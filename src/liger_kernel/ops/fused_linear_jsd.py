@@ -3,6 +3,8 @@ from typing import Optional
 import torch
 import triton
 
+from packaging.version import Version
+
 from liger_kernel.ops.jsd import _jsd_kernel
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
@@ -14,6 +16,8 @@ from liger_kernel.utils import infer_device
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536 // 2
+_TORCH_VERSION = Version(torch.__version__.split("+")[0])
+_ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
 def fused_linear_jsd_forward(
@@ -26,6 +30,7 @@ def fused_linear_jsd_forward(
     ignore_index,
     has_label,
     temperature,
+    accum_dtype=None,
 ):
     device = student_input.device
     dtype = student_input.dtype
@@ -45,7 +50,12 @@ def fused_linear_jsd_forward(
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
-    grad_weight = torch.zeros_like(student_weight, device=device) if student_weight.requires_grad else None
+    if accum_dtype is None:
+        grad_weight = torch.zeros_like(student_weight, device=device) if student_weight.requires_grad else None
+    else:
+        grad_weight = (
+            torch.zeros_like(student_weight, dtype=accum_dtype, device=device) if student_weight.requires_grad else None
+        )
     grad_input = torch.zeros_like(student_input)
     # we use fp32 for loss accumulator
     loss_1d = torch.zeros((BT, V), dtype=torch.float32, device=device)
@@ -116,9 +126,34 @@ def fused_linear_jsd_forward(
         grad_input[start_idx:end_idx] = student_logits_chunk @ student_weight
 
         if grad_weight is not None:
-            grad_weight.add_(student_logits_chunk.t() @ student_input_chunk)
+            if accum_dtype is None:
+                grad_weight.add_(student_logits_chunk.t() @ student_input_chunk)
+            else:
+                grad_logits_t = student_logits_chunk.t()
+                if (
+                    _ADDMM_SUPPORTS_OUT_DTYPE
+                    and grad_weight.device.type == "cuda"
+                    and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
+                    and grad_weight.dtype == torch.float32
+                    and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
+                ):
+                    input_chunk = student_input_chunk
+                    if input_chunk.dtype != grad_logits_t.dtype:
+                        input_chunk = input_chunk.to(grad_logits_t.dtype)
+                    torch.addmm(
+                        grad_weight,
+                        grad_logits_t,
+                        input_chunk,
+                        out_dtype=torch.float32,
+                        out=grad_weight,
+                    )
+                else:
+                    grad_weight.add_(torch.mm(grad_logits_t, student_input_chunk).float())
 
     loss = torch.sum(loss_1d)
+    grad_weight = (
+        grad_weight.to(student_weight.dtype) if grad_weight is not None and accum_dtype is not None else grad_weight
+    )
     return loss, grad_input, grad_weight
 
 
@@ -178,6 +213,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         jsd_beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
+        accum_dtype: Optional[torch.dtype] = None,
     ):
         """
         Args:
@@ -212,6 +248,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             ignore_index,
             has_label,
             temperature,
+            accum_dtype,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -225,4 +262,4 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         (grad_input, grad_weight) = ctx.saved_tensors
         grad_input, grad_weight = fused_linear_jsd_backward(grad_output, grad_input, grad_weight)
-        return (grad_input, grad_weight, None, None, None, None, None, None)
+        return (grad_input, grad_weight, None, None, None, None, None, None, None)
