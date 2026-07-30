@@ -46,7 +46,7 @@ def apply_liger_kernel_to_megatron(
             (and every module that imported the symbol, e.g.
             ``megatron.core.transformer.attention``) with Liger's Triton RoPE.
             Default ``False`` so adopters opt in explicitly. Only the standard
-            unfused ``bshd`` path is routed through Liger; fused (TE/Apex) RoPE,
+            unfused non-packed path is routed through Liger; fused (TE/Apex) RoPE,
             packed ``thd`` sequences, interleaved rotation, multi-latent
             attention, ``mscale != 1`` and per-batch ``freqs`` transparently
             fall back to Megatron's native implementation.
@@ -287,7 +287,7 @@ def _patch_apply_rotary_pos_emb() -> None:
     holds. We rebind the symbol on *every* module whose ``apply_rotary_pos_emb``
     still points at the original, so all live call sites pick up Liger.
 
-    Only the standard unfused ``bshd`` path is routed through Liger. Fused RoPE,
+    Only the standard unfused non-packed path is routed through Liger. Fused RoPE,
     packed ``thd`` sequences, interleaved rotation, multi-latent attention,
     ``mscale != 1`` and per-batch ``freqs`` delegate to the captured original so
     numerics never silently change.
@@ -327,7 +327,7 @@ def _patch_apply_rotary_pos_emb() -> None:
         cp_group=None,
         mla_rotary_interleaved=False,
     ):
-        # Route only the standard unfused bshd path to Liger; everything else
+        # Route only the standard unfused non-packed path to Liger; everything else
         # (fused TE/Apex RoPE, packed thd, interleaved, multi-latent attention,
         # mscale scaling, per-batch/mRoPE freqs) falls back to native so we
         # never change numerics for configs Liger's kernel does not cover.

@@ -1135,7 +1135,7 @@ def test_rms_norm_only_patch_does_not_touch_ce_symbols(fake_megatron_ce):
 # modules (``megatron.core.transformer.attention`` does
 # ``from …rope_utils import apply_rotary_pos_emb``), so the patch must rebind
 # the name on every module that holds the original — not just the definition
-# module. It also routes only the standard unfused ``bshd`` path through Liger,
+# module. It also routes only the standard unfused non-packed path through Liger,
 # delegating fused / thd / interleaved / MLA / mscale / mRoPE configs back to
 # the captured native function so numerics never silently change.
 
@@ -1259,7 +1259,7 @@ def _rope_config(apply_rope_fusion=False, rotary_interleaved=False, multi_latent
     ],
 )
 def test_rope_patch_delegates_unsupported_paths_to_native(fake_megatron_rope, kwargs, config_kwargs):
-    """Every path Liger's bshd kernel doesn't cover must fall through to the
+    """Every path Liger's standard RoPE adapter doesn't cover must fall through to the
     captured native function (observable via the sentinel it returns)."""
     rope_utils, _ = fake_megatron_rope
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
@@ -1319,7 +1319,7 @@ def test_rope_patch_delegates_with_older_megatron_signature():
 
 def test_rope_patch_delegates_per_batch_freqs_to_native(fake_megatron_rope):
     """mRoPE-style per-batch ``freqs`` (shape[1] > 1) is not covered by the
-    bshd kernel and must delegate to native."""
+    non-packed adapter and must delegate to native."""
     rope_utils, _ = fake_megatron_rope
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
@@ -1336,7 +1336,7 @@ def test_rope_patch_delegates_per_batch_freqs_to_native(fake_megatron_rope):
 # ---------------------------------------------------------------------------
 
 
-def _ref_rope_bshd(t, freqs):
+def _ref_rope_sbhd(t, freqs):
     """Native Megatron RoPE (non-interleaved, mscale=1) for the supported path."""
     rot_dim = freqs.shape[-1]
     t_rot, t_pass = t[..., :rot_dim], t[..., rot_dim:]
@@ -1362,7 +1362,7 @@ def test_rope_patch_end_to_end_matches_native(fake_megatron_rope):
     theta = torch.outer(torch.arange(seq, device=_device, dtype=torch.float32), inv_freq)
     freqs = torch.cat((theta, theta), dim=-1).reshape(seq, 1, 1, head_dim)
 
-    ref = _ref_rope_bshd(t.clone(), freqs)
+    ref = _ref_rope_sbhd(t.clone(), freqs)
     # Call through the consumer-module binding — proves attention picks up Liger.
     got = attention.apply_rotary_pos_emb(t.clone(), freqs, _rope_config())
 

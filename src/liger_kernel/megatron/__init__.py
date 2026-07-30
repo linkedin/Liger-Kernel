@@ -6,7 +6,8 @@ Public API:
     LigerMegatronCrossEntropy — drop-in for Megatron-LM's vocab-parallel
         cross-entropy (Megatron defaults). Supports all TP sizes.
     liger_apply_rotary_pos_emb_bshd — Liger drop-in for Megatron-Core's
-        ``_apply_rotary_pos_emb_bshd`` (standard unfused ``bshd`` RoPE path).
+        ``_apply_rotary_pos_emb_bshd`` (standard unfused non-packed RoPE path;
+        the function name mirrors Megatron's upstream helper).
     apply_liger_kernel_to_megatron — patches Megatron-Core so existing training
         scripts pick up Liger kernels with one line. Currently supports
         RMSNorm (via BackendSpecProvider), both the fused and unfused

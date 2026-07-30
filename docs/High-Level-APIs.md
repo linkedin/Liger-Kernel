@@ -106,7 +106,7 @@ Triton kernels.
 | Megatron-LM   | `liger_kernel.megatron.apply_liger_kernel_to_megatron` | RMSNorm, CrossEntropyLoss, RoPE |
 
 **Scope**: Vocab-parallel cross-entropy supports all tensor-parallel sizes.
-RoPE uses Liger for the standard unfused `bshd` path; fused RoPE, packed `thd`
+RoPE uses Liger for the standard unfused non-packed path; fused RoPE, packed `thd`
 sequences, interleaved rotation, multi-latent attention, YaRN scaling, and
 per-batch mRoPE frequencies fall back to Megatron's native implementation.
 

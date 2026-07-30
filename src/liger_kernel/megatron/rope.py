@@ -13,13 +13,13 @@ extra work — one head out of typically dozens). The public entry point
 :func:`liger_apply_rotary_pos_emb_bshd` handles the layout / precision
 conversion between Megatron's convention and Liger's:
 
-  * Megatron ``t``     : ``[seq, batch, heads, head_dim]`` (sbhd)
+  * Megatron ``t``     : ``[seq, batch, heads, head_dim]`` (SBHD)
   * Megatron ``freqs`` : ``[seq, 1, 1, rot_dim]`` (already the doubled
     ``cat(freqs, freqs)`` produced by ``RotaryEmbedding``)
-  * Liger ``q``        : ``[batch, heads, seq, head_dim]`` (bshd)
+  * Liger ``q``        : ``[batch, heads, seq, head_dim]`` (BHSD)
   * Liger ``cos``/``sin`` : ``[1, seq, rot_dim]``
 
-Only the standard non-fused, non-interleaved, non-multi-latent ``bshd`` path
+Only the standard non-fused, non-interleaved, non-multi-latent, non-packed path
 is handled here. The monkey-patch delegates every other path (fused TE/Apex
 RoPE, packed ``thd`` sequences, interleaved rotation, multi-latent attention,
 ``mscale != 1``, per-batch ``freqs``) back to Megatron's native implementation
@@ -73,6 +73,10 @@ class LigerMegatronRopeFunction(torch.autograd.Function):
 def liger_apply_rotary_pos_emb_bshd(t: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
     """Liger drop-in for Megatron's ``_apply_rotary_pos_emb_bshd`` (standard path).
 
+    The ``bshd`` suffix mirrors Megatron's upstream helper name; the tensor
+    received here uses Megatron's ``[sequence, batch, heads, head_dim]`` (SBHD)
+    layout.
+
     Equivalent to Megatron-Core's
 
         t = (t * cos(freqs)) + (rotate_half(t) * sin(freqs))
@@ -100,7 +104,7 @@ def liger_apply_rotary_pos_emb_bshd(t: torch.Tensor, freqs: torch.Tensor) -> tor
     cos = torch.cos(freqs).to(t.dtype)[:, 0, 0, :].unsqueeze(0)
     sin = torch.sin(freqs).to(t.dtype)[:, 0, 0, :].unsqueeze(0)
 
-    # sbhd -> bshd for the Liger kernel, then back.
+    # SBHD -> BHSD for the Liger kernel, then back.
     t_liger = t_rot.permute(1, 2, 0, 3)
     rotated = LigerMegatronRopeFunction.apply(t_liger, cos, sin)
     rotated = rotated.permute(2, 0, 1, 3)

@@ -54,7 +54,7 @@ apply_liger_kernel_to_megatron(
 
 `rope=True` reroutes Megatron's `apply_rotary_pos_emb` dispatcher — including
 the copy `megatron.core.transformer.attention` imported at load time — to
-Liger's Triton RoPE for the standard unfused `bshd` path. Fused (TE/Apex) RoPE,
+Liger's Triton RoPE for the standard unfused non-packed path. Fused (TE/Apex) RoPE,
 packed `thd` sequences, interleaved rotation, multi-latent attention and mRoPE
 transparently fall back to Megatron's native implementation, so enabling it is
 always safe.

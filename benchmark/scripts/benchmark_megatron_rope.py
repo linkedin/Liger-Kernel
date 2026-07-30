@@ -1,7 +1,7 @@
 """Benchmark Liger's Megatron-LM RoPE adapter.
 
 Compares three providers on Megatron's per-tensor RoPE call shape
-``[seq, batch, heads, head_dim]`` (sbhd), sweeping the sequence length:
+``[seq, batch, heads, head_dim]`` (SBHD), sweeping the sequence length:
 
   - **torch**: an eager-PyTorch re-implementation of Megatron's
     ``_apply_rotary_pos_emb_bshd`` (the raw reference).
