@@ -46,16 +46,10 @@ except ImportError:
     tvm_ffi = None
     nvshmem = None
 
-pytestmark = pytest.mark.skipif(
-    tvm_ffi is None or not tvm_ffi.is_available(),
-    reason="liger_cute_kernels not built/installed; build it to run these.",
-)
+pytestmark = pytest.mark.skipif(nvshmem is None, reason="liger_cute_kernels dependencies are not installed")
 
-_NDEV = (
-    torch.cuda.device_count()
-    if (tvm_ffi is not None and tvm_ffi.is_available() and torch is not None and torch.cuda.is_available())
-    else 0
-)
+_NATIVE_AVAILABLE = tvm_ffi is not None and tvm_ffi.is_available()
+_NDEV = torch.cuda.device_count() if (_NATIVE_AVAILABLE and torch is not None and torch.cuda.is_available()) else 0
 
 _NVSHMEM_BINDINGS = (
     "uniqueid_nbytes",
@@ -79,11 +73,13 @@ _NVSHMEM_BINDINGS = (
 # ── Surface / pure-host (no runtime) ─────────────────────────────────────────
 
 
+@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="liger_cute_kernels native core is not built")
 def test_extension_exposes_nvshmem_bindings():
     for name in _NVSHMEM_BINDINGS:
         assert hasattr(tvm_ffi, name), f"missing binding: {name}"
 
 
+@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="liger_cute_kernels native core is not built")
 def test_uniqueid_nbytes_positive():
     # sizeof(nvshmemx_uniqueid_t) — a compile-time constant; no runtime needed.
     n = tvm_ffi.uniqueid_nbytes()
@@ -108,6 +104,100 @@ def test_ranks_to_strided_valid():
 def test_ranks_to_strided_rejects(bad):
     with pytest.raises(ValueError):
         nvshmem._ranks_to_strided(bad)
+
+
+@pytest.fixture
+def isolated_team_state():
+    nvshmem._reset_team_state()
+    yield
+    nvshmem._reset_team_state()
+
+
+def test_team_from_pg_uses_bootstrap_pe_numbering(monkeypatch, isolated_team_state):
+    bootstrap_pg = object()
+    subgroup_pg = object()
+    bootstrap_global_ranks = (1, 3, 5, 7)
+    subgroup_global_ranks = (3, 7)
+    nvshmem._BOOTSTRAP_PG = bootstrap_pg
+    nvshmem._BOOTSTRAP_GLOBAL_RANKS = bootstrap_global_ranks
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda pg=None: 2 if pg is subgroup_pg else 4)
+    monkeypatch.setattr(
+        dist,
+        "get_global_rank",
+        lambda pg, rank: (subgroup_global_ranks[rank] if pg is subgroup_pg else bootstrap_global_ranks[rank]),
+    )
+    monkeypatch.setattr(dist, "get_rank", lambda pg=None: 1 if pg is bootstrap_pg else 3)
+
+    def fake_all_gather_object(output, value, group=None):
+        assert group is bootstrap_pg
+        assert value == (1, 3)
+        output[:] = [(0, 2), (1, 3), (0, 2), (1, 3)]
+
+    monkeypatch.setattr(dist, "all_gather_object", fake_all_gather_object)
+    monkeypatch.setattr(tvm_ffi, "team_world", lambda: 42)
+    splits = []
+
+    def fake_split(parent, start, stride, size):
+        splits.append((parent, start, stride, size))
+        return 100 + len(splits)
+
+    monkeypatch.setattr(tvm_ffi, "team_split_strided", fake_split)
+
+    handle = nvshmem.team_from_pg(subgroup_pg)
+
+    assert handle == 102
+    assert splits == [(42, 0, 2, 2), (42, 1, 2, 2)]
+
+
+def test_uncached_subgroup_lookup_never_creates_team(monkeypatch, isolated_team_state):
+    pg = object()
+    monkeypatch.setattr(nvshmem, "_pg_parent_pes", lambda _: (0, 2))
+    monkeypatch.setattr(nvshmem, "_bootstrap_context", lambda: (object(), (0, 1, 2, 3)))
+    create_calls = []
+    monkeypatch.setattr(nvshmem, "team_from_pg", lambda _: create_calls.append(True) or 17)
+
+    with pytest.raises(RuntimeError, match="collectively during distributed setup"):
+        nvshmem.resolve_team(pg, create=False)
+    assert create_calls == []
+
+    assert nvshmem.resolve_team(pg) == 17
+    assert nvshmem.resolve_team(pg, create=False) == 17
+    assert create_calls == [True]
+
+
+def test_init_pmi_records_aligned_torch_world(monkeypatch, isolated_team_state):
+    world_pg = dist.group.WORLD
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda pg=None: 4)
+    monkeypatch.setattr(dist, "get_rank", lambda pg=None: 2)
+    monkeypatch.setattr(dist, "get_global_rank", lambda pg, rank: rank)
+    monkeypatch.setattr(
+        dist,
+        "all_gather_object",
+        lambda output, value, group=None: output.__setitem__(slice(None), [value] * 4),
+    )
+    monkeypatch.setattr(tvm_ffi, "init_pmi", lambda: None)
+    monkeypatch.setattr(tvm_ffi, "n_pes", lambda: 4)
+    monkeypatch.setattr(tvm_ffi, "my_pe", lambda: 2)
+
+    nvshmem.init_pmi()
+
+    assert nvshmem._BOOTSTRAP_PG is world_pg
+    assert nvshmem._BOOTSTRAP_GLOBAL_RANKS == (0, 1, 2, 3)
+
+
+def test_init_pmi_without_matching_world_keeps_world_only_mode(monkeypatch, isolated_team_state):
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda pg=None: 4)
+    monkeypatch.setattr(tvm_ffi, "init_pmi", lambda: None)
+    monkeypatch.setattr(tvm_ffi, "n_pes", lambda: 2)
+
+    nvshmem.init_pmi()
+
+    assert nvshmem._BOOTSTRAP_PG is None
+    assert nvshmem._BOOTSTRAP_GLOBAL_RANKS is None
 
 
 # ── Distributed harness ──────────────────────────────────────────────────────
@@ -234,7 +324,99 @@ def _run(world_size: int, scenario: str, groups=None):
         shutil.rmtree(rdzv_dir, ignore_errors=True)
 
 
+def _nonworld_bootstrap_worker(rank: int, world_size: int, init_file: str):
+    torch.cuda.set_device(rank)
+    dist.init_process_group(
+        backend="nccl",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=120),
+    )
+
+    bootstrap_groups = ([0, 2], [1, 3])
+    bootstrap_pg = None
+    singleton_pg = None
+    for group in (*bootstrap_groups, [0], [1], [2], [3]):
+        pg = dist.new_group(ranks=group)
+        if rank in group:
+            if len(group) == 2:
+                bootstrap_pg = pg
+                bootstrap_ranks = group
+            else:
+                singleton_pg = pg
+
+    sub_team = None
+    checks = []
+
+    def expect(name, got, expected):
+        checks.append((name, got, expected))
+
+    try:
+        nvshmem.init_from_pg(bootstrap_pg)
+        world_team = nvshmem.team_world()
+        expect("n_pes", nvshmem.n_pes(), 2)
+        expect("my_pe", nvshmem.my_pe(), bootstrap_ranks.index(rank))
+
+        try:
+            nvshmem.resolve_team(singleton_pg, create=False)
+        except RuntimeError as exc:
+            expect("uncached_lookup_error", "collectively during distributed setup" in str(exc), True)
+        else:
+            expect("uncached_lookup_error", False, True)
+
+        sub_team = nvshmem.resolve_team(singleton_pg)
+        expect("cached_handle", nvshmem.resolve_team(singleton_pg, create=False), sub_team)
+        expect("subteam_size", nvshmem.team_n_pes(sub_team), 1)
+        expect("subteam_pe", nvshmem.team_my_pe(sub_team), 0)
+        expect(
+            "translated_pe",
+            nvshmem.team_translate_pe(sub_team, 0, world_team),
+            bootstrap_ranks.index(rank),
+        )
+
+        nvshmem.team_destroy(sub_team)
+        sub_team = None
+        dist.barrier()
+        nvshmem.finalize()
+        dist.destroy_process_group()
+    except BaseException:
+        try:
+            if sub_team is not None:
+                nvshmem.team_destroy(sub_team)
+            nvshmem.finalize()
+        except Exception:
+            pass
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        raise
+
+    for name, got, expected in checks:
+        assert got == expected, f"[rank {rank}] {name}: got {got!r}, expected {expected!r}"
+
+
+def _run_nonworld_bootstrap():
+    rdzv_dir = tempfile.mkdtemp(prefix="lck_nonworld_rdzv_")
+    init_file = os.path.join(rdzv_dir, "store")
+    try:
+        mp.spawn(
+            _nonworld_bootstrap_worker,
+            args=(4, init_file),
+            nprocs=4,
+            join=True,
+        )
+    finally:
+        shutil.rmtree(rdzv_dir, ignore_errors=True)
+
+
 # ── Distributed tests (real PEs) ─────────────────────────────────────────────
+
+
+@pytest.mark.skipif(_NDEV < 1, reason="needs a CUDA device")
+def test_single_pe_world_bootstrap_short_circuit_and_configure():
+    _run(1, "world")
 
 
 @pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
@@ -253,3 +435,8 @@ def test_team_from_pg_contiguous_subgroups():
 def test_team_from_pg_strided_subgroups():
     # WORLD={0,1,2,3} -> strided EP groups {0,2} and {1,3}.
     _run(4, "subgroups", groups=[[0, 2], [1, 3]])
+
+
+@pytest.mark.skipif(_NDEV < 4, reason="needs >=4 CUDA devices")
+def test_nonworld_bootstrap_maps_global_ranks_to_parent_pes():
+    _run_nonworld_bootstrap()

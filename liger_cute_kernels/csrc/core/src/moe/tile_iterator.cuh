@@ -487,13 +487,10 @@ struct RemoteMlpTileIterator {
 	// Signal that Y is ready in cur_slot for the comm put. Per tile,
 	// dst_ready advances by runtime NS.
 	__device__ void release_dst(int lane) {
-		// Direct-store change: for same-host (cur_is_local) tiles the GEMM now
-		// TMA-stores Y straight into the peer's symmetric local_output, and the
-		// put warp issues NO local write for this tile (rubber-stamps only). So
-		// the device-scope __threadfence() that used to order the dst_staging
-		// write before the put-warp read is no longer necessary — dropped.
-		// Cross-host (IB) tiles still stage Y through dst_staging + putmem, so
-		// keep the system fence that flushes Y to NIC-coherence before the put.
+		// Same-host tiles store Y directly into the peer's symmetric
+		// local_output, so the put warp has no staged data to read. Cross-host
+		// tiles use dst_staging + putmem and require a system-scope fence before
+		// the put warp observes dst_ready.
 		if (!cur_is_local) __threadfence_system();
 		if (lane == 0) {
 			atomicAdd(&dst_ready[cur_slot], 1);

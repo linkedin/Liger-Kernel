@@ -80,9 +80,11 @@ src/liger_kernel/ops/cute/
   - Native/system install: point `NVSHMEM_HOME` at it, or use the default
     `/usr/local/nvshmem`.
   - PyPI install: install `nvidia-nvshmem-cu13` (or the optional
-    `liger_cute_kernels[nvshmem-pypi]` extra). The lck build auto-detects that
-    package layout and creates unversioned compatibility symlinks for CMake when
-    needed.
+    `liger_cute_kernels[nvshmem-pypi]` extra). The Python wheel builder and
+    `build_core()` auto-detect that package layout and create unversioned
+    compatibility symlinks for CMake when needed. For direct CMake invocation,
+    pass the package root as `-DNVSHMEM_HOME=...`; the find module accepts its
+    versioned `libnvshmem_host.so.3`.
 - **CUTLASS** headers (4.x) — point `CUTLASS_HOME` at the repo root (so that
   `$CUTLASS_HOME/include/cutlass/cutlass.h` and
   `$CUTLASS_HOME/tools/util/include` exist). *Not needed when linking a prebuilt
@@ -128,6 +130,17 @@ Or from Python (with `liger_cute_kernels/` on `sys.path`):
 ```python
 from cute_build import build_core
 build_core("build/core")   # stages libliger_cute_kernels.so + libnvshmem_host.so
+```
+
+`build_core()` auto-detects both native and PyPI NVSHMEM installations. Direct
+CMake builds against the PyPI package must pass its root explicitly:
+
+```bash
+NVSHMEM_PYPI_HOME="$(python -c \
+  'import importlib.util; s=importlib.util.find_spec("nvidia.nvshmem"); print(next(iter(s.submodule_search_locations)))')"
+cmake -S liger_cute_kernels -B build/core \
+      -DNVSHMEM_HOME="${NVSHMEM_PYPI_HOME}" \
+      -DLIGER_CUTE_BUILD_BINDINGS=OFF
 ```
 
 ### 2. Core + TVM FFI exports from source (single local build)

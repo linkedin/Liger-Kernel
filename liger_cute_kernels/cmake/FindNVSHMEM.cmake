@@ -21,25 +21,32 @@ if(DEFINED ENV{NVSHMEM_HOME} AND NOT DEFINED NVSHMEM_HOME)
     set(NVSHMEM_HOME "$ENV{NVSHMEM_HOME}")
 endif()
 
-# ── Headers ───────────────────────────────────────────────────────────────────
+# Keep headers and libraries within the same installation. In particular, a
+# PyPI NVSHMEM_HOME must not pick up an unversioned host library from a separate
+# system installation.
 find_path(NVSHMEM_INCLUDE_DIR
     NAMES nvshmem.h
-    HINTS "${NVSHMEM_HOME}/include"
-    PATHS /usr/local/nvshmem/include
+    PATHS "${NVSHMEM_HOME}/include"
+    NO_DEFAULT_PATH
 )
 
-# ── Host library ──────────────────────────────────────────────────────────────
 find_library(NVSHMEM_HOST_LIBRARY
     NAMES nvshmem_host
-    HINTS "${NVSHMEM_HOME}/lib" "${NVSHMEM_HOME}/lib64"
-    PATHS /usr/local/nvshmem/lib /usr/local/nvshmem/lib64
+    PATHS "${NVSHMEM_HOME}/lib" "${NVSHMEM_HOME}/lib64"
+    NO_DEFAULT_PATH
 )
+if(NOT NVSHMEM_HOST_LIBRARY)
+    find_file(NVSHMEM_HOST_LIBRARY
+        NAMES libnvshmem_host.so.3
+        PATHS "${NVSHMEM_HOME}/lib" "${NVSHMEM_HOME}/lib64"
+        NO_DEFAULT_PATH
+    )
+endif()
 
-# ── Device-side static library ────────────────────────────────────────────────
 find_library(NVSHMEM_DEVICE_LIBRARY
     NAMES nvshmem_device
-    HINTS "${NVSHMEM_HOME}/lib" "${NVSHMEM_HOME}/lib64"
-    PATHS /usr/local/nvshmem/lib /usr/local/nvshmem/lib64
+    PATHS "${NVSHMEM_HOME}/lib" "${NVSHMEM_HOME}/lib64"
+    NO_DEFAULT_PATH
 )
 
 # ── Standard find_package machinery ───────────────────────────────────────────

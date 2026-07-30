@@ -8,10 +8,9 @@
 //        XG(..., GTM) for explicit comm/gemm decoupling.
 //   BWD: X(NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)  (13 fields)
 //        XG(..., GTM) for explicit comm/gemm decoupling.
-// NOTE: the BWD row has NO leading `NS` field — it starts at `NS2`, matching the
+// The BWD row starts at `NS2` and has 13 fields, matching the
 // 13-param LIGER_MOE_BWD_DISPATCH_ENTRY_* macros and the moe_bwd_fwd_bf16_tuned<>
-// template. (A stale earlier version of this comment listed a phantom leading
-// `NS`; writing 14-field rows against it breaks compilation — see the sm100 set.)
+// template.
 
 #define LIGER_MOE_FWD_EXTRA_CONFIGS_SM90(XG)
 

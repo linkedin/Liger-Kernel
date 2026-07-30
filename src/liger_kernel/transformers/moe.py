@@ -60,7 +60,9 @@ class LigerExpertParallelFusedMoe(nn.Module):
         process_group: Expert-parallel ``ProcessGroup`` whose ranks hold the
             remote experts. ``None`` (the default) runs purely local
             (NVSHMEM_TEAM_WORLD); for multi-rank expert parallelism pass the EP
-            group.
+            group. A proper subgroup must first be prepared collectively on all
+            NVSHMEM PEs with ``liger_cute_kernels.nvshmem.resolve_team(pg)``
+            during distributed setup.
     """
 
     def __init__(self, process_group: Optional["ProcessGroup"] = None) -> None:
