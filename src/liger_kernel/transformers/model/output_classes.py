@@ -44,6 +44,13 @@ except Exception:
     _LlavaCausalLMOutputWithPast = None
 
 try:
+    from transformers.models.lfm2_vl.modeling_lfm2_vl import (
+        Lfm2VlCausalLMOutputWithPast as _Lfm2VlCausalLMOutputWithPast,
+    )
+except Exception:
+    _Lfm2VlCausalLMOutputWithPast = None
+
+try:
     from transformers.models.paligemma.modeling_paligemma import (
         PaliGemmaCausalLMOutputWithPast as _PaliGemmaCausalLMOutputWithPast,
     )
@@ -133,6 +140,14 @@ if _LlavaCausalLMOutputWithPast is not None:
 
     @dataclass
     class LigerLlavaCausalLMOutputWithPast(_LlavaCausalLMOutputWithPast):
+        token_accuracy: Optional[torch.FloatTensor] = None
+        predicted_tokens: Optional[torch.LongTensor] = None
+
+
+if _Lfm2VlCausalLMOutputWithPast is not None:
+
+    @dataclass
+    class LigerLfm2VlCausalLMOutputWithPast(_Lfm2VlCausalLMOutputWithPast):
         token_accuracy: Optional[torch.FloatTensor] = None
         predicted_tokens: Optional[torch.LongTensor] = None
 
