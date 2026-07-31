@@ -38,6 +38,8 @@ checkstyle:
 # We have to explicitly set HF_DATASETS_OFFLINE=1, or dataset will silently try to send metrics and timeout (80s) https://github.com/huggingface/datasets/blob/37a603679f451826cfafd8aae00738b01dcb9d58/src/datasets/load.py#L286
 test-convergence:
 	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings \
+		test/convergence/fp32/test_lfm2_models.py \
+		test/convergence/bf16/test_lfm2_models.py \
 		test/convergence/fp32/test_mini_models.py \
 		test/convergence/fp32/test_mini_models_multimodal.py \
 		test/convergence/fp32/test_mini_models_with_logits.py \

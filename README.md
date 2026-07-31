@@ -297,6 +297,9 @@ loss.backward()
 | Llama4 (Text) & (Multimodal)      | `liger_kernel.transformers.apply_liger_kernel_to_llama4`   | RMSNorm, LayerNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
 | LLaMA 2 & 3 | `liger_kernel.transformers.apply_liger_kernel_to_llama`   | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | LLaMA 3.2-Vision | `liger_kernel.transformers.apply_liger_kernel_to_mllama`   | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
+| LFM2 | `liger_kernel.transformers.apply_liger_kernel_to_lfm2` | RoPE, RMSNorm, SwiGLU, ShortConv, CrossEntropyLoss, FusedLinearCrossEntropy |
+| LFM2MoE | `liger_kernel.transformers.apply_liger_kernel_to_lfm2_moe` | RoPE, RMSNorm, SwiGLU, ShortConv, FusedMoE, MoERouter, CrossEntropyLoss, FusedLinearCrossEntropy |
+| LFM2VL | `liger_kernel.transformers.apply_liger_kernel_to_lfm2_vl` | SigLIP2 LayerNorm, RoPE, RMSNorm, SwiGLU, ShortConv, CrossEntropyLoss, FusedLinearCrossEntropy |
 | Ministral   | `liger_kernel.transformers.apply_liger_kernel_to_ministral` | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mistral     | `liger_kernel.transformers.apply_liger_kernel_to_mistral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mixtral     | `liger_kernel.transformers.apply_liger_kernel_to_mixtral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
@@ -346,6 +349,8 @@ loss.backward()
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
 | Fused Linear CrossEntropy       | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
 | Multi Token Attention           | `liger_kernel.transformers.LigerMultiTokenAttention`        |
+| LFM2 Short Convolution          | `liger_kernel.ops.LigerLfm2ShortConvFunction`               |
+| LFM2 MoE Router                 | `liger_kernel.ops.LigerLfm2MoeRouterFunction`               |
 | Softmax                         | `liger_kernel.transformers.LigerSoftmax`                    |
 | Sparsemax                       | `liger_kernel.transformers.LigerSparsemax`                  |
 | mHC (Hyper-Connections)         | `liger_kernel.transformers.LigerMHC`                        |

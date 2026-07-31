@@ -65,6 +65,8 @@ from liger_kernel.ops.kl_div import LigerKLDivLossFunction  # noqa: F401
 from liger_kernel.ops.layer_norm import LigerLayerNormFunction  # noqa: F401
 from liger_kernel.ops.layer_norm import layer_norm_backward  # noqa: F401
 from liger_kernel.ops.layer_norm import layer_norm_forward  # noqa: F401
+from liger_kernel.ops.lfm2_moe_router import LigerLfm2MoeRouterFunction  # noqa: F401
+from liger_kernel.ops.lfm2_short_conv import LigerLfm2ShortConvFunction  # noqa: F401
 from liger_kernel.ops.llama4_rope import LigerLlama4RopeFunction  # noqa: F401
 from liger_kernel.ops.mhc import LigerMHCCoeffsFunction  # noqa: F401
 from liger_kernel.ops.mhc import LigerMHCPostResFunction  # noqa: F401
