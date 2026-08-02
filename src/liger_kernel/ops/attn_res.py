@@ -23,6 +23,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 # ============================================================================
@@ -258,21 +259,22 @@ def attn_res_forward(blocks, w_query, w_norm, eps=1e-6):
     if BLOCK_D >= 8192:
         nw = 16
 
-    _attn_res_fwd_kernel[(n_tokens,)](
-        V_3d,
-        w_query,
-        w_norm,
-        Out,
-        Alpha,
-        RSTD,
-        N,
-        n_tokens,
-        D,
-        eps,
-        BLOCK_D=BLOCK_D,
-        MAX_BLOCKS=MAX_BLOCKS,
-        num_warps=nw,
-    )
+    with device_context(V.device):
+        _attn_res_fwd_kernel[(n_tokens,)](
+            V_3d,
+            w_query,
+            w_norm,
+            Out,
+            Alpha,
+            RSTD,
+            N,
+            n_tokens,
+            D,
+            eps,
+            BLOCK_D=BLOCK_D,
+            MAX_BLOCKS=MAX_BLOCKS,
+            num_warps=nw,
+        )
 
     # Reshape output to match input spatial dims
     out_shape = list(orig_shape[1:])  # [B, T, D] or [B*T, D]
@@ -299,24 +301,25 @@ def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
     if BLOCK_D >= 8192:
         nw = 16
 
-    _attn_res_bwd_kernel[(n_tokens,)](
-        dh_2d,
-        V_3d,
-        w_query,
-        w_norm,
-        Alpha,
-        RSTD,
-        dV,
-        dW_query,
-        dW_norm,
-        N,
-        n_tokens,
-        D,
-        eps,
-        BLOCK_D=BLOCK_D,
-        MAX_BLOCKS=MAX_BLOCKS,
-        num_warps=nw,
-    )
+    with device_context(dh.device):
+        _attn_res_bwd_kernel[(n_tokens,)](
+            dh_2d,
+            V_3d,
+            w_query,
+            w_norm,
+            Alpha,
+            RSTD,
+            dV,
+            dW_query,
+            dW_norm,
+            N,
+            n_tokens,
+            D,
+            eps,
+            BLOCK_D=BLOCK_D,
+            MAX_BLOCKS=MAX_BLOCKS,
+            num_warps=nw,
+        )
 
     return dV, dW_query.to(w_query.dtype), dW_norm.to(w_norm.dtype)
 
