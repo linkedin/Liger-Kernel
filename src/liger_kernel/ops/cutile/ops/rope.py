@@ -10,6 +10,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 ConstInt = ct.Constant[int]
 PAD_ZERO = ct.PaddingMode.ZERO
@@ -154,22 +155,23 @@ def rope_forward(q, k, cos, sin):
     grid = (bsz * seq_len,)
 
     if ALIGNED:
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            _rope_4d_kernel_ct,
-            (
-                q,
-                k,
-                cos_3d,
-                sin_3d,
-                int(seq_len),
-                float(1.0),
-                int(TILE_QH),
-                int(TILE_KH),
-                int(TILE_HD),
-            ),
-        )
+        with device_context(q.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                _rope_4d_kernel_ct,
+                (
+                    q,
+                    k,
+                    cos_3d,
+                    sin_3d,
+                    int(seq_len),
+                    float(1.0),
+                    int(TILE_QH),
+                    int(TILE_KH),
+                    int(TILE_HD),
+                ),
+            )
         return q, k, cos_3d, sin_3d, cos_bs, ALIGNED, TILE_QH, TILE_KH, TILE_HD, original_dtype
     else:
         # General path: handles arbitrary head_dim (including odd) and n_heads.
@@ -179,24 +181,25 @@ def rope_forward(q, k, cos, sin):
         cos_3d = cos.contiguous()
         sin_3d = sin.contiguous()
         cos_bs = cos_3d.shape[0]
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            _rope_general_kernel_ct,
-            (
-                q_t,
-                k_t,
-                cos_3d,
-                sin_3d,
-                int(cos_bs),
-                int(seq_len),
-                int(n_q_heads),
-                int(n_k_heads),
-                int(head_dim_half),
-                float(1.0),
-                int(TILE_HD),
-            ),
-        )
+        with device_context(q.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                _rope_general_kernel_ct,
+                (
+                    q_t,
+                    k_t,
+                    cos_3d,
+                    sin_3d,
+                    int(cos_bs),
+                    int(seq_len),
+                    int(n_q_heads),
+                    int(n_k_heads),
+                    int(head_dim_half),
+                    float(1.0),
+                    int(TILE_HD),
+                ),
+            )
         q_out = q_t.transpose(1, 2).to(original_dtype)
         k_out = k_t.transpose(1, 2).to(original_dtype)
         return q_out, k_out, cos_3d, sin_3d, cos_bs, ALIGNED, TILE_QH, TILE_KH, TILE_HD, original_dtype
@@ -224,44 +227,46 @@ def rope_backward(
     grid = (n_row,)
 
     if ALIGNED:
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            _rope_4d_kernel_ct,
-            (
-                dq,
-                dk,
-                cos,
-                sin,
-                int(seq_len),
-                float(-1.0),
-                int(TILE_QH),
-                int(TILE_KH),
-                int(TILE_HD),
-            ),
-        )
+        with device_context(dq.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                _rope_4d_kernel_ct,
+                (
+                    dq,
+                    dk,
+                    cos,
+                    sin,
+                    int(seq_len),
+                    float(-1.0),
+                    int(TILE_QH),
+                    int(TILE_KH),
+                    int(TILE_HD),
+                ),
+            )
         return dq, dk
     else:
         dq_t = dq.transpose(1, 2).contiguous()
         dk_t = dk.transpose(1, 2).contiguous()
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            _rope_general_kernel_ct,
-            (
-                dq_t,
-                dk_t,
-                cos,
-                sin,
-                int(cos_bs),
-                int(seq_len),
-                int(n_q_heads),
-                int(n_k_heads),
-                int(head_dim_half),
-                float(-1.0),
-                int(TILE_HD),
-            ),
-        )
+        with device_context(dq.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                _rope_general_kernel_ct,
+                (
+                    dq_t,
+                    dk_t,
+                    cos,
+                    sin,
+                    int(cos_bs),
+                    int(seq_len),
+                    int(n_q_heads),
+                    int(n_k_heads),
+                    int(head_dim_half),
+                    float(-1.0),
+                    int(TILE_HD),
+                ),
+            )
         dq_out = dq_t.transpose(1, 2).to(original_dtype)
         dk_out = dk_t.transpose(1, 2).to(original_dtype)
         return dq_out, dk_out

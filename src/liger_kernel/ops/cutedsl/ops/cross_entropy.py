@@ -17,6 +17,7 @@ from cutlass.cutlass_dsl import T
 from cutlass.cutlass_dsl import dsl_user_op
 
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.utils import device_context
 
 # log2(e) and ln(2): the online-softmax math is done in base-2 (hardware ex2.approx)
 # then converted, exactly mirroring the Triton kernel for numerical parity.
@@ -77,8 +78,13 @@ _compile_cache = {}
 _stream_cache = {}
 
 
-def _cute_stream():
-    raw = torch.cuda.current_stream().cuda_stream
+def _cute_stream(device=None):
+    """Return a CUstream for the current CUDA stream, optionally on ``device``."""
+    if device is None:
+        raw = torch.cuda.current_stream().cuda_stream
+    else:
+        with device_context(device):
+            raw = torch.cuda.current_stream().cuda_stream
     s = _stream_cache.get(raw)
     if s is None:
         s = cuda.CUstream(raw)
@@ -624,7 +630,7 @@ def _launch_ce_fwd(
     x_ct = to_cute_tensor(x)
     y_ct = to_cute_tensor(y, assumed_align=8)  # int64
     loss_ct = to_cute_tensor(loss, assumed_align=2)  # bf16/fp16/fp32 scalar
-    stream = _cute_stream()
+    stream = _cute_stream(x.device)
     # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
     #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
     #   `loss.to(mLoss.element_type)`). Missing loss.dtype let two callers with the

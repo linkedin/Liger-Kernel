@@ -10,6 +10,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 ConstFloat = ct.Constant[float]
@@ -107,24 +108,25 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
     inv_n_non_ignore = 1.0 / n_non_ignore
     label_tensor = shift_labels if has_label else torch.empty(1, device=_input.device, dtype=torch.int64)
 
-    ct.launch(
-        torch.cuda.current_stream(),
-        (num_rows, 1, 1),
-        jsd_kernel_ct,
-        (
-            _input,
-            target,
-            loss,
-            dx,
-            label_tensor,
-            float(beta),
-            float(inv_n_non_ignore),
-            int(ignore_index),
-            int(vocab_size),
-            int(BLOCK_SIZE),
-            int(has_label),
-        ),
-    )
+    with device_context(_input.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            (num_rows, 1, 1),
+            jsd_kernel_ct,
+            (
+                _input,
+                target,
+                loss,
+                dx,
+                label_tensor,
+                float(beta),
+                float(inv_n_non_ignore),
+                int(ignore_index),
+                int(vocab_size),
+                int(BLOCK_SIZE),
+                int(has_label),
+            ),
+        )
 
     return torch.sum(loss).to(_input.dtype), dx
 

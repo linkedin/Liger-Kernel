@@ -10,6 +10,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 ConstFloat = ct.Constant[float]
 ConstInt = ct.Constant[int]
@@ -349,36 +350,37 @@ def cross_entropy_forward(
     dummy_i64 = torch.zeros(1, dtype=torch.int64, device=_input.device)
     dummy_weight = torch.zeros(1, dtype=torch.float32, device=_input.device)
 
-    ct.launch(
-        torch.cuda.current_stream(),
-        (num_rows, 1, 1),
-        liger_cross_entropy_kernel_ct,
-        (
-            _input,
-            target,
-            weight.float() if has_weight else dummy_weight,
-            loss_1d,
-            z_loss_1d if return_z_loss else dummy_f32,
-            token_accuracy_1d if return_token_accuracy else dummy_f32,
-            predicted_tokens_1d if return_predicted_tokens else dummy_i64,
-            int(vocab_size),
-            float(inv_n_non_ignore),
-            float(sum_non_ignore_weight),
-            float(weight_sum),
-            int(ignore_index),
-            float(label_smoothing),
-            float(lse_square_scale),
-            float(softcap_val),
-            int(BLOCK_SIZE),
-            int(input_requires_grad),
-            int(reduction_mean),
-            int(has_weight),
-            int(has_softcapping),
-            int(return_z_loss),
-            int(return_token_accuracy),
-            int(return_predicted_tokens),
-        ),
-    )
+    with device_context(_input.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            (num_rows, 1, 1),
+            liger_cross_entropy_kernel_ct,
+            (
+                _input,
+                target,
+                weight.float() if has_weight else dummy_weight,
+                loss_1d,
+                z_loss_1d if return_z_loss else dummy_f32,
+                token_accuracy_1d if return_token_accuracy else dummy_f32,
+                predicted_tokens_1d if return_predicted_tokens else dummy_i64,
+                int(vocab_size),
+                float(inv_n_non_ignore),
+                float(sum_non_ignore_weight),
+                float(weight_sum),
+                int(ignore_index),
+                float(label_smoothing),
+                float(lse_square_scale),
+                float(softcap_val),
+                int(BLOCK_SIZE),
+                int(input_requires_grad),
+                int(reduction_mean),
+                int(has_weight),
+                int(has_softcapping),
+                int(return_z_loss),
+                int(return_token_accuracy),
+                int(return_predicted_tokens),
+            ),
+        )
 
     if reduction == "none":
         loss = loss_1d

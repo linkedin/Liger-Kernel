@@ -10,6 +10,7 @@ from torch.nn.modules.utils import _pair
 from liger_kernel.ops.cutile.ops.sparsemax import _sparsemax_backward as _sparsemax_backward_ct
 from liger_kernel.ops.cutile.ops.sparsemax import _sparsemax_forward as _sparsemax_forward_ct
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 _MASK_INF_VAL = -1e9  # large negative; -inf breaks multiply-accumulate pattern ((-inf)*0 = NaN)
 
@@ -139,7 +140,8 @@ def _mask_launch(tensor: torch.Tensor, kernel) -> torch.Tensor:
     t_f = tensor.reshape(N * L, L).contiguous()
     out = torch.empty_like(t_f)
     BLOCK = _select_block_size(L)
-    ct.launch(torch.cuda.current_stream(), (L, N, 1), kernel, (t_f, out, int(L), int(BLOCK)))
+    with device_context(tensor.device):
+        ct.launch(torch.cuda.current_stream(), (L, N, 1), kernel, (t_f, out, int(L), int(BLOCK)))
     return out.reshape(*batch, L, L)
 
 
@@ -164,12 +166,13 @@ def _fused_softmax_zeromask_bwd_ct_launch(probs: torch.Tensor, grad_probs: torch
 
     BLOCK = _select_block_size(L)
     grid = (L, N, 1)
-    ct.launch(
-        torch.cuda.current_stream(),
-        grid,
-        _fused_softmax_zeromask_bwd_kernel_ct,
-        (p_f, dp_f, out, int(L), int(BLOCK)),
-    )
+    with device_context(probs.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            grid,
+            _fused_softmax_zeromask_bwd_kernel_ct,
+            (p_f, dp_f, out, int(L), int(BLOCK)),
+        )
     return out.reshape(*batch, L, L)
 
 
