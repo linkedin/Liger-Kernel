@@ -5,6 +5,41 @@ import triton.language as tl
 from liger_kernel.ops.utils import ensure_contiguous
 
 
+def _next_pow2(x):
+    return triton.next_power_of_2(x)
+
+
+def _fwd_config(n_elements, embedding_dim):
+    """Tuned forward launch config (RTX 5060 Ti, Blackwell SM 12.0).
+
+    Swept offline (see optimization/embedding): wide BLOCK_SIZE_N tiles with
+    8 warps cut forward time consistently for embedding_dim >= 1024; mid dims
+    (512/768) prefer a 64x512 tile. Small dims keep the stock-like (128,128,4).
+    """
+    d = embedding_dim
+    if d < 256:
+        tile_n = _next_pow2(min(128, d))
+        return 128, tile_n, 4
+    if d < 1024:
+        return 64, 512, 4
+    return 128, 512, 8
+
+
+def _bwd_config(n_elements, embedding_dim):
+    """Tuned backward config; the atomic-add kernel wins with wide N tiles at
+    moderate token counts ((64,512,16)) and a (128,256,8) tile for very large
+    token counts. Mid/small dims stay on the stock-like conservative tile."""
+    d = embedding_dim
+    if d < 256:
+        tile_n = _next_pow2(min(128, d))
+        return 128, tile_n, 4
+    if d < 1024:
+        return 128, 128, 4
+    if n_elements <= 16384:
+        return 64, 512, 16
+    return 128, 256, 8
+
+
 @triton.jit
 def embedding_forward_kernel(
     embeddings_ptr,
@@ -22,7 +57,7 @@ def embedding_forward_kernel(
     start_n = pid_n * BLOCK_SIZE_N
     offsets_m = start_m + tl.arange(0, BLOCK_SIZE_M)
     mask_m = offsets_m < n_elements
-    indices = tl.load(indices_ptr + offsets_m, mask=mask_m, other=0)
+    indices = tl.load(indices_ptr + offsets_m, mask=mask_m, other=0, eviction_policy="evict_first")
     offsets_n = start_n + tl.arange(0, BLOCK_SIZE_N)
     mask_n = offsets_n < embedding_dim
 
@@ -31,10 +66,13 @@ def embedding_forward_kernel(
         embeddings_ptr + embedding_offsets,
         mask=mask_m[:, None] & mask_n[None, :],
         other=0.0,
+        eviction_policy="evict_last",
     )
 
     output_offsets = offsets_m[:, None] * embedding_dim + offsets_n[None, :]
-    tl.store(output_ptr + output_offsets, embeddings, mask=mask_m[:, None] & mask_n[None, :])
+    tl.store(
+        output_ptr + output_offsets, embeddings, mask=mask_m[:, None] & mask_n[None, :], eviction_policy="evict_first"
+    )
 
 
 @triton.jit
@@ -54,7 +92,7 @@ def embedding_backward_kernel(
     start_n = pid_n * BLOCK_SIZE_N
     offsets_m = start_m + tl.arange(0, BLOCK_SIZE_M)
     mask_m = offsets_m < n_elements
-    indices = tl.load(indices_ptr + offsets_m, mask=mask_m, other=0)
+    indices = tl.load(indices_ptr + offsets_m, mask=mask_m, other=0, eviction_policy="evict_first")
     offsets_n = start_n + tl.arange(0, BLOCK_SIZE_N)
     mask_n = offsets_n < embedding_dim
 
@@ -62,6 +100,7 @@ def embedding_backward_kernel(
         grad_output_ptr + offsets_m[:, None] * embedding_dim + offsets_n[None, :],
         mask=mask_m[:, None] & mask_n[None, :],
         other=0.0,
+        eviction_policy="evict_first",
     )
 
     grad_weight_offsets = indices[:, None] * embedding_dim + offsets_n[None, :]
@@ -89,8 +128,7 @@ class LigerEmbeddingFunction(torch.autograd.Function):
         n_elements = indices.numel()
         embedding_dim = embeddings.shape[1]
 
-        BLOCK_SIZE_M = triton.next_power_of_2(min(128, embedding_dim))
-        BLOCK_SIZE_N = triton.next_power_of_2(min(128, embedding_dim))
+        BLOCK_SIZE_M, BLOCK_SIZE_N, num_warps = _fwd_config(n_elements, embedding_dim)
         grid = (
             triton.cdiv(n_elements, BLOCK_SIZE_M),
             triton.cdiv(embedding_dim, BLOCK_SIZE_N),
@@ -104,6 +142,7 @@ class LigerEmbeddingFunction(torch.autograd.Function):
             embedding_dim=embedding_dim,
             BLOCK_SIZE_M=BLOCK_SIZE_M,
             BLOCK_SIZE_N=BLOCK_SIZE_N,
+            num_warps=num_warps,
         )
 
         ctx.save_for_backward(indices, embeddings)
@@ -121,8 +160,7 @@ class LigerEmbeddingFunction(torch.autograd.Function):
         n_elements = indices.numel()
         embedding_dim = embedding_table.shape[1]
 
-        BLOCK_SIZE_M = triton.next_power_of_2(min(128, embedding_dim))
-        BLOCK_SIZE_N = triton.next_power_of_2(min(128, embedding_dim))
+        BLOCK_SIZE_M, BLOCK_SIZE_N, num_warps = _bwd_config(n_elements, embedding_dim)
         grid = (
             triton.cdiv(n_elements, BLOCK_SIZE_M),
             triton.cdiv(embedding_dim, BLOCK_SIZE_N),
@@ -136,6 +174,7 @@ class LigerEmbeddingFunction(torch.autograd.Function):
             embedding_dim=embedding_dim,
             BLOCK_SIZE_M=BLOCK_SIZE_M,
             BLOCK_SIZE_N=BLOCK_SIZE_N,
+            num_warps=num_warps,
         )
 
         return grad_weight, None

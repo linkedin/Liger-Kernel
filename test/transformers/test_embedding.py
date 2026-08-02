@@ -11,7 +11,6 @@ device = infer_device()
 SLEEP_SECONDS = 0.1
 
 
-@pytest.mark.skip(reason="LigerEmbedding is under experimentation")
 @pytest.mark.parametrize(
     "num_embeddings, embedding_dim, padding_idx",
     [
@@ -23,18 +22,24 @@ SLEEP_SECONDS = 0.1
         (1000, 120, None),
         (1000, 500, None),
         (30522, 768, None),
+        (128256, 4096, None),  # tokenizer scale (e.g. llama-3-8b)
         (100, 64, 0),
         (1000, 128, 50),
         (30522, 768, 1),
     ],
 )
 @pytest.mark.parametrize(
-    "dtype, atol, rtol, device",
+    "dtype, atol, rtol",
     [
-        (torch.float32, 1e-6, 1e-5, device),
+        (torch.float32, 1e-6, 1e-5),
+        # bf16 backward accumulates in bf16 (dtype-rounded atomics), so the
+        # tolerance reflects measured accumulation-order noise calibrated on
+        # this hardware (see optimization/embedding/correctness.py), while
+        # forward is bit-exact (pure gather, no arithmetic).
+        (torch.bfloat16, 0.125, 0.0),
     ],
 )
-def test_embedding_correctness(num_embeddings, embedding_dim, padding_idx, dtype, atol, rtol, device):
+def test_embedding_correctness(num_embeddings, embedding_dim, padding_idx, dtype, atol, rtol):
     print(f"\nTesting embedding with size: ({num_embeddings}, {embedding_dim}), padding_idx: {padding_idx}")
     torch.manual_seed(42)
 
