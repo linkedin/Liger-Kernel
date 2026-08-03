@@ -4,6 +4,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.utils import infer_device
 
@@ -109,23 +110,24 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
     else:
         n_non_ignore = BT
 
-    _jsd_kernel[(n_rows,)](
-        X_ptr=_input,  # input in logspace, X = log Q
-        X_stride=_input.stride(-2),
-        Y_ptr=target,  # ground truth in logspace, Y = log P
-        Y_stride=target.stride(-2),
-        loss_ptr=loss,
-        loss_stride=loss.stride(-2),
-        dX_ptr=dX,
-        dX_stride=dX.stride(-2),
-        label_ptr=(shift_labels if has_label else torch.empty(1, device=_input.device)),  # dummy ptr if no label
-        beta=beta,
-        n_non_ignore=n_non_ignore,
-        ignore_index=ignore_index,
-        n_cols=V,
-        BLOCK_SIZE=BLOCK_SIZE,
-        HAS_LABEL=has_label,
-    )
+    with device_context(_input.device):
+        _jsd_kernel[(n_rows,)](
+            X_ptr=_input,  # input in logspace, X = log Q
+            X_stride=_input.stride(-2),
+            Y_ptr=target,  # ground truth in logspace, Y = log P
+            Y_stride=target.stride(-2),
+            loss_ptr=loss,
+            loss_stride=loss.stride(-2),
+            dX_ptr=dX,
+            dX_stride=dX.stride(-2),
+            label_ptr=(shift_labels if has_label else torch.empty(1, device=_input.device)),  # dummy ptr if no label
+            beta=beta,
+            n_non_ignore=n_non_ignore,
+            ignore_index=ignore_index,
+            n_cols=V,
+            BLOCK_SIZE=BLOCK_SIZE,
+            HAS_LABEL=has_label,
+        )
 
     loss = torch.sum(loss)
     return loss.to(_input.dtype), dX

@@ -37,6 +37,7 @@ from cutlass import Int32
 from cutlass import const_expr
 
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.utils import device_context
 
 # Casting-mode ids — identical values to the Triton kernel so an ``int`` casting
 # mode round-trips between the two backends unchanged.
@@ -65,8 +66,13 @@ _compile_cache = {}
 _stream_cache = {}
 
 
-def _cute_stream():
-    raw = torch.cuda.current_stream().cuda_stream
+def _cute_stream(device=None):
+    """Return a CUstream for the current CUDA stream, optionally on ``device``."""
+    if device is None:
+        raw = torch.cuda.current_stream().cuda_stream
+    else:
+        with device_context(device):
+            raw = torch.cuda.current_stream().cuda_stream
     s = _stream_cache.get(raw)
     if s is None:
         s = cuda.CUstream(raw)
@@ -351,7 +357,7 @@ def _rms_norm_bwd_dw_host(
 
 
 def _launch_fwd(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine):
-    stream = _cute_stream()
+    stream = _cute_stream(X.device)
     # Scalar (non-vectorized) access, so element-size alignment is all we assume — this
     # keeps the kernel correct for unaligned contiguous slices and irregular hidden dims.
     x_ct = to_cute_tensor(X, assumed_align=X.element_size())
@@ -382,7 +388,7 @@ def _launch_fwd(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine):
 
 
 def _launch_bwd_dx(dY, X, W, RSTD, dX, offset, casting_mode, elementwise_affine):
-    stream = _cute_stream()
+    stream = _cute_stream(X.device)
     dy_ct = to_cute_tensor(dY, assumed_align=dY.element_size())
     x_ct = to_cute_tensor(X, assumed_align=X.element_size())
     rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
@@ -408,7 +414,7 @@ def _launch_bwd_dx(dY, X, W, RSTD, dX, offset, casting_mode, elementwise_affine)
 
 
 def _launch_bwd_dw(dY, X, RSTD, dW_partial, rows_per_strip, casting_mode):
-    stream = _cute_stream()
+    stream = _cute_stream(X.device)
     dy_ct = to_cute_tensor(dY, assumed_align=dY.element_size())
     x_ct = to_cute_tensor(X, assumed_align=X.element_size())
     rstd_ct = to_cute_tensor(RSTD, assumed_align=4)

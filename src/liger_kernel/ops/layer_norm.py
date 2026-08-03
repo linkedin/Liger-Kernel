@@ -7,6 +7,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 from liger_kernel.ops.utils import set_large_grf_mode
@@ -204,25 +205,26 @@ def layer_norm_forward(X, W, B, eps):
 
     # Launch kernel with one thread block per row for optimal performance
     grid = (n_rows,)
-    _layer_norm_forward_kernel[grid](
-        Y,
-        Y.stride(0),
-        X,
-        X.stride(0),
-        W,
-        W.stride(0),
-        B,
-        B.stride(0),
-        Mean,
-        Mean.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        n_cols,
-        eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        **kernel_args,
-    )
+    with device_context(X.device):
+        _layer_norm_forward_kernel[grid](
+            Y,
+            Y.stride(0),
+            X,
+            X.stride(0),
+            W,
+            W.stride(0),
+            B,
+            B.stride(0),
+            Mean,
+            Mean.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            n_cols,
+            eps,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            **kernel_args,
+        )
 
     return Y.view(*shape), X, Mean, RSTD, BLOCK_SIZE, num_warps
 
@@ -274,28 +276,29 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         set_large_grf_mode(kernel_args)
 
     # Launch kernel with one thread block per row for optimal performance
-    _layer_norm_backward_kernel[grid](
-        X,
-        X.stride(0),
-        W,
-        Mean,
-        Mean.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        DX,
-        DX.stride(0),
-        _DW,
-        _DW.stride(0),
-        _DB,
-        _DB.stride(0),
-        dY,
-        dY.stride(0),
-        n_rows,
-        n_cols,
-        rows_per_program=rows_per_program,
-        BLOCK_SIZE=BLOCK_SIZE,
-        **kernel_args,
-    )
+    with device_context(X.device):
+        _layer_norm_backward_kernel[grid](
+            X,
+            X.stride(0),
+            W,
+            Mean,
+            Mean.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            DX,
+            DX.stride(0),
+            _DW,
+            _DW.stride(0),
+            _DB,
+            _DB.stride(0),
+            dY,
+            dY.stride(0),
+            n_rows,
+            n_cols,
+            rows_per_program=rows_per_program,
+            BLOCK_SIZE=BLOCK_SIZE,
+            **kernel_args,
+        )
 
     DX = DX.view(*shape)
     DW = _DW.sum(dim=0).to(W.dtype)

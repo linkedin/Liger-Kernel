@@ -24,6 +24,7 @@ Key rules:
 - Cast to `tl.float32` for precision-sensitive ops (sigmoid, rsqrt, exp, log, tanh)
 - Use `tl.program_id(0).to(tl.int64)` to avoid overflow
 - Use stride parameters for memory access, not hardcoded offsets
+- Wrap every kernel launch in `with device_context(<tensor>.device):` so Triton compiles and launches on the tensor's GPU, not the process' active one
 - Prefer recomputation over saving for backward when computation is cheap
 
 ### 2. `src/liger_kernel/transformers/{kernel}.py` (NEW)

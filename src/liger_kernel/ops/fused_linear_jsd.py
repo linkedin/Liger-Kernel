@@ -8,6 +8,7 @@ from packaging.version import Version
 from liger_kernel.ops.jsd import _jsd_kernel
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import element_mul_kernel
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device
@@ -93,25 +94,26 @@ def fused_linear_jsd_forward(
         teacher_prob_chunk = teacher_prob_chunk.contiguous()
 
         # Here we calculate the gradient of prob_chunk in place so we can save memory.
-        _jsd_kernel[(chunk_n_rows,)](
-            X_ptr=student_prob_chunk,
-            X_stride=student_prob_chunk.stride(-2),
-            Y_ptr=teacher_prob_chunk,
-            Y_stride=teacher_prob_chunk.stride(-2),
-            loss_ptr=loss_1d_slice,
-            loss_stride=loss_1d_slice.stride(-2),
-            dX_ptr=student_prob_chunk,
-            dX_stride=student_prob_chunk.stride(-2),
-            label_ptr=(
-                shift_labels[start_idx:end_idx] if has_label else torch.empty(1, device=device)
-            ),  # dummy ptr if no label
-            beta=jsd_beta,
-            n_non_ignore=n_non_ignore,
-            ignore_index=ignore_index,
-            n_cols=V,
-            BLOCK_SIZE=BLOCK_SIZE,
-            HAS_LABEL=has_label,
-        )
+        with device_context(device):
+            _jsd_kernel[(chunk_n_rows,)](
+                X_ptr=student_prob_chunk,
+                X_stride=student_prob_chunk.stride(-2),
+                Y_ptr=teacher_prob_chunk,
+                Y_stride=teacher_prob_chunk.stride(-2),
+                loss_ptr=loss_1d_slice,
+                loss_stride=loss_1d_slice.stride(-2),
+                dX_ptr=student_prob_chunk,
+                dX_stride=student_prob_chunk.stride(-2),
+                label_ptr=(
+                    shift_labels[start_idx:end_idx] if has_label else torch.empty(1, device=device)
+                ),  # dummy ptr if no label
+                beta=jsd_beta,
+                n_non_ignore=n_non_ignore,
+                ignore_index=ignore_index,
+                n_cols=V,
+                BLOCK_SIZE=BLOCK_SIZE,
+                HAS_LABEL=has_label,
+            )
         loss_1d[start_idx:end_idx] = loss_1d_slice
         # gradients of prob_chunk in place, shape: chunk_size x V
         # gradients of logits_chunk in place, shape: chunk_size x V
@@ -166,28 +168,30 @@ def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
         n_rows = BT
         BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
 
-        element_mul_kernel[(n_rows,)](
-            grad_input,
-            grad_input.stride(-2),
-            grad_output,
-            H,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32 if not is_hip() else 16,
-        )
+        with device_context(grad_input.device):
+            element_mul_kernel[(n_rows,)](
+                grad_input,
+                grad_input.stride(-2),
+                grad_output,
+                H,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=32 if not is_hip() else 16,
+            )
 
         # handle grad_weight
         if grad_weight is not None:
             V, H = grad_weight.shape
             n_rows = V
 
-            element_mul_kernel[(n_rows,)](
-                grad_weight,
-                grad_weight.stride(-2),
-                grad_output,
-                H,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32 if not is_hip() else 16,
-            )
+            with device_context(grad_input.device):
+                element_mul_kernel[(n_rows,)](
+                    grad_weight,
+                    grad_weight.stride(-2),
+                    grad_output,
+                    H,
+                    BLOCK_SIZE=BLOCK_SIZE,
+                    num_warps=32 if not is_hip() else 16,
+                )
 
     return grad_input, grad_weight
 

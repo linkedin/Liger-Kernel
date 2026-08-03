@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 
@@ -68,15 +69,16 @@ def relu_squared_forward(X):
     Y = torch.empty_like(X_2d)
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-    _relu_squared_forward_kernel[(n_rows,)](
-        Y,
-        Y.stride(-2),
-        X_2d,
-        X_2d.stride(-2),
-        n_cols=n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(X.device):
+        _relu_squared_forward_kernel[(n_rows,)](
+            Y,
+            Y.stride(-2),
+            X_2d,
+            X_2d.stride(-2),
+            n_cols=n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
     return Y.view(*ori_shape)
 
 
@@ -90,17 +92,18 @@ def relu_squared_backward(X, dY):
     dX = torch.empty_like(dY_2d)
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-    _relu_squared_backward_kernel[(n_rows,)](
-        dX,
-        dX.stride(-2),
-        dY_2d,
-        dY_2d.stride(-2),
-        X_2d,
-        X_2d.stride(-2),
-        n_cols=n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(X.device):
+        _relu_squared_backward_kernel[(n_rows,)](
+            dX,
+            dX.stride(-2),
+            dY_2d,
+            dY_2d.stride(-2),
+            X_2d,
+            X_2d.stride(-2),
+            n_cols=n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
     return dX.view(*ori_shape)
 
 

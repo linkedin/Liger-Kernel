@@ -13,6 +13,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 from liger_kernel.ops.utils import set_large_grf_mode
@@ -282,30 +283,31 @@ def modulated_rms_norm_forward(X, W, scale, shift, eps, offset, casting_mode):
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
 
-    _modulated_rms_norm_forward_kernel[(n_rows,)](
-        Y,
-        Y.stride(0),
-        X,
-        X.stride(0),
-        W,
-        W.stride(0) if elementwise_affine else 0,
-        scale,
-        scale.stride(0),
-        shift,
-        shift.stride(0) if has_shift else 0,
-        RSTD,
-        RSTD.stride(0),
-        n_cols,
-        eps,
-        offset,
-        casting_mode,
-        elementwise_affine=elementwise_affine,
-        has_shift=has_shift,
-        rows_per_modulation=rows_per_modulation,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        **kernel_args,
-    )
+    with device_context(X.device):
+        _modulated_rms_norm_forward_kernel[(n_rows,)](
+            Y,
+            Y.stride(0),
+            X,
+            X.stride(0),
+            W,
+            W.stride(0) if elementwise_affine else 0,
+            scale,
+            scale.stride(0),
+            shift,
+            shift.stride(0) if has_shift else 0,
+            RSTD,
+            RSTD.stride(0),
+            n_cols,
+            eps,
+            offset,
+            casting_mode,
+            elementwise_affine=elementwise_affine,
+            has_shift=has_shift,
+            rows_per_modulation=rows_per_modulation,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            **kernel_args,
+        )
 
     return Y.view(*shape), RSTD, BLOCK_SIZE, num_warps, casting_mode, rows_per_modulation
 
@@ -378,38 +380,39 @@ def modulated_rms_norm_backward(
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
 
-    _modulated_rms_norm_backward_kernel[grid](
-        dY,
-        dY.stride(0),
-        dX,
-        dX.stride(0),
-        X,
-        X.stride(0),
-        torch_to_triton_dtype[X.dtype],
-        W,
-        W.stride(0) if elementwise_affine else 0,
-        scale,
-        scale.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        _dW,
-        _dW.stride(0) if elementwise_affine else 0,
-        dScale,
-        dScale.stride(0),
-        dShift,
-        dShift.stride(0) if has_shift else 0,
-        n_rows,
-        n_cols,
-        offset,
-        rows_per_program,
-        casting_mode,
-        elementwise_affine=elementwise_affine,
-        has_shift=has_shift,
-        rows_per_modulation=rows_per_modulation,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        **kernel_args,
-    )
+    with device_context(X.device):
+        _modulated_rms_norm_backward_kernel[grid](
+            dY,
+            dY.stride(0),
+            dX,
+            dX.stride(0),
+            X,
+            X.stride(0),
+            torch_to_triton_dtype[X.dtype],
+            W,
+            W.stride(0) if elementwise_affine else 0,
+            scale,
+            scale.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            _dW,
+            _dW.stride(0) if elementwise_affine else 0,
+            dScale,
+            dScale.stride(0),
+            dShift,
+            dShift.stride(0) if has_shift else 0,
+            n_rows,
+            n_cols,
+            offset,
+            rows_per_program,
+            casting_mode,
+            elementwise_affine=elementwise_affine,
+            has_shift=has_shift,
+            rows_per_modulation=rows_per_modulation,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            **kernel_args,
+        )
 
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype) if elementwise_affine else None

@@ -10,6 +10,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 MAX_FUSED_SIZE = 65536
@@ -186,25 +187,26 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     rstd_stats = torch.empty(batch_size * num_groups, dtype=torch.float32, device=X.device)
 
     grid = (batch_size, num_groups, 1)
-    ct.launch(
-        torch.cuda.current_stream(),
-        grid,
-        _group_norm_fwd_kernel_ct,
-        (
-            X_2d,
-            Y_2d,
-            W,
-            B,
-            mean_stats,
-            rstd_stats,
-            int(num_channels),
-            int(num_groups),
-            int(channels_per_group),
-            int(hidden_size),
-            float(eps),
-            int(BLOCK_SIZE),
-        ),
-    )
+    with device_context(X.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            grid,
+            _group_norm_fwd_kernel_ct,
+            (
+                X_2d,
+                Y_2d,
+                W,
+                B,
+                mean_stats,
+                rstd_stats,
+                int(num_channels),
+                int(num_groups),
+                int(channels_per_group),
+                int(hidden_size),
+                float(eps),
+                int(BLOCK_SIZE),
+            ),
+        )
 
     return Y_2d.view(*shape), X_2d, mean_stats, rstd_stats, BLOCK_SIZE
 
@@ -223,26 +225,27 @@ def group_norm_backward(dY, X_2d, W, B, Mean, RSTD, num_channels, num_groups):
     db_partial = torch.zeros(batch_size, num_channels, dtype=B.dtype, device=B.device)
 
     grid = (batch_size, num_groups, 1)
-    ct.launch(
-        torch.cuda.current_stream(),
-        grid,
-        _group_norm_bwd_kernel_ct,
-        (
-            X_2d,
-            dY_2d,
-            W,
-            Mean,
-            RSTD,
-            dx_2d,
-            dw_partial,
-            db_partial,
-            int(num_channels),
-            int(num_groups),
-            int(channels_per_group),
-            int(hidden_size),
-            int(BLOCK_SIZE),
-        ),
-    )
+    with device_context(X_2d.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            grid,
+            _group_norm_bwd_kernel_ct,
+            (
+                X_2d,
+                dY_2d,
+                W,
+                Mean,
+                RSTD,
+                dx_2d,
+                dw_partial,
+                db_partial,
+                int(num_channels),
+                int(num_groups),
+                int(channels_per_group),
+                int(hidden_size),
+                int(BLOCK_SIZE),
+            ),
+        )
 
     dw = dw_partial.sum(dim=0)
     db = db_partial.sum(dim=0)
