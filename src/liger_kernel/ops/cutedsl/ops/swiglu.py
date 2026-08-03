@@ -61,9 +61,10 @@ import cutlass.cute.math as cute_math
 
 from cutlass.cute.runtime import from_dlpack
 
-from liger_kernel.ops.backends._cutedsl._cute_lib.compile_utils import make_fake_tensor
-from liger_kernel.ops.backends._cutedsl._cute_lib.dtype_map import torch2cute_dtype_map
+from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
+from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.utils import infer_device_arch
 
 # log2(e); sigmoid(x) = 1 / (1 + exp(-x)) = 1 / (1 + exp2(-x * LOG2E))
 _LOG2E = 1.4426950408889634
@@ -112,10 +113,17 @@ def _is_blackwell(device=None) -> bool:
     try:
         if not torch.cuda.is_available():
             return False
-        # sm_10x == data-center Blackwell (sm_100 B200, sm_103 B300). Excludes
-        # Hopper sm_90 (H100/H200) and consumer Blackwell sm_120 (RTX 50xx),
-        # which fall back to the scalar path.
-        return torch.cuda.get_device_capability(device)[0] == 10
+        # ``infer_device_arch`` maps the compute capability to a coarse family:
+        # sm_100 -> "blackwell" (B200), sm_103 -> "blackwell_ultra" (B300). Hopper
+        # sm_90 ("hopper") and consumer Blackwell sm_120 ("blackwell_consumer",
+        # RTX 50xx) are intentionally excluded and fall back to the scalar path.
+        if isinstance(device, torch.device):
+            device_id = device.index if device.index is not None else torch.cuda.current_device()
+        elif device is None:
+            device_id = torch.cuda.current_device()
+        else:
+            device_id = device
+        return infer_device_arch(device_id) in ("blackwell", "blackwell_ultra")
     except Exception:  # pragma: no cover - no CUDA / bad device
         return False
 
