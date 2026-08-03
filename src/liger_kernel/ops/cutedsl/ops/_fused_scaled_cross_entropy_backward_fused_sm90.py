@@ -257,72 +257,6 @@ local traffic.  Registers/thread stay at 168 in all three.  Because the effect
 is entirely off the critical path -- the kernel is 92-97 % tensor-pipe active
 and the local traffic hits L1 -- the accepted per-phase store widths are kept.
 
-Phase-order ablation (``dw_before_dx``)
----------------------------------------
-dZ and dW both read the wave's X tile (8 MiB at ``m_tiles_per_wave = 8``) while
-dX streams the 256 MiB dZ workspace and 1 GiB of W between them, so running
-dW second-instead-of-third should keep X resident.  It does reduce DRAM reads,
-but the kernel is tensor-pipe bound and the saving does not convert to time
-(target shape, interleaved A/B in one process, 15 samples each)::
-
-    order         median ms   eff TFLOP/s   DRAM rd    DRAM wr   L2 hit   tensor
-    dZ->dX->dW    19.970      660.7         17.584 GB  5.380 GB  79.91 %  91.97 %
-    dZ->dW->dX    19.934      661.9         16.229 GB  5.399 GB  79.92 %  91.94 %
-
-ratio 1.0018x -- inside run-to-run noise -- despite a 7.7 % (1.355 GB) drop in
-DRAM reads.  Per-phase cycle counters (CTA 0, accumulated over the 4 waves,
-``profile_phases`` build) show dW itself gets *slower* when moved earlier, so
-the locality win is real but is not on the critical path::
-
-    order         dZ         barrier   dX        dW         total
-    dZ->dX->dW    8.68 Mcyc  0.05      8.43      9.94       27.10 Mcyc
-    dZ->dW->dX    8.71 Mcyc  0.05      8.47      10.50      27.73 Mcyc
-
-Both orders are bit-identical to each other and to the accepted backward on
-every validated shape, so the knob is kept only as an ablation; the default
-stays ``dw_before_dx=False``.
-
-The same ablation in full-workspace mode (``m_tiles_per_wave = 32`` at
-``M = 4096``: one device wave, 1 GiB dZ workspace, the full 32 MiB X tensor
-instead of an 8 MiB slice, one grid barrier instead of seven, and a single dW
-``tma_d_store`` instead of four BF16 reduce-add passes) **reverses the sign**
-of the DRAM effect::
-
-    order         median ms   eff TFLOP/s   DRAM rd    DRAM wr   L2 hit   tensor
-    dZ->dX->dW    19.362      681.5         18.330 GB  2.182 GB  71.01 %  97.46 %
-    dZ->dW->dX    19.433      678.9         20.663 GB  2.185 GB  71.41 %  97.15 %
-
-    order         dZ         barrier   dX        dW        total
-    dZ->dX->dW    8.54 Mcyc  0.01      8.50      8.72      25.77 Mcyc
-    dZ->dW->dX    8.41 Mcyc  0.01      8.68      8.46      25.56 Mcyc
-
-ratio 0.9963x and 0.9999x over two runs: dW-first is neutral-to-marginally
-*worse*, and it costs 2.333 GB (+12.7 %) of extra DRAM reads rather than
-saving 1.355 GB.  At wave 8 the X
-slice is small enough that running dW straight after dZ reuses it; at wave 32
-the 1 GiB dZ workspace has already swept L2 many times over, so the reuse
-disappears and the transposed dW read pattern only disturbs the residency dX
-would otherwise inherit.  dW's own phase cost is flat between the two orders
-here (8.72 vs 8.68 Mcyc) against +5.6 % at wave 8.
-
-Full-workspace mode is the faster configuration overall (19.36 ms / 681.5
-TFLOP/s vs 19.99 / 660.0), almost entirely from write traffic: 2.18 GB against
-5.38 GB, because the single-wave dW stores once instead of read-modify-writing
-the 1 GiB BF16 accumulator four times.  It also cuts spill traffic (2.8 M vs
-11.2 M local-load sectors) since the device wave loop runs once.  Peak
-allocation rises from 5536 MiB to 6304 MiB for the larger dZ workspace.
-Across wave modes ``grad_input`` matches to 1 BF16 ulp (4.883e-04) and
-``grad_weight`` to 3.125e-02, the expected consequence of single-store versus
-four-pass BF16 accumulation; within either mode the two phase orders remain
-bit-identical.
-
-Ordering note: dX multicasts W into its cluster partner's SMEM, so the phase
-boundary before dX needs a *cluster*-wide barrier, not just
-``sync_threads()``.  In the default order the grid barrier after dZ provides
-it; with ``dw_before_dx=True`` a CTA whose last dW tile is masked off by the
-``tile_id < total`` guard would otherwise run ahead and clobber the operand
-SMEM its partner is still consuming, so that path adds an explicit
-``cluster_arrive`` / ``cluster_wait``.
 """
 
 from dataclasses import dataclass
@@ -425,11 +359,6 @@ class FusedBackwardConfig:
     dw_store_tile_n: int = 64
     dw_store_stages: int = 4
     dw_group_m: int = 1
-
-    # ---- phase order ablation ----
-    # False: dZ -> dX -> dW (default).  True: dZ -> dW -> dX, which keeps the
-    # X wave resident across dZ and dW instead of streaming dZ + W between them.
-    dw_before_dx: bool = False
 
     # ---- registers: each phase runs at its own accepted budget ----
     epi_registers: int = 88
@@ -553,7 +482,6 @@ class _FusedBackwardSM90:
         self.dw_store_stages = config.dw_store_stages
         self.dw_subtiles = self.tile_n // self.dw_store_tile_n
         self.dw_group_m = config.dw_group_m
-        self.dw_first = config.dw_before_dx
 
         self.epi_registers = config.epi_registers
         self.mma_registers = config.mma_registers
@@ -1831,92 +1759,47 @@ class _FusedBackwardSM90:
                 self._grid_barrier(bar_ptr, target_count, tid)
                 self._regs_for_gemm(True)
 
-                if cutlass.const_expr(self.dw_first):
-                    w_ld_i, w_ld_p = self._dw_producer(
-                        wave,
-                        warp,
-                        bidx,
-                        num_ctas,
-                        dw_iters,
-                        dw_total,
-                        dw_m_tiles,
-                        dw_n_tiles,
-                        num_k_dw,
-                        tma_dwa,
-                        tPgP,
-                        tPsP,
-                        tma_xt,
-                        tQgQ,
-                        tQsQ,
-                        dw_pipe,
-                        w_ld_i,
-                        w_ld_p,
-                    )
-                    cute.arch.sync_threads()
-                    cute.arch.cluster_arrive()
-                    cute.arch.cluster_wait()
-                    x_ld_i, x_ld_p = self._dx_producer(
-                        warp,
-                        cluster_idx,
-                        cta_rank,
-                        num_clusters,
-                        b_mcast_mask,
-                        dx_m_tiles,
-                        dx_m_units,
-                        dx_n_units,
-                        num_k_dx,
-                        tma_dza,
-                        tAgA,
-                        tAsA,
-                        tma_wt,
-                        tBgB,
-                        tBsB,
-                        dx_pipe,
-                        x_ld_i,
-                        x_ld_p,
-                    )
-                else:
-                    x_ld_i, x_ld_p = self._dx_producer(
-                        warp,
-                        cluster_idx,
-                        cta_rank,
-                        num_clusters,
-                        b_mcast_mask,
-                        dx_m_tiles,
-                        dx_m_units,
-                        dx_n_units,
-                        num_k_dx,
-                        tma_dza,
-                        tAgA,
-                        tAsA,
-                        tma_wt,
-                        tBgB,
-                        tBsB,
-                        dx_pipe,
-                        x_ld_i,
-                        x_ld_p,
-                    )
-                    cute.arch.sync_threads()
-                    w_ld_i, w_ld_p = self._dw_producer(
-                        wave,
-                        warp,
-                        bidx,
-                        num_ctas,
-                        dw_iters,
-                        dw_total,
-                        dw_m_tiles,
-                        dw_n_tiles,
-                        num_k_dw,
-                        tma_dwa,
-                        tPgP,
-                        tPsP,
-                        tma_xt,
-                        tQgQ,
-                        tQsQ,
-                        dw_pipe,
-                        w_ld_i,
-                        w_ld_p,
-                    )
+                x_ld_i, x_ld_p = self._dx_producer(
+                    warp,
+                    cluster_idx,
+                    cta_rank,
+                    num_clusters,
+                    b_mcast_mask,
+                    dx_m_tiles,
+                    dx_m_units,
+                    dx_n_units,
+                    num_k_dx,
+                    tma_dza,
+                    tAgA,
+                    tAsA,
+                    tma_wt,
+                    tBgB,
+                    tBsB,
+                    dx_pipe,
+                    x_ld_i,
+                    x_ld_p,
+                )
+                cute.arch.sync_threads()
+                w_ld_i, w_ld_p = self._dw_producer(
+                    wave,
+                    warp,
+                    bidx,
+                    num_ctas,
+                    dw_iters,
+                    dw_total,
+                    dw_m_tiles,
+                    dw_n_tiles,
+                    num_k_dw,
+                    tma_dwa,
+                    tPgP,
+                    tPsP,
+                    tma_xt,
+                    tQgQ,
+                    tQsQ,
+                    dw_pipe,
+                    w_ld_i,
+                    w_ld_p,
+                )
 
                 # The final wave cannot overwrite the workspace again, and
                 # kernel completion already orders its output stores.
@@ -2027,122 +1910,62 @@ class _FusedBackwardSM90:
                 self._grid_barrier(bar_ptr, target_count, tid)
                 self._regs_for_gemm(False)
 
-                if cutlass.const_expr(self.dw_first):
-                    (w_rd_i, w_rd_p, w_rl_i, w_rl_p) = self._dw_consumer(
-                        wave,
-                        issuer,
-                        bidx,
-                        num_ctas,
-                        dw_iters,
-                        dw_total,
-                        dw_m_tiles,
-                        dw_n_tiles,
-                        num_k_dw,
-                        num_k_blocks,
-                        tma_dw_store,
-                        tDgDStore,
-                        tDsDStore,
-                        tma_dw_add,
-                        tDgDAdd,
-                        tDsDAdd,
-                        tDsD_frag,
-                        mma_dw,
-                        rWA,
-                        rWB,
-                        accum,
-                        d_frag,
-                        dw_pipe,
-                        w_rd_i,
-                        w_rd_p,
-                        w_rl_i,
-                        w_rl_p,
-                    )
-                    cute.arch.sync_threads()
-                    cute.arch.cluster_arrive()
-                    cute.arch.cluster_wait()
-                    (x_rd_i, x_rd_p, x_rl_i, x_rl_p) = self._dx_consumer(
-                        wave,
-                        issuer,
-                        cluster_idx,
-                        cta_rank,
-                        num_clusters,
-                        dx_m_tiles,
-                        dx_m_units,
-                        dx_n_units,
-                        num_k_dx,
-                        num_k_blocks,
-                        tma_dx,
-                        tCgC,
-                        tCsC,
-                        tCsC_frag,
-                        mma_dx,
-                        rXA,
-                        rXB,
-                        accum,
-                        c_frag,
-                        dx_pipe,
-                        x_rd_i,
-                        x_rd_p,
-                        x_rl_i,
-                        x_rl_p,
-                    )
-                else:
-                    (x_rd_i, x_rd_p, x_rl_i, x_rl_p) = self._dx_consumer(
-                        wave,
-                        issuer,
-                        cluster_idx,
-                        cta_rank,
-                        num_clusters,
-                        dx_m_tiles,
-                        dx_m_units,
-                        dx_n_units,
-                        num_k_dx,
-                        num_k_blocks,
-                        tma_dx,
-                        tCgC,
-                        tCsC,
-                        tCsC_frag,
-                        mma_dx,
-                        rXA,
-                        rXB,
-                        accum,
-                        c_frag,
-                        dx_pipe,
-                        x_rd_i,
-                        x_rd_p,
-                        x_rl_i,
-                        x_rl_p,
-                    )
-                    cute.arch.sync_threads()
-                    (w_rd_i, w_rd_p, w_rl_i, w_rl_p) = self._dw_consumer(
-                        wave,
-                        issuer,
-                        bidx,
-                        num_ctas,
-                        dw_iters,
-                        dw_total,
-                        dw_m_tiles,
-                        dw_n_tiles,
-                        num_k_dw,
-                        num_k_blocks,
-                        tma_dw_store,
-                        tDgDStore,
-                        tDsDStore,
-                        tma_dw_add,
-                        tDgDAdd,
-                        tDsDAdd,
-                        tDsD_frag,
-                        mma_dw,
-                        rWA,
-                        rWB,
-                        accum,
-                        d_frag,
-                        dw_pipe,
-                        w_rd_i,
-                        w_rd_p,
-                        w_rl_i,
-                        w_rl_p,
-                    )
+                (x_rd_i, x_rd_p, x_rl_i, x_rl_p) = self._dx_consumer(
+                    wave,
+                    issuer,
+                    cluster_idx,
+                    cta_rank,
+                    num_clusters,
+                    dx_m_tiles,
+                    dx_m_units,
+                    dx_n_units,
+                    num_k_dx,
+                    num_k_blocks,
+                    tma_dx,
+                    tCgC,
+                    tCsC,
+                    tCsC_frag,
+                    mma_dx,
+                    rXA,
+                    rXB,
+                    accum,
+                    c_frag,
+                    dx_pipe,
+                    x_rd_i,
+                    x_rd_p,
+                    x_rl_i,
+                    x_rl_p,
+                )
+                cute.arch.sync_threads()
+                (w_rd_i, w_rd_p, w_rl_i, w_rl_p) = self._dw_consumer(
+                    wave,
+                    issuer,
+                    bidx,
+                    num_ctas,
+                    dw_iters,
+                    dw_total,
+                    dw_m_tiles,
+                    dw_n_tiles,
+                    num_k_dw,
+                    num_k_blocks,
+                    tma_dw_store,
+                    tDgDStore,
+                    tDsDStore,
+                    tma_dw_add,
+                    tDgDAdd,
+                    tDsDAdd,
+                    tDsD_frag,
+                    mma_dw,
+                    rWA,
+                    rWB,
+                    accum,
+                    d_frag,
+                    dw_pipe,
+                    w_rd_i,
+                    w_rd_p,
+                    w_rl_i,
+                    w_rl_p,
+                )
 
                 if wave + 1 < num_waves:
                     self._regs_for_dz(False)
