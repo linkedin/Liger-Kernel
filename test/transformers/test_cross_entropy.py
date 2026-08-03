@@ -1265,3 +1265,60 @@ def test_correctness_with_predicted_tokens(B, T, V, ignore_index, dtype):
     # Verify backward still works
     result.loss.backward()
     assert _input.grad is not None
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        pytest.param(torch.float16),
+    ],
+)
+@pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
+def test_correctness_true_class_grad_confident_predictions(dtype, label_smoothing, reduction):
+    """
+    dx_y = (softmax(x_y) - (1 - label_smoothing)) / N cancels catastrophically once the model is
+    confident, so the -(1 - label_smoothing) term must be folded in before the result is rounded
+    to the low-precision dtype of the in-place gradient buffer. Random logits leave softmax(x_y)
+    near zero and never expose a lossy round-trip through that buffer; confident ones do.
+
+    The true-class gradient is checked against an fp32 reference computed from the same
+    low-precision logits, and is required to be no less accurate than torch's own low-precision
+    backward on those logits.
+    """
+    torch.manual_seed(0)
+    B, T, V = 2, 64, 4096
+
+    logits = torch.randn(B * T, V, device=device, dtype=torch.float32)
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    # Drive softmax(x_y) close to 1 so the true-class gradient is a small difference of
+    # comparatively large terms.
+    logits[torch.arange(B * T, device=device), target] = logits.max(dim=-1).values + 10.0
+    _tensor = logits.to(dtype)
+
+    _input = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+    _input_ref = _tensor.detach().clone().float().requires_grad_(True)
+
+    torch_ce = CrossEntropyLoss(reduction=reduction, label_smoothing=label_smoothing)
+    liger_ce = LigerCrossEntropyLoss(reduction=reduction, label_smoothing=label_smoothing)
+
+    torch_ce(_input, target).backward()
+    liger_ce(_input2, target).backward()
+    torch_ce(_input_ref, target).backward()
+
+    rows = torch.arange(B * T, device=device)
+    ref = _input_ref.grad[rows, target].double()
+    torch_err = (_input.grad[rows, target].double() - ref).abs().max().item()
+    liger_err = (_input2.grad[rows, target].double() - ref).abs().max().item()
+
+    # Rounding the softmax term before the subtraction inflates this error by ~1/(1 - softmax(x_y)),
+    # i.e. orders of magnitude, so a small constant factor over torch is a wide margin.
+    assert liger_err <= max(4 * torch_err, torch.finfo(dtype).tiny), (
+        f"true-class grad error {liger_err:.3e} exceeds torch's {torch_err:.3e} "
+        f"(reduction={reduction}, label_smoothing={label_smoothing}, dtype={dtype})"
+    )
