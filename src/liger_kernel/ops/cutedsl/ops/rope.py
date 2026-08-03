@@ -184,7 +184,20 @@ def _dyn_cached(t: torch.Tensor):
 
 
 def _get_compiled_token(q4, k4, cos3, sin3, nqh, nkh, hd_half, seq_inner, cos_bcast, backward):
-    key = (q4.dtype, k4.dtype, cos3.dtype, sin3.dtype, nqh, nkh, hd_half, seq_inner, cos_bcast, backward, "tok", q4.device.index)
+    key = (
+        q4.dtype,
+        k4.dtype,
+        cos3.dtype,
+        sin3.dtype,
+        nqh,
+        nkh,
+        hd_half,
+        seq_inner,
+        cos_bcast,
+        backward,
+        "tok",
+        q4.device.index,
+    )
     fn = _COMPILE_CACHE.get(key)
     if fn is not None:
         return fn
@@ -759,7 +772,22 @@ def _static_cos_cached(t: torch.Tensor):
 
 
 def _get_compiled_tma_qk(q2d, k2d, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, seq_len):
-    key = (q2d.dtype, k2d.dtype, cos3.dtype, sin3.dtype, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, tuple(cos3.shape), "tma_qk", q2d.device.index)
+    key = (
+        q2d.dtype,
+        k2d.dtype,
+        cos3.dtype,
+        sin3.dtype,
+        nqh,
+        nkh,
+        hd_half,
+        vec,
+        seq_inner,
+        cos_bcast,
+        backward,
+        tuple(cos3.shape),
+        "tma_qk",
+        q2d.device.index,
+    )
     fn = _COMPILE_CACHE.get(key)
     if fn is not None:
         return fn
@@ -778,8 +806,37 @@ def _get_compiled_tma_qk(q2d, k2d, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner
     return fn
 
 
-def _compile_key_tma_qk(dtype, k_dtype, cos_dtype, sin_dtype, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, cos_shape, device_index):
-    return (dtype, k_dtype, cos_dtype, sin_dtype, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, cos_shape, "tma_qk", device_index)
+def _compile_key_tma_qk(
+    dtype,
+    k_dtype,
+    cos_dtype,
+    sin_dtype,
+    nqh,
+    nkh,
+    hd_half,
+    vec,
+    seq_inner,
+    cos_bcast,
+    backward,
+    cos_shape,
+    device_index,
+):
+    return (
+        dtype,
+        k_dtype,
+        cos_dtype,
+        sin_dtype,
+        nqh,
+        nkh,
+        hd_half,
+        vec,
+        seq_inner,
+        cos_bcast,
+        backward,
+        cos_shape,
+        "tma_qk",
+        device_index,
+    )
 
 
 def _apply_qk_tma(q, k, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, seq_len, backward):
@@ -788,7 +845,21 @@ def _apply_qk_tma(q, k, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast
     # Hot path avoids the per-call ``reshape`` of q/k: look the compiled fn up by a
     # cheap scalar key (only dtype/config matters) and swap the data pointer into the
     # cached flat memref. Reshape happens only on the first (compile/build) call.
-    key = _compile_key_tma_qk(q.dtype, k.dtype, cos3.dtype, sin3.dtype, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, tuple(cos3.shape), q.device.index)
+    key = _compile_key_tma_qk(
+        q.dtype,
+        k.dtype,
+        cos3.dtype,
+        sin3.dtype,
+        nqh,
+        nkh,
+        hd_half,
+        vec,
+        seq_inner,
+        cos_bcast,
+        backward,
+        tuple(cos3.shape),
+        q.device.index,
+    )
     fn = _COMPILE_CACHE.get(key)
     if fn is None:
         fn = _get_compiled_tma_qk(q, k, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, seq_len)
