@@ -5,6 +5,7 @@ from typing import List
 from typing import Optional
 
 import torch
+import torch.distributed as dist
 
 from liger_kernel.ops.utils import ensure_contiguous
 
@@ -44,6 +45,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         ctx.fn = fn
         ctx.mlp_module = mlp_module
         ctx.shards = shards
+        ctx.compute_params = compute_params
         ctx.save_for_backward(x)
 
         # x.shape could be [bs, seqlen, hidden_size] or [seqlen, hidden_size] (moe experts)
@@ -61,6 +63,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         (x,) = ctx.saved_tensors
         mlp_module = ctx.mlp_module
         shards = ctx.shards
+        compute_params = ctx.compute_params
 
         x_requires_grad = x.requires_grad
         x = x.detach()
@@ -78,6 +81,10 @@ class LigerTiledMLPFunction(torch.autograd.Function):
 
         x_shards = list(torch.chunk(x, chunks=shards, dim=0))
 
+        # ZeRO-3 partitioned parameters carry a ds_id; collect them once so the per-shard loop only
+        # flips the ready flag. Parameters on other backends have no ds_id and are left untouched.
+        ds_params = [p for p in compute_params if hasattr(p, "ds_id")] if compute_params else []
+
         for i, x_shard in enumerate(x_shards):
             x_shard.requires_grad_(x_requires_grad)
 
@@ -87,6 +94,11 @@ class LigerTiledMLPFunction(torch.autograd.Function):
 
             x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
             incoming_grad_shard = incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
+
+            # Defer DeepSpeed's reduction until the last shard has accumulated into param.grad; the flag
+            # is read by ZeRO's hook during each shard's backward, so it must be set per shard.
+            for param in ds_params:
+                param.ds_grad_is_ready = i + 1 == len(x_shards)
 
             with torch.enable_grad():
                 output = fn(mlp_module, x_shard)
@@ -126,6 +138,14 @@ def apply_tiled_mlp(
 
     # Ensure num_shards is at least 1
     num_shards = max(1, num_shards)
+
+    # All ranks must run the same number of shards: a sharded-parameter backend (DeepSpeed ZeRO-3, FSDP)
+    # gathers weights inside each shard's recompute, so a rank that runs fewer shards stops participating
+    # in those collectives and deadlocks the others. Harmonize on the per-rank maximum.
+    if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+        num_shards_tensor = torch.tensor(num_shards, device=x.device)
+        dist.all_reduce(num_shards_tensor, op=dist.ReduceOp.MAX)
+        num_shards = int(num_shards_tensor.item())
 
     return LigerTiledMLPFunction.apply(
         fn,

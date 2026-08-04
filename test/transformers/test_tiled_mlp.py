@@ -1,9 +1,13 @@
+import copy
+
 import pytest
 import torch
 
 from test.utils import supports_bfloat16
+from transformers import AutoModelForCausalLM
 from transformers.models.llama.configuration_llama import LlamaConfig
 
+from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP
@@ -195,3 +199,118 @@ def test_tiled_swiglu_correctness(
         )
 
     torch.testing.assert_close(x1.grad, x2.grad, atol=atol, rtol=rtol, msg="Input gradients don't match")
+
+
+def test_apply_liger_tiled_mlp_patch_matches_regular_swiglu():
+    """The tiled MLP monkey patch must produce the same logits and gradients as the regular Liger SwiGLU
+    patch, end to end through a real model."""
+    config = LlamaConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        vocab_size=512,
+        max_position_embeddings=512,
+        hidden_act="silu",
+        attn_implementation="eager",
+    )
+    torch.manual_seed(0)
+    base = AutoModelForCausalLM.from_config(config).to(device).to(torch.float32)
+
+    tiled_model = copy.deepcopy(base)
+    regular_model = copy.deepcopy(base)
+
+    monkey_patch.apply_liger_tiled_mlp(model=tiled_model, num_shards=4)
+    for layer in regular_model.model.layers:
+        monkey_patch._patch_swiglu_module(layer.mlp, LigerSwiGLUMLP)
+
+    input_ids = torch.randint(0, config.vocab_size, (2, 256), device=device)
+    labels = input_ids.clone()
+
+    tiled_out = tiled_model(input_ids=input_ids, labels=labels)
+    regular_out = regular_model(input_ids=input_ids, labels=labels)
+
+    torch.testing.assert_close(tiled_out.logits, regular_out.logits, atol=1e-3, rtol=1e-3)
+
+    tiled_out.loss.backward()
+    regular_out.loss.backward()
+
+    for (name, p_tiled), (_, p_regular) in zip(tiled_model.named_parameters(), regular_model.named_parameters()):
+        if p_tiled.grad is None:
+            continue
+        torch.testing.assert_close(p_tiled.grad, p_regular.grad, atol=1e-2, rtol=1e-2, msg=name)
+
+
+@pytest.mark.parametrize("num_shards", [2, 4, 8])
+@pytest.mark.parametrize(
+    "mlp_cls, hidden_act",
+    [
+        (LigerTiledSwiGLUMLP, "silu"),
+        (LigerTiledGEGLUMLP, "gelu_pytorch_tanh"),
+    ],
+)
+def test_tiled_mlp_zero3_gradient_reduction_deferral(mlp_cls, hidden_act, num_shards):
+    """The tiled backward must defer DeepSpeed ZeRO-3 gradient reduction (ds_grad_is_ready stays False
+    until the last shard), run the recompute exactly once per shard, leave non-ZeRO-3 parameters
+    untouched, and leave the computed gradients unchanged."""
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act=hidden_act)
+    x = torch.randn(2, 512, 128, device=device, dtype=torch.float32)
+
+    # Without a ds_id marker the deferral logic is a no-op and must not set ds_grad_is_ready
+    plain = mlp_cls(config=config, num_shards=num_shards).to(device).to(torch.float32)
+    plain(x.detach().clone().requires_grad_(True)).pow(2).sum().backward()
+    assert all(not hasattr(p, "ds_grad_is_ready") for p in plain.parameters())
+    ref_grads = [p.grad.clone() for p in plain.parameters()]
+
+    # With a ds_id marker (ZeRO-3 partitioned), same weights, record the flag during each recompute
+    z3 = mlp_cls(config=config, num_shards=num_shards).to(device).to(torch.float32)
+    z3.load_state_dict(plain.state_dict())
+    for p in z3.parameters():
+        p.ds_id = 0
+
+    seen = []
+    original_mlp_forward = z3._mlp_forward
+
+    def recording_mlp_forward(module, shard):
+        seen.append(getattr(next(z3.parameters()), "ds_grad_is_ready", None))
+        return original_mlp_forward(module, shard)
+
+    z3._mlp_forward = recording_mlp_forward
+    z3(x.detach().clone().requires_grad_(True)).pow(2).sum().backward()
+
+    # the recompute runs once per shard in forward and once per shard in backward
+    assert len(seen) == 2 * num_shards
+    # reduction is deferred for every shard but the last, where the accumulated grad is released
+    assert seen[-num_shards:] == [False] * (num_shards - 1) + [True]
+    # the flag is bookkeeping only: gradients must match the non-ZeRO-3 run exactly
+    for p, ref in zip(z3.parameters(), ref_grads):
+        torch.testing.assert_close(p.grad, ref)
+
+
+def test_tiled_mlp_synchronizes_num_shards_across_ranks(monkeypatch):
+    """Under a distributed sharded-parameter backend num_shards must be raised to the per-rank maximum,
+    so every rank runs the same number of weight-gathering collectives and cannot deadlock."""
+    import torch.distributed as dist
+
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act="silu")
+    mlp = LigerTiledSwiGLUMLP(config=config, num_shards=2).to(device).to(torch.float32)
+
+    global_max_shards = 4
+    monkeypatch.setattr(dist, "is_available", lambda: True)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(dist, "all_reduce", lambda tensor, op=None: tensor.fill_(global_max_shards))
+
+    shard_calls = []
+    original_mlp_forward = mlp._mlp_forward
+
+    def recording_mlp_forward(module, shard):
+        shard_calls.append(shard)
+        return original_mlp_forward(module, shard)
+
+    mlp._mlp_forward = recording_mlp_forward
+    mlp(torch.randn(2, 512, 128, device=device).requires_grad_(True)).pow(2).sum().backward()
+
+    # this rank locally wanted 2 shards but must run the global max of 4, in both forward and backward
+    assert len(shard_calls) == 2 * global_max_shards
