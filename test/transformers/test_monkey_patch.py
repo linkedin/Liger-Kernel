@@ -201,6 +201,16 @@ def is_gemma4_available():
         return False
 
 
+def is_gemma4_unified_available():
+    # Requires transformers>=5.10.0.
+    try:
+        import transformers.models.gemma4_unified  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_paligemma_available():
     try:
         import transformers.models.paligemma  # noqa: F401
@@ -290,6 +300,7 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_gemma3  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma4_text  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_gemma4_unified_text  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_glm4  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_glm4v  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe  # noqa: F401
@@ -2103,6 +2114,72 @@ def test_apply_liger_kernel_to_instance_for_gemma4_conditional_generation():
             v_norm = getattr(layer.self_attn, "v_norm", None)
             if v_norm is not None:
                 # with_scale=False → intentionally not patched.
+                assert inspect.getsource(v_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_gemma4_unified_available(), reason="gemma4_unified module not available")
+def test_apply_liger_kernel_to_instance_for_gemma4_unified_text():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.gemma4_unified.modeling_gemma4_unified"):
+        from liger_kernel.transformers.model.gemma4_unified import causal_forward as gemma4_unified_causal_forward
+
+        # Instantiate a dummy model. Unlike gemma4 (omni) there are no PLE or
+        # MoE knobs to pin off — the unified text stack is dense-only.
+        config = transformers.models.gemma4_unified.configuration_gemma4_unified.Gemma4UnifiedTextConfig(
+            dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=16,
+            num_kv_shared_layers=0,
+            use_double_wide_mlp=False,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Pre-patch assertions
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma4_unified_causal_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        # q_norm / k_norm are only present on non-KV-shared layers; we pin
+        # num_kv_shared_layers=0 in the config above so every layer has them.
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Apply kernels to the instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Post-patch assertions
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(gemma4_unified_causal_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            # v_norm is scale-free (with_scale=False); _maybe_patch_scaled_norm
+            # intentionally skips it, so the instance must retain the HF forward.
+            v_norm = getattr(layer.self_attn, "v_norm", None)
+            if v_norm is not None:
                 assert inspect.getsource(v_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
         try:
