@@ -43,6 +43,21 @@ def _target_logit(X, W, target, chunk=8192):
     return x_tgt
 
 
+def _chunked_argmax(X, W, bias):
+    """Match upstream FLCE argmax precision without materializing the full logits tensor."""
+    BT, H = X.shape
+    V = W.shape[0]
+    chunk = _bwd_chunk_size(BT, H, V)
+    predicted_tokens = torch.empty(BT, device=X.device, dtype=torch.int64)
+    for start in range(0, BT, chunk):
+        end = min(start + chunk, BT)
+        logits = X[start:end] @ W.t()
+        if bias is not None:
+            logits = logits + bias
+        predicted_tokens[start:end] = logits.argmax(dim=-1)
+    return predicted_tokens
+
+
 def _recompute_softmax(Xc, W, colvec_bias, rowvec_bias=None):
     """Recompute and exponentiate logits in the native GEMM epilogue.
 
@@ -447,7 +462,7 @@ def fused_linear_cross_entropy_forward(
     return_token_accuracy=False,
     return_predicted_tokens=False,
 ):
-    """Fused linear + cross-entropy forward (loss only; logits never materialized). Returns
+    """Fused linear + cross-entropy forward (loss only; full logits never materialized). Returns
     ``(loss, z_loss, token_accuracy, predicted_tokens, state)`` where ``state`` carries everything
     the backward needs — pass it straight to ``fused_linear_cross_entropy_backward``. The autograd
     Function copies it onto its ctx; a direct functional caller uses it as-is."""
@@ -467,12 +482,11 @@ def fused_linear_cross_entropy_forward(
     fully_trainable = _input.requires_grad and weight.requires_grad and (bias is None or bias.requires_grad)
     # Route to the general feature path when a feature the native 2-CTA path cannot
     # fuse is requested — softcap (its (1−tanh²) chain rule is per-element, so it breaks the
-    # one-hot-as-correction backward), token accuracy / predicted tokens (need an argmax over V, and
-    # the fused GEMM emits only the max VALUE, not its index — so they'd need a (chunk,V) pass with
-    # no speed gain) — when the dtype is fp32 (the native GEMM is 16-bit only), or when the GPU is not
-    # exactly SM100 (the kernel's tcgen05 launch and cluster policy are SM100-specific; SM103 and
-    # SM120 use the general path), or when only a subset of operands requires gradients (the Triton
-    # path avoids allocating unused large gradients). H need not be a multiple of the mainloop K tile:
+    # one-hot-as-correction backward) — when the dtype is fp32 (the native GEMM is 16-bit only), or
+    # when the GPU is not exactly SM100 (the kernel's tcgen05 launch and cluster policy are
+    # SM100-specific; SM103 and SM120 use the general path), or when only a subset of operands
+    # requires gradients (the Triton path avoids allocating unused large gradients). H need not be a
+    # multiple of the mainloop K tile:
     # it is zero-padded to the required alignment on the fast path
     # (the padded columns contribute 0 to every dot product → logits/grads exact; the all-zero padded
     # grad rows are sliced off in the backward). z_loss, label_smoothing, ce_weight, bias, and
@@ -483,12 +497,9 @@ def fused_linear_cross_entropy_forward(
         or reduction == "none"
         or (needs_grad and not fully_trainable)
         or (softcap is not None and softcap != 0.0)
-        or return_token_accuracy
-        or return_predicted_tokens
         or _input.dtype not in (torch.bfloat16, torch.float16)
     ):
-        # fp32, non-SM100, reduction="none", softcap, and the argmax
-        # metrics (token-accuracy / predicted-tokens) can't take the fused fast path. For these we
+        # fp32, non-SM100, reduction="none", and softcap can't take the fused fast path. For these we
         # DELEGATE to the upstream Triton FLCE rather than run a memory-lean recompute fallback: on
         # these cases the GEMM has no tensor-core advantage (fp32 uses the same cutlass SIMT sgemm as
         # Triton), so an extra recompute GEMM in the backward is pure overhead — the recompute path
@@ -539,6 +550,16 @@ def fused_linear_cross_entropy_forward(
             ctx.grad_weight = gW
             ctx.grad_bias = gb
         return loss, z_out, acc_out, pred_out, ctx
+    need_argmax = return_token_accuracy or return_predicted_tokens
+    if need_argmax:
+        argmax_bias = bias.detach() if bias is not None else None
+        argmax = _chunked_argmax(
+            _input.detach(),
+            weight.detach(),
+            argmax_bias,
+        )
+    else:
+        argmax = None
     # The native mainloop consumes full 64-element K tiles. Zero padding preserves
     # every dot product and produces padded gradient columns that are sliced below.
     h_orig = None
@@ -554,7 +575,7 @@ def fused_linear_cross_entropy_forward(
     W = weight.detach().contiguous()
     bias_f = bias.detach().float().contiguous() if bias is not None else None
 
-    lse = row_logsumexp(X, W, bias_f)  # fused, logits (incl. per-column bias) never materialized
+    lse = row_logsumexp(X, W, bias_f)
     valid = target != ignore_index
     tclamp_f = torch.where(valid, target, torch.zeros_like(target))  # ignored -> row 0 (gather-safe)
     x_tgt = _target_logit(X, W, tclamp_f)  # x_tgt[i] = X[i]·W[target[i]], chunked; clamped so the
@@ -650,6 +671,10 @@ def fused_linear_cross_entropy_forward(
         z_total = z_scaled.sum() if (return_z_loss and z_scaled is not None) else None
     if z_total is not None:
         z_total = z_total.to(X.dtype)
+    token_accuracy = None
+    if return_token_accuracy:
+        token_accuracy = ((argmax == target) & valid).float().sum() / valid.sum()
+    predicted_tokens = torch.where(valid, argmax, -1) if return_predicted_tokens else None
 
     # Save the forward LSE — the backward reuses it (as the −lse colvec bias in _recompute_exp) so
     # its softmax needs no per-chunk logsumexp reduction. It's just (BT,) fp32 = negligible mem.
@@ -663,7 +688,7 @@ def fused_linear_cross_entropy_forward(
     ctx.has_bias = bias is not None
     ctx.bias_dtype = bias.dtype if bias is not None else None
     ctx.scale = scale  # (BT,) token-scaling per-row factor (None if off) — backward folds it into go
-    return loss, z_total, None, None, ctx  # (loss, z_loss, token_acc, pred, state)
+    return loss, z_total, token_accuracy, predicted_tokens, ctx
 
 
 def fused_linear_cross_entropy_backward(ctx, grad_output):
@@ -697,7 +722,7 @@ def _flce_backward(ctx, grad_output):
             **ctx.fwd_kwargs,
         )
         return (gX, gW, None, gb, None, None, None, None, None, None, None, None, None, None, None)
-    # Triton-delegated fallback (fp32 / non-Blackwell / softcap / argmax-metrics): the grads were
+    # Triton-delegated fallback (fp32 / non-Blackwell / softcap): the grads were
     # already computed in the delegated forward; apply the scalar/per-row grad_output scale exactly
     # as Triton's own backward does (element_mul kernel; no-op when grad_output == 1).
     if getattr(ctx, "_triton_delegated", False):

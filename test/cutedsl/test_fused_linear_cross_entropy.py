@@ -28,6 +28,10 @@ _DTYPES = [torch.bfloat16, torch.float16, torch.float32]
 _DTYPE_IDS = ["bf16", "fp16", "fp32"]
 
 cuda_required = pytest.mark.skipif(not torch.cuda.is_available(), reason="cutedsl FLCE requires CUDA")
+sm100_required = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() != (10, 0),
+    reason="native cutedsl FLCE requires an SM100 GPU",
+)
 
 
 def set_seed(seed: int = 42):
@@ -42,8 +46,7 @@ def set_seed(seed: int = 42):
 def _cutedsl_flce():
     """The native CuTe DSL ``LigerFusedLinearCrossEntropyFunction`` under test, or skip if CUTLASS
     is not installed. It implements the core path fast (mean/sum, 16-bit, SM100) and
-    routes every other case (fp32, softcap, argmax metrics, non-Blackwell, …) through its general
-    Triton fallback."""
+    routes other cases (fp32, softcap, non-Blackwell, …) through its general Triton fallback."""
     try:
         from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
     except ImportError as exc:
@@ -743,7 +746,7 @@ def test_flce_softcap_matches_triton(dtype, reduction):
 
 
 @cuda_required
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("dtype", _DTYPES, ids=_DTYPE_IDS)
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 @pytest.mark.parametrize("bias", [True, False], ids=["bias", "nobias"])
 def test_flce_token_accuracy_matches_triton(dtype, reduction, bias):
@@ -771,7 +774,7 @@ def test_flce_token_accuracy_matches_triton(dtype, reduction, bias):
 
 
 @cuda_required
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("dtype", _DTYPES, ids=_DTYPE_IDS)
 @pytest.mark.parametrize("ignore_index", [-100, 2], ids=["ig-100", "ig2"])
 def test_flce_predicted_tokens_matches_triton(dtype, ignore_index):
     """return_predicted_tokens: per-row argmax (int64), -1 for ignored rows. (Triton:
@@ -790,6 +793,45 @@ def test_flce_predicted_tokens_matches_triton(dtype, ignore_index):
         check_grad=False,
         return_predicted_tokens=True,
     )
+
+
+@sm100_required
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+@pytest.mark.parametrize(
+    ("return_token_accuracy", "return_predicted_tokens"),
+    [(True, False), (False, True), (True, True)],
+    ids=["accuracy", "predictions", "both"],
+)
+def test_flce_metrics_stay_on_native_path(dtype, return_token_accuracy, return_predicted_tokens, monkeypatch):
+    import liger_kernel.ops.fused_linear_cross_entropy as triton_flce
+
+    set_seed()
+    BT, H, V = 257, 127, 513
+    masters = _Masters(BT, H, V, bias=True, ce_weight=False)
+    target = _make_target(BT, V, ignore_frac=0.25)
+    logits = masters.input.to(dtype) @ masters.weight.to(dtype).t()
+    logits = logits + masters.bias.to(dtype)
+    expected_predictions = logits.argmax(dim=-1)
+    expected_accuracy = ((expected_predictions == target) & (target != -100)).float().sum() / (target != -100).sum()
+    expected_predictions = torch.where(target != -100, expected_predictions, -1)
+
+    def fail_if_delegated(**_):
+        pytest.fail("token metrics delegated to Triton instead of using the native SM100 path")
+
+    monkeypatch.setattr(triton_flce, "fused_linear_cross_entropy_forward", fail_if_delegated)
+    out = _run(
+        _cutedsl_flce(),
+        masters,
+        target,
+        dtype,
+        return_token_accuracy=return_token_accuracy,
+        return_predicted_tokens=return_predicted_tokens,
+    )
+
+    if return_token_accuracy:
+        torch.testing.assert_close(out["token_accuracy"], expected_accuracy)
+    if return_predicted_tokens:
+        assert torch.equal(out["predicted_tokens"], expected_predictions)
 
 
 @cuda_required
