@@ -11,9 +11,9 @@ buffers, and support CUDA Graph execution without a token-capacity limit.
 
 ### Hopper results
 
-The accompanying ICLR 2027 evaluation reports the following BF16 results. These
-are benchmark snapshots from the paper environment (CUDA 12.9), not performance
-guarantees for every model or system.
+The evaluation reports the following BF16 results. These are benchmark
+snapshots from the CUDA 12.9 environment, not performance guarantees for every
+model or system.
 
 | Evaluation | Headline result |
 |---|---|
