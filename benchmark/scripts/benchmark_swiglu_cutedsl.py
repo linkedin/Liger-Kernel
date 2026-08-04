@@ -2,7 +2,10 @@
 
 import argparse
 import gc
+import json
 import statistics
+import subprocess
+import sys
 import time
 
 import torch
@@ -48,17 +51,16 @@ def _benchmark_pair(elementwise, fused, warmup, samples, cooldown_ms):
     return {name: statistics.median(values) for name, values in timings.items()}
 
 
-def _measure_peak_activation_bytes(fn):
-    gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.synchronize()
-    baseline = torch.cuda.memory_allocated()
-    torch.cuda.reset_peak_memory_stats()
-    output = fn()
-    torch.cuda.synchronize()
-    peak = torch.cuda.max_memory_allocated() - baseline
-    del output
-    return peak
+def _make_weights(hidden_size, intermediate_size, dtype, device):
+    weight_scale = hidden_size**-0.5
+    gate_weight = torch.randn(
+        intermediate_size,
+        hidden_size,
+        device=device,
+        dtype=dtype,
+    ).mul_(weight_scale)
+    up_weight = torch.randn_like(gate_weight).mul_(weight_scale)
+    return gate_weight, up_weight
 
 
 def _parse_args():
@@ -75,7 +77,77 @@ def _parse_args():
         default=20.0,
         help="GPU idle time between interleaved sample pairs to limit clock droop.",
     )
+    parser.add_argument(
+        "--memory-provider",
+        choices=("baseline", "fused"),
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
+
+
+def _run_memory_provider(args, dtype, device):
+    torch.manual_seed(0)
+    gate_weight, up_weight = _make_weights(
+        args.hidden_size,
+        args.intermediate_size,
+        dtype,
+        device,
+    )
+    if args.memory_provider == "fused":
+        packed_weight, output_features = pack_swiglu_weights(gate_weight, up_weight)
+        del gate_weight, up_weight
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    peaks = {}
+    with torch.inference_mode():
+        for tokens in args.tokens:
+            x = torch.randn(tokens, args.hidden_size, device=device, dtype=dtype)
+            if args.memory_provider == "baseline":
+
+                def provider(current_x):
+                    gate = F.linear(current_x, gate_weight)
+                    up = F.linear(current_x, up_weight)
+                    return swiglu_forward(gate, up)[2]
+
+            else:
+
+                def provider(current_x):
+                    return fused_swiglu(current_x, packed_weight, output_features)
+
+            warm = provider(x)
+            torch.cuda.synchronize()
+            del warm
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            output = provider(x)
+            torch.cuda.synchronize()
+            peaks[tokens] = torch.cuda.max_memory_allocated()
+            del output, x
+            gc.collect()
+            torch.cuda.empty_cache()
+    print(f"PEAK_BYTES={json.dumps(peaks, sort_keys=True)}")
+
+
+def _measure_isolated_peaks(args, provider):
+    command = [
+        sys.executable,
+        __file__,
+        "--tokens",
+        *(str(tokens) for tokens in args.tokens),
+        "--hidden-size",
+        str(args.hidden_size),
+        "--intermediate-size",
+        str(args.intermediate_size),
+        "--dtype",
+        args.dtype,
+        "--memory-provider",
+        provider,
+    ]
+    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    line = next(line for line in reversed(result.stdout.splitlines()) if line.startswith("PEAK_BYTES="))
+    return {int(tokens): peak for tokens, peak in json.loads(line.removeprefix("PEAK_BYTES=")).items()}
 
 
 def main():
@@ -91,20 +163,25 @@ def main():
 
     dtype = _DTYPES[args.dtype]
     device = torch.device("cuda")
+    if args.memory_provider is not None:
+        _run_memory_provider(args, dtype, device)
+        return
+
+    baseline_peaks = _measure_isolated_peaks(args, "baseline")
+    fused_peaks = _measure_isolated_peaks(args, "fused")
+
     torch.manual_seed(0)
-    weight_scale = args.hidden_size**-0.5
-    gate_weight = torch.randn(
-        args.intermediate_size,
+    gate_weight, up_weight = _make_weights(
         args.hidden_size,
-        device=device,
-        dtype=dtype,
-    ).mul_(weight_scale)
-    up_weight = torch.randn_like(gate_weight).mul_(weight_scale)
+        args.intermediate_size,
+        dtype,
+        device,
+    )
     packed_weight, output_features = pack_swiglu_weights(gate_weight, up_weight)
 
     print(
         "| tokens | two GEMMs + SwiGLU (ms) | fused SwiGLU (ms) | speedup | "
-        "baseline peak (MiB) | fused peak (MiB) | memory ratio |"
+        "baseline total peak (MiB) | fused total peak (MiB) | memory ratio |"
     )
     print("|---:|---:|---:|---:|---:|---:|---:|")
     with torch.inference_mode():
@@ -134,16 +211,16 @@ def main():
             )
             elementwise_ms = timings["cutedsl-elementwise"]
             fused_ms = timings["cutedsl-fused"]
-            elementwise_peak = _measure_peak_activation_bytes(elementwise)
-            fused_peak = _measure_peak_activation_bytes(fused)
+            elementwise_peak = baseline_peaks[tokens]
+            fused_peak = fused_peaks[tokens]
             print(
                 f"| {tokens} | {elementwise_ms:.6f} | {fused_ms:.6f} | "
                 f"{elementwise_ms / fused_ms:.3f}x | {elementwise_peak / 2**20:.0f} | "
                 f"{fused_peak / 2**20:.0f} | {elementwise_peak / fused_peak:.2f}x |"
             )
     print(
-        "\nWeight packing is excluded from latency. Peak memory is incremental activation "
-        "allocation above persistent inputs and weights; packed and unpacked weights have equal storage."
+        "\nWeight packing is excluded from latency. Memory is total peak PyTorch CUDA allocation "
+        "from isolated provider processes, including input, one weight representation, and output."
     )
 
 
