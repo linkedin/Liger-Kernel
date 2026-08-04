@@ -126,7 +126,7 @@ def test_team_from_pg_uses_bootstrap_pe_numbering(monkeypatch, isolated_team_sta
     monkeypatch.setattr(
         dist,
         "get_global_rank",
-        lambda pg, rank: (subgroup_global_ranks[rank] if pg is subgroup_pg else bootstrap_global_ranks[rank]),
+        lambda pg, rank: subgroup_global_ranks[rank] if pg is subgroup_pg else bootstrap_global_ranks[rank],
     )
     monkeypatch.setattr(dist, "get_rank", lambda pg=None: 1 if pg is bootstrap_pg else 3)
 
