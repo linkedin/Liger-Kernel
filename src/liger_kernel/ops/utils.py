@@ -14,6 +14,7 @@ import functools
 import importlib
 import operator
 
+from contextlib import contextmanager
 from typing import Callable
 
 import torch
@@ -27,6 +28,17 @@ from liger_kernel.utils import infer_device
 
 def is_hip() -> bool:
     return torch.version.hip is not None
+
+
+@contextmanager
+def device_context(device):
+    device = torch.device(device)
+    backend = getattr(torch, device.type, None)
+    if backend is not None and hasattr(backend, "device"):
+        with backend.device(device):
+            yield
+    else:
+        yield
 
 
 def ensure_contiguous(fn):
