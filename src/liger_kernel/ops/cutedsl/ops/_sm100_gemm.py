@@ -85,6 +85,8 @@ _CLUSTER_SHAPE_MN = (2, 1)
 
 _NUM_AB_STAGES_FWD = 5
 _NUM_AB_STAGES_BWD = 6
+_NUM_AB_STAGES_EPILOGUE = 6
+_SWIZZLE_SIZES_EPILOGUE = (8, 4, 2)
 _NUM_ACC_STAGES = 2
 _NUM_OUT_STAGES = 2
 _NUM_TMEM_COLS = 512
@@ -1390,8 +1392,9 @@ def _run_epilogue_gemm(a, b, out, epilogue, epilogue_fragments):
     _validate_epilogue_inputs(a, b, out, epilogue_fragments)
     epilogue_key = _validate_epilogue_callback(epilogue, epilogue_fragments + 1)
     current_stream = _current_stream(a.device)
-    num_ab_stages = _NUM_AB_STAGES_BWD
-    swizzle_size = 1
+    num_ab_stages = _NUM_AB_STAGES_EPILOGUE
+    m_tiles = (a.shape[0] + _CTA_M - 1) // _CTA_M
+    swizzle_size = next((size for size in _SWIZZLE_SIZES_EPILOGUE if m_tiles % size == 0), 1)
     use_tma_output = out.stride(0) * out.element_size() % 16 == 0
     max_active_clusters = _max_active_clusters(a.device.index)
 
