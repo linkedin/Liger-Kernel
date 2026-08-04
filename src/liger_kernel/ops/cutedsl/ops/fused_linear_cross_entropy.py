@@ -7,6 +7,7 @@ from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import K_ALIG
 from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import VOCAB_TILE_SIZE
 from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import fused_lse
 from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import recompute_softmax
+from liger_kernel.ops.cutedsl.ops.utils import infer_device_arch
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import compare_version
@@ -92,7 +93,10 @@ def _validate_inputs(_input, weight, target, bias, ce_weight, reduction):
 
 
 def _native_sm100_supported(tensor):
-    return tensor.device.type == "cuda" and torch.cuda.get_device_capability(tensor.device) == (10, 0)
+    if tensor.device.type != "cuda":
+        return False
+    device_id = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
+    return infer_device_arch(device_id) == "blackwell" and torch.cuda.get_device_capability(tensor.device) == (10, 0)
 
 
 def _addmm_fp32_out(out, lhs, rhs):
