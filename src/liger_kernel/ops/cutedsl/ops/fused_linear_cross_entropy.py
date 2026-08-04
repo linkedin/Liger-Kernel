@@ -328,7 +328,7 @@ def _core_vocab_backward(ctx, grad_output):
             if ls > 0.0:
                 grad_bias = grad_bias + ((-eps / ctx.swnw) * cw) * cnt_w.sum()  # + c_col·Σw
             grad_bias.index_add_(0, tclamp, torch.where(valid, oh_coef, torch.zeros_like(oh_coef)))
-            grad_bias = (go_wf * grad_bias).to(W.dtype)
+            grad_bias = (go_wf * grad_bias).to(ctx.bias_dtype)
         return gX, gW, None, grad_bias, None, None, None, None, None, None, None, None, None, None, None
 
     go_f = grad_output.detach().reshape(()).item() / float(n.item())  # grad_output/n (one host sync)
@@ -416,7 +416,7 @@ def _core_vocab_backward(ctx, grad_output):
         onehot_col = torch.zeros(V, device=W.device, dtype=torch.float32)
         onehot_col.index_add_(0, tclamp, bias_row_w)
         grad_bias = grad_bias - onehot_scale * onehot_col
-        grad_bias = (go_f * grad_bias).to(W.dtype)
+        grad_bias = (go_f * grad_bias).to(ctx.bias_dtype)
     return gX, gW, None, grad_bias, None, None, None, None, None, None, None, None, None, None, None
 
 
@@ -661,6 +661,7 @@ def fused_linear_cross_entropy_forward(
     ctx.reduction = reduction
     ctx.bias_f = bias_f  # (V,) fp32 per-column bias (None if no bias) — backward needs grad_bias
     ctx.has_bias = bias is not None
+    ctx.bias_dtype = bias.dtype if bias is not None else None
     ctx.scale = scale  # (BT,) token-scaling per-row factor (None if off) — backward folds it into go
     return loss, z_total, None, None, ctx  # (loss, z_loss, token_acc, pred, state)
 
@@ -800,7 +801,7 @@ def _flce_backward(ctx, grad_output):
             if ls > 0.0:
                 grad_bias = grad_bias + ((-eps / swnw) * cw) * n_valid
             grad_bias.index_add_(0, tclamp, torch.where(valid, onehot_scale, torch.zeros_like(onehot_scale)))
-            grad_bias = (go_wf * grad_bias).to(W.dtype)
+            grad_bias = (go_wf * grad_bias).to(ctx.bias_dtype)
         return gX, gW, None, grad_bias, None, None, None, None, None, None, None, None, None, None, None
 
     # ---- unweighted backward (core / z-loss / label-smoothing) ------------------------------------
@@ -914,7 +915,7 @@ def _flce_backward(ctx, grad_output):
         onehot_col = torch.zeros(V, device=W.device, dtype=torch.float32)
         onehot_col.index_add_(0, tclamp, valid.float())
         grad_bias = grad_bias - (1.0 - ls) * onehot_col
-        grad_bias = (go_f * grad_bias).to(W.dtype)
+        grad_bias = (go_f * grad_bias).to(ctx.bias_dtype)
     # grads align with forward args (_input, weight, target, bias, ce_weight, ignore_index,
     # lse_square_scale, label_smoothing, reduction, softcap, return_z_loss, accum_dtype,
     # use_token_scaling, return_token_accuracy, return_predicted_tokens)
