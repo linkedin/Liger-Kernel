@@ -81,7 +81,12 @@ def fused_linear_jsd_forward(
         chunk_n_rows = student_logits_chunk.shape[0]
 
         # unreduced loss
-        loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size
+        # NOTE: this must be a standalone contiguous buffer, *not* a `loss_1d[start_idx:end_idx]`
+        # view. `torch.compile` functionalizes the kernel's mutation by cloning the pointer
+        # argument via `clone_preserve_strides`, which clones `storage_offset + numel` elements out
+        # of a buffer Inductor may have sized to the view alone -- an out-of-bounds read whose
+        # garbage survives into the loss on rows where the kernel returns early (ignore_index).
+        loss_1d_slice = torch.zeros((chunk_n_rows, V), dtype=torch.float32, device=device)
         # log-softmax with temperature
         student_logits_chunk = student_logits_chunk / temperature
         teacher_logits_chunk = teacher_logits_chunk / temperature
