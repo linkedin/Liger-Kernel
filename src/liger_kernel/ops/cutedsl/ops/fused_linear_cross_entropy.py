@@ -7,10 +7,10 @@ from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import K_ALIG
 from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import VOCAB_TILE_SIZE
 from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import fused_lse
 from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import recompute_softmax
-from liger_kernel.ops.cutedsl.ops.utils import infer_device_arch
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.utils import infer_device_arch
 
 _TILE_N = VOCAB_TILE_SIZE
 _SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
