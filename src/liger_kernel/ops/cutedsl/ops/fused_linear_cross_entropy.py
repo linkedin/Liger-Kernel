@@ -1,410 +1,26 @@
-import math
+import operator
 
-from functools import partial
-
-import cutlass
-import cutlass.cute as cute
-import quack.gemm_act as _gact
-import quack.gemm_sq_reduce as _gsr
-import quack.layout_utils as layout_utils
 import torch
 import triton
 
-from cutlass import Float32
-from cutlass import const_expr
-from cutlass.cutlass_dsl import dsl_user_op
-from quack.epi_ops import ColVecReduce
-from quack.epi_ops import RowVecLoad
-from quack.epi_ops import Scalar
-from quack.epi_ops import TileStore
-from quack.epi_ops import _get_lane_warp_layouts
-from quack.epi_ops import partition_for_epilogue
-from quack.gemm_act import gemm_act as _gemm_act
-from quack.gemm_sq_reduce import GemmSqReduceMixin
-from quack.gemm_tvm_ffi_utils import get_major as _get_major
-from quack.gemm_tvm_ffi_utils import torch2cute_dtype_map as _M
+from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import K_ALIGNMENT
+from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import VOCAB_TILE_SIZE
+from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import fused_lse
+from liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm import recompute_softmax
+from liger_kernel.ops.utils import amp_custom_bwd
+from liger_kernel.ops.utils import amp_custom_fwd
+from liger_kernel.ops.utils import compare_version
 
-from liger_kernel.ops.cutedsl.ops.utils import infer_device_arch
-
-_LOG2_E = math.log2(math.e)
-_TILE_N = 256  # MUST equal the GEMM's CTA N-tile (a smaller tile_N silently mis-sizes the reduction)
-_TILE_M = 256  # GEMM CTA M-tile. 256 is ~34% faster than 128 for this reduction GEMM (measured); a
-#              # 2-CTA cluster wants the larger M-tile to feed the tensor core. tile_M doesn't affect
-#              # the colvec shape (still (BT, ceil(V/tile_N))), only the row tiling of the GEMM.
+_TILE_N = VOCAB_TILE_SIZE
+_SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
 
 
-# Backward loop orientation for the CORE path (no ce_weight/bias/label-smoothing/z-loss/token-scaling,
-# grad_output==1). The default backward chunks over TOKENS (chunk == Triton's memory-minimal formula),
-# which — at that small chunk — makes the dW accumulate ``gW += smᵀ@Xc`` a K=chunk contraction with a
-# beta=1 read-modify-write of the whole (V,H) grad EVERY chunk. When ``chunk`` is small the tensor core
-# starves (K<512) and that RMW dominates (~40% of fwd+bwd). Chunking over VOCAB instead gives the dW
-# GEMM K=BT (saturated) and writes each gW slice ONCE (no RMW), while dX accumulates into a small (BT,H)
-# fp32 buffer — measured 1.4–4.1x faster at ≈parity peak memory on B200. Two effects bound where it
-# helps: (1) the speedup shrinks as the token chunk grows (the token GEMMs saturate on their own) and
-# reverses past chunk≈2048; (2) the extra fp32 (BT,H) dX accumulator grows with BT, so peak memory drifts
-# above parity for large chunks. Both say "small token chunks only", so it is GATED to
-# ``token_chunk <= _VOCAB_BWD_MAX_TOKEN_CHUNK``. 512 is the measured sweet spot on B200 @ V=128k/H=4096:
-#   chunk 256 (BT≤8k): 1.4–5.2x, at/below parity mem.
-#   chunk 512 (BT=16k): 1.13x, lead over Triton 2.66x→3.01x, peak 2.96GB (still 1.9x UNDER Triton's 5.7).
-#   chunk 1024 (BT=32k): only ~1.02x (noise) for +0.65GB — a bad trade, so it stays on the token path.
-#   chunk ≥2048 (BT≥64k): vocab ties/loses AND its fp32 (BT,H) accumulator pushes peak past Triton.
-# Above the gate the byte-identical token path runs (no regression). Both are plain module constants —
-# override at runtime (``fused_linear_cross_entropy.VOCAB_BWD = False`` to A/B the token path, or move the
-# chunk gate) if you ever need to; the shipped defaults are the tuned production values.
+# Backward loop orientation for the core path. Small token chunks make the
+# token-oriented dW update repeatedly read and write the entire (V, H) gradient,
+# while vocabulary chunking writes each dW slice once and accumulates only the
+# smaller fp32 dX. Keep the measured B200 crossover from the existing backend.
 VOCAB_BWD = True
 _VOCAB_BWD_MAX_TOKEN_CHUNK = 512
-
-
-# =============================================================================
-# Forward epilogue (default): single-pass online-softmax (flash) LSE reduction.
-# =============================================================================
-# _ColVecOnlineReduce below carries the running per-row (max m, sumexp l) with the flash rescale and
-# emits LSE_tile = m + ln(l) per (row, N-tile); the caller does logsumexp across the N-tiles. Robust
-# at ANY logit scale in ONE GEMM pass. It is quack.epi_ops.ColVecReduce's lane/warp plumbing with the
-# SUM combiner replaced by the flash (m, l) merge and a second register/smem stripe for l. Generated
-# once from quack's ColVecReduce, then inlined here (the DSL AST preprocessor cannot parse
-# exec'd/inspect'd source, so it must live in a REAL module file — this one). Regenerate if quack's
-# ColVecReduce changes.
-
-# Finite very-negative init for the running max: -inf would make the first/masked merge compute
-# ``(-inf) - (-inf) = NaN`` in the rescale exponent. -1e30 is <  any real logit, and
-# ``exp2((-1e30)·log2e)`` underflows cleanly to 0, so the sentinel is arithmetically identical to
-# -inf for the merge while never producing NaN.
-_NEG = -1.0e30
-
-
-@cute.jit
-def _exp(v):
-    """e^v via exp2(v·log2e) (ffma-friendly, fastmath)."""
-    return cute.math.exp2(v * _LOG2_E, fastmath=True)
-
-
-@cute.jit
-def _online_add_rowvec(tRS_rInput, tDrRowVec):
-    """Add a broadcast per-column vector (the FLCE ``bias``) to the logit fragment IN PLACE, before the
-    flash reduction. ``tDrRowVec`` is the RowVecLoad fragment (bias[n] broadcast along M). No-op —
-    const_expr'd out — when ``tDrRowVec`` is None, so the no-bias kernel is byte-identical to before."""
-    if const_expr(tDrRowVec is None):
-        return
-    for i in cutlass.range(cute.size(tRS_rInput), unroll_full=True):
-        tRS_rInput[i] = tRS_rInput[i] + tDrRowVec[i]
-
-
-@cute.jit
-def _colvec_online_accumulate(gemm, tDr_m, tDr_l, tRS_rInput):
-    """Fold this subtile's columns into the running per-row (max ``m``, sumexp ``l``) pair.
-
-    tDr_m / tDr_l are the two register accumulators (same layout); tRS_rInput is this subtile's
-    fragment of logits. For each column x held by this thread:  m' = max(m, x);
-    l = l·e^{m−m'} + e^{x−m'};  m = m'.
-    """
-    if const_expr(tDr_m is None):
-        return
-    tDr_m_mn = layout_utils.convert_layout_zero_stride(tDr_m, tDr_m.layout)
-    tDr_l_mn = layout_utils.convert_layout_zero_stride(tDr_l, tDr_m.layout)
-    tIn_mn = layout_utils.convert_layout_zero_stride(tRS_rInput, tDr_m.layout)
-    for m in cutlass.range(cute.size(tDr_m_mn, mode=[0]), unroll_full=True):
-        rm = tDr_m_mn[m, 0]
-        rl = tDr_l_mn[m, 0]
-        for n in cutlass.range(cute.size(tIn_mn, mode=[1]), unroll_full=True):
-            x = tIn_mn[m, n]
-            m_new = cute.arch.fmax(rm, x)
-            rl = rl * _exp(rm - m_new) + _exp(x - m_new)
-            rm = m_new
-        tDr_m_mn[m, 0] = rm
-        tDr_l_mn[m, 0] = rl
-
-
-class _ColVecOnlineReduce(ColVecReduce):
-    """ColVecReduce that emits per (row, N-tile) ``LSE_tile = max + ln(Σ e^{x−max})`` via a single
-    online (flash) softmax pass. Two register accumulators (m, l) and a doubled smem stripe."""
-
-    # ---- smem: the stock op keeps (tile_M, smem_warps) Float32; we need a second stripe for l ----
-    def smem_bytes(self, arg_tensor, cta_tile_shape_mnk, epi_tile, warp_shape_mnk=None):
-        b = super().smem_bytes(arg_tensor, cta_tile_shape_mnk, epi_tile, warp_shape_mnk)
-        return type(b)(unstaged=b.unstaged * 2, d_stage=b.d_stage, c_stage=b.c_stage)
-
-    def smem_struct_field(self, gemm, params):
-        smem_warps = self._smem_warps(gemm.epi_smem_warp_shape_mnk())
-        if smem_warps == 0:
-            return None
-        size = self._tile_size(gemm.cta_tile_shape_mnk) * smem_warps * 2
-        return (f"s_{self.name}", cute.struct.Align[cute.struct.MemRange[Float32, size], 16])
-
-    def get_smem_tensor(self, gemm, params, storage_epi):
-        smem_warps = self._smem_warps(gemm.epi_smem_warp_shape_mnk())
-        if smem_warps == 0:
-            return None
-        tile_size = self._tile_size(gemm.cta_tile_shape_mnk)
-        # (tile_size, smem_warps, 2): [..., 0] = running max m, [..., 1] = running sumexp l
-        return getattr(storage_epi, f"s_{self.name}").get_tensor(cute.make_layout((tile_size, smem_warps, 2)))
-
-    # ---- state: two register accumulators (m, l) + the smem tensor ----
-    @cute.jit
-    def begin(self, gemm, param, smem_tensor, ctx):
-        vec_mma_layout = cute.make_layout((ctx.tile_M, ctx.tile_N), stride=self._broadcast_stride())
-        reduce_layout = ctx.partition_for_epilogue_fn(cute.make_rmem_tensor(vec_mma_layout, Float32)).layout
-        tDr_m = cute.make_rmem_tensor(reduce_layout, Float32)
-        tDr_l = cute.make_rmem_tensor(reduce_layout, Float32)
-        return (tDr_m, tDr_l, smem_tensor)
-
-    @cute.jit
-    def begin_loop(self, gemm, state, epi_coord):
-        tDr_m, tDr_l = state[0], state[1]
-        res_m = tDr_m[None, None, None, epi_coord[0], epi_coord[1]]
-        res_l = tDr_l[None, None, None, epi_coord[0], epi_coord[1]]
-        if const_expr(epi_coord[self._reduce_dim()] == 0):
-            cute.filter_zeros(res_m).fill(_NEG)
-            cute.filter_zeros(res_l).fill(0.0)
-        return (res_m, res_l)
-
-    @cute.jit
-    def end_loop(
-        self,
-        gemm,
-        param,
-        state,
-        epi_coord,
-        epi_tile,
-        tiled_copy_t2r,
-        tiled_copy_r2s,
-        tile_coord_mnkl,
-        varlen_manager,
-        tidx,
-    ):
-        """On the last N subtile of the M stripe: flash-merge (m, l) across N lanes then N warps,
-        then write LSE_tile = m + ln(l) to gmem."""
-        epi_tile_shape = cute.zipped_divide(cute.make_layout(gemm.cta_tile_shape_mnk[:2]), epi_tile).shape[1]
-        if const_expr(epi_coord[1] == epi_tile_shape[1] - 1):
-            tDr_m, tDr_l = state[0], state[1]
-            sDr = state[2]
-            tDr_m_cur = tDr_m[None, None, None, epi_coord[0], epi_coord[1]]
-            tDr_l_cur = tDr_l[None, None, None, epi_coord[0], epi_coord[1]]
-            tiled_copy = tiled_copy_t2r if tiled_copy_t2r is not None else tiled_copy_r2s
-            reference_src = tiled_copy_t2r is None
-
-            lane_layout_MN, warp_layout_MN = _get_lane_warp_layouts(tiled_copy, reference_src)
-            lanes_in_N = cute.size(lane_layout_MN, mode=[1])
-            is_lane_n_leader = cute.arch.lane_idx() % lanes_in_N == 0
-            assert lanes_in_N == 1 << int(math.log2(lanes_in_N)), (
-                "lanes_in_N must be a power of 2 for butterfly reduction"
-            )
-
-            # ── Intra-warp flash merge across the N lanes (butterfly; result broadcast to all) ──
-            if const_expr(lanes_in_N > 1):
-                assert lane_layout_MN.stride[1] == 1
-                tDr_m_flt = cute.filter_zeros(tDr_m_cur)
-                tDr_l_flt = cute.filter_zeros(tDr_l_cur)
-                for i in cutlass.range(cute.size(tDr_m_flt), unroll_full=True):
-                    rm = tDr_m_flt[i]
-                    rl = tDr_l_flt[i]
-                    for step in cutlass.range_constexpr(int(math.log2(lanes_in_N))):
-                        off = lanes_in_N >> (step + 1)
-                        m2 = cute.arch.shuffle_sync_bfly(rm, offset=off)
-                        l2 = cute.arch.shuffle_sync_bfly(rl, offset=off)
-                        m_new = cute.arch.fmax(rm, m2)
-                        rl = rl * _exp(rm - m_new) + l2 * _exp(m2 - m_new)
-                        rm = m_new
-                    tDr_m_flt[i] = rm
-                    tDr_l_flt[i] = rl
-
-            warp_N = warp_layout_MN[1]
-            warps_in_N = const_expr(cute.size(warp_N))
-            partition_for_epilogue_fn = partial(
-                partition_for_epilogue,
-                epi_tile=epi_tile,
-                tiled_copy=tiled_copy,
-                tidx=tidx,
-                reference_src=tiled_copy_t2r is None,
-            )
-            tile_M, tile_N = gemm.cta_tile_shape_mnk[:2]
-            tDcD = partition_for_epilogue_fn(cute.make_identity_tensor((tile_M, tile_N)))
-            tDcD_cur = tDcD[None, None, None, epi_coord[0], epi_coord[1]]
-            tDr_m_m = layout_utils.convert_layout_zero_stride(tDr_m_cur, tDr_m_cur.layout)[None, 0]
-            tDr_l_m = layout_utils.convert_layout_zero_stride(tDr_l_cur, tDr_m_cur.layout)[None, 0]
-            tDcD_m = layout_utils.convert_layout_zero_stride(tDcD_cur, tDr_m_cur.layout)[None, 0]
-
-            # ── Inter-warp flash merge through smem (only warp-N leaders participate) ──
-            warp_idx = cute.arch.make_warp_uniform(tidx // cute.arch.WARP_SIZE)
-            warp_n_idx = warp_layout_MN.get_hier_coord(warp_idx)[1]
-            if const_expr(warps_in_N > 1):
-                if warp_n_idx > 0 and is_lane_n_leader:
-                    for m in cutlass.range(cute.size(tDcD_m, mode=[0])):
-                        row_idx = tDcD_m[m][0]
-                        sDr[row_idx, warp_n_idx - 1, 0] = tDr_m_m[m]
-                        sDr[row_idx, warp_n_idx - 1, 1] = tDr_l_m[m]
-                gemm.epilogue_barrier.arrive_and_wait()
-                if warp_n_idx == 0 and is_lane_n_leader:
-                    for m in cutlass.range(cute.size(tDcD_m, mode=[0])):
-                        row_idx = tDcD_m[m][0]
-                        rm = tDr_m_m[m]
-                        rl = tDr_l_m[m]
-                        for warp_n in cutlass.range_constexpr(1, warps_in_N):
-                            m2 = sDr[row_idx, warp_n - 1, 0]
-                            l2 = sDr[row_idx, warp_n - 1, 1]
-                            m_new = cute.arch.fmax(rm, m2)
-                            rl = rl * _exp(rm - m_new) + l2 * _exp(m2 - m_new)
-                            rm = m_new
-                        tDr_m_m[m] = rm
-                        tDr_l_m[m] = rl
-
-            # ── Write LSE_tile = m + ln(l) to gmem ──
-            batch_idx = tile_coord_mnkl[3]
-            limit_m = min(varlen_manager.len_m(batch_idx) - tile_coord_mnkl[0] * tile_M, tile_M)
-            limit_n_tiles = param.shape[2] if not varlen_manager.varlen_m else param.shape[1]
-            if const_expr(not varlen_manager.varlen_m):
-                mColVec = param[batch_idx, None, tile_coord_mnkl[1]]
-            else:
-                mColVec = cute.domain_offset(
-                    (varlen_manager.params.cu_seqlens_m[batch_idx],),
-                    param[None, tile_coord_mnkl[1]],
-                )
-            gColVec = cute.local_tile(mColVec, (tile_M,), (tile_coord_mnkl[0],))
-            should_write_gmem = (
-                is_lane_n_leader if const_expr(warps_in_N == 1) else warp_n_idx == 0 and is_lane_n_leader
-            )
-            if tile_coord_mnkl[1] < limit_n_tiles and should_write_gmem:
-                for m in cutlass.range(cute.size(tDcD_m, mode=[0])):
-                    row_idx = tDcD_m[m][0]
-                    if row_idx < limit_m:
-                        gColVec[row_idx] = tDr_m_m[m] + cute.math.log(tDr_l_m[m], fastmath=True)
-
-
-# =============================================================================
-# Patch installation (idempotent)
-# =============================================================================
-_PATCHED = False
-
-
-@dsl_user_op
-def _exp_act(x, *, loc=None, ip=None):
-    """exp(x) = exp2(x·log2e) activation for the fused backward recompute GEMM. Same scalar +
-    SM100 f32x2-tuple contract as quack's silu/relu act_fns."""
-    if const_expr(not isinstance(x, tuple)):
-        return cute.math.exp2(x * _LOG2_E, fastmath=True)
-    return (
-        cute.math.exp2(x[0] * _LOG2_E, fastmath=True),
-        cute.math.exp2(x[1] * _LOG2_E, fastmath=True),
-    )
-
-
-def _ensure_patched():
-    """Install the online-softmax epilogue as the default 2-SM GEMM + the ``mD=None`` (no-materialize)
-    guards on quack, once."""
-    global _PATCHED
-    if _PATCHED:
-        return
-    # quack's get_majors/get_dtypes assume D is non-None; allow mD=None so logits are never written.
-    _gsr.get_majors = lambda A, B, D, C: (
-        _get_major(A, "m", "k"),
-        _get_major(B, "n", "k"),
-        _get_major(D, "m", "n") if D is not None else None,
-        _get_major(C, "m", "n") if C is not None else None,
-    )
-    _gsr.get_dtypes = lambda A, B, D, C: (
-        _M[A.dtype],
-        _M[B.dtype],
-        _M[D.dtype] if D is not None else None,
-        _M[C.dtype] if C is not None else None,
-    )
-    # Register the exp activation so gemm_act (which resolves ``act_fn = act_fn_map[name]``) can run
-    # the fused backward recompute+exp GEMM. Copy the map first so we don't mutate quack's global.
-    _gact.act_fn_map = dict(_gact.act_fn_map)
-    _gact.act_fn_map["exp"] = _exp_act
-    # Default forward = single-pass online-softmax LSE. Build the class from quack's stock default
-    # (its base arch GEMM) BEFORE swapping it in, then install it as THE default so the normal
-    # (cached) jit path serves it — no per-call recompile.
-    _build_online_class()
-    _gsr.GemmSqReduceSm100 = _OnlineSm100
-    _PATCHED = True
-
-
-_OnlineSm100 = None  # lazily built single-pass online-softmax GEMM class
-
-
-def _build_online_class():
-    """Build the online-softmax GEMM subclass (its epilogue emits LSE_tile per (row, N-tile))."""
-    global _OnlineSm100
-    if _OnlineSm100 is not None:
-        return
-    base = _gsr.GemmSqReduceSm100.__bases__[-1]  # the arch GEMM (GemmSm100)
-
-    class _OnlineMixin(GemmSqReduceMixin):
-        _epi_ops = (
-            Scalar("alpha"),
-            Scalar("beta"),
-            Scalar("sr_seed", dtype=cutlass.Int32),
-            RowVecLoad("mRowVecBroadcast"),
-            _ColVecOnlineReduce("mColVecReduce"),
-            TileStore("mAuxOut"),
-        )
-
-        @cute.jit
-        def epi_visit_subtile(self, params, epi_loop_tensors, tRS_rD, tRS_rC=None):
-            # Add the per-column bias (rowvec) to the logits BEFORE the flash reduction, so the LSE is
-            # over (X@Wᵀ + bias). No-op (const_expr'd out) when no rowvec is bound → core path unchanged.
-            _online_add_rowvec(tRS_rD, epi_loop_tensors.get("mRowVecBroadcast"))
-            res = epi_loop_tensors.get("mColVecReduce")
-            _colvec_online_accumulate(self, res[0], res[1], tRS_rD)
-            return None
-
-    _OnlineSm100 = type("_GemmOnlineSm100", (_OnlineMixin, base), {})
-
-
-def _online_lse(X, W, rowvec=None):
-    """Single-pass online-softmax LSE. One 2-SM GEMM whose epilogue writes LSE_tile = m + ln(l) per
-    (row, N-tile); logits never materialized. Robust at ANY logit scale (no overflow, validated to
-    max_logit ≈ 258). Post-kernel: lse = logsumexp over the N-tiles (stable).
-
-    ``rowvec`` (optional, (1, V) fp32) is a per-column bias ADDED to the logits inside the epilogue
-    (LSE over X@Wᵀ + bias) — the online_add_rowvec step. None → no bias (byte-identical core kernel).
-
-    ``_OnlineSm100`` is the DEFAULT epilogue class (installed by ``_ensure_patched``), so this runs on
-    the normal cached jit path — no per-call recompile."""
-    _ensure_patched()
-    colvec = _colvec_gemm(X, W, float("-inf"), rowvec)  # (BT, n_tiles) of LSE_tile; untouched -> -inf
-    return torch.logsumexp(colvec, dim=-1)  # (BT,)
-
-
-# =============================================================================
-# Fused forward LSE
-# =============================================================================
-def _colvec_gemm(X, W, fill, rowvec=None):
-    """Run the 2-SM GEMM with a colvec reduction (whatever epilogue is currently installed).
-    Returns the per-(row, N-tile) reduction buffer; logits are NOT materialized (mD=None).
-    ``rowvec`` ((1,V) fp32) is the optional per-column bias added inside the online epilogue."""
-    BT, V = X.shape[0], W.shape[0]
-    n_tiles = (V + _TILE_N - 1) // _TILE_N
-    colvec = torch.full((1, BT, n_tiles), fill, device=X.device, dtype=torch.float32)
-    _gsr.gemm_sq_reduce(
-        X[None],
-        W[None],
-        None,
-        None,
-        colvec,
-        None,
-        tile_M=_TILE_M,
-        tile_N=_TILE_N,
-        cluster_M=2,
-        cluster_N=1,
-        rowvec=rowvec,  # per-column bias added additively in the online epilogue (None -> no bias)
-        # Dynamic-persistent tile scheduler: keeps the SMs saturated as BT (the M-tile count) grows,
-        # flattening the throughput curve. Measured ~823/688/688 TF/s at BT 8k/32k/64k vs a static
-        # 791/579/557 — it removes the large-BT forward degradation (the single-CTA disease).
-        is_dynamic_persistent=True,
-    )
-    return colvec[0]
-
-
-def fused_lse(X, W, bias=None):
-    """Per-row LSE = log Σ_v exp(X @ Wᵀ + bias), fused on the 2-SM GEMM, logits never in HBM.
-
-    **Single-pass online softmax** (FlashAttention-style running max+sumexp in the epilogue) — ONE
-    GEMM, robust at any logit scale (validated to max_logit ≈ 258). See ``_online_lse`` /
-    ``_ColVecOnlineReduce``. ``bias`` ((V,) or None) is a per-column additive bias folded into the
-    epilogue (LSE over X@Wᵀ + bias)."""
-    rowvec = bias.detach().float().reshape(1, -1) if bias is not None else None  # (1, V) fp32
-    return _online_lse(X, W, rowvec)
 
 
 def _bwd_chunk_size(BT, H, V):
@@ -426,38 +42,73 @@ def _target_logit(X, W, target, chunk=8192):
     return x_tgt
 
 
-# Fused backward recompute+exp: instead of a cuBLAS GEMM that materializes fp32 (chunk,V) logits and
-# a separate exp pass, run quack's gemm_act (a 2-SM GEMM with a fused activation epilogue) so the
-# kernel computes ``sm = exp(Xc@Wᵀ + colvec_bias)`` DIRECTLY (bf16, one pass). With
-# ``colvec_bias = where(valid, −lse, −1e30)`` this is the per-row softmax for valid rows and 0 for
-# ignored rows (``exp(−1e30) = 0``) — i.e. the MASKED softmax, no separate finalize pass. The one-hot
-# subtract is applied OUT of vocab space as cheap (chunk,H) gather/scatter corrections (see backward),
-# since it is nonzero at only one column per row. Measured 1.7-2.1x faster than cuBLAS-recompute +
-# torch-exp; removing the (chunk,V) finalize adds a further ~1.1x at the large-chunk weak spots.
 def _recompute_softmax(Xc, W, colvec_bias, rowvec_bias=None):
-    """Masked softmax ``sm = exp(Xc @ Wᵀ + rowvec_bias + colvec_bias)`` as bf16 (chunk, V), fused in
-    one 2-SM GEMM. ``colvec_bias = where(valid, −lse_row, −1e30)`` (per-row): −lse gives the softmax
-    for valid rows, −1e30 zeroes ignored rows. ``rowvec_bias`` ((1,V) or None) is the per-column FLCE
-    bias. No (chunk,V) fp32 intermediate; the one-hot is handled by the caller."""
-    chunk, V = Xc.shape[0], W.shape[0]
-    sm = torch.empty(1, chunk, V, device=Xc.device, dtype=Xc.dtype)
-    _gemm_act(
-        Xc[None],
-        W[None],
-        None,  # raw D not needed (mD=None) -> no (chunk,V) fp32 store
-        None,  # C
-        sm,  # PostAct = exp(D + rowvec_bias + colvec_bias)
-        None,  # tile_count_semaphore
-        "exp",
-        tile_M=_TILE_M,
-        tile_N=_TILE_N,
-        cluster_M=2,
-        cluster_N=1,
-        is_dynamic_persistent=True,
-        colvec_bias=colvec_bias[None],  # per-row, broadcast along N: exp(D − lse) masked
-        rowvec_bias=rowvec_bias,  # per-column FLCE bias (None -> unbiased); broadcast along M
+    """Recompute and exponentiate logits in the native GEMM epilogue.
+
+    ``colvec_bias`` is the per-token ``-LSE`` or ignored-row sentinel, while
+    ``rowvec_bias`` is the optional vocabulary bias. The kernel writes only the
+    input-dtype softmax buffer.
+    """
+    vocab_bias = None if rowvec_bias is None else rowvec_bias.reshape(-1)
+    return recompute_softmax(
+        Xc,
+        W,
+        colvec_bias,
+        vocab_bias,
     )
-    return sm[0]
+
+
+def _validate_inputs(_input, weight, target, bias, ce_weight, reduction):
+    if _input.ndim != 2 or weight.ndim != 2:
+        raise ValueError(f"_input and weight must be 2D, got {_input.shape} and {weight.shape}.")
+    if target.ndim != 1 or target.shape[0] != _input.shape[0]:
+        raise ValueError(f"target must have shape ({_input.shape[0]},), got {target.shape}.")
+    if _input.shape[1] != weight.shape[1]:
+        raise ValueError(f"Input and weight hidden dimensions must match, got {_input.shape[1]} and {weight.shape[1]}.")
+    if _input.shape[0] == 0 or _input.shape[1] == 0 or weight.shape[0] == 0:
+        raise ValueError("FLCE requires non-empty token, hidden, and vocabulary dimensions.")
+    if _input.device != weight.device or _input.device != target.device:
+        raise ValueError(
+            f"_input, weight, and target must share a device, got {_input.device}, {weight.device}, and {target.device}."
+        )
+    if _input.dtype != weight.dtype:
+        raise TypeError(f"_input and weight must share a dtype, got {_input.dtype} and {weight.dtype}.")
+    if not torch.is_floating_point(_input):
+        raise TypeError(f"_input and weight must have a floating-point dtype, got {_input.dtype}.")
+    if target.dtype != torch.long:
+        raise TypeError(f"target must have dtype torch.long, got {target.dtype}.")
+    if bias is not None:
+        if bias.ndim != 1 or bias.shape[0] != weight.shape[0]:
+            raise ValueError(f"bias must have shape ({weight.shape[0]},), got {bias.shape}.")
+        if bias.device != _input.device or not torch.is_floating_point(bias):
+            raise TypeError("bias must be a floating-point tensor on the same device as _input.")
+    if ce_weight is not None:
+        if ce_weight.ndim != 1 or ce_weight.shape[0] != weight.shape[0]:
+            raise ValueError(f"ce_weight must have shape ({weight.shape[0]},), got {ce_weight.shape}.")
+        if ce_weight.device != _input.device or not torch.is_floating_point(ce_weight):
+            raise TypeError("ce_weight must be a floating-point tensor on the same device as _input.")
+    if reduction not in ("mean", "sum", "none"):
+        raise ValueError(f"reduction must be one of 'mean', 'sum', or 'none', got {reduction!r}.")
+
+
+def _native_sm100_supported(tensor):
+    return tensor.device.type == "cuda" and torch.cuda.get_device_capability(tensor.device) == (10, 0)
+
+
+def _addmm_fp32_out(out, lhs, rhs):
+    if _SUPPORTS_OUT_DTYPE:
+        torch.addmm(out, lhs, rhs, out_dtype=torch.float32, out=out)
+    else:
+        torch.addmm(out, lhs.float(), rhs.float(), out=out)
+
+
+def _mm_out(out, lhs, rhs):
+    if out.dtype == lhs.dtype:
+        torch.mm(lhs, rhs, out=out)
+    elif _SUPPORTS_OUT_DTYPE:
+        torch.mm(lhs, rhs, out_dtype=out.dtype, out=out)
+    else:
+        torch.mm(lhs.float(), rhs.float(), out=out)
 
 
 @torch.compile(dynamic=True)
@@ -537,11 +188,6 @@ def _scatter_target_grad_rowscaled(grad_weight, xc, tclamp, valid, row_scale, al
     grad_weight.index_add_(0, tclamp, xc_scaled.to(grad_weight.dtype), alpha=alpha)
 
 
-# torch.addmm gained the out_dtype kwarg in 2.8.0 — needed only for the mixed bf16-in / fp32-out
-# accumulate path (accum_dtype=fp32).
-_ADDMM_SUPPORTS_OUT_DTYPE = None
-
-
 def _accum_grad_weight(grad_weight, dlogits_t, xc, alpha):
     """grad_weight += ``alpha`` * (dlogits_tᵀ-view @ xc), accumulated IN PLACE with a fused cuBLAS
     addmm. ``alpha`` = grad_output/n folded into the GEMM (no separate scale pass).
@@ -558,24 +204,11 @@ def _accum_grad_weight(grad_weight, dlogits_t, xc, alpha):
         ``+= alpha·(dlogitsᵀ@xc).float()``.
       * grad_weight bf16/fp16 (the default, memory-parity with Triton): plain fused addmm.
     """
-    global _ADDMM_SUPPORTS_OUT_DTYPE
     if grad_weight.dtype == torch.float32 and dlogits_t.dtype in (torch.float16, torch.bfloat16):
-        if _ADDMM_SUPPORTS_OUT_DTYPE is None:
-            try:
-                torch.addmm(
-                    grad_weight[:2, :2],
-                    dlogits_t[:2, :2],
-                    xc[:2, :2],
-                    out_dtype=torch.float32,
-                    out=grad_weight[:2, :2],
-                )
-                _ADDMM_SUPPORTS_OUT_DTYPE = True
-            except (TypeError, RuntimeError):
-                _ADDMM_SUPPORTS_OUT_DTYPE = False
-        if _ADDMM_SUPPORTS_OUT_DTYPE:
+        if _SUPPORTS_OUT_DTYPE:
             torch.addmm(grad_weight, dlogits_t, xc, alpha=alpha, out_dtype=torch.float32, out=grad_weight)
         else:
-            grad_weight += alpha * (dlogits_t @ xc).float()
+            grad_weight += alpha * (dlogits_t.float() @ xc.float())
     else:
         torch.addmm(grad_weight, dlogits_t, xc, alpha=alpha, out=grad_weight)
 
@@ -591,11 +224,11 @@ def _scatter_target_grad(grad_weight, xc, tclamp, valid, alpha):
 
 def _vocab_chunk_size(V, BT, token_chunk):
     """Vocab-tile width for the vocab-oriented core backward, sized so the transient softmax buffer
-    ``(BT, vc)`` never exceeds the token scheme's ``(token_chunk, V)`` — i.e. peak memory stays at
-    parity with the shipped (Triton-memory-minimal) backward. Floored to a multiple of ``_TILE_N`` so
-    each ``gemm_act`` N-tile is full (and — since V is a multiple of 8 — every partial last slice
-    ``V − k·vc`` stays a multiple of 8, which the TMA store needs)."""
-    budget = token_chunk * V  # elements in the token-scheme sm buffer (the parity target)
+    ``(BT, vc)`` is at most 1.75 times the token scheme's ``(token_chunk, V)``. The larger slice amortizes
+    the persistent GEMM epilogue at small token chunks; dropping the final slice before label
+    corrections keeps measured full-pass peak memory within 1% of the previous parity target.
+    Floored to a multiple of ``_TILE_N`` so each native GEMM N-tile is full."""
+    budget = 7 * token_chunk * V // 4
     vc = budget // BT
     vc = (vc // _TILE_N) * _TILE_N  # floor to a full N-tile -> buffer <= parity
     return max(_TILE_N, min(V, vc))
@@ -610,7 +243,7 @@ def _core_vocab_backward(ctx, grad_output):
     the whole grad). Returns the 15-tuple of grads.
 
     Per vocab slice v: sm_v = exp(X@W_vᵀ − lse) masked (0 for ignored rows via the −1e30 colvec bias,
-    the same fused ``gemm_act`` used by the token path). ``gX += (c·sm_v) @ W_v`` accumulates the
+    the same fused native GEMM used by the token path). ``gX += (c·sm_v) @ W_v`` accumulates the
     softmax part of dX into the small (BT,H) fp32 buffer; ``gW[v] = (c·sm_v)ᵀ @ X`` is a single write.
     The label terms (one-hot, nonzero at one column per row; and the label-smoothing −ε broadcast) are
     applied ONCE outside the loop as cheap (BT,H) gather/scatter + (H,) rank-1 corrections — no (BT,V)
@@ -658,11 +291,12 @@ def _core_vocab_backward(ctx, grad_output):
             rvb = bias_f[s:e].reshape(1, -1) if has_bias else None
             sm = _recompute_softmax(X, Wv, colvec_bias, rvb)
             sm.mul_(arow_m)  # (a_row·scale)⊙sm (per-row softmax coefficient × token-scaling)
-            torch.addmm(gXacc, sm, Wv, out_dtype=torch.float32, out=gXacc)  # dX += (arow_m·sm)@W
-            torch.mm(sm.t(), X, out_dtype=gw_dtype, out=gW[s:e])  # dW[v] = (arow_m·sm)ᵀ@X, write-once
+            _addmm_fp32_out(gXacc, sm, Wv)  # dX += (arow_m·sm)@W
+            _mm_out(gW[s:e], sm.t(), X)  # dW[v] = (arow_m·sm)ᵀ@X, write-once
             if has_bias:
                 gb_sm[s:e] = sm.sum(0, dtype=torch.float32)  # Σ_r arow_m·sm colsum
 
+        del sm
         gW.mul_(go_wf)
         oh_x = torch.where(valid[:, None], oh_coef.to(X.dtype)[:, None] * X, torch.zeros_like(X)).to(gw_dtype)
         gW.index_add_(0, tclamp, oh_x, alpha=go_wf)  # + go·oh_coef·X @ targets (bf16 (BT,H) temp)
@@ -729,14 +363,15 @@ def _core_vocab_backward(ctx, grad_output):
         e = min(s + vc, V)
         Wv = W[s:e]
         rvb = bias_f[s:e].reshape(1, -1) if has_bias else None  # (1, e−s) bias slice for this vocab tile
-        sm = _recompute_softmax(X, Wv, colvec_bias, rvb)  # (BT, e−s) masked softmax slice, fused 2-SM GEMM
+        sm = _recompute_softmax(X, Wv, colvec_bias, rvb)  # (BT, e−s) masked softmax slice
         if row_mul is not None:
             sm.mul_(row_mul)  # (c·scale)⊙sm: scales the softmax term of BOTH dX and dW (labels added later)
-        torch.addmm(gXacc, sm, Wv, out_dtype=torch.float32, out=gXacc)  # dX += (·sm_v)@W_v (no transient)
-        torch.mm(sm.t(), X, out_dtype=gw_dtype, out=gW[s:e])  # dW[v] = (·sm_v)ᵀ@X, K=BT, write-once
+        _addmm_fp32_out(gXacc, sm, Wv)  # dX += (·sm_v)@W_v (no transient)
+        _mm_out(gW[s:e], sm.t(), X)  # dW[v] = (·sm_v)ᵀ@X, K=BT, write-once
         if has_bias:
             gb_sm[s:e] = sm.sum(0, dtype=torch.float32)  # softmax colsum (write-once per slice)
 
+    del sm
     # The one-hot / label-smoothing terms carry the token-scaling `scale` (per-row) but NOT c: replace
     # X by scale·X for the dW label terms, and scale W[target]/W.sum(0) per-row for dX (no-op if scale None).
     # bf16 throughout (scale ∈ [0,1] softmax prob) so the per-row (BT,H) temps stay at core-case parity.
@@ -761,7 +396,7 @@ def _core_vocab_backward(ctx, grad_output):
         oh_row = ((go_f * onehot_scale) * scale).to(X.dtype)[:, None]  # (BT,1) per-row one-hot weight
         gX.sub_(oh_row * W[tclamp])  # −go·(1−ls)·scale·W[target] (bf16 (BT,H) temp — core-parity)
         if ls != 0.0:
-            sv_row = ((go_f * eps) * scale).to(X.dtype)[:, None]  # (BT,1)
+            sv_row = (go_f * scale).to(X.dtype)[:, None]  # (BT,1)
             gX.sub_(sv_row * smooth_vec)  # −go·ε·scale·W.sum(0) (smooth_vec already bf16)
     gX.mul_(valid[:, None])
 
@@ -813,55 +448,53 @@ def fused_linear_cross_entropy_forward(
     the backward needs — pass it straight to ``fused_linear_cross_entropy_backward``. The autograd
     Function copies it onto its ctx; a direct functional caller uses it as-is."""
     ctx = _FlceState()
-    # reduction='none' WITH grad is unsupported (a fused FLCE accumulates grad_weight across tokens,
-    # so it can't be re-weighted by a NON-uniform per-token upstream grad — the same limit the 1-CTA
-    # and Triton fused paths hit). Forward-only 'none' (per-token loss for eval) IS supported and now
-    # runs on the fast fused path. token_scaling's per-row weight, by contrast, is a uniform-scalar
-    # grad × a detached per-row factor, which the backward CAN fold in — so it stays fully supported.
-    if reduction == "none" and _input.requires_grad:
-        raise NotImplementedError("cutedsl FLCE: reduction='none' with grad is not supported")
+    _validate_inputs(_input, weight, target, bias, ce_weight, reduction)
+    needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
     # Host-side target bounds check (matches the 1-CTA): zero out ignored tokens so they don't trip
     # it, then assert the valid targets are in [0, V). A device-side gather OOB would corrupt the
     # CUDA context; this raises a clean host AssertionError instead.
-    _tmask = target != ignore_index
     _V = weight.shape[0]
-    assert (target * _tmask).max() < _V, f"Target out of bounds. Expected < {_V}"
-    assert (target * _tmask).min() >= 0, "Target out of bounds. Expected >= 0"
-    # Route to the general (chunked, cuBLAS) feature path when a feature the fast 2-SM path can't
+    valid_targets = target[target != ignore_index]
+    if valid_targets.numel() > 0:
+        if valid_targets.max() >= _V:
+            raise AssertionError(f"Target out of bounds. Expected < {_V}")
+        if valid_targets.min() < 0:
+            raise AssertionError("Target out of bounds. Expected >= 0")
+    fully_trainable = _input.requires_grad and weight.requires_grad and (bias is None or bias.requires_grad)
+    # Route to the general feature path when a feature the native 2-CTA path cannot
     # fuse is requested — softcap (its (1−tanh²) chain rule is per-element, so it breaks the
     # one-hot-as-correction backward), token accuracy / predicted tokens (need an argmax over V, and
     # the fused GEMM emits only the max VALUE, not its index — so they'd need a (chunk,V) pass with
-    # no speed gain) — when the dtype is fp32 (the 2-SM GEMM is 16-bit only), OR when the GPU is not
-    # Blackwell (``infer_device_arch`` families all start with "blackwell"; the 2-SM quack GEMM is
-    # sm_100+ only, and the general path is pure PyTorch/cuBLAS and runs on Hopper/Ampere/… too — a
-    # non-CUDA input tensor also routes here). H NOT a multiple of 8 no longer falls back: the 2-SM TMA
-    # needs 16-byte-aligned rows (8 bf16 elems), so we zero-pad H up to a multiple of 8 on the fast path
+    # no speed gain) — when the dtype is fp32 (the native GEMM is 16-bit only), or when the GPU is not
+    # exactly SM100 (the kernel's tcgen05 launch and cluster policy are SM100-specific; SM103 and
+    # SM120 use the general path), or when only a subset of operands requires gradients (the Triton
+    # path avoids allocating unused large gradients). H need not be a multiple of the mainloop K tile:
+    # it is zero-padded to the required alignment on the fast path
     # (the padded columns contribute 0 to every dot product → logits/grads exact; the all-zero padded
-    # grad rows are sliced off in the backward). z_loss, label_smoothing, ce_weight, bias,
-    # reduction="none" (forward-only — grad is refused above, incl. WITH ce_weight/bias), and
-    # token_scaling (fwd+bwd, INCLUDING with ce_weight/bias — its per-row scale threads through every
-    # dgrad term and grad_bias) are all handled ON the fast path. Callers ALWAYS get a valid kernel.
+    # grad rows are sliced off in the backward). z_loss, label_smoothing, ce_weight, bias, and
+    # token_scaling are all handled on the fast path. reduction="none" delegates to Triton because
+    # its per-token upstream gradient requires deferred recomputation in backward.
     if (
-        _input.device.type != "cuda"
-        or not infer_device_arch().startswith("blackwell")
+        not _native_sm100_supported(_input)
+        or reduction == "none"
+        or (needs_grad and not fully_trainable)
         or (softcap is not None and softcap != 0.0)
         or return_token_accuracy
         or return_predicted_tokens
         or _input.dtype not in (torch.bfloat16, torch.float16)
     ):
-        if reduction not in ("mean", "sum", "none"):
-            raise NotImplementedError(f"cutedsl FLCE: reduction={reduction}")
-        # fp32 (the 2-SM tcgen05 GEMM is 16-bit-input only), non-Blackwell, softcap, and the argmax
+        # fp32, non-SM100, reduction="none", softcap, and the argmax
         # metrics (token-accuracy / predicted-tokens) can't take the fused fast path. For these we
         # DELEGATE to the upstream Triton FLCE rather than run a memory-lean recompute fallback: on
         # these cases the GEMM has no tensor-core advantage (fp32 uses the same cutlass SIMT sgemm as
         # Triton), so an extra recompute GEMM in the backward is pure overhead — the recompute path
         # measured ~1.3× SLOWER than Triton for fp32. Delegating gives byte-identical numerics AND
-        # exact speed/peak-memory parity with Triton (it IS the reference kernel). ``no_grad`` stops a
-        # functional caller from building an autograd graph while preserving ``requires_grad`` so
-        # Triton still emits the right grads; the grads are stashed for the (scalar-scale) backward.
+        # exact speed/peak-memory parity with Triton (it IS the reference kernel). ``no_grad`` stops
+        # a functional caller from building an autograd graph. Per-token gradients are deferred and
+        # recomputed in backward; scalar reductions stash their gradients directly.
         from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward as _triton_flce_fwd
 
+        defer_none = reduction == "none" and needs_grad
         with torch.no_grad():
             loss, z_out, acc_out, pred_out, gX, gW, gb = _triton_flce_fwd(
                 _input=_input,
@@ -879,34 +512,45 @@ def fused_linear_cross_entropy_forward(
                 use_token_scaling=use_token_scaling,
                 return_token_accuracy=return_token_accuracy,
                 return_predicted_tokens=return_predicted_tokens,
+                compute_gradients=False if defer_none else needs_grad,
+                weight_requires_grad=weight.requires_grad,
             )
-        ctx._triton_delegated = True
-        ctx.grad_input = gX
-        ctx.grad_weight = gW
-        ctx.grad_bias = gb
+        if defer_none:
+            ctx._triton_deferred_none = True
+            ctx.save_for_backward(_input.detach(), weight.detach(), target, bias.detach() if bias is not None else None)
+            ctx.fwd_kwargs = {
+                "ce_weight": ce_weight,
+                "ignore_index": ignore_index,
+                "lse_square_scale": lse_square_scale,
+                "label_smoothing": label_smoothing,
+                "reduction": reduction,
+                "softcap": softcap,
+                "accum_dtype": accum_dtype,
+                "use_token_scaling": use_token_scaling,
+            }
+            ctx.weight_requires_grad = weight.requires_grad
+        else:
+            ctx._triton_delegated = True
+            ctx.grad_input = gX
+            ctx.grad_weight = gW
+            ctx.grad_bias = gb
         return loss, z_out, acc_out, pred_out, ctx
-    # Fast fused 2-SM path (core case, 16-bit — Blackwell & non-fallback features guaranteed above).
-    _ensure_patched()
-
-    # H%8 padding: the 2-SM TMA needs 16-byte-aligned rows (8 bf16/fp16 elems), so zero-pad H up to a
-    # multiple of 8. The pad columns are exact zeros → contribute 0 to X@Wᵀ (logits/LSE unchanged) and
-    # produce all-zero padded rows of grad_input/grad_weight, which the backward slices off. Cost is one
-    # ≤7-column-wider copy of X and W (≈+0.2% memory); it unlocks the fast path (measured 8–11x vs the
-    # cuBLAS fallback). ``h_orig`` (None unless padded) tells the backward how far to slice the grads.
+    # The native mainloop consumes full 64-element K tiles. Zero padding preserves
+    # every dot product and produces padded gradient columns that are sliced below.
     h_orig = None
     _H = weight.shape[1]
-    if _H % 8 != 0:
-        _pad = (-_H) % 8
+    if _H % K_ALIGNMENT != 0:
+        _pad = (-_H) % K_ALIGNMENT
         _input = torch.nn.functional.pad(_input, (0, _pad))
         weight = torch.nn.functional.pad(weight, (0, _pad))
         h_orig = _H
     ctx.h_orig = h_orig
 
-    X = _input.detach()
-    W = weight.detach()
-    bias_f = bias.detach().float() if bias is not None else None
+    X = _input.detach().contiguous()
+    W = weight.detach().contiguous()
+    bias_f = bias.detach().float().contiguous() if bias is not None else None
 
-    lse = fused_lse(X, W, bias)  # fused, logits (incl. per-column bias) never materialized
+    lse = fused_lse(X, W, bias_f)  # fused, logits (incl. per-column bias) never materialized
     valid = target != ignore_index
     tclamp_f = torch.where(valid, target, torch.zeros_like(target))  # ignored -> row 0 (gather-safe)
     x_tgt = _target_logit(X, W, tclamp_f)  # x_tgt[i] = X[i]·W[target[i]], chunked; clamped so the
@@ -930,11 +574,12 @@ def fused_linear_cross_entropy_forward(
         weight_sum = cw.sum()
         tcl = tclamp_f
         wy = cw[tcl]  # (BT,) weight at each row's target
-        swnw = (
-            torch.where(valid, wy, torch.zeros_like(wy)).sum().clamp(min=1e-9)
-            if mean
-            else torch.ones((), device=X.device)
-        )
+        if mean:
+            swnw = torch.where(valid, wy, torch.zeros_like(wy)).sum()
+            if not valid.any():
+                swnw = swnw.new_ones(())
+        else:
+            swnw = torch.ones((), device=X.device)
         ce_r = wy * (lse - x_tgt)
         if label_smoothing > 0.0:
             cwW_raw = _weighted_col_sum(W, cw)  # (H,) = Σ_i weight_i·W_i ; reused in backward for dX broadcast
@@ -999,6 +644,8 @@ def fused_linear_cross_entropy_forward(
     else:
         loss = per_row_total.sum()
         z_total = z_scaled.sum() if (return_z_loss and z_scaled is not None) else None
+    if z_total is not None:
+        z_total = z_total.to(X.dtype)
 
     # Save the forward LSE — the backward reuses it (as the −lse colvec bias in _recompute_exp) so
     # its softmax needs no per-chunk logsumexp reduction. It's just (BT,) fp32 = negligible mem.
@@ -1017,7 +664,7 @@ def fused_linear_cross_entropy_forward(
 def fused_linear_cross_entropy_backward(ctx, grad_output):
     """Fused linear + cross-entropy backward. ``ctx`` is the forward's state carrier (or the autograd
     ctx). Returns the grad tuple aligned to the forward args (grad_input, grad_weight, None, grad_bias,
-    None...). When the forward zero-padded H to a multiple of 8 for the 2-SM TMA (``ctx.h_orig`` set),
+    None...). When the forward zero-padded H to the native K-tile alignment (``ctx.h_orig`` set),
     the all-zero padded columns of grad_input/grad_weight are sliced back to the original H."""
     grads = _flce_backward(ctx, grad_output)
     h_orig = getattr(ctx, "h_orig", None)
@@ -1030,6 +677,21 @@ def _flce_backward(ctx, grad_output):
     """Dispatch the actual backward compute (general fallback vs the fused fast paths). Operates on
     whatever H it is given (possibly the TMA-padded H); the public wrapper slices padded grads."""
     # z_loss / token_accuracy / predicted_tokens are metrics — no gradient flows from them.
+    if getattr(ctx, "_triton_deferred_none", False):
+        from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward as _triton_flce_fwd
+
+        _input, weight, target, bias = ctx.saved_tensors
+        _, _, _, _, gX, gW, gb = _triton_flce_fwd(
+            _input=_input,
+            weight=weight,
+            target=target,
+            bias=bias,
+            token_grad_output=grad_output,
+            compute_gradients=True,
+            weight_requires_grad=ctx.weight_requires_grad,
+            **ctx.fwd_kwargs,
+        )
+        return (gX, gW, None, gb, None, None, None, None, None, None, None, None, None, None, None)
     # Triton-delegated fallback (fp32 / non-Blackwell / softcap / argmax-metrics): the grads were
     # already computed in the delegated forward; apply the scalar/per-row grad_output scale exactly
     # as Triton's own backward does (element_mul kernel; no-op when grad_output == 1).
@@ -1077,7 +739,7 @@ def _flce_backward(ctx, grad_output):
     # opts into exact accumulation (nearly doubles the (V, H) grad footprint).
     gw_dtype = ctx.accum_dtype if ctx.accum_dtype is not None else W.dtype
     gW = torch.zeros(V, H, device=W.device, dtype=gw_dtype)
-    bias_rowvec = ctx.bias_f.reshape(1, -1) if has_bias else None  # (1,V) fp32 for gemm_act rowvec_bias
+    bias_rowvec = ctx.bias_f.reshape(1, -1) if has_bias else None
     n_valid = valid.sum().float()  # actual non-ignored count (grad_bias column terms use this, not n)
 
     if ctx.cw is not None:
@@ -1139,7 +801,7 @@ def _flce_backward(ctx, grad_output):
 
     # ---- unweighted backward (core / z-loss / label-smoothing) ------------------------------------
     # The dX / dW GEMMs use cuBLAS (torch.mm / addmm). The logit recompute + exp is FUSED into one
-    # quack gemm_act whose epilogue emits the MASKED softmax sm = exp(Xc@Wᵀ − lse) directly (0 for
+    # native GEMM whose epilogue emits the masked softmax sm = exp(Xc@W.T - lse) directly (0 for
     # ignored rows via the −1e30 bias), so no fp32 (chunk,V) logits are ever materialized AND the
     # ignore-mask is free. The one-hot subtract is applied OUT of vocab space as (chunk,H)
     # gather/scatter corrections (H ≪ V) — no (chunk,V) elementwise pass.
@@ -1262,6 +924,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     ``.apply`` signature and 4-tuple return as the Triton/cutedsl providers."""
 
     @staticmethod
+    @amp_custom_fwd
     def forward(
         ctx,
         _input,
@@ -1307,6 +970,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         return loss, z_loss, token_accuracy, predicted_tokens
 
     @staticmethod
+    @amp_custom_bwd
     def backward(ctx, grad_output, grad_output2=None, grad_output3=None, grad_output4=None):
         # z_loss / token_accuracy / predicted_tokens are metrics — no gradient flows from them.
         return fused_linear_cross_entropy_backward(ctx, grad_output)

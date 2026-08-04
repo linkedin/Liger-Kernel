@@ -40,12 +40,10 @@ def set_seed(seed: int = 42):
 # Imports (skip — don't fail — when the optional backend isn't installed)
 # =============================================================================
 def _cutedsl_flce():
-    """The cutedsl ``LigerFusedLinearCrossEntropyFunction`` under test (the canonical 2-SM/quack FLCE
-    at ``liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy``), or skip if CUTLASS/quack isn't
-    installed. It implements the core path fast (mean/sum/none-fwd, 16-bit, H%8==0, Blackwell) and
+    """The native CuTe DSL ``LigerFusedLinearCrossEntropyFunction`` under test, or skip if CUTLASS
+    is not installed. It implements the core path fast (mean/sum, 16-bit, SM100) and
     routes every other case (fp32, softcap, argmax metrics, non-Blackwell, …) through its general
-    cuBLAS fallback — so all parametrizations run; none raise NotImplementedError except the by-design
-    ``reduction='none'`` + grad refusal (tested in G)."""
+    Triton fallback."""
     try:
         from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
     except ImportError as exc:
@@ -510,14 +508,13 @@ def test_flce_amp_matches_triton(B, T, H, V, cast_dtype, bias, accum_dtype):
 
 
 # =============================================================================
-# D. reduction='none' — forward-only parity (grad is refused by design, tested in F).
+# D. reduction='none' — forward and deferred-backward parity.
 # =============================================================================
 @cuda_required
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("bias", [True, False], ids=["bias", "nobias"])
 def test_flce_reduction_none_forward_matches_triton(dtype, bias):
-    """Per-token loss vector (BT,) parity, forward-only (the only 'none' mode cutedsl FLCE
-    allows — see test_flce_reduction_none_with_grad_refused for the grad path)."""
+    """Per-token loss vector (BT,) parity without gradient computation."""
     set_seed()
     BT, H, V = 256, 512, 4096
     masters = _Masters(BT, H, V, bias=bias, ce_weight=False)
@@ -529,10 +526,7 @@ def test_flce_reduction_none_forward_matches_triton(dtype, bias):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("bias", [True, False], ids=["bias", "nobias"])
 def test_flce_reduction_none_ce_weight_forward_matches_triton(dtype, bias):
-    """reduction='none' per-token loss WITH ce_weight (± bias). For the 2-CTA backend bf16+H%8==0
-    this exercises the fused fast path (reduction='none' composed with ce_weight/bias — grad is
-    forward-only for 'none', so there's no backward-combo restriction). Guards the gate relaxation
-    that lets 'none' × ce_weight/bias fuse instead of falling back to the chunked path."""
+    """reduction='none' per-token loss with ce_weight (and optional bias)."""
     set_seed()
     BT, H, V = 256, 512, 4096
     masters = _Masters(BT, H, V, bias=bias, ce_weight=True)
@@ -718,6 +712,26 @@ def test_flce_z_loss_matches_triton(dtype, reduction, return_z_loss, bias):
 
 
 @cuda_required
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+def test_flce_native_z_loss_preserves_input_dtype(dtype):
+    set_seed()
+    BT, H, V = 256, 128, 256
+    masters = _Masters(BT, H, V, bias=False, ce_weight=False)
+    x = masters.input.to(dtype).requires_grad_(True)
+    w = masters.weight.to(dtype).requires_grad_(True)
+    target = _make_target(BT, V, ignore_frac=0.25)
+    _, z_loss, *_ = _apply(
+        _cutedsl_flce(),
+        x,
+        w,
+        target,
+        lse_square_scale=1e-4,
+        return_z_loss=True,
+    )
+    assert z_loss.dtype == dtype
+
+
+@cuda_required
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 def test_flce_softcap_matches_triton(dtype, reduction):
@@ -827,6 +841,42 @@ def test_flce_token_scaling_fast_grad_matches_triton(dtype, reduction, feat):
 
 
 @cuda_required
+def test_flce_token_scaling_strong_label_smoothing_grad_matches_triton():
+    """The token scale multiplies the smoothing term once, not epsilon twice."""
+    set_seed()
+    BT, H, V = 256, 128, 256
+    masters = _Masters(BT, H, V, bias=False, ce_weight=False)
+    target = _make_target(BT, V, ignore_frac=0.25)
+    _assert_flce_parity(
+        masters,
+        target,
+        torch.bfloat16,
+        reduction="mean",
+        label_smoothing=0.9,
+        use_token_scaling=True,
+    )
+
+
+@cuda_required
+def test_flce_pre_torch_2_8_out_dtype_fallback_matches_triton(monkeypatch):
+    """The native vocab backward remains usable when torch.mm/addmm lack out_dtype."""
+    import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
+
+    set_seed()
+    monkeypatch.setattr(flce, "_SUPPORTS_OUT_DTYPE", False)
+    BT, H, V = 256, 128, 256
+    masters = _Masters(BT, H, V, bias=False, ce_weight=False)
+    target = _make_target(BT, V, ignore_frac=0.25)
+    _assert_flce_parity(
+        masters,
+        target,
+        torch.bfloat16,
+        reduction="mean",
+        accum_dtype=torch.float32,
+    )
+
+
+@cuda_required
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_flce_all_features_matches_triton(dtype):
     """Everything at once: ce_weight + label_smoothing + z_loss + softcap + ignore_index +
@@ -851,8 +901,7 @@ def test_flce_all_features_matches_triton(dtype):
 
 
 # =============================================================================
-# G. CuTe DSL-specific contracts — host-side asserts + the by-design refusals the
-#    Triton kernel doesn't have. These are PERMANENT (not stubs), so they assert.
+# G. CuTe DSL-specific contracts and input validation.
 # =============================================================================
 def _basic_args(BT=8, H=16, V=4096, dtype=torch.float32):
     _input = torch.randn(BT, H, device="cuda", dtype=dtype, requires_grad=True)
@@ -880,13 +929,140 @@ def test_flce_target_negative_non_ignore_raises():
 
 
 @cuda_required
-def test_flce_reduction_none_with_grad_refused():
-    """reduction='none' WITH a grad-requiring input is refused by design: the fused path
-    accumulates grad_weight over tokens in forward and can't re-weight by a per-token
-    upstream grad. Must raise NotImplementedError (forward-only 'none' is fine — see D)."""
-    _input, weight, target = _basic_args(BT=16, V=4096)
-    with pytest.raises(NotImplementedError):
-        _apply(_cutedsl_flce(), _input, weight, target, reduction="none")
+@pytest.mark.parametrize("trainable", ["input", "weight", "bias"])
+def test_flce_reduction_none_grad_matches_triton(trainable):
+    """Per-token upstream gradients work when any differentiable operand requires grad."""
+    set_seed()
+    BT, H, V = 16, 64, 256
+    masters = _Masters(BT, H, V, bias=True, ce_weight=False)
+    target = _make_target(BT, V, ignore_frac=0.25)
+    grad_output = torch.randn(BT, device="cuda")
+
+    def one(fn):
+        x = masters.input.to(torch.bfloat16).requires_grad_(trainable == "input")
+        w = masters.weight.to(torch.bfloat16).requires_grad_(trainable == "weight")
+        b = masters.bias.to(torch.bfloat16).requires_grad_(trainable == "bias")
+        loss, *_ = _apply(fn, x, w, target, bias=b, reduction="none")
+        loss.backward(grad_output.to(loss.dtype))
+        leaf = {"input": x, "weight": w, "bias": b}[trainable]
+        return loss.detach().float(), leaf.grad.detach().float()
+
+    out = one(_cutedsl_flce())
+    ref = one(_triton_flce())
+    _assert_close(out[0], ref[0], 5e-3, 5e-2, "reduction=none loss")
+    _assert_close(out[1], ref[1], 5e-3, 5e-2, f"reduction=none grad_{trainable}")
+
+
+@cuda_required
+@pytest.mark.parametrize("trainable", ["input", "weight", "bias"])
+def test_flce_independent_requires_grad_matches_torch(trainable):
+    """Frozen operands delegate so the native path never allocates their unused gradients."""
+    set_seed()
+    BT, H, V = 256, 128, 256
+    masters = _Masters(BT, H, V, bias=True, ce_weight=False)
+    target = _make_target(BT, V, ignore_frac=0.25)
+
+    def one_cutedsl():
+        x = masters.input.to(torch.bfloat16).requires_grad_(trainable == "input")
+        w = masters.weight.to(torch.bfloat16).requires_grad_(trainable == "weight")
+        b = masters.bias.to(torch.bfloat16).requires_grad_(trainable == "bias")
+        loss, *_ = _apply(_cutedsl_flce(), x, w, target, bias=b, reduction="mean")
+        loss.backward()
+        leaf = {"input": x, "weight": w, "bias": b}[trainable]
+        return loss.detach().float(), leaf.grad.detach().float()
+
+    def one_torch():
+        x = masters.input.to(torch.bfloat16).requires_grad_(trainable == "input")
+        w = masters.weight.to(torch.bfloat16).requires_grad_(trainable == "weight")
+        b = masters.bias.to(torch.bfloat16).requires_grad_(trainable == "bias")
+        logits = F.linear(x, w, b).float()
+        loss = F.cross_entropy(logits, target, ignore_index=-100, reduction="mean")
+        loss.backward()
+        leaf = {"input": x, "weight": w, "bias": b}[trainable]
+        return loss.detach().float(), leaf.grad.detach().float()
+
+    out = one_cutedsl()
+    ref = one_torch()
+    _assert_close(out[0], ref[0], 5e-3, 5e-2, "independent requires_grad loss")
+    _assert_close(out[1], ref[1], 5e-3, 5e-2, f"independent grad_{trainable}")
+
+
+@cuda_required
+def test_flce_all_ignored_targets_are_valid():
+    _input, weight, target = _basic_args(BT=16, V=256, dtype=torch.bfloat16)
+    target.fill_(-100)
+    out = _apply(_cutedsl_flce(), _input, weight, target, reduction="mean")[0]
+    assert out.item() == 0.0
+
+
+@cuda_required
+def test_flce_signed_weighted_mean_denominator_matches_triton():
+    set_seed()
+    BT, H, V = 256, 128, 256
+    masters = _Masters(BT, H, V, bias=False, ce_weight=True)
+    masters.ce_weight.fill_(-1.0)
+    target = _make_target(BT, V, ignore_frac=0.25)
+    _assert_flce_parity(masters, target, torch.bfloat16, reduction="mean")
+
+
+@cuda_required
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        (lambda x, w, t: (x.unsqueeze(0), w, t), ValueError),
+        (lambda x, w, t: (x, w[:, :-1], t), ValueError),
+        (lambda x, w, t: (x, w.float(), t), TypeError),
+        (lambda x, w, t: (x, w, t.int()), TypeError),
+        (lambda x, w, t: (x, w, t[:-1]), ValueError),
+    ],
+)
+def test_flce_invalid_inputs_raise(mutation, error):
+    _input, weight, target = _basic_args(BT=16, H=64, V=256, dtype=torch.bfloat16)
+    _input, weight, target = mutation(_input, weight, target)
+    with pytest.raises(error):
+        _apply(_cutedsl_flce(), _input, weight, target)
+
+
+@cuda_required
+def test_flce_native_dispatch_requires_exact_sm100(monkeypatch):
+    import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
+
+    tensor = torch.empty(1, device="cuda")
+    seen = []
+
+    def capability(device):
+        seen.append(device)
+        return (10, 3)
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
+    assert not flce._native_sm100_supported(tensor)
+    assert seen == [tensor.device]
+
+
+def test_flce_native_gemm_guards_noncurrent_device(monkeypatch):
+    try:
+        import liger_kernel.ops.cutedsl.ops._fused_linear_cross_entropy_gemm as gemm
+    except ImportError as exc:
+        pytest.skip(f"cutedsl backend not importable: {exc}")
+
+    entered = []
+
+    class Guard:
+        def __init__(self, device):
+            self.device = device
+
+        def __enter__(self):
+            entered.append(self.device)
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "device", Guard)
+    device = torch.device("cuda", 1)
+    with gemm._device_guard(device):
+        pass
+    assert entered == [device]
 
 
 # =============================================================================
@@ -909,7 +1085,11 @@ def test_liger_kernel_impl_cutedsl_selects_cutedsl_flce():
     script = textwrap.dedent(
         """
         import sys
-        from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
+        from liger_kernel.ops import (
+            LigerFusedLinearCrossEntropyFunction,
+            fused_linear_cross_entropy_backward,
+            fused_linear_cross_entropy_forward,
+        )
 
         prefix = "liger_kernel.ops.cutedsl."
         mod = LigerFusedLinearCrossEntropyFunction.__module__
@@ -918,6 +1098,8 @@ def test_liger_kernel_impl_cutedsl_selects_cutedsl_flce():
             # so this documents the gap without being a false failure.
             print(f"FLCE not wired into cutedsl backend (module={mod}); skipping", file=sys.stderr)
             sys.exit(77)
+        assert fused_linear_cross_entropy_forward.__module__ == "liger_kernel.ops.fused_linear_cross_entropy"
+        assert fused_linear_cross_entropy_backward.__module__ == "liger_kernel.ops.fused_linear_cross_entropy"
         """
     )
     proc = subprocess.run([sys.executable, "-c", script], env=env, cwd=repo_root, capture_output=True, text=True)
