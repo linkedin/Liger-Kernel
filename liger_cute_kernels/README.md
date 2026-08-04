@@ -1,5 +1,55 @@
 # LigerCute — native MoE kernels (CUTLASS + NVSHMEM)
 
+## Overview
+
+Liger MoE is a fused expert-parallel MoE implementation for NVIDIA Hopper and
+Blackwell GPUs. A persistent kernel uses warp specialization to overlap
+NVSHMEM communication with CUTLASS matrix multiplication: communication warps
+move remote token tiles while the remaining warps execute the expert MLP. Both
+the forward and backward passes are fused, use statically sized symmetric
+buffers, and support CUDA Graph execution without a token-capacity limit.
+
+### Hopper results
+
+The accompanying ICLR 2027 evaluation reports the following BF16 results. These
+are benchmark snapshots from the paper environment (CUDA 12.9), not performance
+guarantees for every model or system.
+
+| Evaluation | Headline result |
+|---|---|
+| Standalone MoE kernels | Up to **32% lower forward latency** and **7% lower backward latency** than the strongest compared implementation |
+| Communication-intensive H200 cases | **10–35% higher forward throughput** than Comet; selected backward cases reach up to **~108% higher throughput** than DeepEP |
+| Qwen3-30B-A3B training on 8 H100 GPUs | **2.35× speedup / 57% lower step time** than Megatron and **~17% lower step time** than Transformer Engine |
+| End-to-end convergence | **5.06% final-loss improvement** over the Megatron baseline |
+
+#### Throughput across expert-parallel GPU counts
+
+![H200 MoE throughput across GPU counts](assets/hopper_gpu_scaling.png)
+
+BF16 throughput at 8,192 tokens per rank on H200 GPUs. Top: Qwen3-30B-A3B
+(`D=2048`, `I=768`). Bottom: Mixtral-8x7B (`D=4096`, `I=14336`). Forward and
+backward results are shown from 1 to 8 expert-parallel GPUs; Comet and DeepEP
+require multiple GPUs, and FlashMoE is forward-only.
+
+#### Throughput across token counts
+
+![H200 MoE throughput across token counts](assets/hopper_token_scaling.png)
+
+BF16 throughput from 1,024 to 16,384 tokens per rank on 8 H200 GPUs. Longer
+sequences deepen Liger's token-transport pipeline and increase communication
+and compute overlap.
+
+#### End-to-end training
+
+![H100 end-to-end training loss and step time](assets/hopper_training.png)
+
+Qwen3-30B-A3B pre-training on 8 H100 GPUs for 500 steps using OpenWebText,
+global batch size 512, and sequence length 4,096. Left: cross-entropy loss.
+Right: per-step wall time. The paper excludes the initial CUDA Graph build from
+its aggregate step-time statistics.
+
+## Package architecture
+
 Native CUDA build for the MoE port (from `LigerCommKernels`). The lck wheel
 packages one native core shared library that also exports the Python-facing TVM
 FFI functions:
@@ -40,6 +90,7 @@ in-liger entry point) lives separately, under `src/liger_kernel/ops/cute/`.
 ```
 liger_cute_kernels/             # ← standalone native build module (repo root)
 ├── README.md
+├── assets/                     # README benchmark figures
 ├── setup.py                    # builds the lck wheel (package liger_cute_kernels)
 ├── pyproject.toml
 ├── cute_build.py               # build_core() helper + LckBuildExt
