@@ -37,6 +37,28 @@ torchrun --nproc_per_node=2 \
     examples/megatron/run_mode2_hand_spec.py
 ```
 
+## Enabling more kernels
+
+`apply_liger_kernel_to_megatron()` takes one flag per kernel. Combine them in
+a single call before building the model:
+
+```python
+from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+apply_liger_kernel_to_megatron(
+    rms_norm=True,       # RMSNorm slots (default True)
+    cross_entropy=True,  # both fused + unfused vocab-parallel CE paths
+    rope=True,           # rotary positional embeddings (apply_rotary_pos_emb)
+)
+```
+
+`rope=True` reroutes Megatron's `apply_rotary_pos_emb` dispatcher — including
+the copy `megatron.core.transformer.attention` imported at load time — to
+Liger's Triton RoPE for the standard unfused non-packed path. Fused (TE/Apex) RoPE,
+packed `thd` sequences, interleaved rotation, multi-latent attention and mRoPE
+transparently fall back to Megatron's native implementation, so enabling it is
+always safe.
+
 ## What you should see
 
 For both scripts:
