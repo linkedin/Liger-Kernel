@@ -1182,7 +1182,7 @@ def _validate_epilogue_signature(
             raise ValueError(f"{name} must be a 2D tensor.")
         if device.type != "cuda":
             raise ValueError(f"{name} must be a CUDA tensor.")
-        if not is_contiguous:
+        if not is_contiguous and name != "out":
             raise ValueError(f"{name} must be contiguous.")
         if not is_aligned:
             raise ValueError(f"{name} must be 16-byte aligned.")
@@ -1206,6 +1206,8 @@ def _validate_epilogue_signature(
 
 
 def _validate_epilogue_inputs(a, b, out, epilogue_fragments):
+    if out.stride(1) != 1 or out.stride(0) < out.shape[1]:
+        raise ValueError("out must be a dense row-major tensor or row-padded row-major view.")
     tensors = (a, b, out)
     _validate_epilogue_signature(
         *(tuple(tensor.shape) for tensor in tensors),

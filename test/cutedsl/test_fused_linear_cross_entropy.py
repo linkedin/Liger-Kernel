@@ -942,6 +942,128 @@ def test_flce_all_features_matches_triton(dtype):
     )
 
 
+@sm100_required
+def test_flce_all_native_features_use_one_path(monkeypatch):
+    """Every feature supported on SM100 must stay on the single native path."""
+    import liger_kernel.ops.fused_linear_cross_entropy as triton_flce
+
+    set_seed()
+    BT, H, V = 256, 512, 4096
+    masters = _Masters(BT, H, V, bias=True, ce_weight=True)
+    target = _make_target(BT, V, ignore_frac=0.25)
+
+    def fail_if_delegated(**_):
+        pytest.fail("native SM100 features delegated to Triton")
+
+    monkeypatch.setattr(triton_flce, "fused_linear_cross_entropy_forward", fail_if_delegated)
+    out = _run(
+        _cutedsl_flce(),
+        masters,
+        target,
+        torch.bfloat16,
+        label_smoothing=0.1,
+        lse_square_scale=1e-4,
+        softcap=30.0,
+        return_z_loss=True,
+        accum_dtype=torch.float32,
+        use_token_scaling=True,
+        return_token_accuracy=True,
+        return_predicted_tokens=True,
+    )
+    assert out["z_loss"] is not None
+    assert out["token_accuracy"] is not None
+    assert out["predicted_tokens"] is not None
+    assert out["grad_bias"] is not None
+
+
+@sm100_required
+def test_flce_odd_vocab_all_native_features_match_triton():
+    """Logical vocabulary padding must preserve every native feature and gradient."""
+    set_seed()
+    BT, H, V = 257, 127, 513
+    masters = _Masters(BT, H, V, bias=True, ce_weight=True)
+    target = _make_target(BT, V, ignore_frac=0.25)
+    _assert_flce_parity(
+        masters,
+        target,
+        torch.bfloat16,
+        reduction="mean",
+        label_smoothing=0.1,
+        lse_square_scale=1e-4,
+        softcap=30.0,
+        return_z_loss=True,
+        accum_dtype=torch.float32,
+        use_token_scaling=True,
+        return_token_accuracy=True,
+        return_predicted_tokens=True,
+    )
+
+
+@sm100_required
+def test_flce_first_backward_does_not_recompute(monkeypatch):
+    """The normal backward must only hand off gradients produced during forward."""
+    import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
+
+    set_seed()
+    BT, H, V = 256, 512, 4096
+    x = torch.randn(BT, H, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    w = torch.randn(V, H, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    bias = torch.randn(V, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    ce_weight = torch.rand(V, device="cuda", dtype=torch.float32) + 0.5
+    target = _make_target(BT, V, ignore_frac=0.25)
+    loss = _apply(
+        _cutedsl_flce(),
+        x,
+        w,
+        target,
+        bias=bias,
+        ce_weight=ce_weight,
+        lse_square_scale=1e-4,
+        label_smoothing=0.1,
+        softcap=30.0,
+        use_token_scaling=True,
+    )[0]
+
+    def fail_if_recomputed(*_, **__):
+        pytest.fail("first native backward recomputed the forward")
+
+    monkeypatch.setattr(flce, "_native_forward", fail_if_recomputed)
+    loss.backward()
+
+
+@sm100_required
+def test_flce_repeated_backward_recomputes_full_feature_gradients():
+    """A retained graph may recompute once, and must preserve scalar scaling."""
+    set_seed()
+    BT, H, V = 256, 512, 4096
+    x = torch.randn(BT, H, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    w = torch.randn(V, H, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    bias = torch.randn(V, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    ce_weight = torch.rand(V, device="cuda", dtype=torch.float32) + 0.5
+    target = _make_target(BT, V, ignore_frac=0.25)
+    loss = _apply(
+        _cutedsl_flce(),
+        x,
+        w,
+        target,
+        bias=bias,
+        ce_weight=ce_weight,
+        lse_square_scale=1e-4,
+        label_smoothing=0.1,
+        softcap=30.0,
+        accum_dtype=torch.float32,
+        use_token_scaling=True,
+    )[0]
+    loss.backward(retain_graph=True)
+    first = (x.grad.clone(), w.grad.clone(), bias.grad.clone())
+    x.grad = None
+    w.grad = None
+    bias.grad = None
+    loss.backward(torch.tensor(2.0, device="cuda"), retain_graph=True)
+    for repeated, expected in zip((x.grad, w.grad, bias.grad), first, strict=True):
+        torch.testing.assert_close(repeated, expected * 2, rtol=0, atol=0)
+
+
 # =============================================================================
 # G. CuTe DSL-specific contracts and input validation.
 # =============================================================================

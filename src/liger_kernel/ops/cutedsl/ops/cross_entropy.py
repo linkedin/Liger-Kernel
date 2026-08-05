@@ -210,6 +210,7 @@ def _ce_fwd_kernel(
     softcap: Float32,  # logit soft-cap threshold; unused if not HAS_SOFTCAP
     label_smoothing: Float32,  # smoothing amount; unused if not HAS_SMOOTHING
     weight_sum: Float32,  # sum of the full weight vector; used only by weighted smoothing
+    logical_vocab_size: Int32,  # excludes aligned workspace padding from softmax/smoothing
     ignore_index: Int32,
     HAS_GRAD: cutlass.Constexpr,
     HAS_ZLOSS: cutlass.Constexpr,  # lse_square_scale != 0 or return_z_loss
@@ -219,6 +220,7 @@ def _ce_fwd_kernel(
     RETURN_PREDICTED_TOKENS: cutlass.Constexpr,  # write per-row argmax column to mPredTok
     HAS_WEIGHT: cutlass.Constexpr,  # scale loss/grad by per-class weight
     HAS_SMOOTHING: cutlass.Constexpr,  # label_smoothing != 0
+    HAS_PADDING: cutlass.Constexpr,  # physical V includes zero columns beyond logical_vocab_size
     NUM_WARPS: cutlass.Constexpr,  # warps/CTA cooperating on one row (8 for 2-byte, 32 for fp32)
 ):
     THREADS = const_expr(32 * NUM_WARPS)
@@ -272,10 +274,11 @@ def _ce_fwd_kernel(
     # label-smoothing per-class mass eps = label_smoothing / V (matches Triton).
     eps = Float32(0.0)
     if const_expr(HAS_SMOOTHING):
-        eps = label_smoothing / Float32(V)
+        eps = label_smoothing / Float32(logical_vocab_size)
 
     # 128-bit vectorization + cp.async pipeline. gXv: (VEC, V//VEC). 256 threads
-    # cooperate; each loads its 128-bit vector per tile. Tail predicated -> V % VEC.
+    # cooperate; each loads its 128-bit vector per tile. FLCE may align physical V
+    # upward; HAS_PADDING removes those zero columns from logical reductions.
     VEC = const_expr(128 // gX.element_type.width)
     gXv = cute.tiled_divide(gX, (VEC,))
     num_vec = V // VEC
@@ -336,9 +339,15 @@ def _ce_fwd_kernel(
                 base = r_vidx * VEC
                 for j in cutlass.range_constexpr(VEC):
                     xj = x_frag[j].to(Float32)
-                    if xj > t_am:
-                        t_am = xj
-                        t_acol = Float32(base + j)
+                    if const_expr(HAS_PADDING):
+                        if base + j < logical_vocab_size:
+                            if xj > t_am:
+                                t_am = xj
+                                t_acol = Float32(base + j)
+                    else:
+                        if xj > t_am:
+                            t_am = xj
+                            t_acol = Float32(base + j)
             x_ssa = x_frag.load().to(Float32)  # (VEC,) fp32 TensorSSA
             if const_expr(HAS_SOFTCAP):
                 x_ssa = softcap * cute.math.tanh(x_ssa / softcap)  # cap before max/sum
@@ -359,6 +368,10 @@ def _ce_fwd_kernel(
             neg_m2 = m_new * NEG_LOG2_E
             x_exp = cute.math.exp2(x_ssa * LOG2_E + neg_m2, fastmath=True)
             local_sum = x_exp.reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
+            if const_expr(HAS_PADDING):
+                if r_vidx == num_vec - 1:
+                    pad_count = V - logical_vocab_size
+                    local_sum = local_sum - Float32(pad_count) * cute.math.exp2(neg_m2, fastmath=True)
             d = d * cute.math.exp2((m - m_new) * LOG2_E, fastmath=True) + local_sum
             m = m_new
         read_stage = _advance(read_stage, _NUM_STAGES)
@@ -366,7 +379,6 @@ def _ce_fwd_kernel(
         r_vidx = r_vidx + THREADS
         w_vidx = w_vidx + THREADS
     cute.arch.cp_async_wait_group(0)  # drain remaining prefetches
-
     # warp-level reduce (collective: all 32 lanes) -> each lane has the warp's (m, d)
     m, d = _warp_online_combine(m, d)
     if const_expr(NEED_ARGMAX):
@@ -581,6 +593,7 @@ def _ce_fwd_host(
     softcap: Float32,
     label_smoothing: Float32,
     weight_sum: Float32,
+    logical_vocab_size: Int32,
     ignore_index: Int32,
     HAS_GRAD: cutlass.Constexpr,
     HAS_ZLOSS: cutlass.Constexpr,
@@ -590,6 +603,7 @@ def _ce_fwd_host(
     RETURN_PREDICTED_TOKENS: cutlass.Constexpr,
     HAS_WEIGHT: cutlass.Constexpr,
     HAS_SMOOTHING: cutlass.Constexpr,
+    HAS_PADDING: cutlass.Constexpr,
     NUM_WARPS: cutlass.Constexpr,
     stream: cuda.CUstream = None,
 ):
@@ -613,6 +627,7 @@ def _ce_fwd_host(
         softcap,
         label_smoothing,
         weight_sum,
+        logical_vocab_size,
         ignore_index,
         HAS_GRAD,
         HAS_ZLOSS,
@@ -622,6 +637,7 @@ def _ce_fwd_host(
         RETURN_PREDICTED_TOKENS,
         HAS_WEIGHT,
         HAS_SMOOTHING,
+        HAS_PADDING,
         NUM_WARPS,
     ).launch(
         grid=[BT, 1, 1],
@@ -650,11 +666,11 @@ def _launch_ce_fwd(
     token_acc_out=None,
     pred_tok_out=None,
     inv_n_z=None,
+    logical_vocab_size=None,
 ):
-    vec = 16 // x.element_size()  # 128-bit vectorization width: 8 bf16 / 4 fp32
-    assert x.shape[-1] % vec == 0, (
-        f"cutedsl CE needs V % {vec} == 0 for {x.dtype} (128-bit vectorized loads); "
-        f"got V={x.shape[-1]}. The 256-thread tail is predicated, so only V % VEC is required."
+    assert x.stride(0) * x.element_size() % 16 == 0, (
+        "cutedsl CE needs each row to start on a 16-byte boundary for vectorized loads; "
+        f"got row stride {x.stride(0)} for {x.dtype}."
     )
     # inv_n_z defaults to inv_n_loss: on the core / no-class-weight path the main loss and the
     # z_loss share one normalizer. Keeping inv_n_z a trailing keyword (not a 5th positional)
@@ -670,6 +686,10 @@ def _launch_ce_fwd(
     has_softcap = softcap is not None
     has_weight = weight is not None
     has_smoothing = bool(label_smoothing != 0.0)
+    logical_vocab_size = x.shape[-1] if logical_vocab_size is None else int(logical_vocab_size)
+    if not 0 < logical_vocab_size <= x.shape[-1]:
+        raise ValueError(f"logical_vocab_size must be in [1, {x.shape[-1]}], got {logical_vocab_size}.")
+    has_padding = logical_vocab_size != x.shape[-1]
     softcap_val = float(softcap) if has_softcap else 0.0
     x_ct = to_cute_tensor(x)
     y_ct = to_cute_tensor(y, assumed_align=8)  # int64
@@ -716,6 +736,7 @@ def _launch_ce_fwd(
         bool(return_predicted_tokens),
         has_weight,
         has_smoothing,
+        has_padding,
         num_warps,
     )
     if key not in _compile_cache:
@@ -734,6 +755,7 @@ def _launch_ce_fwd(
             float(softcap_val),
             float(label_smoothing),
             float(weight_sum),
+            logical_vocab_size,
             int(ignore_index),
             has_grad,
             has_zloss,
@@ -743,6 +765,7 @@ def _launch_ce_fwd(
             bool(return_predicted_tokens),
             has_weight,
             has_smoothing,
+            has_padding,
             num_warps,
             stream,
         )
@@ -761,6 +784,7 @@ def _launch_ce_fwd(
         float(softcap_val),
         float(label_smoothing),
         float(weight_sum),
+        logical_vocab_size,
         int(ignore_index),
         stream,
     )
