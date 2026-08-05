@@ -28,6 +28,8 @@ class LigerGEGLUMLPForGemma4(LigerGEGLUMLP):
     HF's Gemma4TextMLP conditionally doubles intermediate_size for KV-shared layers
     when ``config.use_double_wide_mlp=True``. This subclass replicates that logic
     so the class-level swap works for all Gemma 4 variants (31B text, future MoE).
+    Also swapped in for ``Gemma4UnifiedTextMLP`` (gemma4_unified), which is
+    implementation-identical including the double-wide handling.
 
     See: https://github.com/huggingface/transformers/blob/74a2a4d0c/src/transformers/models/gemma4/modeling_gemma4.py#L1030-L1035
     """
