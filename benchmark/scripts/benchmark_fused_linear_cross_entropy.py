@@ -47,6 +47,37 @@ class LigerLMHeadCE(torch.nn.Module):
         return self.ce_loss(self.lin.weight, x, y)
 
 
+class CuteDSLLMHeadCE(torch.nn.Module):
+    """CuTe DSL (Hopper-optimised) fused linear + cross-entropy loss."""
+
+    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
+        super().__init__()
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
+        self.ignore_index = ignore_index
+
+    def forward(self, x, y):
+        from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
+
+        loss, _, _, _ = LigerFusedLinearCrossEntropyFunction.apply(
+            x,
+            self.lin.weight,
+            y,
+            None,  # bias
+            None,  # ce_weight
+            self.ignore_index,
+            0.0,  # lse_square_scale
+            0.0,  # label_smoothing
+            "mean",  # reduction
+            None,  # softcap
+            False,  # return_z_loss
+            None,  # accum_dtype
+            False,  # use_token_scaling
+            False,  # return_token_accuracy
+            False,  # return_predicted_tokens
+        )
+        return loss
+
+
 def setup_fused_linear_cross_entropy(input: SingleBenchmarkRunInput):
     """Create input tensor, target, and fused linear CE from benchmark config."""
     cfg = input.extra_benchmark_config
@@ -69,6 +100,8 @@ def setup_fused_linear_cross_entropy(input: SingleBenchmarkRunInput):
         lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     elif input.kernel_provider == "liger-fp32-accum":
         lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    elif input.kernel_provider == "liger-cutedsl":
+        lm_head_ce = CuteDSLLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     else:
         lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     return _input, lambda _: lm_head_ce(_input, target)
@@ -109,7 +142,7 @@ if __name__ == "__main__":
             overwrite=args.overwrite,
         )
 
-    common_configs["kernel_providers"] = ["torch", "liger", "liger-fp32-accum"]
+    common_configs["kernel_providers"] = ["torch", "liger", "liger-fp32-accum", "liger-cutedsl"]
 
     run_benchmarks(
         bench_test_fn=build_speed_bench_fn(setup_fused_linear_cross_entropy),
