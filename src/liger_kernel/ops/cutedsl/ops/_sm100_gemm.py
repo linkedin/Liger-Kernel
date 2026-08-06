@@ -79,6 +79,8 @@ _NUM_ACC_STAGES = 2
 _NUM_OUT_STAGES = 2
 _NUM_TMEM_COLS = 512
 
+# Four epilogue warps plus one dedicated UMMA warp and one TMA warp: six total.
+# No warp is idle, so rounding the launch to eight would only consume resources.
 _EPILOGUE_WARPS = (0, 1, 2, 3)
 _MMA_WARP = 4
 _TMA_WARP = 5
@@ -899,6 +901,8 @@ def _run_epilogue_gemm(a, b, out, epilogue):
     compiled = _COMPILE_CACHE.get(key)
     if compiled is None:
         if _TVM_FFI_AVAILABLE:
+            # TVM-FFI is only the Python ABI used to pass torch tensors and the
+            # current stream directly; cute.compile still produces a CUDA kernel.
             m_a = _fake_matrix(a.dtype)
             m_b = _fake_matrix(b.dtype)
             m_out = _fake_dynamic_tensor(

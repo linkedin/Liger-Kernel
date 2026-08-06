@@ -180,7 +180,7 @@ def _native_forward(
     return loss, z_loss, token_accuracy, predicted_tokens, grad_input, grad_weight, grad_bias
 
 
-def _validate_inputs(_input, weight, target, bias, ce_weight, reduction):
+def _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index):
     if _input.ndim != 2 or weight.ndim != 2:
         raise ValueError(f"_input and weight must be 2D, got {_input.shape} and {weight.shape}.")
     if target.ndim != 1 or target.shape[0] != _input.shape[0]:
@@ -211,6 +211,12 @@ def _validate_inputs(_input, weight, target, bias, ce_weight, reduction):
             raise TypeError("ce_weight must be a floating-point tensor on the same device as _input.")
     if reduction not in ("mean", "sum", "none"):
         raise ValueError(f"reduction must be one of 'mean', 'sum', or 'none', got {reduction!r}.")
+    valid_targets = target[target != ignore_index]
+    if valid_targets.numel() > 0:
+        if valid_targets.max() >= weight.shape[0]:
+            raise AssertionError(f"Target out of bounds. Expected < {weight.shape[0]}")
+        if valid_targets.min() < 0:
+            raise AssertionError("Target out of bounds. Expected >= 0")
 
 
 def _native_sm100_supported(tensor):
@@ -225,69 +231,15 @@ class _FlceState:
         self.saved_tensors = tensors
 
 
-def _triton_forward(
-    ctx,
-    _input,
-    weight,
-    target,
-    bias,
-    ce_weight,
-    ignore_index,
-    lse_square_scale,
-    label_smoothing,
-    reduction,
-    softcap,
-    return_z_loss,
-    accum_dtype,
-    use_token_scaling,
-    return_token_accuracy,
-    return_predicted_tokens,
-    needs_grad,
-):
-    from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward as _triton_flce_fwd
-
-    defer_none = reduction == "none" and needs_grad
-    with torch.no_grad():
-        loss, z_out, acc_out, pred_out, gX, gW, gb = _triton_flce_fwd(
-            _input=_input,
-            weight=weight,
-            target=target,
-            ce_weight=ce_weight,
-            bias=bias,
-            ignore_index=ignore_index,
-            lse_square_scale=lse_square_scale,
-            label_smoothing=label_smoothing,
-            reduction=reduction,
-            softcap=softcap,
-            return_z_loss=return_z_loss,
-            accum_dtype=accum_dtype,
-            use_token_scaling=use_token_scaling,
-            return_token_accuracy=return_token_accuracy,
-            return_predicted_tokens=return_predicted_tokens,
-            compute_gradients=False if defer_none else needs_grad,
-            weight_requires_grad=weight.requires_grad,
-        )
-    if defer_none:
-        ctx._triton_deferred_none = True
-        ctx.save_for_backward(_input.detach(), weight.detach(), target)
-        ctx.triton_bias = bias.detach() if bias is not None else None
-        ctx.fwd_kwargs = {
-            "ce_weight": ce_weight,
-            "ignore_index": ignore_index,
-            "lse_square_scale": lse_square_scale,
-            "label_smoothing": label_smoothing,
-            "reduction": reduction,
-            "softcap": softcap,
-            "accum_dtype": accum_dtype,
-            "use_token_scaling": use_token_scaling,
-        }
-        ctx.weight_requires_grad = weight.requires_grad
-    else:
-        ctx._triton_delegated = True
-        ctx.grad_input = gX
-        ctx.grad_weight = gW
-        ctx.grad_bias = gb
-    return loss, z_out, acc_out, pred_out, ctx
+def supports_fused_linear_cross_entropy(_input, weight, bias, reduction):
+    needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
+    fully_trainable = _input.requires_grad and weight.requires_grad and (bias is None or bias.requires_grad)
+    return (
+        _native_sm100_supported(_input)
+        and _input.dtype in (torch.bfloat16, torch.float16)
+        and reduction != "none"
+        and (not needs_grad or fully_trainable)
+    )
 
 
 def fused_linear_cross_entropy_forward(
@@ -307,43 +259,15 @@ def fused_linear_cross_entropy_forward(
     return_token_accuracy=False,
     return_predicted_tokens=False,
 ):
-    """Run either the complete native SM100 path or the Triton fallback."""
+    """Run the native SM100 CuTe DSL path."""
     ctx = _FlceState()
-    _validate_inputs(_input, weight, target, bias, ce_weight, reduction)
+    _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index)
     needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
-    valid_targets = target[target != ignore_index]
-    if valid_targets.numel() > 0:
-        if valid_targets.max() >= weight.shape[0]:
-            raise AssertionError(f"Target out of bounds. Expected < {weight.shape[0]}")
-        if valid_targets.min() < 0:
-            raise AssertionError("Target out of bounds. Expected >= 0")
 
-    fully_trainable = _input.requires_grad and weight.requires_grad and (bias is None or bias.requires_grad)
-    use_triton = (
-        not _native_sm100_supported(_input)
-        or _input.dtype not in (torch.bfloat16, torch.float16)
-        or reduction == "none"
-        or (needs_grad and not fully_trainable)
-    )
-    if use_triton:
-        return _triton_forward(
-            ctx,
-            _input,
-            weight,
-            target,
-            bias,
-            ce_weight,
-            ignore_index,
-            lse_square_scale,
-            label_smoothing,
-            reduction,
-            softcap,
-            return_z_loss,
-            accum_dtype,
-            use_token_scaling,
-            return_token_accuracy,
-            return_predicted_tokens,
-            needs_grad,
+    if not supports_fused_linear_cross_entropy(_input, weight, bias, reduction):
+        raise RuntimeError(
+            "Native CuTe DSL FLCE requires exact SM100, FP16/BF16, mean/sum reduction, "
+            "and either no gradients or fully trainable input/weight/bias."
         )
 
     h_orig = None
@@ -407,56 +331,33 @@ def _scale_gradients(grads, grad_output, in_place):
 
 
 def _flce_backward(ctx, grad_output):
-    if getattr(ctx, "_native", False):
-        handoff = not ctx._native_gradients_consumed
-        if handoff:
-            grads = (ctx.grad_input, ctx.grad_weight, ctx.grad_bias)
-            ctx.grad_input = None
-            ctx.grad_weight = None
-            ctx.grad_bias = None
-            ctx._native_gradients_consumed = True
-        else:
-            if ctx._repeated_grad_input is None:
-                X, W, target = ctx.saved_tensors
-                _, _, _, _, gX, gW, gb = _native_forward(
-                    X,
-                    W,
-                    target,
-                    ctx.native_bias,
-                    ctx.native_ce_weight,
-                    needs_grad=True,
-                    **ctx.native_kwargs,
-                )
-                ctx._repeated_grad_input = gX
-                ctx._repeated_grad_weight = gW
-                ctx._repeated_grad_bias = gb
-            grads = (ctx._repeated_grad_input, ctx._repeated_grad_weight, ctx._repeated_grad_bias)
-        gX, gW, gb = _scale_gradients(grads, grad_output, in_place=handoff)
-        return (gX, gW, None, gb, None, None, None, None, None, None, None, None, None, None, None)
-
-    if getattr(ctx, "_triton_deferred_none", False):
-        from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward as _triton_flce_fwd
-
-        _input, weight, target = ctx.saved_tensors
-        _, _, _, _, gX, gW, gb = _triton_flce_fwd(
-            _input=_input,
-            weight=weight,
-            target=target,
-            bias=ctx.triton_bias,
-            token_grad_output=grad_output,
-            compute_gradients=True,
-            weight_requires_grad=ctx.weight_requires_grad,
-            **ctx.fwd_kwargs,
-        )
-        return (gX, gW, None, gb, None, None, None, None, None, None, None, None, None, None, None)
-
-    if getattr(ctx, "_triton_delegated", False):
-        from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_backward as _triton_flce_bwd
-
-        gX, gW, gb = _triton_flce_bwd(grad_output, ctx.grad_input, ctx.grad_weight, ctx.grad_bias)
-        return (gX, gW, None, gb, None, None, None, None, None, None, None, None, None, None, None)
-
-    raise RuntimeError("FLCE backward state is missing its native or Triton path marker.")
+    if not getattr(ctx, "_native", False):
+        raise RuntimeError("FLCE backward state is missing its native CuTe DSL marker.")
+    handoff = not ctx._native_gradients_consumed
+    if handoff:
+        grads = (ctx.grad_input, ctx.grad_weight, ctx.grad_bias)
+        ctx.grad_input = None
+        ctx.grad_weight = None
+        ctx.grad_bias = None
+        ctx._native_gradients_consumed = True
+    else:
+        if ctx._repeated_grad_input is None:
+            X, W, target = ctx.saved_tensors
+            _, _, _, _, gX, gW, gb = _native_forward(
+                X,
+                W,
+                target,
+                ctx.native_bias,
+                ctx.native_ce_weight,
+                needs_grad=True,
+                **ctx.native_kwargs,
+            )
+            ctx._repeated_grad_input = gX
+            ctx._repeated_grad_weight = gW
+            ctx._repeated_grad_bias = gb
+        grads = (ctx._repeated_grad_input, ctx._repeated_grad_weight, ctx._repeated_grad_bias)
+    gX, gW, gb = _scale_gradients(grads, grad_output, in_place=handoff)
+    return (gX, gW, None, gb, None, None, None, None, None, None, None, None, None, None, None)
 
 
 def fused_linear_cross_entropy_backward(ctx, grad_output):

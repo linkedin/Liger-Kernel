@@ -44,11 +44,9 @@ def set_seed(seed: int = 42):
 # Imports (skip — don't fail — when the optional backend isn't installed)
 # =============================================================================
 def _cutedsl_flce():
-    """The native CuTe DSL ``LigerFusedLinearCrossEntropyFunction`` under test, or skip if CUTLASS
-    is not installed. It implements the core path fast (mean/sum, 16-bit, SM100) and
-    routes unsupported cases (fp32, non-Blackwell, reduction="none", …) through Triton."""
+    """The CuTe DSL dispatcher under test, or skip if CUTLASS is not installed."""
     try:
-        from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
+        from liger_kernel.ops.cutedsl.ops import LigerFusedLinearCrossEntropyFunction
     except ImportError as exc:
         pytest.skip(f"cutedsl backend not importable (cutlass.cute missing?): {exc}")
     return LigerFusedLinearCrossEntropyFunction
@@ -945,7 +943,7 @@ def test_flce_all_features_matches_triton(dtype):
 @sm100_required
 def test_flce_all_native_features_use_one_path(monkeypatch):
     """Every feature supported on SM100 must stay on the single native path."""
-    import liger_kernel.ops.fused_linear_cross_entropy as triton_flce
+    import liger_kernel.ops.fused_linear_cross_entropy_cutedsl as dispatcher
 
     set_seed()
     BT, H, V = 256, 512, 4096
@@ -955,7 +953,7 @@ def test_flce_all_native_features_use_one_path(monkeypatch):
     def fail_if_delegated(**_):
         pytest.fail("native SM100 features delegated to Triton")
 
-    monkeypatch.setattr(triton_flce, "fused_linear_cross_entropy_forward", fail_if_delegated)
+    monkeypatch.setattr(dispatcher, "_triton_forward", fail_if_delegated)
     out = _run(
         _cutedsl_flce(),
         masters,
@@ -1214,6 +1212,20 @@ def test_flce_native_dispatch_requires_exact_sm100(monkeypatch):
     assert seen == [tensor.device]
 
 
+@cuda_required
+def test_flce_native_function_rejects_unsupported_inputs():
+    try:
+        from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import (
+            LigerFusedLinearCrossEntropyFunction as NativeFunction,
+        )
+    except ImportError as exc:
+        pytest.skip(f"cutedsl backend not importable: {exc}")
+
+    _input, weight, target = _basic_args(dtype=torch.float32)
+    with pytest.raises(RuntimeError, match="requires exact SM100"):
+        _apply(NativeFunction, _input, weight, target)
+
+
 def test_flce_native_gemm_guards_noncurrent_device(monkeypatch):
     try:
         import liger_kernel.ops.cutedsl.ops._sm100_gemm as gemm
@@ -1266,9 +1278,9 @@ def test_liger_kernel_impl_cutedsl_selects_cutedsl_flce():
             fused_linear_cross_entropy_forward,
         )
 
-        prefix = "liger_kernel.ops.cutedsl."
+        expected_module = "liger_kernel.ops.fused_linear_cross_entropy_cutedsl"
         mod = LigerFusedLinearCrossEntropyFunction.__module__
-        if not mod.startswith(prefix):
+        if mod != expected_module:
             # FLCE isn't exported by the cutedsl backend yet (only CE is). Signal SKIP (77)
             # so this documents the gap without being a false failure.
             print(f"FLCE not wired into cutedsl backend (module={mod}); skipping", file=sys.stderr)
