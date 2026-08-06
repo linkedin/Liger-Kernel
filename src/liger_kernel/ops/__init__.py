@@ -73,6 +73,12 @@ from liger_kernel.ops.modulated_rms_norm import LigerModulatedRMSNormFunction  #
 from liger_kernel.ops.modulated_rms_norm import modulated_rms_norm_backward  # noqa: F401
 from liger_kernel.ops.modulated_rms_norm import modulated_rms_norm_forward  # noqa: F401
 from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunction  # noqa: F401
+from liger_kernel.ops.nsa_compressed_attention import LigerNSACompressedAttentionFunction  # noqa: F401
+from liger_kernel.ops.nsa_compressed_attention import nsa_compressed_attention  # noqa: F401
+from liger_kernel.ops.nsa_selected_attention import LigerNSASelectedAttentionFunction  # noqa: F401
+from liger_kernel.ops.nsa_selected_attention import nsa_selected_attention  # noqa: F401
+from liger_kernel.ops.nsa_sliding_attention import LigerNSASlidingAttentionFunction  # noqa: F401
+from liger_kernel.ops.nsa_sliding_attention import nsa_sliding_attention  # noqa: F401
 from liger_kernel.ops.poly_norm import LigerPolyNormFunction  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_backward  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_forward  # noqa: F401
