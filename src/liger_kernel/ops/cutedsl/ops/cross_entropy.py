@@ -733,6 +733,7 @@ def _launch_ce_fwd(
         x.dtype,
         y.dtype,
         loss.dtype,
+        x.shape[-1],  # V (vocab) is baked as a static dim in the TVM-FFI compiled kernel
         has_grad,
         has_zloss,
         bool(return_z_loss),

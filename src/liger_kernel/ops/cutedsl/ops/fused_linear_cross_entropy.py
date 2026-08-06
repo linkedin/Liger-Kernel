@@ -26,6 +26,7 @@ reductions — Hopper-native async-copy hardware features.
 """
 
 import math
+import operator
 
 from typing import Optional
 
@@ -34,6 +35,7 @@ import torch
 from liger_kernel.ops.cutedsl.ops.cross_entropy import _launch_ce_fwd
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
+from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import element_mul_kernel
 
 # Maximum logit-tensor memory budget per chunk (bytes).
@@ -44,9 +46,38 @@ _HOPPER_CHUNK_BUDGET_BYTES = 2 * 1024**3  # 2 GB
 # Minimum GEMM M-dimension in tokens.  Below this cuBLAS cannot saturate tensor cores.
 _MIN_CHUNK_TOKENS = 512
 
+# torch.mm(bf16, bf16, out_dtype=fp32) fused path: available from torch 2.8.
+_SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
+
 # Cached CUDA streams (one pair per device) — avoids creating new Stream objects per call.
 _gemm_stream_cache: dict[int, torch.cuda.Stream] = {}
 _ce_stream_cache: dict[int, torch.cuda.Stream] = {}
+
+
+def _mm_out(out: torch.Tensor, lhs: torch.Tensor, rhs: torch.Tensor) -> None:
+    """torch.mm with dtype-aware dispatch.
+
+    When ``out`` is fp32 but ``lhs``/``rhs`` are bf16/fp16 (accum_dtype=float32 path),
+    use torch.mm's ``out_dtype`` parameter (torch ≥ 2.8) to fuse the upcast into the
+    GEMM rather than materialising a half-precision temp and adding separately.
+    Falls back to explicit upcast on older torch.
+    """
+    if out.dtype == lhs.dtype:
+        torch.mm(lhs, rhs, out=out)
+    elif _SUPPORTS_OUT_DTYPE:
+        torch.mm(lhs, rhs, out_dtype=out.dtype, out=out)
+    else:
+        torch.mm(lhs.float(), rhs.float(), out=out)
+
+
+def _addmm_out(out: torch.Tensor, lhs: torch.Tensor, rhs: torch.Tensor) -> None:
+    """torch.addmm(out, lhs, rhs, out=out) with dtype-aware dispatch (same as _mm_out)."""
+    if out.dtype == lhs.dtype:
+        torch.addmm(out, lhs, rhs, out=out)
+    elif _SUPPORTS_OUT_DTYPE:
+        torch.addmm(out, lhs, rhs, out_dtype=out.dtype, out=out)
+    else:
+        out += lhs.float() @ rhs.float()
 
 
 def _next_power_of_2(n: int) -> int:
@@ -106,15 +137,19 @@ def fused_linear_cross_entropy_forward(
     BT, H = _input.shape
     V = weight.shape[0]
 
-    # Validate vocab size divisibility (required by CuTe DSL CE kernel for 128-bit vectorised loads)
+    # Pad V to the CE kernel's 128-bit vector alignment when needed.
+    # logical_vocab_size=V tells the CE kernel to treat only the first V columns as valid,
+    # so any V works — not just multiples of vec.  The padding is zero-filled and contributes
+    # nothing to loss or gradients (softmax denominator is unaffected by logit=0 columns
+    # when all real logits are finite, which cuBLAS guarantees).
     vec = 16 // _input.element_size()  # 8 for bf16/fp16, 4 for fp32
-    assert V % vec == 0, f"cutedsl FLCE needs V % {vec} == 0 for {dtype} (128-bit vectorised loads); got V={V}."
+    storage_V = ((V + vec - 1) // vec) * vec  # round up to alignment boundary
 
     if _input.stride(-1) != 1:
         _input = _input.contiguous()
 
     # --- Hopper-tuned chunk size ---
-    chunk_size = _select_chunk_size(BT, V, dtype)
+    chunk_size = _select_chunk_size(BT, storage_V, dtype)
     num_chunks = math.ceil(BT / chunk_size)
 
     # --- Output / accumulation buffers ---
@@ -203,6 +238,10 @@ def fused_linear_cross_entropy_forward(
             logits_i = _input[start:end] @ weight.t()
             if bias is not None:
                 logits_i = logits_i + bias
+            # Pad to storage_V if needed so the CE kernel can do 128-bit vectorised loads.
+            # Padding columns are set to a very negative value so they never affect softmax.
+            if storage_V != V:
+                logits_i = torch.nn.functional.pad(logits_i, (0, storage_V - V), value=float("-inf"))
             logits_i = logits_i.contiguous()
             logits_chunks.append(logits_i)
             gemm_events[chunk_id].record(gemm_stream)
@@ -311,19 +350,23 @@ def fused_linear_cross_entropy_forward(
                 # Grad accumulation (logits_i now holds d(loss)/d(logits) after CE kernel)
                 if input_requires_grad:
                     # grad_input[start:end] = grad_logits @ weight
-                    torch.mm(logits_i, weight, out=grad_input[start:end])
+                    # _mm_out handles mixed dtypes (e.g. bf16 logits → fp32 grad_input).
+                    # Slice [:, :V] strips padding columns (they are ghost logits with -inf).
+                    _mm_out(grad_input[start:end], logits_i[:, :V], weight)
 
                 if grad_weight is not None:
                     # First chunk: direct write (grad_weight is empty, no need to addmm).
                     # Subsequent chunks: accumulate. Avoids torch.zeros(V,H) cost.
+                    # Slice [:, :V] strips padding columns from the grad_logits before mm.
+                    grad_logits_v = logits_i[:, :V]
                     if chunk_id == 0:
-                        torch.mm(logits_i.t(), input_chunk, out=grad_weight)
+                        _mm_out(grad_weight, grad_logits_v.t(), input_chunk)
                     else:
-                        torch.addmm(grad_weight, logits_i.t(), input_chunk, out=grad_weight)
+                        _addmm_out(grad_weight, grad_logits_v.t(), input_chunk)
 
                 if grad_bias is not None:
-                    # grad_bias += grad_logits.sum(dim=0)
-                    grad_bias.add_(logits_i.sum(dim=0))
+                    # grad_bias += grad_logits.sum(dim=0) — strip padding columns
+                    grad_bias.add_(logits_i[:, :V].sum(dim=0))
 
     # Sync back to main stream
     main_stream.wait_stream(ce_stream)
