@@ -1,4 +1,4 @@
-.PHONY: test checkstyle test-convergence all serve build clean
+.PHONY: test test-verbose checkstyle test-convergence test-cutedsl all serve build clean
 
 
 all: checkstyle test test-convergence
@@ -6,8 +6,23 @@ all: checkstyle test test-convergence
 # Command to run pytest for correctness tests
 test:
 	python -m pytest --disable-warnings \
+		--ignore=test/convergence \
+		--ignore=test/cutedsl \
+		test/
+
+# Command to run pytest for CuTe DSL kernel tests
+# Requires nvidia-cutlass-dsl: pip install -e '.[cutedsl]'
+test-cutedsl:
+	LIGER_KERNEL_IMPL=cutedsl python -m pytest --disable-warnings test/cutedsl/
+
+# Command to run pytest for correctness tests with coverage reporting and full test-duration breakdown
+test-verbose:
+	python -m pytest --disable-warnings \
 		--cov=src/liger_kernel \
 		--cov-report=term-missing \
+		--cov-report=html \
+		--cov-config=pyproject.toml \
+		--durations=0 \
 		--ignore=test/convergence \
 		test/
 

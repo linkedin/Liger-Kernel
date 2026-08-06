@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.utils import infer_device_arch
 
@@ -150,30 +151,32 @@ def swiglu_forward(a, b, gate_multiplier: float = 1.0):
         # Blackwell (B200), wide rows: column-tiled 2D grid for higher SM occupancy.
         BLOCK_SIZE, num_warps = _swiglu_tile_settings(n_cols)
         grid = (n_rows, triton.cdiv(n_cols, BLOCK_SIZE))
-        _swiglu_forward_kernel_tiled[grid](
+        with device_context(a.device):
+            _swiglu_forward_kernel_tiled[grid](
+                a,
+                b,
+                c,
+                c.stride(-2),
+                float(gate_multiplier),
+                n_cols,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
+            )
+        return a, b, c.view(*ori_shape)
+
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+
+    with device_context(a.device):
+        _swiglu_forward_kernel[(n_rows,)](
             a,
             b,
             c,
             c.stride(-2),
             float(gate_multiplier),
-            n_cols,
+            n_cols=n_cols,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
         )
-        return a, b, c.view(*ori_shape)
-
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-
-    _swiglu_forward_kernel[(n_rows,)](
-        a,
-        b,
-        c,
-        c.stride(-2),
-        float(gate_multiplier),
-        n_cols=n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
     return a, b, c.view(*ori_shape)
 
 
@@ -187,30 +190,32 @@ def swiglu_backward(a, b, dc, gate_multiplier: float = 1.0):
         # Blackwell (B200), wide rows: column-tiled 2D grid for higher SM occupancy.
         BLOCK_SIZE, num_warps = _swiglu_tile_settings(n_cols)
         grid = (n_rows, triton.cdiv(n_cols, BLOCK_SIZE))
-        _swiglu_backward_kernel_tiled[grid](
+        with device_context(a.device):
+            _swiglu_backward_kernel_tiled[grid](
+                dc,
+                a,
+                b,
+                dc.stride(-2),
+                float(gate_multiplier),
+                n_cols,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
+            )
+        return a.view(*ori_shape), b.view(*ori_shape)
+
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+
+    with device_context(a.device):
+        _swiglu_backward_kernel[(n_rows,)](
             dc,
             a,
             b,
             dc.stride(-2),
             float(gate_multiplier),
-            n_cols,
+            n_cols=n_cols,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
         )
-        return a.view(*ori_shape), b.view(*ori_shape)
-
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-
-    _swiglu_backward_kernel[(n_rows,)](
-        dc,
-        a,
-        b,
-        dc.stride(-2),
-        float(gate_multiplier),
-        n_cols=n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
     return a.view(*ori_shape), b.view(*ori_shape)
 
 
