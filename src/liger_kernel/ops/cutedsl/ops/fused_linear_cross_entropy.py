@@ -118,20 +118,25 @@ def fused_linear_cross_entropy_forward(
     num_chunks = math.ceil(BT / chunk_size)
 
     # --- Output / accumulation buffers ---
-    # loss_1d: fp32 regardless of input dtype (matches Triton FLCE; avoids precision loss)
-    loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
-    z_loss_1d = torch.zeros(BT, dtype=dtype, device=device) if return_z_loss else None
+    # loss_1d: fp32 regardless of input dtype (matches Triton FLCE; avoids precision loss).
+    # Use torch.empty — the CE kernel writes every element, no pre-zeroing needed.
+    loss_1d = torch.empty(BT, dtype=torch.float32, device=device)
+    z_loss_1d = torch.empty(BT, dtype=dtype, device=device) if return_z_loss else None
     token_accuracy_1d = torch.zeros(BT, dtype=torch.float32, device=device) if return_token_accuracy else None
     predicted_tokens_1d = torch.full((BT,), -1, dtype=torch.int64, device=device) if return_predicted_tokens else None
 
-    grad_input = torch.zeros_like(_input) if input_requires_grad else None
+    # grad_input: torch.empty is safe — CE kernel writes dlogits in-place, then mm writes
+    # every row of grad_input. Pre-zeroing wastes ~2.5 us for no benefit.
+    grad_input = torch.empty_like(_input) if input_requires_grad else None
+    grad_weight = None
+    grad_bias = None
     if input_requires_grad:
         accum_dt = accum_dtype if accum_dtype is not None else weight.dtype
-        grad_weight = torch.zeros_like(weight, dtype=accum_dt) if weight.requires_grad else None
+        # grad_weight: allocate empty — on the first chunk we use torch.mm(..., out=grad_weight)
+        # which writes every element directly (no accumulation). Subsequent chunks use addmm.
+        # This avoids the 52 us torch.zeros(V, H, fp32) cost on every forward call.
+        grad_weight = torch.empty(weight.shape, dtype=accum_dt, device=device) if weight.requires_grad else None
         grad_bias = torch.zeros_like(bias, dtype=accum_dt) if (bias is not None and bias.requires_grad) else None
-    else:
-        grad_weight = None
-        grad_bias = None
 
     # --- Pre-compute ignore-index statistics (single D2H sync) ---
     target_mask = target != ignore_index
@@ -169,21 +174,7 @@ def fused_linear_cross_entropy_forward(
         inv_n_loss = 1.0
         inv_n_z = 1.0
 
-    # --- Two-stream GEMM / CE overlap ---
-    # Strategy: GEMM for chunk i+1 overlaps with CE + grad-accum for chunk i.
-    # Synchronisation: explicit cuda Events so each stream waits only for the precise
-    # dependency it needs (not all prior work on the other stream).
-    #
-    # gemm_stream: cuBLAS GEMM workloads (tensor-core pipeline)
-    # ce_stream:   CuTe DSL CE kernel + grad accumulation (cp.async pipeline)
-    #
-    # Timeline for 3 chunks:
-    #   gemm_stream:  GEMM_0 [ev0] GEMM_1 [ev1] GEMM_2 [ev2]
-    #   ce_stream:    {wait ev0} CE_0 GRAD_0 {wait ev1} CE_1 GRAD_1 {wait ev2} CE_2 GRAD_2
-    #
-    # CE_0 overlaps with GEMM_1; CE_1 overlaps with GEMM_2, etc.
-    # grad_weight accumulation (GRAD_0, GRAD_1, ...) is serialised on ce_stream → no race.
-    #
+    # --- Streams ---
     # Streams are cached per-device to avoid per-call Stream object creation overhead.
     dev_idx = device.index if isinstance(device, torch.device) else torch.cuda.current_device()
     if dev_idx not in _gemm_stream_cache:
@@ -200,8 +191,10 @@ def fused_linear_cross_entropy_forward(
     # Allocate one Event per chunk (records right after each chunk's GEMM)
     gemm_events = [torch.cuda.Event() for _ in range(num_chunks)]
 
-    # Queue ALL GEMMs onto gemm_stream immediately — the CPU-side loop is fast and
-    # the GPU executes them sequentially on gemm_stream while ce_stream overlaps.
+    # --- Queue ALL GEMMs FIRST ---
+    # This lets the GPU start computing logits immediately while the host does the
+    # D2H ignore-index sync below (~44 us stall), hiding it behind GPU GEMM execution.
+    # For BT>=128 on LLaMA-3 (V=128256), GEMM takes >100 us so the stall is fully hidden.
     logits_chunks: list[torch.Tensor] = []
     with torch.no_grad(), torch.cuda.stream(gemm_stream):
         for chunk_id in range(num_chunks):
@@ -214,7 +207,46 @@ def fused_linear_cross_entropy_forward(
             logits_chunks.append(logits_i)
             gemm_events[chunk_id].record(gemm_stream)
 
-    # Now queue CE + grad-accum on ce_stream, waiting for each chunk's GEMM event.
+    # --- D2H sync: ignore-index statistics (now hidden behind running GEMMs) ---
+    has_weight = ce_weight is not None
+    target_mask = target != ignore_index
+    _mt = target * target_mask
+    _stats = torch.stack((target_mask.sum(), _mt.max(), _mt.min())).tolist()
+    total_n_non_ignore = int(_stats[0])
+    assert _stats[1] < V, f"Target out of bounds. Expected < {V}"
+    assert _stats[2] >= 0, "Target out of bounds. Expected >= 0"
+
+    # Class-weight setup (fp32 upcast, single sum D2H sync)
+    ce_weight_fp32 = None
+    ce_weight_sum = 0.0
+    sum_non_ignore_ce_weight = float(total_n_non_ignore)
+    if has_weight:
+        assert ce_weight.shape[0] == V
+        assert torch.is_floating_point(ce_weight), f"ce_weight must be floating point; got {ce_weight.dtype}"
+        ce_weight_fp32 = ce_weight.to(torch.float32)
+        if ce_weight_fp32.stride(-1) != 1:
+            ce_weight_fp32 = ce_weight_fp32.contiguous()
+        if total_n_non_ignore > 0:
+            sum_non_ignore_ce_weight = torch.gather(ce_weight_fp32, 0, target.masked_select(target_mask)).sum().item()
+        else:
+            sum_non_ignore_ce_weight = 1.0
+        ce_weight_sum = ce_weight_fp32.sum().item()
+
+    # Global loss / z_loss normalizers (passed to CE kernel; applied per-row in-kernel)
+    if reduction == "mean" and total_n_non_ignore > 0:
+        if has_weight and sum_non_ignore_ce_weight > 0:
+            inv_n_loss = 1.0 / sum_non_ignore_ce_weight
+        else:
+            inv_n_loss = 1.0 / total_n_non_ignore
+        inv_n_z = 1.0 / total_n_non_ignore
+    else:
+        inv_n_loss = 1.0
+        inv_n_z = 1.0
+
+    # --- Two-stream GEMM / CE overlap ---
+    # gemm_stream:  [GEMM_0 ev0] [GEMM_1 ev1] ...  (all already queued above)
+    # ce_stream:    {wait ev0} CE_0 GRAD_0 {wait ev1} CE_1 GRAD_1 ...
+    # D2H sync above hidden behind GEMM_0.
     with torch.no_grad():
         for chunk_id in range(num_chunks):
             start = chunk_id * chunk_size
@@ -282,8 +314,12 @@ def fused_linear_cross_entropy_forward(
                     torch.mm(logits_i, weight, out=grad_input[start:end])
 
                 if grad_weight is not None:
-                    # grad_weight += grad_logits.T @ input_chunk
-                    torch.addmm(grad_weight, logits_i.t(), input_chunk, out=grad_weight)
+                    # First chunk: direct write (grad_weight is empty, no need to addmm).
+                    # Subsequent chunks: accumulate. Avoids torch.zeros(V,H) cost.
+                    if chunk_id == 0:
+                        torch.mm(logits_i.t(), input_chunk, out=grad_weight)
+                    else:
+                        torch.addmm(grad_weight, logits_i.t(), input_chunk, out=grad_weight)
 
                 if grad_bias is not None:
                     # grad_bias += grad_logits.sum(dim=0)

@@ -1,3 +1,4 @@
+import ctypes
 import inspect
 
 from typing import Optional
@@ -16,9 +17,18 @@ from cutlass.cute.nvgpu import cpasync
 from cutlass.cutlass_dsl import T
 from cutlass.cutlass_dsl import dsl_user_op
 
+from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device_arch
+
+try:
+    import tvm_ffi as _tvm_ffi  # noqa: F401
+
+    _TVM_FFI_AVAILABLE = True
+except ImportError:
+    _TVM_FFI_AVAILABLE = False
 
 # log2(e) and ln(2): the online-softmax math is done in base-2 (hardware ex2.approx)
 # then converted, exactly mirroring the Triton kernel for numerical parity.
@@ -72,12 +82,42 @@ _NUM_STAGES = 4
 # kernel bakes. V/BT are dynamic so one compile serves all shapes. REQUIRED: without it the
 # @cute.jit host fn recompiles on every call (~30 ms that dwarfs the kernel).
 _compile_cache = {}
+# TVM-FFI fast-path cache: same key as _compile_cache but compiled with --enable-tvm-ffi so
+# PyTorch tensors are passed directly (no from_dlpack). ~26 us -> ~4 us per launch.
+_tvm_ffi_compile_cache = {}
 _scale_compile_cache = {}
 
 # Per-call host overhead is constant (~25 us): it doesn't scale with BT/V, so it dominates small
 # shapes and vanishes at scale. Cache the CUstream wrapper keyed on torch's raw stream handle so
 # we don't reconstruct the cuda.CUstream object every launch (general — no shape dependence).
 _stream_cache = {}
+
+# Pointer-swap cache for CuTe tensor handles: build the memref descriptor once per
+# (shape, stride, dtype, align) and overwrite the data pointer field on the hot path.
+# Costs ~0.1 us vs ~6.5 us for a fresh from_dlpack.  Keyed by (slot, shape, stride, dtype).
+_handle_cache: dict = {}
+
+
+def _cute_handle(t: torch.Tensor, slot: int, assumed_align: int = 16):
+    """Return a cached cute.Tensor handle with its data pointer updated to t.data_ptr()."""
+    if t.storage_offset() != 0 or not t.is_contiguous():
+        return to_cute_tensor(t, assumed_align=assumed_align)
+    key = (slot, tuple(t.shape), tuple(t.stride()), t.dtype, t.device.index, assumed_align)
+    entry = _handle_cache.get(key)
+    if entry is None:
+        h = to_cute_tensor(t, assumed_align=assumed_align)
+        ptr = h.__c_pointers__()[0]
+        # Drop references to the source DLPack capsule — the descriptor is cached.
+        h._dlpack_data = None
+        h._dltensor_wrapper = None
+        if len(_handle_cache) > 64:
+            _handle_cache.clear()
+        field0 = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_int64))
+        entry = (h, field0)
+        _handle_cache[key] = entry
+    h, field0 = entry
+    field0[0] = t.data_ptr()
+    return h
 
 
 def _cute_stream():
@@ -671,27 +711,6 @@ def _launch_ce_fwd(
     has_weight = weight is not None
     has_smoothing = bool(label_smoothing != 0.0)
     softcap_val = float(softcap) if has_softcap else 0.0
-    x_ct = to_cute_tensor(x)
-    y_ct = to_cute_tensor(y, assumed_align=8)  # int64
-    loss_ct = to_cute_tensor(loss, assumed_align=2)  # bf16/fp16/fp32 scalar
-    stream = _cute_stream()
-    # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
-    #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
-    #   `loss.to(mLoss.element_type)`). Missing loss.dtype let two callers with the
-    #   same (x.dtype, has_grad) but different loss-buffer widths reuse each other's
-    #   kernel and write wrong-width values into the loss buffer — e.g. CE (loss =
-    #   input dtype) vs FLCE (loss = fp32) collided on bf16.
-    # When an optional output isn't requested, pass a same-shape dummy
-    # of any dtype (mZLoss reuses `loss`; mTokenAcc reuses `loss`; mPredTok reuses the
-    # int64 target `y`) — the kernel never touches it because its RETURN_* flag bakes
-    # False, and the compile key carries that flag so a real-output compile can't reuse it.
-    # Reuse the already-marshalled loss_ct/y_ct handles for the dummies (no extra from_dlpack
-    # on the common path — one fewer DLPack capsule per call).
-    z_ct = to_cute_tensor(z_loss_out, assumed_align=2) if return_z_loss else loss_ct
-    ta_ct = to_cute_tensor(token_acc_out, assumed_align=4) if return_token_accuracy else loss_ct
-    pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
-    # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.
-    w_ct = to_cute_tensor(weight, assumed_align=4) if has_weight else y_ct
     # warps/CTA: mirror the Triton CE convention exactly (arch- and dtype-dependent):
     #   Blackwell (B200, sm_100+) bf16/fp16 -> 8 (instruction-issue-bound); fp32 -> 32
     #   Hopper (H100, sm_90) and earlier    -> 32 for all dtypes (bandwidth-bound)
@@ -704,6 +723,12 @@ def _launch_ce_fwd(
     else:
         is_blackwell = infer_device_arch().startswith("blackwell")
         num_warps = 8 if (x.element_size() == 2 and is_blackwell) else 32
+    # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
+    #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
+    #   `loss.to(mLoss.element_type)`). Missing loss.dtype let two callers with the
+    #   same (x.dtype, has_grad) but different loss-buffer widths reuse each other's
+    #   kernel and write wrong-width values into the loss buffer — e.g. CE (loss =
+    #   input dtype) vs FLCE (loss = fp32) collided on bf16.
     key = (
         x.dtype,
         y.dtype,
@@ -718,6 +743,85 @@ def _launch_ce_fwd(
         has_smoothing,
         num_warps,
     )
+    stream = _cute_stream()
+
+    # --- TVM-FFI fast path ---
+    # When available, compile against abstract (sym_int) fake tensors with --enable-tvm-ffi
+    # so the hot-path invocation passes raw PyTorch tensors directly — no from_dlpack /
+    # memref-construction overhead (~26 us -> ~4 us per launch).  Disabled for optional
+    # outputs (rare paths) and class-weight (rare) to keep the common-case fast path simple.
+    use_tvm_ffi = (
+        _TVM_FFI_AVAILABLE
+        and not return_z_loss
+        and not return_token_accuracy
+        and not return_predicted_tokens
+        and not has_weight
+    )
+
+    if use_tvm_ffi:
+        if key not in _tvm_ffi_compile_cache:
+            x_dtype = torch2cute_dtype_map[x.dtype]
+            loss_dtype = torch2cute_dtype_map[loss.dtype]
+            V = x.shape[-1]
+            # Dynamic BT (sym_int), static V (baked for vectorization).
+            x_fake = make_fake_tensor(x_dtype, (cute.sym_int(), V), vec)
+            y_fake = make_fake_tensor(torch2cute_dtype_map[torch.int64], (cute.sym_int(),), 1)
+            loss_fake = make_fake_tensor(loss_dtype, (cute.sym_int(),), 1)
+            fake_stream = cute.runtime.make_fake_stream()
+            _tvm_ffi_compile_cache[key] = cute.compile(
+                _ce_fwd_host,
+                x_fake,
+                y_fake,
+                loss_fake,
+                loss_fake,   # z_loss dummy (RETURN_Z_LOSS=False)
+                loss_fake,   # token_acc dummy (RETURN_TOKEN_ACCURACY=False)
+                y_fake,      # pred_tok dummy (RETURN_PREDICTED_TOKENS=False)
+                y_fake,      # weight dummy (HAS_WEIGHT=False)
+                float(inv_n_loss),
+                float(inv_n_z),
+                float(lse_sq_scale),
+                float(softcap_val),
+                float(label_smoothing),
+                float(weight_sum),
+                int(ignore_index),
+                has_grad,
+                has_zloss,
+                False,   # return_z_loss
+                has_softcap,
+                False,   # return_token_accuracy
+                False,   # return_predicted_tokens
+                False,   # has_weight
+                has_smoothing,
+                num_warps,
+                fake_stream,
+                options="--enable-tvm-ffi",
+            )
+        _tvm_ffi_compile_cache[key](
+            x, y, loss, loss, loss, y, y,
+            float(inv_n_loss),
+            float(inv_n_z),
+            float(lse_sq_scale),
+            float(softcap_val),
+            float(label_smoothing),
+            float(weight_sum),
+            int(ignore_index),
+            stream,
+        )
+        return
+
+    # --- Pointer-swap handle path (fallback when TVM-FFI unavailable or optional outputs active) ---
+    # Build CuTe tensor handles once per (shape, stride, dtype), then overwrite the data
+    # pointer field in ~0.1 us instead of a full from_dlpack (~6.5 us each).
+    x_ct = _cute_handle(x, slot=0)
+    y_ct = _cute_handle(y, slot=1, assumed_align=8)
+    loss_ct = _cute_handle(loss, slot=2, assumed_align=2)
+    # When an optional output isn't requested, pass a same-shape dummy so the kernel's
+    # RETURN_* flag (baked False) keeps it from writing anything.
+    z_ct = _cute_handle(z_loss_out, slot=3, assumed_align=2) if return_z_loss else loss_ct
+    ta_ct = _cute_handle(token_acc_out, slot=4, assumed_align=4) if return_token_accuracy else loss_ct
+    pt_ct = _cute_handle(pred_tok_out, slot=5, assumed_align=8) if return_predicted_tokens else y_ct
+    w_ct = _cute_handle(weight, slot=6, assumed_align=4) if has_weight else y_ct
+
     if key not in _compile_cache:
         _compile_cache[key] = cute.compile(
             _ce_fwd_host,
@@ -746,7 +850,6 @@ def _launch_ce_fwd(
             num_warps,
             stream,
         )
-    # The constexpr flags are baked at compile; pass runtime tensors/scalars/stream only.
     _compile_cache[key](
         x_ct,
         y_ct,
