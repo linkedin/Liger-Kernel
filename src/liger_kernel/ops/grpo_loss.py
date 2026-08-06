@@ -1002,3 +1002,18 @@ class GrpoLossFunction(torch.autograd.Function):
             None,  # num_items_in_batch
             None,  # phi_seq
         )
+
+
+def fused_linear_selective_logprob(_input, weight, target, bias=None, temperature=1.0):
+    """Default memory-efficient selected-token log probabilities."""
+    from liger_kernel.chunked_loss.fused_linear_ppo import _SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE
+    from liger_kernel.chunked_loss.fused_linear_ppo import _ChunkedSelectiveLogProbFunction
+
+    return _ChunkedSelectiveLogProbFunction.apply(
+        _input,
+        weight,
+        target,
+        bias,
+        temperature,
+        _SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE,
+    )

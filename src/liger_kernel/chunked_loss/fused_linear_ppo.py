@@ -528,19 +528,21 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
     def chunk_forward(input_chunk, weight, selected_token_ids, bias=None, temperature=1.0):
         """Compute selected-token log probabilities without materializing full vocab logits.
 
-        Uses _ChunkedSelectiveLogProbFunction for memory-efficient custom backward
-        (recomputes logits per vocab chunk instead of storing all intermediates).
+        Uses the native SM100 CuTe DSL path when explicitly selected and supported.
+        Otherwise, _ChunkedSelectiveLogProbFunction recomputes logits per vocab
+        chunk instead of storing all intermediates.
         """
         batch_size, seq_len, hidden_size = input_chunk.shape
         hidden = input_chunk.reshape(batch_size * seq_len, hidden_size).contiguous()
         targets = selected_token_ids.reshape(batch_size * seq_len).contiguous()
-        per_token_logps = _ChunkedSelectiveLogProbFunction.apply(
+        from liger_kernel.ops import fused_linear_selective_logprob
+
+        per_token_logps = fused_linear_selective_logprob(
             hidden,
             weight,
             targets,
             bias,
             temperature,
-            _SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE,
         )
         return per_token_logps.reshape(batch_size, seq_len)
 
