@@ -1,5 +1,9 @@
+import tempfile
+
 import pytest
 import torch
+import torch.multiprocessing as mp
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from test.utils import supports_bfloat16
 from transformers.models.llama.configuration_llama import LlamaConfig
@@ -195,3 +199,147 @@ def test_tiled_swiglu_correctness(
         )
 
     torch.testing.assert_close(x1.grad, x2.grad, atol=atol, rtol=rtol, msg="Input gradients don't match")
+
+
+class _TorchSwiGLUMLP(torch.nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.gate_proj = torch.nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.up_proj = torch.nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.down_proj = torch.nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+
+    def forward(self, x):
+        return self.down_proj(torch.nn.functional.silu(self.gate_proj(x)) * self.up_proj(x))
+
+
+class _TorchGEGLUMLP(torch.nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.gate_proj = torch.nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.up_proj = torch.nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.down_proj = torch.nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+
+    def forward(self, x):
+        return self.down_proj(
+            torch.nn.functional.gelu(self.gate_proj(x), approximate="tanh") * self.up_proj(x)
+        )
+
+
+def _test_fsdp_tiled_vs_torch(
+    rank,
+    world_size,
+    bsz,
+    seq_len,
+    hidden_size,
+    intermediate_size,
+    num_shards,
+    activation,
+    dtype,
+    atol,
+    rtol,
+    file_name,
+):
+    torch.distributed.init_process_group(
+        backend="nccl",
+        init_method=f"file://{file_name}",
+        rank=rank,
+        world_size=world_size,
+    )
+    torch.cuda.set_device(rank)
+    device = f"cuda:{rank}"
+
+    if activation == "swiglu":
+        config = LlamaConfig(hidden_size=hidden_size, intermediate_size=intermediate_size, hidden_act="silu")
+        tiled_cls = LigerTiledSwiGLUMLP
+        torch_cls = _TorchSwiGLUMLP
+    else:
+        config = LlamaConfig(
+            hidden_size=hidden_size,
+            intermediate_size=intermediate_size,
+            hidden_act="gelu_pytorch_tanh",
+        )
+        tiled_cls = LigerTiledGEGLUMLP
+        torch_cls = _TorchGEGLUMLP
+
+    torch.manual_seed(42)
+    G = torch.randn(intermediate_size, hidden_size, device=device, dtype=dtype)
+    U = torch.randn(intermediate_size, hidden_size, device=device, dtype=dtype)
+    D = torch.randn(hidden_size, intermediate_size, device=device, dtype=dtype)
+    for t in (G, U, D):
+        torch.distributed.broadcast(t, src=0)
+
+    tiled_model = tiled_cls(config=config, num_shards=num_shards).to(device).to(dtype)
+    tiled_model.gate_proj.weight.data = G.clone()
+    tiled_model.up_proj.weight.data = U.clone()
+    tiled_model.down_proj.weight.data = D.clone()
+    tiled_model = FSDP(tiled_model, use_orig_params=True)
+
+    torch_model = torch_cls(config=config).to(device).to(dtype)
+    torch_model.gate_proj.weight.data = G.clone()
+    torch_model.up_proj.weight.data = U.clone()
+    torch_model.down_proj.weight.data = D.clone()
+    torch_model = FSDP(torch_model, use_orig_params=True)
+
+    torch.manual_seed(123)
+    x = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype) * 0.1
+    x_tiled = x.clone().requires_grad_(True)
+    x_ref = x.clone().requires_grad_(True)
+
+    out_tiled = tiled_model(x_tiled)
+    out_ref = torch_model(x_ref)
+    torch.testing.assert_close(
+        out_tiled, out_ref, atol=atol, rtol=rtol, msg=f"Rank {rank}: forward outputs don't match"
+    )
+
+    out_tiled.sum().backward()
+    out_ref.sum().backward()
+    torch.testing.assert_close(
+        x_tiled.grad, x_ref.grad, atol=atol, rtol=rtol, msg=f"Rank {rank}: input gradients don't match"
+    )
+
+    with FSDP.summon_full_params(tiled_model, with_grads=True), FSDP.summon_full_params(
+        torch_model, with_grads=True
+    ):
+        for i, (p_tiled, p_ref) in enumerate(zip(tiled_model.parameters(), torch_model.parameters())):
+            if p_tiled.grad is not None and p_ref.grad is not None:
+                torch.testing.assert_close(
+                    p_tiled.grad,
+                    p_ref.grad,
+                    atol=atol,
+                    rtol=rtol,
+                    msg=f"Rank {rank}: parameter {i} gradients don't match",
+                )
+
+    torch.distributed.destroy_process_group()
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires at least 2 GPUs")
+@pytest.mark.parametrize("world_size", [ws for ws in [2, 4, 8] if ws <= torch.cuda.device_count()])
+@pytest.mark.parametrize("num_shards", [2, 4])
+@pytest.mark.parametrize("activation", ["swiglu", "geglu"])
+@pytest.mark.parametrize(
+    "bsz, seq_len, hidden_size, intermediate_size",
+    [(2, 512, 128, 256)],
+)
+def test_fsdp_tiled_mlp_matches_torch(world_size, num_shards, activation, bsz, seq_len, hidden_size, intermediate_size):
+    """TiledMLP + FSDP should match a torch MLP baseline on forward and all gradients."""
+    atol, rtol = 1e-3, 1e-3
+    with tempfile.NamedTemporaryFile() as f:
+        mp.spawn(
+            _test_fsdp_tiled_vs_torch,
+            args=(
+                world_size,
+                bsz,
+                seq_len,
+                hidden_size,
+                intermediate_size,
+                num_shards,
+                activation,
+                torch.float32,
+                atol,
+                rtol,
+                f.name,
+            ),
+            nprocs=world_size,
+            join=True,
+        )
