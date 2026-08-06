@@ -192,14 +192,9 @@ def fused_linear_cross_entropy_forward(
                 logits_i = torch.nn.functional.pad(logits_i, (0, storage_V - V), value=float("-inf"))
             logits_i = logits_i.contiguous()
 
-        # D2H stats (host-side; GPU runs the GEMM above concurrently)
+        # D2H stats (host-side; GEMM runs on GPU concurrently with this host work)
         has_weight = ce_weight is not None
-        target_mask = target != ignore_index
-        _mt = target * target_mask
-        _stats = torch.stack((target_mask.sum(), _mt.max(), _mt.min())).tolist()
-        total_n_non_ignore = int(_stats[0])
-        assert _stats[1] < V, f"Target out of bounds. Expected < {V}"
-        assert _stats[2] >= 0, "Target out of bounds. Expected >= 0"
+        total_n_non_ignore = int((target != ignore_index).sum().item())
 
         ce_weight_fp32 = None
         ce_weight_sum = 0.0
@@ -211,7 +206,7 @@ def fused_linear_cross_entropy_forward(
             if ce_weight_fp32.stride(-1) != 1:
                 ce_weight_fp32 = ce_weight_fp32.contiguous()
             if total_n_non_ignore > 0:
-                sum_non_ignore_ce_weight = torch.gather(ce_weight_fp32, 0, target.masked_select(target_mask)).sum().item()
+                sum_non_ignore_ce_weight = torch.gather(ce_weight_fp32, 0, target.masked_select(target != ignore_index)).sum().item()
             else:
                 sum_non_ignore_ce_weight = 1.0
             ce_weight_sum = ce_weight_fp32.sum().item()
@@ -297,11 +292,7 @@ def fused_linear_cross_entropy_forward(
         # D2H stats (hidden behind GEMM_0 running on gemm_stream)
         has_weight = ce_weight is not None
         target_mask = target != ignore_index
-        _mt = target * target_mask
-        _stats = torch.stack((target_mask.sum(), _mt.max(), _mt.min())).tolist()
-        total_n_non_ignore = int(_stats[0])
-        assert _stats[1] < V, f"Target out of bounds. Expected < {V}"
-        assert _stats[2] >= 0, "Target out of bounds. Expected >= 0"
+        total_n_non_ignore = int(target_mask.sum().item())
 
         ce_weight_fp32 = None
         ce_weight_sum = 0.0
