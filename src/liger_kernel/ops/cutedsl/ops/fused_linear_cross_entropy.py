@@ -173,204 +173,220 @@ def fused_linear_cross_entropy_forward(
         grad_weight = torch.empty(weight.shape, dtype=accum_dt, device=device) if weight.requires_grad else None
         grad_bias = torch.zeros_like(bias, dtype=accum_dt) if (bias is not None and bias.requires_grad) else None
 
-    # --- Pre-compute ignore-index statistics (single D2H sync) ---
-    target_mask = target != ignore_index
-    _mt = target * target_mask
-    _stats = torch.stack((target_mask.sum(), _mt.max(), _mt.min())).tolist()
-    total_n_non_ignore = int(_stats[0])
-    assert _stats[1] < V, f"Target out of bounds. Expected < {V}"
-    assert _stats[2] >= 0, "Target out of bounds. Expected >= 0"
+    # total_n_non_ignore is needed for the final token_accuracy reduction.
+    # Each code path below computes it via its own D2H sync; initialize to 0 here
+    # so the final reduction block always has a defined value regardless of path taken.
+    total_n_non_ignore = 0
 
-    # Class-weight setup (fp32 upcast, single sum D2H sync)
-    has_weight = ce_weight is not None
-    ce_weight_fp32 = None
-    ce_weight_sum = 0.0
-    sum_non_ignore_ce_weight = float(total_n_non_ignore)
-    if has_weight:
-        assert ce_weight.shape[0] == V
-        assert torch.is_floating_point(ce_weight), f"ce_weight must be floating point; got {ce_weight.dtype}"
-        ce_weight_fp32 = ce_weight.to(torch.float32)
-        if ce_weight_fp32.stride(-1) != 1:
-            ce_weight_fp32 = ce_weight_fp32.contiguous()
-        if total_n_non_ignore > 0:
-            sum_non_ignore_ce_weight = torch.gather(ce_weight_fp32, 0, target.masked_select(target_mask)).sum().item()
-        else:
-            sum_non_ignore_ce_weight = 1.0
-        ce_weight_sum = ce_weight_fp32.sum().item()
-
-    # Global loss / z_loss normalizers (passed to CE kernel; applied per-row in-kernel)
-    if reduction == "mean" and total_n_non_ignore > 0:
-        if has_weight and sum_non_ignore_ce_weight > 0:
-            inv_n_loss = 1.0 / sum_non_ignore_ce_weight
-        else:
-            inv_n_loss = 1.0 / total_n_non_ignore
-        inv_n_z = 1.0 / total_n_non_ignore
-    else:
-        inv_n_loss = 1.0
-        inv_n_z = 1.0
-
-    # --- Streams ---
-    # Streams are cached per-device to avoid per-call Stream object creation overhead.
-    dev_idx = device.index if isinstance(device, torch.device) else torch.cuda.current_device()
-    if dev_idx not in _gemm_stream_cache:
-        _gemm_stream_cache[dev_idx] = torch.cuda.Stream(device=device)
-        _ce_stream_cache[dev_idx] = torch.cuda.Stream(device=device)
-    gemm_stream = _gemm_stream_cache[dev_idx]
-    ce_stream = _ce_stream_cache[dev_idx]
-    main_stream = torch.cuda.current_stream(device)
-
-    # Both streams must wait for the main-stream work that produced _input / weight
-    # (e.g. the optimizer step) before they start their own work.
-    gemm_stream.wait_stream(main_stream)
-
-    # Allocate one Event per chunk (records right after each chunk's GEMM)
-    gemm_events = [torch.cuda.Event() for _ in range(num_chunks)]
-
-    # --- Queue ALL GEMMs FIRST ---
-    # This lets the GPU start computing logits immediately while the host does the
-    # D2H ignore-index sync below (~44 us stall), hiding it behind GPU GEMM execution.
-    # For BT>=128 on LLaMA-3 (V=128256), GEMM takes >100 us so the stall is fully hidden.
-    logits_chunks: list[torch.Tensor] = []
-    with torch.no_grad(), torch.cuda.stream(gemm_stream):
-        for chunk_id in range(num_chunks):
-            start = chunk_id * chunk_size
-            end = min(start + chunk_size, BT)
-            logits_i = _input[start:end] @ weight.t()
+    # --- Single-chunk fast path: no stream overhead ---
+    # When BT fits in one chunk there's no GEMM/CE overlap opportunity, so the
+    # two-stream machinery (~200 µs of event/wait_stream overhead) only hurts.
+    # We queue the GEMM first (returns immediately to host), run D2H stats while
+    # the GPU executes it, then dispatch CE + grads — all on the main stream.
+    if num_chunks == 1:
+        with torch.no_grad():
+            logits_i = _input @ weight.t()
             if bias is not None:
                 logits_i = logits_i + bias
-            # Pad to storage_V if needed so the CE kernel can do 128-bit vectorised loads.
-            # Padding columns are set to a very negative value so they never affect softmax.
             if storage_V != V:
                 logits_i = torch.nn.functional.pad(logits_i, (0, storage_V - V), value=float("-inf"))
             logits_i = logits_i.contiguous()
-            logits_chunks.append(logits_i)
-            gemm_events[chunk_id].record(gemm_stream)
 
-    # --- D2H sync: ignore-index statistics (now hidden behind running GEMMs) ---
-    has_weight = ce_weight is not None
-    target_mask = target != ignore_index
-    _mt = target * target_mask
-    _stats = torch.stack((target_mask.sum(), _mt.max(), _mt.min())).tolist()
-    total_n_non_ignore = int(_stats[0])
-    assert _stats[1] < V, f"Target out of bounds. Expected < {V}"
-    assert _stats[2] >= 0, "Target out of bounds. Expected >= 0"
+        # D2H stats (host-side; GPU runs the GEMM above concurrently)
+        has_weight = ce_weight is not None
+        target_mask = target != ignore_index
+        _mt = target * target_mask
+        _stats = torch.stack((target_mask.sum(), _mt.max(), _mt.min())).tolist()
+        total_n_non_ignore = int(_stats[0])
+        assert _stats[1] < V, f"Target out of bounds. Expected < {V}"
+        assert _stats[2] >= 0, "Target out of bounds. Expected >= 0"
 
-    # Class-weight setup (fp32 upcast, single sum D2H sync)
-    ce_weight_fp32 = None
-    ce_weight_sum = 0.0
-    sum_non_ignore_ce_weight = float(total_n_non_ignore)
-    if has_weight:
-        assert ce_weight.shape[0] == V
-        assert torch.is_floating_point(ce_weight), f"ce_weight must be floating point; got {ce_weight.dtype}"
-        ce_weight_fp32 = ce_weight.to(torch.float32)
-        if ce_weight_fp32.stride(-1) != 1:
-            ce_weight_fp32 = ce_weight_fp32.contiguous()
-        if total_n_non_ignore > 0:
-            sum_non_ignore_ce_weight = torch.gather(ce_weight_fp32, 0, target.masked_select(target_mask)).sum().item()
+        ce_weight_fp32 = None
+        ce_weight_sum = 0.0
+        sum_non_ignore_ce_weight = float(total_n_non_ignore)
+        if has_weight:
+            assert ce_weight.shape[0] == V
+            assert torch.is_floating_point(ce_weight), f"ce_weight must be floating point; got {ce_weight.dtype}"
+            ce_weight_fp32 = ce_weight.to(torch.float32)
+            if ce_weight_fp32.stride(-1) != 1:
+                ce_weight_fp32 = ce_weight_fp32.contiguous()
+            if total_n_non_ignore > 0:
+                sum_non_ignore_ce_weight = torch.gather(ce_weight_fp32, 0, target.masked_select(target_mask)).sum().item()
+            else:
+                sum_non_ignore_ce_weight = 1.0
+            ce_weight_sum = ce_weight_fp32.sum().item()
+
+        if reduction == "mean" and total_n_non_ignore > 0:
+            if has_weight and sum_non_ignore_ce_weight > 0:
+                inv_n_loss = 1.0 / sum_non_ignore_ce_weight
+            else:
+                inv_n_loss = 1.0 / total_n_non_ignore
+            inv_n_z = 1.0 / total_n_non_ignore
         else:
-            sum_non_ignore_ce_weight = 1.0
-        ce_weight_sum = ce_weight_fp32.sum().item()
+            inv_n_loss = 1.0
+            inv_n_z = 1.0
 
-    # Global loss / z_loss normalizers (passed to CE kernel; applied per-row in-kernel)
-    if reduction == "mean" and total_n_non_ignore > 0:
-        if has_weight and sum_non_ignore_ce_weight > 0:
-            inv_n_loss = 1.0 / sum_non_ignore_ce_weight
-        else:
-            inv_n_loss = 1.0 / total_n_non_ignore
-        inv_n_z = 1.0 / total_n_non_ignore
+        with torch.no_grad():
+            _launch_ce_fwd(
+                logits_i, target, loss_1d, inv_n_loss, ignore_index,
+                input_requires_grad, lse_square_scale, z_loss_1d,
+                return_z_loss, softcap,
+                label_smoothing=label_smoothing, weight=ce_weight_fp32,
+                weight_sum=ce_weight_sum, return_token_accuracy=return_token_accuracy,
+                return_predicted_tokens=return_predicted_tokens,
+                token_acc_out=token_accuracy_1d, pred_tok_out=predicted_tokens_1d,
+                inv_n_z=inv_n_z,
+            )
+
+            if use_token_scaling:
+                probs_f = logits_i.detach().float()
+                if softcap is not None:
+                    sc = float(softcap)
+                    probs_f = sc * torch.tanh(probs_f / sc)
+                probs_f = torch.softmax(probs_f, dim=-1)
+                valid_mask = target != ignore_index
+                scaling = torch.zeros(BT, dtype=probs_f.dtype, device=device)
+                valid_targets = target[valid_mask]
+                if valid_targets.numel() > 0:
+                    scaling[valid_mask] = torch.gather(
+                        probs_f[valid_mask], -1, valid_targets.unsqueeze(-1)
+                    ).squeeze(-1)
+                loss_1d.mul_(scaling)
+                if return_z_loss:
+                    z_loss_1d.mul_(scaling)
+                logits_i.mul_(scaling.unsqueeze(-1))
+
+            if input_requires_grad:
+                _mm_out(grad_input, logits_i[:, :V], weight)
+            if grad_weight is not None:
+                _mm_out(grad_weight, logits_i[:, :V].t(), _input)
+            if grad_bias is not None:
+                grad_bias.add_(logits_i[:, :V].sum(dim=0))
+
     else:
-        inv_n_loss = 1.0
-        inv_n_z = 1.0
+        # --- Multi-chunk two-stream path ---
+        # gemm_stream: [GEMM_0 ev0] [GEMM_1 ev1] ...  (all queued first)
+        # ce_stream:   {wait ev0} CE_0+GRAD_0 {wait ev1} CE_1+GRAD_1 ...
+        # D2H stats hidden behind GEMM_0.
 
-    # --- Two-stream GEMM / CE overlap ---
-    # gemm_stream:  [GEMM_0 ev0] [GEMM_1 ev1] ...  (all already queued above)
-    # ce_stream:    {wait ev0} CE_0 GRAD_0 {wait ev1} CE_1 GRAD_1 ...
-    # D2H sync above hidden behind GEMM_0.
-    with torch.no_grad():
-        for chunk_id in range(num_chunks):
-            start = chunk_id * chunk_size
-            end = min(start + chunk_size, BT)
+        # Streams cached per-device
+        dev_idx = device.index if isinstance(device, torch.device) else torch.cuda.current_device()
+        if dev_idx not in _gemm_stream_cache:
+            _gemm_stream_cache[dev_idx] = torch.cuda.Stream(device=device)
+            _ce_stream_cache[dev_idx] = torch.cuda.Stream(device=device)
+        gemm_stream = _gemm_stream_cache[dev_idx]
+        ce_stream = _ce_stream_cache[dev_idx]
+        main_stream = torch.cuda.current_stream(device)
+        gemm_stream.wait_stream(main_stream)
 
-            logits_i = logits_chunks[chunk_id]
-            target_chunk = target[start:end].contiguous()
-            loss_slice = loss_1d[start:end]
-            z_loss_slice = z_loss_1d[start:end] if return_z_loss else None
-            ta_slice = token_accuracy_1d[start:end] if return_token_accuracy else None
-            pt_slice = predicted_tokens_1d[start:end] if return_predicted_tokens else None
-            input_chunk = _input[start:end]
+        gemm_events = [torch.cuda.Event() for _ in range(num_chunks)]
+        logits_chunks: list[torch.Tensor] = []
+        with torch.no_grad(), torch.cuda.stream(gemm_stream):
+            for chunk_id in range(num_chunks):
+                start = chunk_id * chunk_size
+                end = min(start + chunk_size, BT)
+                logits_i = _input[start:end] @ weight.t()
+                if bias is not None:
+                    logits_i = logits_i + bias
+                if storage_V != V:
+                    logits_i = torch.nn.functional.pad(logits_i, (0, storage_V - V), value=float("-inf"))
+                logits_i = logits_i.contiguous()
+                logits_chunks.append(logits_i)
+                gemm_events[chunk_id].record(gemm_stream)
 
-            with torch.cuda.stream(ce_stream):
-                # Wait only for this chunk's GEMM to complete
-                ce_stream.wait_event(gemm_events[chunk_id])
+        # D2H stats (hidden behind GEMM_0 running on gemm_stream)
+        has_weight = ce_weight is not None
+        target_mask = target != ignore_index
+        _mt = target * target_mask
+        _stats = torch.stack((target_mask.sum(), _mt.max(), _mt.min())).tolist()
+        total_n_non_ignore = int(_stats[0])
+        assert _stats[1] < V, f"Target out of bounds. Expected < {V}"
+        assert _stats[2] >= 0, "Target out of bounds. Expected >= 0"
 
-                # CuTe DSL CE kernel — reads logits_i, writes d(loss)/d(logits) in-place.
-                # _launch_ce_fwd queries torch.cuda.current_stream(), which is ce_stream here
-                # because we are inside the torch.cuda.stream(ce_stream) context.
-                _launch_ce_fwd(
-                    logits_i,
-                    target_chunk,
-                    loss_slice,
-                    inv_n_loss,
-                    ignore_index,
-                    input_requires_grad,
-                    lse_square_scale,
-                    z_loss_slice,
-                    return_z_loss,
-                    softcap,
-                    label_smoothing=label_smoothing,
-                    weight=ce_weight_fp32,
-                    weight_sum=ce_weight_sum,
-                    return_token_accuracy=return_token_accuracy,
-                    return_predicted_tokens=return_predicted_tokens,
-                    token_acc_out=ta_slice,
-                    pred_tok_out=pt_slice,
-                    inv_n_z=inv_n_z,
-                )
+        ce_weight_fp32 = None
+        ce_weight_sum = 0.0
+        sum_non_ignore_ce_weight = float(total_n_non_ignore)
+        if has_weight:
+            assert ce_weight.shape[0] == V
+            assert torch.is_floating_point(ce_weight), f"ce_weight must be floating point; got {ce_weight.dtype}"
+            ce_weight_fp32 = ce_weight.to(torch.float32)
+            if ce_weight_fp32.stride(-1) != 1:
+                ce_weight_fp32 = ce_weight_fp32.contiguous()
+            if total_n_non_ignore > 0:
+                sum_non_ignore_ce_weight = torch.gather(ce_weight_fp32, 0, target.masked_select(target_mask)).sum().item()
+            else:
+                sum_non_ignore_ce_weight = 1.0
+            ce_weight_sum = ce_weight_fp32.sum().item()
 
-                # token_scaling: scale loss by predicted probability (detached)
-                if use_token_scaling:
-                    probs_f = logits_i.detach().float()
-                    if softcap is not None:
-                        sc = float(softcap)
-                        probs_f = sc * torch.tanh(probs_f / sc)
-                    probs_f = torch.softmax(probs_f, dim=-1)
-                    valid_mask = target_chunk != ignore_index
-                    n_rows = end - start
-                    scaling = torch.zeros(n_rows, dtype=probs_f.dtype, device=device)
-                    valid_targets = target_chunk[valid_mask]
-                    if valid_targets.numel() > 0:
-                        scaling[valid_mask] = torch.gather(
-                            probs_f[valid_mask], -1, valid_targets.unsqueeze(-1)
-                        ).squeeze(-1)
-                    loss_1d[start:end].mul_(scaling)
-                    if return_z_loss:
-                        z_loss_1d[start:end].mul_(scaling)
-                    logits_i.mul_(scaling.unsqueeze(-1))
+        if reduction == "mean" and total_n_non_ignore > 0:
+            if has_weight and sum_non_ignore_ce_weight > 0:
+                inv_n_loss = 1.0 / sum_non_ignore_ce_weight
+            else:
+                inv_n_loss = 1.0 / total_n_non_ignore
+            inv_n_z = 1.0 / total_n_non_ignore
+        else:
+            inv_n_loss = 1.0
+            inv_n_z = 1.0
 
-                # Grad accumulation (logits_i now holds d(loss)/d(logits) after CE kernel)
-                if input_requires_grad:
-                    # grad_input[start:end] = grad_logits @ weight
-                    # _mm_out handles mixed dtypes (e.g. bf16 logits → fp32 grad_input).
-                    # Slice [:, :V] strips padding columns (they are ghost logits with -inf).
-                    _mm_out(grad_input[start:end], logits_i[:, :V], weight)
+        with torch.no_grad():
+            for chunk_id in range(num_chunks):
+                start = chunk_id * chunk_size
+                end = min(start + chunk_size, BT)
+                logits_i = logits_chunks[chunk_id]
+                target_chunk = target[start:end].contiguous()
+                loss_slice = loss_1d[start:end]
+                z_loss_slice = z_loss_1d[start:end] if return_z_loss else None
+                ta_slice = token_accuracy_1d[start:end] if return_token_accuracy else None
+                pt_slice = predicted_tokens_1d[start:end] if return_predicted_tokens else None
+                input_chunk = _input[start:end]
 
-                if grad_weight is not None:
-                    # First chunk: direct write (grad_weight is empty, no need to addmm).
-                    # Subsequent chunks: accumulate. Avoids torch.zeros(V,H) cost.
-                    # Slice [:, :V] strips padding columns from the grad_logits before mm.
-                    grad_logits_v = logits_i[:, :V]
-                    if chunk_id == 0:
-                        _mm_out(grad_weight, grad_logits_v.t(), input_chunk)
-                    else:
-                        _addmm_out(grad_weight, grad_logits_v.t(), input_chunk)
+                with torch.cuda.stream(ce_stream):
+                    ce_stream.wait_event(gemm_events[chunk_id])
 
-                if grad_bias is not None:
-                    # grad_bias += grad_logits.sum(dim=0) — strip padding columns
-                    grad_bias.add_(logits_i[:, :V].sum(dim=0))
+                    _launch_ce_fwd(
+                        logits_i, target_chunk, loss_slice, inv_n_loss, ignore_index,
+                        input_requires_grad, lse_square_scale, z_loss_slice,
+                        return_z_loss, softcap,
+                        label_smoothing=label_smoothing, weight=ce_weight_fp32,
+                        weight_sum=ce_weight_sum, return_token_accuracy=return_token_accuracy,
+                        return_predicted_tokens=return_predicted_tokens,
+                        token_acc_out=ta_slice, pred_tok_out=pt_slice, inv_n_z=inv_n_z,
+                    )
 
-    # Sync back to main stream
-    main_stream.wait_stream(ce_stream)
-    main_stream.wait_stream(gemm_stream)
+                    if use_token_scaling:
+                        probs_f = logits_i.detach().float()
+                        if softcap is not None:
+                            sc = float(softcap)
+                            probs_f = sc * torch.tanh(probs_f / sc)
+                        probs_f = torch.softmax(probs_f, dim=-1)
+                        valid_mask = target_chunk != ignore_index
+                        n_rows = end - start
+                        scaling = torch.zeros(n_rows, dtype=probs_f.dtype, device=device)
+                        valid_targets = target_chunk[valid_mask]
+                        if valid_targets.numel() > 0:
+                            scaling[valid_mask] = torch.gather(
+                                probs_f[valid_mask], -1, valid_targets.unsqueeze(-1)
+                            ).squeeze(-1)
+                        loss_1d[start:end].mul_(scaling)
+                        if return_z_loss:
+                            z_loss_1d[start:end].mul_(scaling)
+                        logits_i.mul_(scaling.unsqueeze(-1))
+
+                    if input_requires_grad:
+                        _mm_out(grad_input[start:end], logits_i[:, :V], weight)
+
+                    if grad_weight is not None:
+                        grad_logits_v = logits_i[:, :V]
+                        if chunk_id == 0:
+                            _mm_out(grad_weight, grad_logits_v.t(), input_chunk)
+                        else:
+                            _addmm_out(grad_weight, grad_logits_v.t(), input_chunk)
+
+                    if grad_bias is not None:
+                        grad_bias.add_(logits_i[:, :V].sum(dim=0))
+
+        main_stream.wait_stream(ce_stream)
+        main_stream.wait_stream(gemm_stream)
 
     # --- Final reduction ---
     if reduction == "none":
