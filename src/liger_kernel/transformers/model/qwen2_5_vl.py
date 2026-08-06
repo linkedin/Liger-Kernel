@@ -51,6 +51,7 @@ def lce_forward(
     mm_token_type_ids: Optional[torch.IntTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
     second_per_grid_ts: Optional[torch.Tensor] = None,
+    logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
     **kwargs,
 ) -> Union[Tuple, LigerQwen2_5_VLCausalLMOutputWithPast]:
@@ -155,7 +156,8 @@ def lce_forward(
         )
         loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
     else:
-        logits = self.lm_head(hidden_states)
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        logits = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None
         if labels is not None or shift_labels is not None:
