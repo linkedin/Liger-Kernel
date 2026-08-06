@@ -231,17 +231,6 @@ class _FlceState:
         self.saved_tensors = tensors
 
 
-def supports_fused_linear_cross_entropy(_input, weight, bias, reduction):
-    needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
-    fully_trainable = _input.requires_grad and weight.requires_grad and (bias is None or bias.requires_grad)
-    return (
-        _native_sm100_supported(_input)
-        and _input.dtype in (torch.bfloat16, torch.float16)
-        and reduction != "none"
-        and (not needs_grad or fully_trainable)
-    )
-
-
 def fused_linear_cross_entropy_forward(
     _input,
     weight,
@@ -264,10 +253,13 @@ def fused_linear_cross_entropy_forward(
     _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index)
     needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
 
-    if not supports_fused_linear_cross_entropy(_input, weight, bias, reduction):
+    if (
+        not _native_sm100_supported(_input)
+        or _input.dtype not in (torch.bfloat16, torch.float16)
+        or reduction not in ("mean", "sum")
+    ):
         raise RuntimeError(
-            "Native CuTe DSL FLCE requires exact SM100, FP16/BF16, mean/sum reduction, "
-            "and either no gradients or fully trainable input/weight/bias."
+            "Native CuTe DSL FLCE requires exact SM100 hardware, FP16/BF16 input and weight, and mean/sum reduction."
         )
 
     h_orig = None
