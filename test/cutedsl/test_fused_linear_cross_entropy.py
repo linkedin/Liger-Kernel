@@ -46,7 +46,7 @@ def set_seed(seed: int = 42):
 def _cutedsl_flce():
     """The native CuTe DSL ``LigerFusedLinearCrossEntropyFunction`` under test, or skip if CUTLASS
     is not installed. It implements the core path fast (mean/sum, 16-bit, SM100) and
-    routes other cases (fp32, softcap, non-Blackwell, …) through its general Triton fallback."""
+    routes unsupported cases (fp32, non-Blackwell, reduction="none", …) through Triton."""
     try:
         from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
     except ImportError as exc:
@@ -997,6 +997,17 @@ def test_flce_odd_vocab_all_native_features_match_triton():
         return_token_accuracy=True,
         return_predicted_tokens=True,
     )
+
+
+@sm100_required
+def test_flce_odd_vocab_padding_cannot_become_softmax_max():
+    """Aligned zero padding must not replace a very negative logical row maximum."""
+    BT, H, V = 33, 64, 513
+    masters = _Masters(BT, H, V, bias=False, ce_weight=False)
+    masters.input.fill_(1.0)
+    masters.weight.fill_(-20.0)
+    target = _make_target(BT, V)
+    _assert_flce_parity(masters, target, torch.bfloat16, reduction="mean")
 
 
 @sm100_required

@@ -332,22 +332,22 @@ def _ce_fwd_kernel(
         cute.arch.cp_async_wait_group(_NUM_STAGES - 1)
         if r_vidx < num_vec:
             cute.autovec_copy(sTilesV[None, tid, read_stage], x_frag)  # smem -> reg
+            vec_base = r_vidx * VEC
             if const_expr(NEED_ARGMAX):
                 # argmax on the RAW logits: softcap is monotonic, so argmax(softcap(x)) ==
                 # argmax(x) and the column is identical. Smaller j (and earlier, smaller-
                 # column tiles) win ties via the strict `>`.
-                base = r_vidx * VEC
                 for j in cutlass.range_constexpr(VEC):
                     xj = x_frag[j].to(Float32)
                     if const_expr(HAS_PADDING):
-                        if base + j < logical_vocab_size:
+                        if vec_base + j < logical_vocab_size:
                             if xj > t_am:
                                 t_am = xj
-                                t_acol = Float32(base + j)
+                                t_acol = Float32(vec_base + j)
                     else:
                         if xj > t_am:
                             t_am = xj
-                            t_acol = Float32(base + j)
+                            t_acol = Float32(vec_base + j)
             x_ssa = x_frag.load().to(Float32)  # (VEC,) fp32 TensorSSA
             if const_expr(HAS_SOFTCAP):
                 x_ssa = softcap * cute.math.tanh(x_ssa / softcap)  # cap before max/sum
@@ -361,6 +361,18 @@ def _ce_fwd_kernel(
                 else:
                     t_sxs = t_sxs + (x_ssa * neg_eps).reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
             local_max = x_ssa.reduce(cute.ReductionOp.MAX, Float32(NEG_INF_F32), 0)
+            if const_expr(HAS_PADDING):
+                xj = Float32(NEG_INF_F32)
+                x_exp_j = Float32(0.0)
+                if r_vidx == num_vec - 1:
+                    local_max = Float32(NEG_INF_F32)
+                    for j in cutlass.range_constexpr(VEC):
+                        xj = Float32(NEG_INF_F32)
+                        if vec_base + j < logical_vocab_size:
+                            xj = x_frag[j].to(Float32)
+                            if const_expr(HAS_SOFTCAP):
+                                xj = softcap * cute.math.tanh(xj / softcap)
+                        local_max = fmax(local_max, xj)
             m_new = fmax(m, local_max)
             # FMA-fold: exp2((x - m_new)*LOG2_E) == exp2(x*LOG2_E + (-m_new*LOG2_E)).
             # Hoisting the per-tile scalar neg_m2 lets the per-element arg compile to one
@@ -370,8 +382,16 @@ def _ce_fwd_kernel(
             local_sum = x_exp.reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
             if const_expr(HAS_PADDING):
                 if r_vidx == num_vec - 1:
-                    pad_count = V - logical_vocab_size
-                    local_sum = local_sum - Float32(pad_count) * cute.math.exp2(neg_m2, fastmath=True)
+                    local_sum = Float32(0.0)
+                    for j in cutlass.range_constexpr(VEC):
+                        xj = Float32(NEG_INF_F32)
+                        x_exp_j = Float32(0.0)
+                        if vec_base + j < logical_vocab_size:
+                            xj = x_frag[j].to(Float32)
+                            if const_expr(HAS_SOFTCAP):
+                                xj = softcap * cute.math.tanh(xj / softcap)
+                            x_exp_j = cute.math.exp2(xj * LOG2_E + neg_m2, fastmath=True)
+                        local_sum = local_sum + x_exp_j
             d = d * cute.math.exp2((m - m_new) * LOG2_E, fastmath=True) + local_sum
             m = m_new
         read_stage = _advance(read_stage, _NUM_STAGES)
