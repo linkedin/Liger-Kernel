@@ -20,10 +20,18 @@ import sys
 
 CUTILE_ENABLED_KERNELS = [
     "cross_entropy",
+    "dyt",
+    "fused_add_rms_norm",
+    "fused_linear_cross_entropy",
     "fused_linear_jsd",
     "geglu",
+    "grpo_loss",
     "jsd",
     "layer_norm",
+    "poly_norm",
+    "rms_norm",
+    "softmax",
+    "swiglu",
 ]
 
 
