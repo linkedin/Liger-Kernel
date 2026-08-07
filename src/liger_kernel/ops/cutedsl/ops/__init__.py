@@ -14,14 +14,24 @@ except ImportError as exc:
 from liger_kernel.ops.cutedsl.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_forward
+from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import LigerFusedScaledCrossEntropySM90Function
+from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_backward
+from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_forward
 from liger_kernel.ops.cutedsl.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_backward
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_forward
 
+# ``LigerFusedScaledCrossEntropySM90Function`` is an *additional* CuTe DSL
+# operator (per-token NLL only, Hopper BF16); it deliberately does not replace
+# or alias the Triton ``LigerFusedLinearCrossEntropyFunction``, which keeps its
+# reduction and legacy-option surface.
 __all__ = [
     "LigerCrossEntropyFunction",
     "cross_entropy_backward",
     "cross_entropy_forward",
+    "LigerFusedScaledCrossEntropySM90Function",
+    "fused_scaled_cross_entropy_backward",
+    "fused_scaled_cross_entropy_forward",
     "LigerRMSNormFunction",
     "rms_norm_backward",
     "rms_norm_forward",
