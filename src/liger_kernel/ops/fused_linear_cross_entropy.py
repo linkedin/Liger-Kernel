@@ -150,10 +150,21 @@ def fused_linear_cross_entropy_forward(
             scaling_factors = pred_probs.detach()  # Detach to ensure no gradient flow
 
         # unreduced loss
-        loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size,
-        z_loss_1d_slice = z_loss_1d[start_idx:end_idx] if return_z_loss else None
-        token_accuracy_1d_slice = token_accuracy_1d[start_idx:end_idx] if return_token_accuracy else None
-        predicted_tokens_1d_slice = predicted_tokens_1d[start_idx:end_idx] if return_predicted_tokens else None
+        # NOTE: these must be standalone contiguous buffers, *not* `xxx_1d[start_idx:end_idx]`
+        # views. `torch.compile` functionalizes the kernel's mutation by cloning the pointer
+        # argument via `clone_preserve_strides`, which clones `storage_offset + numel` elements out
+        # of a buffer Inductor may have sized to the view alone -- an out-of-bounds read whose
+        # garbage survives into the loss on rows where the kernel returns early (ignore_index).
+        loss_1d_slice = torch.zeros(n_rows, dtype=loss_1d.dtype, device=device)  # chunk_size,
+        z_loss_1d_slice = torch.zeros(n_rows, dtype=z_loss_1d.dtype, device=device) if return_z_loss else None
+        token_accuracy_1d_slice = (
+            torch.zeros(n_rows, dtype=token_accuracy_1d.dtype, device=device) if return_token_accuracy else None
+        )
+        predicted_tokens_1d_slice = (
+            torch.full((n_rows,), -1, dtype=predicted_tokens_1d.dtype, device=device)
+            if return_predicted_tokens
+            else None
+        )
 
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
