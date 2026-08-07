@@ -45,6 +45,7 @@ from cutlass import Int32
 from cutlass import const_expr
 
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fast_path_vector_width
+from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fwd_warp_count
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import triton_backward_warp_count
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
 
@@ -97,8 +98,12 @@ _str_to_casting_mode = {
 _NUM_WARPS = 8
 _THREADS = 32 * _NUM_WARPS
 
-# The vector forward stays at four warps. Backward chooses its warp count from the
-# hidden width to mirror the existing Triton kernel's calculate_settings heuristic.
+# The vector forward picks its warp count from the hidden width (see
+# fwd_warp_count): wide rows use 8 warps so each thread holds fewer register-resident
+# vector tiles, which lifts occupancy and hides DRAM-load latency on this memory-bound
+# kernel; narrow rows keep 4 warps so threads stay busy and the reduction stays cheap.
+# These constants are the narrow-row default / scalar-path fallback and the eligibility
+# probe's assumed block size; the vector launch overrides them per call.
 _FAST_NUM_WARPS = 4
 _FAST_THREADS = 32 * _FAST_NUM_WARPS
 _FAST_MAX_COLS = 8192
@@ -345,6 +350,8 @@ def _rms_norm_fwd_vector_kernel(
     N_COLS: cutlass.Constexpr,
     VEC: cutlass.Constexpr,
     NUM_VEC_TILES: cutlass.Constexpr,
+    NUM_WARPS: cutlass.Constexpr,
+    NUM_THREADS: cutlass.Constexpr,
 ):
     """Aligned one-row forward kernel with register-resident X fragments."""
     tid, _, _ = cute.arch.thread_idx()
@@ -353,7 +360,7 @@ def _rms_norm_fwd_vector_kernel(
     row, _, _ = cute.arch.block_idx()
 
     smem = cutlass.utils.SmemAllocator()
-    sm_warp = smem.allocate_tensor(Float32, cute.make_layout(_FAST_NUM_WARPS), byte_alignment=4)
+    sm_warp = smem.allocate_tensor(Float32, cute.make_layout(NUM_WARPS), byte_alignment=4)
     sm_result = smem.allocate_tensor(Float32, cute.make_layout(1), byte_alignment=4)
 
     # Slicing a dynamic tensor loses its static alignment.  The host validates the
@@ -379,13 +386,13 @@ def _rms_norm_fwd_vector_kernel(
     partial = Float32(0.0)
     n_vec = N_COLS // VEC
     for ct in cutlass.range_constexpr(NUM_VEC_TILES):
-        vec_idx = ct * _FAST_THREADS + tid
+        vec_idx = ct * NUM_THREADS + tid
         if vec_idx < n_vec:
             cute.autovec_copy(gXv[None, vec_idx], x_frags[None, ct])
             x_ssa = x_frags[None, ct].load().to(Float32)
             partial = partial + (x_ssa * x_ssa).reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
 
-    total = _cta_reduce_sum_warp0(partial, sm_warp, sm_result, lane, warp, _FAST_NUM_WARPS)
+    total = _cta_reduce_sum_warp0(partial, sm_warp, sm_result, lane, warp, NUM_WARPS)
     rstd = cute.math.rsqrt(total / Float32(N_COLS) + eps)
     if tid == 0:
         mRSTD[row] = rstd.to(mRSTD.element_type)
@@ -400,7 +407,7 @@ def _rms_norm_fwd_vector_kernel(
         gWv = cute.tiled_divide(gW, (VEC,))
         w_frag = cute.make_rmem_tensor((VEC,), mW.element_type)
     for ct in cutlass.range_constexpr(NUM_VEC_TILES):
-        vec_idx = ct * _FAST_THREADS + tid
+        vec_idx = ct * NUM_THREADS + tid
         if vec_idx < n_vec:
             xhat = x_frags[None, ct].load().to(Float32) * rstd
             if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
@@ -674,15 +681,29 @@ def _rms_norm_fwd_vector_host(
     N_COLS: cutlass.Constexpr,
     VEC: cutlass.Constexpr,
     NUM_VEC_TILES: cutlass.Constexpr,
+    NUM_WARPS: cutlass.Constexpr,
+    NUM_THREADS: cutlass.Constexpr,
     stream: cuda.CUstream = None,
 ):
     n_rows = mX.shape[0]
-    smem_bytes = (((_FAST_NUM_WARPS + 1) * 4 + 15) // 16) * 16
+    smem_bytes = (((NUM_WARPS + 1) * 4 + 15) // 16) * 16
     _rms_norm_fwd_vector_kernel(
-        mX, mW, mY, mRSTD, eps, offset, CASTING_MODE, ELEMENTWISE_AFFINE, N_COLS, VEC, NUM_VEC_TILES
+        mX,
+        mW,
+        mY,
+        mRSTD,
+        eps,
+        offset,
+        CASTING_MODE,
+        ELEMENTWISE_AFFINE,
+        N_COLS,
+        VEC,
+        NUM_VEC_TILES,
+        NUM_WARPS,
+        NUM_THREADS,
     ).launch(
         grid=[n_rows, 1, 1],
-        block=[_FAST_THREADS, 1, 1],
+        block=[NUM_THREADS, 1, 1],
         smem=smem_bytes,
         stream=stream,
     )
@@ -823,8 +844,12 @@ def _fast_vector_params(n_cols, *tensors, num_threads=_FAST_THREADS):
     return vec, (n_cols // vec + num_threads - 1) // num_threads
 
 
-def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine, vec, num_vec_tiles):
-    """Launch the aligned vector forward specialization."""
+def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine, vec):
+    """Launch the aligned vector forward specialization.
+
+    The warp count (hence thread count and register-resident tiles per thread) is
+    chosen from the hidden width by ``fwd_warp_count``; ``num_vec_tiles`` follows.
+    """
     stream = _cute_stream()
     # Cache the marshaled handles for the INPUTS (X, W) -- their addresses are stable
     # across steps (weights always; activations under a reused-buffer harness), so they
@@ -837,6 +862,9 @@ def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_aff
     rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
     w_ct = _to_cute_cached(W, assumed_align=16) if elementwise_affine else rstd_ct
     n_cols = X.shape[1]
+    num_warps = fwd_warp_count(n_cols, vec)
+    num_threads = 32 * num_warps
+    num_vec_tiles = (n_cols // vec + num_threads - 1) // num_threads
     # Optionally bucket n_cols in the compile key to reduce cold-compile churn.
     bucket = _COMPILE_BUCKET
     n_cols_key = n_cols
@@ -847,6 +875,7 @@ def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_aff
         n_cols_key,
         vec,
         num_vec_tiles,
+        num_warps,
         X.dtype,
         W.dtype if elementwise_affine else None,
         casting_mode,
@@ -872,6 +901,8 @@ def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_aff
             n_cols,
             vec,
             num_vec_tiles,
+            num_warps,
+            num_threads,
             stream,
         )
         _compile_cache[key] = compiled
@@ -886,7 +917,9 @@ def _launch_fwd(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine):
     fast_tensors = (X, Y, W) if elementwise_affine else (X, Y)
     fast_params = _fast_vector_params(X.shape[1], *fast_tensors)
     if fast_params is not None:
-        _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine, *fast_params)
+        # fast_params[0] is VEC; _launch_fwd_vector derives the width-aware warp/thread
+        # count and num_vec_tiles itself, so only VEC is forwarded.
+        _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine, fast_params[0])
         return
 
     stream = _cute_stream()
