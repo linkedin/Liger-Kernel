@@ -2,9 +2,48 @@
 Shared helpers for the CuTe DSL backend ops.
 """
 
+import cuda.bindings.driver as driver
 import torch
 
+from cutlass import BFloat16
+from cutlass import Float16
+from cutlass import Float32
+from cutlass import Int32
+from cutlass import Int64
 from cutlass.cute.runtime import from_dlpack
+
+torch2cute_dtype_map = {
+    torch.float16: Float16,
+    torch.bfloat16: BFloat16,
+    torch.float32: Float32,
+    torch.int32: Int32,
+    torch.int64: Int64,
+}
+
+
+def ensure_cuda_context():
+    """Make the CUDA primary context current on the calling thread.
+
+    ``torch.autograd`` runs backward nodes on worker threads.  PyTorch binds
+    those threads through the CUDA *runtime* API, which leaves the *driver*
+    API's current context unset, so CuTe DSL helpers that call the driver
+    directly (notably ``cutlass.utils.HardwareInfo``) fail with
+    ``CUDA_ERROR_INVALID_CONTEXT``.  Retaining and setting the device's primary
+    context -- the very context PyTorch itself uses -- fixes that and is a no-op
+    once a context is already current.
+    """
+    err, ctx = driver.cuCtxGetCurrent()
+    if err == driver.CUresult.CUDA_SUCCESS and ctx and int(ctx) != 0:
+        return
+    err, device = driver.cuDeviceGet(torch.cuda.current_device())
+    if err != driver.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {err}")
+    err, primary = driver.cuDevicePrimaryCtxRetain(device)
+    if err != driver.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {err}")
+    (err,) = driver.cuCtxSetCurrent(primary)
+    if err != driver.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuCtxSetCurrent failed: {err}")
 
 
 def _next_power_of_2(n: int) -> int:
