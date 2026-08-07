@@ -44,9 +44,9 @@ from cutlass import Float32
 from cutlass import Int32
 from cutlass import const_expr
 
+from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import backward_warp_count
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fast_path_vector_width
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fwd_warp_count
-from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import triton_backward_warp_count
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
 
 # ---------------------------------------------------------------------------
@@ -1157,7 +1157,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     # failed alignment/shape precondition selects the established split fallback.
     sm_count = _get_sm_count(X.device)
     # Allow explicit override of backward warp count for autotuning experiments
-    backward_num_warps = triton_backward_warp_count(n_cols)
+    backward_num_warps = backward_warp_count(n_cols)
     if _BACKWARD_WARPS is not None:
         backward_num_warps = _BACKWARD_WARPS
         if _DEBUG:

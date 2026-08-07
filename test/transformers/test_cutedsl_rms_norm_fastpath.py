@@ -12,7 +12,7 @@ assert _spec is not None and _spec.loader is not None
 _helpers = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_helpers)
 fast_path_vector_width = _helpers.fast_path_vector_width
-triton_backward_warp_count = _helpers.triton_backward_warp_count
+backward_warp_count = _helpers.backward_warp_count
 
 
 def test_fast_path_vector_width_uses_largest_participating_element():
@@ -38,5 +38,5 @@ def test_fast_path_vector_width_rejects_non_vectorizable_size():
         (8192, 16),
     ],
 )
-def test_triton_backward_warp_count(n_cols, expected):
-    assert triton_backward_warp_count(n_cols) == expected
+def test_backward_warp_count(n_cols, expected):
+    assert backward_warp_count(n_cols) == expected

@@ -9,7 +9,7 @@ def fast_path_vector_width(*element_sizes: int) -> int:
     return 16 // largest
 
 
-def triton_backward_warp_count(n_cols: int) -> int:
+def backward_warp_count(n_cols: int) -> int:
     """Mirror calculate_settings() for hidden widths supported by the fast path."""
     if n_cols > 4096:
         return 16
