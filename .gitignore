@@ -25,3 +25,6 @@ uv.lock
 benchmark/visualizations
 .vscode/
 .coverage
+
+# Liger CUTE kernels build artifacts
+liger_cute_kernels/build*

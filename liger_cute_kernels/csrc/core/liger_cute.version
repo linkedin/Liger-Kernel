@@ -1,0 +1,14 @@
+/* Linker version script — belt-and-suspenders alongside -fvisibility=hidden.
+ *
+ * Exports ONLY the flat C ABI (every public symbol is prefixed liger_cute_),
+ * and localizes everything else (CUTLASS/CuTe instantiations, libstdc++ guts,
+ * NVSHMEM internals). This guarantees the .so's dynamic symbol table carries
+ * no ABI-sensitive C++ symbols, keeping it linkable into any-ABI torch binding.
+ */
+{
+  global:
+    liger_cute_*;
+    __tvm_ffi_*;
+  local:
+    *;
+};
