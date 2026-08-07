@@ -218,18 +218,21 @@ LIGER_KERNEL_IMPL=cutedsl python your_script.py
 ```
 
 It currently provides genuine `cutlass.cute` implementations of **RMSNorm**, **cross entropy**, and
-Hopper **fused scaled cross entropy** (`LigerFusedScaledCrossEntropySM90Function`). The SM90 scaled
-kernel is an *additional* operator, not a replacement for the Triton `LigerFusedLinearCrossEntropyFunction`:
-it fuses `x @ weight.T` with the softmax, takes BF16 `input`/`weight` plus `ignore_index`, and returns
+**fused scaled cross entropy** (`LigerFusedLinearScaledCrossEntropyFunction`). The frontend dispatches from the input
+device: Hopper compute capability 9.0 uses `LigerFusedScaledCrossEntropySM90Function`, while other devices and
+NVIDIA compute capabilities use a 512-token chunked PyTorch fallback adapted from Verl's fused linear PPO
+implementation. The scaled operator is an *additional* operator, not a replacement for the Triton
+`LigerFusedLinearCrossEntropyFunction`:
+it fuses `x @ weight.T` with the softmax, takes matching floating-point `input`/`weight` (BF16 on SM90) plus
+`ignore_index`, and returns
 the per-token negative log-likelihood `[M]` plus optional vocabulary entropy — reductions are composed in PyTorch. Backward
 therefore receives the per-token upstream gradient `[M]`, which is used verbatim as the row scale of
 `dZ`; a scalar `grad_output` is rejected rather than silently reduced. `temperature` defaults to
 `1.0` and applies the same `logits / temperature` semantics as Verl.
 Set `return_entropy=True` to additionally return differentiable per-token
-vocabulary entropy in BF16; its backward contribution follows Verl's PPO
+vocabulary entropy in the input dtype; its backward contribution follows Verl's PPO
 formula. Both NLL and entropy are zeroed for `ignore_index` rows.
-`m_tiles_per_cluster` (>= 1,
-default `1`) selects the forward schedule: `1` uses the fastest M-outer self-TMA forward, values `> 1`
+On SM90, `m_tiles_per_cluster` (>= 1, default `1`) selects the forward schedule: `1` uses the fastest M-outer self-TMA forward, values `> 1`
 use the M-fast forward with that many live M tiles per cluster. Backward executes `dZ`, `dX = dZ @ W`,
 and `dW = dZ.T @ X` inside one persistent cluster-2 CUDA kernel. Its device-side wave loop aliases
 phase-specific shared memory, uses W multicast for dX, transposed TMA for dW, and HBM atomics between
@@ -239,9 +242,9 @@ transparently fall back to the default Triton kernel. Selecting the backend on a
 without `nvidia-cutlass-dsl` installed, raises an error.
 
 ```python
-from liger_kernel.ops.cutedsl.ops import LigerFusedScaledCrossEntropySM90Function
+from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
 
-nll, entropy = LigerFusedScaledCrossEntropySM90Function.apply(
+nll, entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
     x, weight, target, 1.0, -100, 1, True
 )  # [M], [M]
 loss = nll.sum() / (target != -100).sum().clamp_min(1)
