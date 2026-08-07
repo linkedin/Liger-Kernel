@@ -14,6 +14,7 @@ except ImportError as exc:
 from liger_kernel.ops.cutedsl.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_forward
+from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import LigerFusedScaledCrossEntropySM90Function
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_forward
@@ -29,6 +30,7 @@ __all__ = [
     "LigerCrossEntropyFunction",
     "cross_entropy_backward",
     "cross_entropy_forward",
+    "LigerFusedLinearCrossEntropyFunction",
     "LigerFusedScaledCrossEntropySM90Function",
     "fused_scaled_cross_entropy_backward",
     "fused_scaled_cross_entropy_forward",

@@ -452,8 +452,9 @@ def run_benchmarks(
 
     # Output routing for comparison runs.
     # LIGER_BENCH_TARGET selects the destination CSV (e.g. "cutile" -> all_benchmark_data_cutile.csv).
-    # LIGER_BENCH_PROVIDER_TAG renames the "liger" provider in this run (e.g. "liger_cutile") so
+    # LIGER_BENCH_PROVIDER_TAG renames "liger" providers in this run (e.g. "liger_cutile") so
     # multiple implementations can coexist in one CSV without colliding on the dedup key.
+    # Variants retain their suffix: "liger-fp32-accum" becomes "liger_cutile-fp32-accum".
     target = os.environ.get("LIGER_BENCH_TARGET", "").strip().lower()
     provider_tag = os.environ.get("LIGER_BENCH_PROVIDER_TAG", "").strip().lower()
 
@@ -461,6 +462,8 @@ def run_benchmarks(
         for bd in benchmark_data_list:
             if bd.kernel_provider == "liger":
                 bd.kernel_provider = provider_tag
+            elif bd.kernel_provider.startswith("liger-"):
+                bd.kernel_provider = provider_tag + bd.kernel_provider[len("liger") :]
 
     print_benchmark_data(benchmark_data_list)
 

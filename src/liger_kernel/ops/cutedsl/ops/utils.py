@@ -5,7 +5,20 @@ Shared helpers for the CuTe DSL backend ops.
 import cuda.bindings.driver as driver
 import torch
 
+from cutlass import BFloat16
+from cutlass import Float16
+from cutlass import Float32
+from cutlass import Int32
+from cutlass import Int64
 from cutlass.cute.runtime import from_dlpack
+
+torch2cute_dtype_map = {
+    torch.float16: Float16,
+    torch.bfloat16: BFloat16,
+    torch.float32: Float32,
+    torch.int32: Int32,
+    torch.int64: Int64,
+}
 
 
 def ensure_cuda_context():
