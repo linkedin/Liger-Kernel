@@ -231,9 +231,9 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 vllm_is_ratio = vllm_is_ratio.unsqueeze(-1)  # (B,) -> (B, 1) for broadcasting
         # Initialize accumulators
         loss_acc = torch.zeros((), device=_input.device, dtype=torch.float32)
-        grad_weight = torch.zeros_like(weight)  # [V, H]
+        grad_weight = None
         grad_inputs = []
-        grad_bias = torch.zeros_like(bias) if bias is not None else None  # [V]
+        grad_bias = None
         aggregated_metrics = []
 
         # Only compile the loss math, NOT chunk_forward (which uses custom autograd.Function)
@@ -321,6 +321,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             ref_input_chunk=None,
             vllm_is_ratio_chunk=None,
         ):
+            nonlocal grad_weight, grad_bias
             (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
                 input_chunk,
                 selected_token_ids_chunk,
@@ -332,10 +333,16 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 vllm_is_ratio_chunk,
             )
             if bias is not None:
-                grad_bias.add_(chunk_grad_bias[0])
+                if grad_bias is None:
+                    grad_bias = chunk_grad_bias[0]
+                else:
+                    grad_bias.add_(chunk_grad_bias[0])
 
             # Accumulate gradients and loss
-            grad_weight.add_(chunk_grad_weight)
+            if grad_weight is None:
+                grad_weight = chunk_grad_weight
+            else:
+                grad_weight.add_(chunk_grad_weight)
             grad_inputs.append(chunk_grad_input)
             loss_acc.add_(chunk_loss)
             # Initialize storage for metrics on first chunk
@@ -419,7 +426,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             )
 
         # Combine gradients
-        grad_input = torch.cat(grad_inputs, dim=0)
+        grad_input = grad_inputs[0] if len(grad_inputs) == 1 else torch.cat(grad_inputs, dim=0)
 
         # Save for backward
         ctx.save_for_backward(grad_input, grad_weight, grad_bias)

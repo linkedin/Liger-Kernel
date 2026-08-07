@@ -45,3 +45,37 @@ def test_fused_linear_selective_logprob(dtype, with_bias, hidden_size):
     torch.testing.assert_close(w.grad.float(), w_ref.grad, atol=atol, rtol=5e-2)
     if with_bias:
         torch.testing.assert_close(b.grad.float(), b_ref.grad, atol=atol, rtol=5e-2)
+
+
+@pytest.mark.parametrize(
+    "needs_input, needs_weight, needs_bias",
+    [
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+)
+def test_fused_linear_selective_logprob_partial_gradients(needs_input, needs_weight, needs_bias):
+    torch.manual_seed(42)
+    token_count, hidden_size, vocab_size = 17, 128, 257
+    x_master = 0.1 * torch.randn(token_count, hidden_size, device="cuda", dtype=torch.float32)
+    w_master = 0.1 * torch.randn(vocab_size, hidden_size, device="cuda", dtype=torch.float32)
+    b_master = 0.1 * torch.randn(vocab_size, device="cuda", dtype=torch.float32)
+    target = torch.randint(0, vocab_size, (token_count,), device="cuda")
+    grad_output = torch.randn(token_count, device="cuda", dtype=torch.float32)
+
+    x = x_master.to(torch.bfloat16).requires_grad_(needs_input)
+    w = w_master.to(torch.bfloat16).requires_grad_(needs_weight)
+    b = b_master.to(torch.bfloat16).requires_grad_(needs_bias)
+    fused_linear_selective_logprob(x, w, target, b).backward(grad_output)
+
+    x_ref = x_master.requires_grad_(needs_input)
+    w_ref = w_master.requires_grad_(needs_weight)
+    b_ref = b_master.requires_grad_(needs_bias)
+    torch.log_softmax(x_ref @ w_ref.t() + b_ref, dim=-1).gather(1, target[:, None]).squeeze(1).backward(grad_output)
+
+    for actual, expected in ((x.grad, x_ref.grad), (w.grad, w_ref.grad), (b.grad, b_ref.grad)):
+        if expected is None:
+            assert actual is None
+        else:
+            torch.testing.assert_close(actual.float(), expected, atol=5e-2, rtol=5e-2)

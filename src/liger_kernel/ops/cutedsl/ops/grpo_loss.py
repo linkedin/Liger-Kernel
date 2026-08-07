@@ -1,18 +1,16 @@
 import torch
 
 from liger_kernel.ops.cutedsl.ops._sm100_gemm import K_ALIGNMENT
-from liger_kernel.ops.cutedsl.ops._sm100_gemm import row_logsumexp
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _addmm_fp32_out
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _bwd_chunk_size
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _dx_correct
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import run_epilogue_gemm
+from liger_kernel.ops.cutedsl.ops.cross_entropy import _launch_ce_fwd
+from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _accum_grad_weight
+from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _identity_epilogue
 from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _mm_out
 from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _native_sm100_supported
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _recompute_softmax
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _scatter_target_grad_rowscaled
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _target_logit
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import _vocab_chunk_size
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
+
+_MAX_LOGITS_CHUNK_SIZE = 1024
 
 
 def native_fused_linear_selective_logprob_supported(_input, weight, temperature=1.0):
@@ -60,6 +58,25 @@ def _validate_inputs(_input, weight, target, bias, temperature):
             raise TypeError("bias must be a floating-point tensor on the same device as _input.")
 
 
+def _logits_storage(token_count, vocab_size, device, dtype):
+    chunk_size = min(token_count, _MAX_LOGITS_CHUNK_SIZE)
+    vector_width = 16 // dtype.itemsize
+    storage_width = ((vocab_size + vector_width - 1) // vector_width) * vector_width
+    return torch.empty(chunk_size, storage_width, device=device, dtype=dtype), chunk_size
+
+
+def _fill_logits(storage, x, weight, bias):
+    rows = x.shape[0]
+    vocab_size = weight.shape[0]
+    logits = storage[:rows, :vocab_size]
+    run_epilogue_gemm(x, weight, logits, _identity_epilogue)
+    if bias is not None:
+        logits.add_(bias)
+    if storage.shape[1] != vocab_size:
+        storage[:rows, vocab_size:].zero_()
+    return storage[:rows]
+
+
 class LigerFusedLinearSelectiveLogProbFunction(torch.autograd.Function):
     """SM100 fused-linear selected-token log probabilities for GRPO-style losses."""
 
@@ -82,16 +99,27 @@ class LigerFusedLinearSelectiveLogProbFunction(torch.autograd.Function):
         x = _input.detach().contiguous()
         w = weight.detach().contiguous()
         target = target.detach().contiguous()
-        bias_f = bias.detach().float().contiguous() if bias is not None else None
+        native_bias = bias.detach().contiguous() if bias is not None else None
 
-        lse = row_logsumexp(x, w, bias_f)
-        target_logit = _target_logit(x, w, target)
-        if bias_f is not None:
-            target_logit = target_logit + bias_f[target]
-        logp = target_logit - lse
+        token_count = x.shape[0]
+        vocab_size = w.shape[0]
+        logits_storage, chunk_size = _logits_storage(token_count, vocab_size, x.device, x.dtype)
+        logp = torch.empty(token_count, device=x.device, dtype=torch.float32)
+        for start in range(0, token_count, chunk_size):
+            end = min(start + chunk_size, token_count)
+            logits = _fill_logits(logits_storage, x[start:end], w, native_bias)
+            _launch_ce_fwd(
+                logits,
+                target[start:end],
+                logp[start:end],
+                -1.0,
+                -100,
+                False,
+                logical_vocab_size=vocab_size,
+            )
 
-        saved_bias = bias_f if bias_f is not None else x.new_empty(0, dtype=torch.float32)
-        ctx.save_for_backward(x, w, target, lse, saved_bias)
+        saved_bias = native_bias if native_bias is not None else x.new_empty(0)
+        ctx.save_for_backward(x, w, target, saved_bias)
         ctx.has_bias = bias is not None
         ctx.bias_dtype = bias.dtype if bias is not None else None
         return logp
@@ -99,58 +127,51 @@ class LigerFusedLinearSelectiveLogProbFunction(torch.autograd.Function):
     @staticmethod
     @amp_custom_bwd
     def backward(ctx, grad_logp):
-        x, w, target, lse, bias_f = ctx.saved_tensors
-        grad_logp = grad_logp.reshape(-1).float()
+        x, w, target, bias = ctx.saved_tensors
+        grad_logp = grad_logp.reshape(-1).float().contiguous()
         token_count, hidden_size = x.shape
         vocab_size = w.shape[0]
-        token_chunk = _bwd_chunk_size(token_count, hidden_size, vocab_size)
-        vocab_chunk = _vocab_chunk_size(vocab_size, token_count, token_chunk)
-        col_bias = -lse
-
-        grad_input_softmax = torch.zeros(
-            token_count,
-            hidden_size,
-            device=x.device,
-            dtype=torch.float32,
+        needs_input, needs_weight, _, needs_bias, _ = ctx.needs_input_grad
+        logits_storage, chunk_size = _logits_storage(token_count, vocab_size, x.device, x.dtype)
+        loss = torch.empty(chunk_size, device=x.device, dtype=torch.float32)
+        grad_input = torch.empty_like(x) if needs_input else None
+        grad_weight = torch.empty_like(w) if needs_weight else None
+        grad_bias_acc = (
+            torch.zeros(vocab_size, device=x.device, dtype=torch.float32) if ctx.has_bias and needs_bias else None
         )
-        grad_weight = torch.empty_like(w)
-        grad_bias = torch.empty(vocab_size, device=x.device, dtype=torch.float32) if ctx.has_bias else None
 
-        for start in range(0, vocab_size, vocab_chunk):
-            end = min(start + vocab_chunk, vocab_size)
-            weight_slice = w[start:end]
-            vocab_bias = bias_f[start:end].reshape(1, -1) if ctx.has_bias else None
-            softmax = _recompute_softmax(x, weight_slice, col_bias, vocab_bias)
-            _addmm_fp32_out(grad_input_softmax, softmax, weight_slice)
-            softmax.mul_(-grad_logp[:, None])
-            _mm_out(grad_weight[start:end], softmax.t(), x)
-            if grad_bias is not None:
-                grad_bias[start:end] = softmax.sum(0, dtype=torch.float32)
+        for start in range(0, token_count, chunk_size):
+            end = min(start + chunk_size, token_count)
+            x_chunk = x[start:end]
+            dlogits = _fill_logits(logits_storage, x_chunk, w, bias if ctx.has_bias else None)
+            _launch_ce_fwd(
+                dlogits,
+                target[start:end],
+                loss[: end - start],
+                -1.0,
+                -100,
+                True,
+                logical_vocab_size=vocab_size,
+            )
+            dlogits = dlogits[:, :vocab_size]
+            dlogits.mul_(grad_logp[start:end, None])
+            if grad_input is not None:
+                _mm_out(grad_input[start:end], dlogits, w)
+            if grad_weight is not None:
+                if start == 0:
+                    _mm_out(grad_weight, dlogits.t(), x_chunk)
+                else:
+                    _accum_grad_weight(grad_weight, dlogits.t(), x_chunk)
+            if grad_bias_acc is not None:
+                grad_bias_acc.add_(dlogits.sum(0, dtype=torch.float32))
 
-        del softmax
-        valid = torch.ones_like(target, dtype=torch.bool)
-        grad_input = _dx_correct(
-            grad_input_softmax,
-            w[target],
-            valid,
-            -grad_logp[:, None],
-            x.dtype,
-        )
-        _scatter_target_grad_rowscaled(
-            grad_weight,
-            x,
-            target,
-            valid,
-            grad_logp,
-            1.0,
-        )
-        if grad_bias is not None:
-            grad_bias.index_add_(0, target, grad_logp)
-            grad_bias = grad_bias.to(ctx.bias_dtype)
+        grad_bias = grad_bias_acc.to(ctx.bias_dtype) if grad_bias_acc is not None else None
 
         if ctx.h_orig is not None:
-            grad_input = grad_input[:, : ctx.h_orig].contiguous()
-            grad_weight = grad_weight[:, : ctx.h_orig].contiguous()
+            if grad_input is not None:
+                grad_input = grad_input[:, : ctx.h_orig].contiguous()
+            if grad_weight is not None:
+                grad_weight = grad_weight[:, : ctx.h_orig].contiguous()
         return grad_input, grad_weight, None, grad_bias, None
 
 
