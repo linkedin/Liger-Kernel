@@ -26,11 +26,5 @@ benchmark/visualizations
 .vscode/
 .coverage
 
+# Liger CUTE kernels build artifacts
 liger_cute_kernels/build*
-
-
-# Local design / process writeup docs (kept locally, not tracked)
-blackwell_port/
-writeup*.md
-evals
-pipeline.md
