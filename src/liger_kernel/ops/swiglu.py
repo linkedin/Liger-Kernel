@@ -36,6 +36,14 @@ def silu(x):
     return x * tl.sigmoid(x)
 
 
+# NOTE on `gate_multiplier.to(tl.float32)` below: scalar kernel params are
+# specialized to fp32 by eager Triton but to fp64 by Inductor when these kernels
+# are launched from inside torch.compile. An fp64 scalar silently promotes the
+# whole silu/sigmoid chain to float64, which halves throughput (108us vs 56us at
+# 8192x3072 on H100). The explicit cast is a no-op in eager and keeps the
+# compiled path identical.
+
+
 @triton.jit
 def _swiglu_forward_kernel(
     a_ptr, b_ptr, c_ptr, stride, gate_multiplier, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
@@ -51,7 +59,7 @@ def _swiglu_forward_kernel(
     mask = col_offsets < n_cols
 
     # sigmoid requires type float32
-    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier
+    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier.to(tl.float32)
     b_row = tl.load(b_ptr + col_offsets, mask=mask, other=0)
     c_row = silu(a_row).cast(b_row.dtype) * b_row
     tl.store(c_ptr + col_offsets, c_row, mask=mask)
@@ -73,7 +81,7 @@ def _swiglu_backward_kernel(
 
     dc_row = tl.load(dc_ptr + col_offsets, mask=mask, other=0)
     # sigmoid requires type float32
-    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier
+    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier.to(tl.float32)
     b_row = tl.load(b_ptr + col_offsets, mask=mask, other=0)
 
     # recomputation to save memory. a_row already holds a * gate_multiplier.
@@ -81,7 +89,7 @@ def _swiglu_backward_kernel(
     silu_a = a_row * sig_a
     db_row = dc_row * silu_a
     # chain rule pulls an extra factor of gate_multiplier through the pre-activation scaling
-    da_row = dc_row * (silu_a * (1 - sig_a) + sig_a) * b_row * gate_multiplier
+    da_row = dc_row * (silu_a * (1 - sig_a) + sig_a) * b_row * gate_multiplier.to(tl.float32)
 
     tl.store(a_ptr + col_offsets, da_row, mask=mask)
     tl.store(b_ptr + col_offsets, db_row, mask=mask)
@@ -102,7 +110,7 @@ def _swiglu_forward_kernel_tiled(a_ptr, b_ptr, c_ptr, stride, gate_multiplier, n
     mask = col_offsets < n_cols
 
     # sigmoid requires type float32
-    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier
+    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier.to(tl.float32)
     b_row = tl.load(b_ptr + col_offsets, mask=mask, other=0)
     c_row = silu(a_row).cast(b_row.dtype) * b_row
     tl.store(c_ptr + col_offsets, c_row, mask=mask)
@@ -124,7 +132,7 @@ def _swiglu_backward_kernel_tiled(dc_ptr, a_ptr, b_ptr, stride, gate_multiplier,
 
     dc_row = tl.load(dc_ptr + col_offsets, mask=mask, other=0)
     # sigmoid requires type float32
-    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier
+    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier.to(tl.float32)
     b_row = tl.load(b_ptr + col_offsets, mask=mask, other=0)
 
     # recomputation to save memory. a_row already holds a * gate_multiplier.
@@ -132,7 +140,7 @@ def _swiglu_backward_kernel_tiled(dc_ptr, a_ptr, b_ptr, stride, gate_multiplier,
     silu_a = a_row * sig_a
     db_row = dc_row * silu_a
     # chain rule pulls an extra factor of gate_multiplier through the pre-activation scaling
-    da_row = dc_row * (silu_a * (1 - sig_a) + sig_a) * b_row * gate_multiplier
+    da_row = dc_row * (silu_a * (1 - sig_a) + sig_a) * b_row * gate_multiplier.to(tl.float32)
 
     tl.store(a_ptr + col_offsets, da_row, mask=mask)
     tl.store(b_ptr + col_offsets, db_row, mask=mask)
