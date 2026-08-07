@@ -1,6 +1,8 @@
 import pytest
 import torch
 
+import liger_kernel.ops.cutedsl.ops.grpo_loss as grpo_ops
+
 from liger_kernel.ops.cutedsl.ops.grpo_loss import fused_linear_selective_logprob
 
 pytestmark = [
@@ -79,3 +81,23 @@ def test_fused_linear_selective_logprob_partial_gradients(needs_input, needs_wei
             assert actual is None
         else:
             torch.testing.assert_close(actual.float(), expected, atol=5e-2, rtol=5e-2)
+
+
+def test_fused_linear_selective_logprob_accumulates_multichunk_weight_grad_in_fp32(monkeypatch):
+    torch.manual_seed(42)
+    token_count, hidden_size, vocab_size = 1025, 128, 129
+    x = torch.randn(token_count, hidden_size, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    w = torch.randn(vocab_size, hidden_size, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    target = torch.randint(0, vocab_size, (token_count,), device="cuda")
+    grad_output = torch.randn(token_count, device="cuda", dtype=torch.float32)
+    accumulation_dtypes = []
+    original_accum = grpo_ops._accum_grad_weight
+
+    def checked_accum(grad_weight, dlogits_t, x_chunk):
+        accumulation_dtypes.append(grad_weight.dtype)
+        return original_accum(grad_weight, dlogits_t, x_chunk)
+
+    monkeypatch.setattr(grpo_ops, "_accum_grad_weight", checked_accum)
+    fused_linear_selective_logprob(x, w, target).backward(grad_output)
+
+    assert accumulation_dtypes == [torch.float32]

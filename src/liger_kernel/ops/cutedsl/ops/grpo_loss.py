@@ -135,7 +135,15 @@ class LigerFusedLinearSelectiveLogProbFunction(torch.autograd.Function):
         logits_storage, chunk_size = _logits_storage(token_count, vocab_size, x.device, x.dtype)
         loss = torch.empty(chunk_size, device=x.device, dtype=torch.float32)
         grad_input = torch.empty_like(x) if needs_input else None
-        grad_weight = torch.empty_like(w) if needs_weight else None
+        grad_weight = (
+            torch.empty(
+                w.shape,
+                device=w.device,
+                dtype=torch.float32 if token_count > chunk_size else w.dtype,
+            )
+            if needs_weight
+            else None
+        )
         grad_bias_acc = (
             torch.zeros(vocab_size, device=x.device, dtype=torch.float32) if ctx.has_bias and needs_bias else None
         )
@@ -172,6 +180,8 @@ class LigerFusedLinearSelectiveLogProbFunction(torch.autograd.Function):
                 grad_input = grad_input[:, : ctx.h_orig].contiguous()
             if grad_weight is not None:
                 grad_weight = grad_weight[:, : ctx.h_orig].contiguous()
+        if grad_weight is not None:
+            grad_weight = grad_weight.to(w.dtype)
         return grad_input, grad_weight, None, grad_bias, None
 
 
