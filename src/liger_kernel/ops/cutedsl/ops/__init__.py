@@ -21,6 +21,9 @@ from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_s
 from liger_kernel.ops.cutedsl.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_backward
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_forward
+from liger_kernel.ops.cutedsl.ops.rope import LigerRopeFunction
+from liger_kernel.ops.cutedsl.ops.rope import rope_backward
+from liger_kernel.ops.cutedsl.ops.rope import rope_forward
 
 # ``LigerFusedScaledCrossEntropySM90Function`` is an *additional* CuTe DSL
 # operator (per-token NLL only, Hopper BF16); it deliberately does not replace
@@ -37,4 +40,7 @@ __all__ = [
     "LigerRMSNormFunction",
     "rms_norm_backward",
     "rms_norm_forward",
+    "LigerRopeFunction",
+    "rope_backward",
+    "rope_forward",
 ]
