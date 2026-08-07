@@ -1,3 +1,5 @@
+"""Correctness tests for the Hopper fused scaled cross entropy CuTe DSL kernel."""
+
 import os
 import subprocess
 import sys
