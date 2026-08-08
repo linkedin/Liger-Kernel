@@ -1351,6 +1351,32 @@ def test_alpha_scales_nll_loss(dtype):
     )
 
 
+def test_no_nll_loss_is_finite_when_chosen_targets_are_all_ignored():
+    """Preference-only DPO must not normalize its disabled NLL component."""
+    B, T, H, V = 4, 8, 16, 32
+    dtype = torch.float32
+    ignore_index = -100
+
+    inputs = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=True)
+    weight = torch.randn(V, H, device=device, dtype=dtype, requires_grad=True)
+    ref_inputs = torch.randn(B, T, H, device=device, dtype=dtype)
+    ref_weight = torch.randn(V, H, device=device, dtype=dtype)
+    targets = torch.randint(0, V, (B, T), device=device, dtype=torch.long)
+    targets[: B // 2] = ignore_index
+
+    loss, _ = LigerFusedLinearDPOLoss(
+        ignore_index=ignore_index,
+        compute_nll_loss=False,
+        compiled=False,
+        use_ref_model=True,
+    )(weight, inputs, targets, None, ref_inputs, ref_weight, None)
+
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert torch.isfinite(inputs.grad).all()
+    assert torch.isfinite(weight.grad).all()
+
+
 def test_functional_positional_arg_contract():
     """
     Pin the positional-argument contract of the public functional alias.
