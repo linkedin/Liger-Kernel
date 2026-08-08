@@ -4,8 +4,12 @@ from functools import partial
 import torch
 import torch._dynamo.config
 
-_SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE = 4096
-_SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE = 2048
+# Chunk temporaries are seq_chunk x vocab_chunk fp32 (~128 MB at these sizes) —
+# negligible next to the fp32 grad_weight buffer, and larger chunks amortize the
+# per-chunk elementwise/launch overhead: 4096x8192 measured 21% faster than the
+# previous 2048x4096 at identical peak memory (B300, V=248320, 65K tokens).
+_SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE = 8192
+_SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE = 4096
 
 
 def _maybe_mark_dynamic_dim1(tensor):
@@ -72,6 +76,16 @@ def _selective_logprob_backward(hidden, weight, targets, bias, log_z, grad_logpr
     """Dual-chunked (sequence × vocab) backward for selective logprob.
 
     Recomputes logits per chunk for memory efficiency.
+
+    The two grad GEMMs run with operands in ``hidden.dtype`` (bf16/fp16 in
+    practice) rather than fp32: fp32×fp32 matmuls dispatch to SIMT CUDA-core
+    kernels (~57 TFLOPS on B300, ~20x below the bf16 tensor-core rate) and were
+    ~78% of this backward's runtime. Precision is preserved where it matters:
+    cuBLAS accumulates each chunk GEMM in fp32 internally, and the cross-chunk
+    accumulation buffers (grad_hidden/grad_weight) stay fp32. Only the per-chunk
+    GEMM inputs/outputs round to the compute dtype — the same rounding a
+    non-chunked autograd backward through a bf16 lm_head applies everywhere.
+    For fp32 inputs the casts are no-ops and behavior is unchanged.
     """
     inv_t = 1.0 / temperature
     n_rows, _ = hidden.shape
@@ -109,8 +123,11 @@ def _selective_logprob_backward(hidden, weight, targets, bias, log_z, grad_logpr
             grad_logits[row_idx, local_idx] += grad_chunk * in_chunk
             grad_logits.mul_(inv_t)
 
-            grad_hidden[seq_start:seq_end].add_(grad_logits @ weight_chunk.float())
-            grad_weight[vocab_start:vocab_end].add_(grad_logits.t() @ hidden_chunk.float())
+            # Tensor-core GEMMs in the input dtype; fp32 accumulation across
+            # chunks via the fp32 grad buffers (see docstring).
+            grad_logits_lp = grad_logits.to(hidden.dtype)
+            grad_hidden[seq_start:seq_end].add_(grad_logits_lp @ weight_chunk.to(hidden.dtype))
+            grad_weight[vocab_start:vocab_end].add_(grad_logits_lp.t() @ hidden_chunk)
             if has_bias:
                 grad_bias[vocab_start:vocab_end].add_(grad_logits.sum(dim=0))
 
