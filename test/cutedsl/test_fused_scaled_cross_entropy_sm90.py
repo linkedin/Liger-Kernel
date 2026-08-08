@@ -30,6 +30,18 @@ def _sm90_module():
     return module
 
 
+def _frontend_function():
+    from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+
+    return LigerFusedLinearScaledCrossEntropyFunction
+
+
+def _frontend_module():
+    import liger_kernel.ops.fused_linear_scaled_cross_entropy as module
+
+    return module
+
+
 def _reference_nll(x, weight, target, ignore_index, temperature=1.0):
     logits = (x.float() @ weight.float().t()) / temperature
     valid = target != ignore_index
@@ -84,10 +96,10 @@ def _run_liger(
     temperature=1.0,
     m_tiles_per_cluster=1,
 ):
-    module = _sm90_module()
+    function = _frontend_function()
     x = x.detach().clone().requires_grad_(True)
     weight = weight.detach().clone().requires_grad_(True)
-    nll = module.LigerFusedScaledCrossEntropySM90Function.apply(
+    nll = function.apply(
         x,
         weight,
         target,
@@ -160,10 +172,10 @@ def test_sm90_differentiable_entropy_matches_torch(m_tiles_per_cluster):
     grad_nll = torch.rand(193, device="cuda", dtype=torch.float32) + 0.25
     grad_entropy = torch.rand(193, device="cuda", dtype=torch.float32) - 0.5
 
-    module = _sm90_module()
+    function = _frontend_function()
     xa = x.detach().clone().requires_grad_(True)
     wa = weight.detach().clone().requires_grad_(True)
-    nll, entropy = module.LigerFusedScaledCrossEntropySM90Function.apply(
+    nll, entropy = function.apply(
         xa,
         wa,
         target,
@@ -194,10 +206,10 @@ def test_sm90_matches_verl_fused_ppo_formulas():
     grad_nll = torch.rand(193, device="cuda", dtype=torch.float32) + 0.25
     grad_entropy = torch.rand(193, device="cuda", dtype=torch.float32) - 0.5
 
-    module = _sm90_module()
+    function = _frontend_function()
     xa = x.detach().clone().requires_grad_(True)
     wa = weight.detach().clone().requires_grad_(True)
-    nll, entropy = module.LigerFusedScaledCrossEntropySM90Function.apply(
+    nll, entropy = function.apply(
         xa,
         wa,
         target,
@@ -222,8 +234,50 @@ def test_sm90_matches_verl_fused_ppo_formulas():
     assert_verbose_allclose(wa.grad.float(), ref_dw.float(), atol=3e-2, rtol=1.5e-1)
 
 
-def test_sm90_ignored_entropy_rows_stay_zero_with_large_logits():
+def test_sm90_frontend_matches_fused_linear_ppo_fallback():
     set_seed(46)
+    x, weight, target = _make_inputs(521, 70, 517, ignore_stride=11)
+    temperature = 0.8
+    grad_nll = torch.rand(521, device="cuda", dtype=torch.float32) + 0.25
+    grad_entropy = torch.rand(521, device="cuda", dtype=torch.float32) - 0.5
+    frontend = _frontend_module()
+
+    sm90_input = x.detach().clone().requires_grad_(True)
+    sm90_weight = weight.detach().clone().requires_grad_(True)
+    sm90_nll, sm90_entropy = frontend.LigerFusedLinearScaledCrossEntropyFunction.apply(
+        sm90_input,
+        sm90_weight,
+        target,
+        temperature,
+        -100,
+        1,
+        True,
+    )
+    torch.autograd.backward((sm90_nll, sm90_entropy), (grad_nll, grad_entropy.to(sm90_entropy.dtype)))
+
+    fallback_input = x.detach().clone().requires_grad_(True)
+    fallback_weight = weight.detach().clone().requires_grad_(True)
+    fallback_nll, fallback_entropy = frontend._FusedLinearPPOFallbackFunction.apply(
+        fallback_input,
+        fallback_weight,
+        target,
+        temperature,
+        -100,
+        True,
+    )
+    torch.autograd.backward(
+        (fallback_nll, fallback_entropy),
+        (grad_nll, grad_entropy.to(fallback_entropy.dtype)),
+    )
+
+    assert_verbose_allclose(sm90_nll.float(), fallback_nll.float(), atol=5e-2, rtol=5e-2)
+    assert_verbose_allclose(sm90_entropy.float(), fallback_entropy.float(), atol=5e-2, rtol=5e-2)
+    assert_verbose_allclose(sm90_input.grad.float(), fallback_input.grad.float(), atol=3e-2, rtol=1.5e-1)
+    assert_verbose_allclose(sm90_weight.grad.float(), fallback_weight.grad.float(), atol=3e-2, rtol=1.5e-1)
+
+
+def test_sm90_ignored_entropy_rows_stay_zero_with_large_logits():
+    set_seed(47)
     x = (torch.randn(128, 64, device="cuda", dtype=torch.bfloat16) * 20).requires_grad_(True)
     weight = (torch.randn(256, 64, device="cuda", dtype=torch.bfloat16) * 20).requires_grad_(True)
     target = torch.full((128,), -100, device="cuda", dtype=torch.long)
@@ -444,7 +498,7 @@ def test_sm90_rejects_out_of_range_targets():
     fn.apply(x, weight, target)
 
 
-def test_sm90_exports_are_additive_and_do_not_alias_triton_flce():
+def test_sm90_frontend_and_backend_exports_are_additive():
     _sm90_module()
     repo_root = Path(__file__).resolve().parents[2]
     pythonpath = os.pathsep.join([str(repo_root / "src"), str(repo_root), os.environ.get("PYTHONPATH", "")])
@@ -457,12 +511,16 @@ def test_sm90_exports_are_additive_and_do_not_alias_triton_flce():
     script = textwrap.dedent(
         """
         import liger_kernel.ops.cutedsl.ops as cutedsl_ops
-        from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
+        from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
 
-        expected = "liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90"
-        actual = cutedsl_ops.LigerFusedScaledCrossEntropySM90Function.__module__
-        if actual != expected:
-            raise AssertionError(f"Expected {expected}, got {actual}")
+        expected_frontend = "liger_kernel.ops.fused_linear_scaled_cross_entropy"
+        actual_frontend = LigerFusedLinearScaledCrossEntropyFunction.__module__
+        if actual_frontend != expected_frontend:
+            raise AssertionError(f"Expected {expected_frontend}, got {actual_frontend}")
+        expected_backend = "liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90"
+        actual_backend = cutedsl_ops.LigerFusedScaledCrossEntropySM90Function.__module__
+        if actual_backend != expected_backend:
+            raise AssertionError(f"Expected {expected_backend}, got {actual_backend}")
         for name in (
             "LigerFusedScaledCrossEntropySM90Function",
             "fused_scaled_cross_entropy_forward",
@@ -470,13 +528,8 @@ def test_sm90_exports_are_additive_and_do_not_alias_triton_flce():
         ):
             if name not in cutedsl_ops.__all__:
                 raise AssertionError(f"{name} missing from cutedsl ops __all__")
-        if hasattr(cutedsl_ops, "LigerFusedLinearCrossEntropyFunction"):
-            raise AssertionError("cutedsl must not export a FusedLinearCrossEntropy override")
-        if LigerFusedLinearCrossEntropyFunction.__module__ != "liger_kernel.ops.fused_linear_cross_entropy":
-            raise AssertionError(
-                "Triton FusedLinearCrossEntropy must stay in place, got "
-                f"{LigerFusedLinearCrossEntropyFunction.__module__}"
-            )
+        if hasattr(cutedsl_ops, "LigerFusedLinearScaledCrossEntropyFunction"):
+            raise AssertionError("root frontend must not be exported from cutedsl ops")
         """
     )
     subprocess.run([sys.executable, "-c", script], check=True, env=env, cwd=repo_root)

@@ -21,14 +21,18 @@ from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_s
 from liger_kernel.ops.cutedsl.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_backward
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_forward
+from liger_kernel.ops.cutedsl.ops.rope import LigerRopeFunction
+from liger_kernel.ops.cutedsl.ops.rope import rope_backward
+from liger_kernel.ops.cutedsl.ops.rope import rope_forward
 from liger_kernel.ops.cutedsl.ops.swiglu import LigerSiLUMulCuteDSLFunction as LigerSiLUMulFunction
 from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_backward
 from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_forward
 
-# ``LigerFusedScaledCrossEntropySM90Function`` is an *additional* CuTe DSL
-# operator (per-token NLL only, Hopper BF16); it deliberately does not replace
-# or alias the Triton ``LigerFusedLinearCrossEntropyFunction``, which keeps its
-# reduction and legacy-option surface.
+# The SM90 fused scaled cross entropy implementation is selected by the
+# root-level ``LigerFusedLinearScaledCrossEntropyFunction`` frontend. It
+# deliberately does not replace or alias
+# ``LigerFusedLinearCrossEntropyFunction``, which keeps its reduction and
+# legacy-option surface.
 __all__ = [
     "LigerCrossEntropyFunction",
     "cross_entropy_backward",
@@ -40,6 +44,9 @@ __all__ = [
     "LigerRMSNormFunction",
     "rms_norm_backward",
     "rms_norm_forward",
+    "LigerRopeFunction",
+    "rope_backward",
+    "rope_forward",
     "LigerSiLUMulFunction",
     "swiglu_backward",
     "swiglu_forward",
