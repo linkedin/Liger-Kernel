@@ -223,6 +223,33 @@ DEEPSEEK_V3 = ModelConfig(
     topk=8,
 )
 
+LFM2_1_2B = ModelConfig(
+    name="lfm2_1.2b",
+    hidden_size=2048,
+    intermediate_size=12288,
+    vocab_size=65536,
+    num_attention_heads=32,
+    num_key_value_heads=8,
+    head_dim=64,
+    hidden_act="silu",
+    max_position_embeddings=128000,
+)
+
+LFM2_MOE_8B_A1B = ModelConfig(
+    name="lfm2_moe_8b_a1b",
+    hidden_size=2048,
+    intermediate_size=7168,
+    vocab_size=65536,
+    num_attention_heads=32,
+    num_key_value_heads=8,
+    head_dim=64,
+    hidden_act="silu",
+    max_position_embeddings=128000,
+    num_experts=32,
+    topk=4,
+    moe_intermediate_size=1792,
+)
+
 MODEL_REGISTRY: Dict[str, ModelConfig] = {
     "llama_2_7b": LLAMA_2_7B,
     "llama_3_8b": LLAMA_3_8B,
@@ -231,6 +258,8 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
     "qwen2.5_72b": QWEN_2_5_72B,
     "deepseek_v2_lite": DEEPSEEK_V2_LITE,
     "deepseek_v3": DEEPSEEK_V3,
+    "lfm2_1.2b": LFM2_1_2B,
+    "lfm2_moe_8b_a1b": LFM2_MOE_8B_A1B,
 }
 
 DEFAULT_MODEL_CONFIG = LLAMA_3_8B
