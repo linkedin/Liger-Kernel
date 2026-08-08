@@ -357,78 +357,81 @@ def _rms_norm_bwd_dw_host(
 
 
 def _launch_fwd(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine):
-    stream = _cute_stream(X.device)
-    # Scalar (non-vectorized) access, so element-size alignment is all we assume — this
-    # keeps the kernel correct for unaligned contiguous slices and irregular hidden dims.
-    x_ct = to_cute_tensor(X, assumed_align=X.element_size())
-    y_ct = to_cute_tensor(Y, assumed_align=Y.element_size())
-    rstd_ct = to_cute_tensor(RSTD, assumed_align=4)  # fp32
-    # Non-affine: reuse the fp32 RSTD handle as a dummy — the kernel never reads it.
-    w_ct = to_cute_tensor(W, assumed_align=W.element_size()) if elementwise_affine else rstd_ct
+    with device_context(X.device):
+        stream = _cute_stream(X.device)
+        # Scalar (non-vectorized) access, so element-size alignment is all we assume — this
+        # keeps the kernel correct for unaligned contiguous slices and irregular hidden dims.
+        x_ct = to_cute_tensor(X, assumed_align=X.element_size())
+        y_ct = to_cute_tensor(Y, assumed_align=Y.element_size())
+        rstd_ct = to_cute_tensor(RSTD, assumed_align=4)  # fp32
+        # Non-affine: reuse the fp32 RSTD handle as a dummy — the kernel never reads it.
+        w_ct = to_cute_tensor(W, assumed_align=W.element_size()) if elementwise_affine else rstd_ct
 
-    # Key on every dtype the kernel bakes: X (also Y), and W when affine (mW.element_type
-    # is a compile-time specialization). Missing W.dtype would let a bf16-activations /
-    # fp32-weight call reuse a kernel baked for a different weight width — see the same
-    # guard in cross_entropy.py's compile key.
-    key = ("fwd", X.dtype, W.dtype if elementwise_affine else None, casting_mode, elementwise_affine)
-    if key not in _compile_cache:
-        _compile_cache[key] = cute.compile(
-            _rms_norm_fwd_host,
-            x_ct,
-            w_ct,
-            y_ct,
-            rstd_ct,
-            float(eps),
-            float(offset),
-            casting_mode,
-            elementwise_affine,
-            stream,
-        )
-    _compile_cache[key](x_ct, w_ct, y_ct, rstd_ct, float(eps), float(offset), stream)
+        # Key on every dtype the kernel bakes: X (also Y), and W when affine (mW.element_type
+        # is a compile-time specialization). Missing W.dtype would let a bf16-activations /
+        # fp32-weight call reuse a kernel baked for a different weight width — see the same
+        # guard in cross_entropy.py's compile key.
+        key = ("fwd", X.dtype, W.dtype if elementwise_affine else None, casting_mode, elementwise_affine)
+        if key not in _compile_cache:
+            _compile_cache[key] = cute.compile(
+                _rms_norm_fwd_host,
+                x_ct,
+                w_ct,
+                y_ct,
+                rstd_ct,
+                float(eps),
+                float(offset),
+                casting_mode,
+                elementwise_affine,
+                stream,
+            )
+        _compile_cache[key](x_ct, w_ct, y_ct, rstd_ct, float(eps), float(offset), stream)
 
 
 def _launch_bwd_dx(dY, X, W, RSTD, dX, offset, casting_mode, elementwise_affine):
-    stream = _cute_stream(X.device)
-    dy_ct = to_cute_tensor(dY, assumed_align=dY.element_size())
-    x_ct = to_cute_tensor(X, assumed_align=X.element_size())
-    rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
-    dx_ct = to_cute_tensor(dX, assumed_align=dX.element_size())
-    w_ct = to_cute_tensor(W, assumed_align=W.element_size()) if elementwise_affine else rstd_ct
+    with device_context(X.device):
+        stream = _cute_stream(X.device)
+        dy_ct = to_cute_tensor(dY, assumed_align=dY.element_size())
+        x_ct = to_cute_tensor(X, assumed_align=X.element_size())
+        rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
+        dx_ct = to_cute_tensor(dX, assumed_align=dX.element_size())
+        w_ct = to_cute_tensor(W, assumed_align=W.element_size()) if elementwise_affine else rstd_ct
 
-    # Key on every baked dtype: dY, X (also dX == dY.dtype), and W when affine.
-    key = ("bwd_dx", X.dtype, dY.dtype, W.dtype if elementwise_affine else None, casting_mode, elementwise_affine)
-    if key not in _compile_cache:
-        _compile_cache[key] = cute.compile(
-            _rms_norm_bwd_dx_host,
-            dy_ct,
-            x_ct,
-            w_ct,
-            rstd_ct,
-            dx_ct,
-            float(offset),
-            casting_mode,
-            elementwise_affine,
-            stream,
-        )
-    _compile_cache[key](dy_ct, x_ct, w_ct, rstd_ct, dx_ct, float(offset), stream)
+        # Key on every baked dtype: dY, X (also dX == dY.dtype), and W when affine.
+        key = ("bwd_dx", X.dtype, dY.dtype, W.dtype if elementwise_affine else None, casting_mode, elementwise_affine)
+        if key not in _compile_cache:
+            _compile_cache[key] = cute.compile(
+                _rms_norm_bwd_dx_host,
+                dy_ct,
+                x_ct,
+                w_ct,
+                rstd_ct,
+                dx_ct,
+                float(offset),
+                casting_mode,
+                elementwise_affine,
+                stream,
+            )
+        _compile_cache[key](dy_ct, x_ct, w_ct, rstd_ct, dx_ct, float(offset), stream)
 
 
 def _launch_bwd_dw(dY, X, RSTD, dW_partial, rows_per_strip, casting_mode):
-    stream = _cute_stream(X.device)
-    dy_ct = to_cute_tensor(dY, assumed_align=dY.element_size())
-    x_ct = to_cute_tensor(X, assumed_align=X.element_size())
-    rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
-    dw_ct = to_cute_tensor(dW_partial, assumed_align=4)  # fp32 (num_strips, n_cols)
+    with device_context(X.device):
+        stream = _cute_stream(X.device)
+        dy_ct = to_cute_tensor(dY, assumed_align=dY.element_size())
+        x_ct = to_cute_tensor(X, assumed_align=X.element_size())
+        rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
+        dw_ct = to_cute_tensor(dW_partial, assumed_align=4)  # fp32 (num_strips, n_cols)
 
-    # Key on every baked dtype: dY and X (mdW is always fp32). The llama cast bakes
-    # mX.element_type; the loads bake mdY.element_type. rows_per_strip is a runtime
-    # arg (not baked), so one compiled kernel serves every shape.
-    key = ("bwd_dw", X.dtype, dY.dtype, casting_mode)
-    if key not in _compile_cache:
-        _compile_cache[key] = cute.compile(
-            _rms_norm_bwd_dw_host, dy_ct, x_ct, rstd_ct, dw_ct, int(rows_per_strip), casting_mode, stream
-        )
-    _compile_cache[key](dy_ct, x_ct, rstd_ct, dw_ct, int(rows_per_strip), stream)
+        # Key on every baked dtype: dY and X (mdW is always fp32). The llama cast bakes
+        # mX.element_type; the loads bake mdY.element_type. rows_per_strip is a runtime
+        # arg (not baked), so one compiled kernel serves every shape.
+        key = ("bwd_dw", X.dtype, dY.dtype, casting_mode)
+        if key not in _compile_cache:
+            _compile_cache[key] = cute.compile(
+                _rms_norm_bwd_dw_host, dy_ct, x_ct, rstd_ct, dw_ct, int(rows_per_strip), casting_mode, stream
+            )
+        _compile_cache[key](dy_ct, x_ct, rstd_ct, dw_ct, int(rows_per_strip), stream)
 
 
 # =============================================================================

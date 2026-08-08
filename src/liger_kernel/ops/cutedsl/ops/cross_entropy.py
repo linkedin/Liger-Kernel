@@ -607,68 +607,96 @@ def _launch_ce_fwd(
     pred_tok_out=None,
     inv_n_z=None,
 ):
-    vec = 16 // x.element_size()  # 128-bit vectorization width: 8 bf16 / 4 fp32
-    assert x.shape[-1] % vec == 0, (
-        f"cutedsl CE needs V % {vec} == 0 for {x.dtype} (128-bit vectorized loads); "
-        f"got V={x.shape[-1]}. The 256-thread tail is predicated, so only V % VEC is required."
-    )
-    # inv_n_z defaults to inv_n_loss: on the core / no-class-weight path the main loss and the
-    # z_loss share one normalizer. Keeping inv_n_z a trailing keyword (not a 5th positional)
-    # leaves the 6-arg call other cutedsl ops use unchanged: (x, y, loss, inv_n, ignore_index,
-    # has_grad) — so this stays a drop-in for FLCE and any other caller.
-    if inv_n_z is None:
-        inv_n_z = inv_n_loss
-    # Compile ONCE per (dtype, has_grad, feature flags) and cache the compiled callable;
-    # invoke it each call. (Eager-calling the @cute.jit fn recompiled on every invocation
-    # -> ~30 ms fixed overhead.) Launch on torch's current CUDA stream so the in-place
-    # grad write is ordered w.r.t. the caller.
-    has_zloss = bool(lse_sq_scale != 0.0 or return_z_loss)
-    has_softcap = softcap is not None
-    has_weight = weight is not None
-    has_smoothing = bool(label_smoothing != 0.0)
-    softcap_val = float(softcap) if has_softcap else 0.0
-    x_ct = to_cute_tensor(x)
-    y_ct = to_cute_tensor(y, assumed_align=8)  # int64
-    loss_ct = to_cute_tensor(loss, assumed_align=2)  # bf16/fp16/fp32 scalar
-    stream = _cute_stream(x.device)
-    # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
-    #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
-    #   `loss.to(mLoss.element_type)`). Missing loss.dtype let two callers with the
-    #   same (x.dtype, has_grad) but different loss-buffer widths reuse each other's
-    #   kernel and write wrong-width values into the loss buffer — e.g. CE (loss =
-    #   input dtype) vs FLCE (loss = fp32) collided on bf16.
-    # When an optional output isn't requested, pass a same-shape dummy
-    # of any dtype (mZLoss reuses `loss`; mTokenAcc reuses `loss`; mPredTok reuses the
-    # int64 target `y`) — the kernel never touches it because its RETURN_* flag bakes
-    # False, and the compile key carries that flag so a real-output compile can't reuse it.
-    # Reuse the already-marshalled loss_ct/y_ct handles for the dummies (no extra from_dlpack
-    # on the common path — one fewer DLPack capsule per call).
-    z_ct = to_cute_tensor(z_loss_out, assumed_align=2) if return_z_loss else loss_ct
-    ta_ct = to_cute_tensor(token_acc_out, assumed_align=4) if return_token_accuracy else loss_ct
-    pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
-    # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.
-    w_ct = to_cute_tensor(weight, assumed_align=4) if has_weight else y_ct
-    # warps/CTA: mirror Triton's Blackwell CE convention — 2-byte dtypes (bf16/fp16) are
-    # instruction-issue-bound -> 8 warps; fp32 is bandwidth-bound -> 32 warps. Baked into the
-    # kernel, so it's part of the compile key.
-    num_warps = 8 if x.element_size() == 2 else 32
-    key = (
-        x.dtype,
-        y.dtype,
-        loss.dtype,
-        has_grad,
-        has_zloss,
-        bool(return_z_loss),
-        has_softcap,
-        bool(return_token_accuracy),
-        bool(return_predicted_tokens),
-        has_weight,
-        has_smoothing,
-        num_warps,
-    )
-    if key not in _compile_cache:
-        _compile_cache[key] = cute.compile(
-            _ce_fwd_host,
+    with device_context(x.device):
+        vec = 16 // x.element_size()  # 128-bit vectorization width: 8 bf16 / 4 fp32
+        assert x.shape[-1] % vec == 0, (
+            f"cutedsl CE needs V % {vec} == 0 for {x.dtype} (128-bit vectorized loads); "
+            f"got V={x.shape[-1]}. The 256-thread tail is predicated, so only V % VEC is required."
+        )
+        # inv_n_z defaults to inv_n_loss: on the core / no-class-weight path the main loss and the
+        # z_loss share one normalizer. Keeping inv_n_z a trailing keyword (not a 5th positional)
+        # leaves the 6-arg call other cutedsl ops use unchanged: (x, y, loss, inv_n, ignore_index,
+        # has_grad) — so this stays a drop-in for FLCE and any other caller.
+        if inv_n_z is None:
+            inv_n_z = inv_n_loss
+        # Compile ONCE per (dtype, has_grad, feature flags) and cache the compiled callable;
+        # invoke it each call. (Eager-calling the @cute.jit fn recompiled on every invocation
+        # -> ~30 ms fixed overhead.) Launch on torch's current CUDA stream so the in-place
+        # grad write is ordered w.r.t. the caller.
+        has_zloss = bool(lse_sq_scale != 0.0 or return_z_loss)
+        has_softcap = softcap is not None
+        has_weight = weight is not None
+        has_smoothing = bool(label_smoothing != 0.0)
+        softcap_val = float(softcap) if has_softcap else 0.0
+        x_ct = to_cute_tensor(x)
+        y_ct = to_cute_tensor(y, assumed_align=8)  # int64
+        loss_ct = to_cute_tensor(loss, assumed_align=2)  # bf16/fp16/fp32 scalar
+        stream = _cute_stream(x.device)
+        # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
+        #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
+        #   `loss.to(mLoss.element_type)`). Missing loss.dtype let two callers with the
+        #   same (x.dtype, has_grad) but different loss-buffer widths reuse each other's
+        #   kernel and write wrong-width values into the loss buffer — e.g. CE (loss =
+        #   input dtype) vs FLCE (loss = fp32) collided on bf16.
+        # When an optional output isn't requested, pass a same-shape dummy
+        # of any dtype (mZLoss reuses `loss`; mTokenAcc reuses `loss`; mPredTok reuses the
+        # int64 target `y`) — the kernel never touches it because its RETURN_* flag bakes
+        # False, and the compile key carries that flag so a real-output compile can't reuse it.
+        # Reuse the already-marshalled loss_ct/y_ct handles for the dummies (no extra from_dlpack
+        # on the common path — one fewer DLPack capsule per call).
+        z_ct = to_cute_tensor(z_loss_out, assumed_align=2) if return_z_loss else loss_ct
+        ta_ct = to_cute_tensor(token_acc_out, assumed_align=4) if return_token_accuracy else loss_ct
+        pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
+        # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.
+        w_ct = to_cute_tensor(weight, assumed_align=4) if has_weight else y_ct
+        # warps/CTA: mirror Triton's Blackwell CE convention — 2-byte dtypes (bf16/fp16) are
+        # instruction-issue-bound -> 8 warps; fp32 is bandwidth-bound -> 32 warps. Baked into the
+        # kernel, so it's part of the compile key.
+        num_warps = 8 if x.element_size() == 2 else 32
+        key = (
+            x.dtype,
+            y.dtype,
+            loss.dtype,
+            has_grad,
+            has_zloss,
+            bool(return_z_loss),
+            has_softcap,
+            bool(return_token_accuracy),
+            bool(return_predicted_tokens),
+            has_weight,
+            has_smoothing,
+            num_warps,
+        )
+        if key not in _compile_cache:
+            _compile_cache[key] = cute.compile(
+                _ce_fwd_host,
+                x_ct,
+                y_ct,
+                loss_ct,
+                z_ct,
+                ta_ct,
+                pt_ct,
+                w_ct,
+                float(inv_n_loss),
+                float(inv_n_z),
+                float(lse_sq_scale),
+                float(softcap_val),
+                float(label_smoothing),
+                float(weight_sum),
+                int(ignore_index),
+                has_grad,
+                has_zloss,
+                bool(return_z_loss),
+                has_softcap,
+                bool(return_token_accuracy),
+                bool(return_predicted_tokens),
+                has_weight,
+                has_smoothing,
+                num_warps,
+                stream,
+            )
+        # The constexpr flags are baked at compile; pass runtime tensors/scalars/stream only.
+        _compile_cache[key](
             x_ct,
             y_ct,
             loss_ct,
@@ -683,35 +711,8 @@ def _launch_ce_fwd(
             float(label_smoothing),
             float(weight_sum),
             int(ignore_index),
-            has_grad,
-            has_zloss,
-            bool(return_z_loss),
-            has_softcap,
-            bool(return_token_accuracy),
-            bool(return_predicted_tokens),
-            has_weight,
-            has_smoothing,
-            num_warps,
             stream,
         )
-    # The constexpr flags are baked at compile; pass runtime tensors/scalars/stream only.
-    _compile_cache[key](
-        x_ct,
-        y_ct,
-        loss_ct,
-        z_ct,
-        ta_ct,
-        pt_ct,
-        w_ct,
-        float(inv_n_loss),
-        float(inv_n_z),
-        float(lse_sq_scale),
-        float(softcap_val),
-        float(label_smoothing),
-        float(weight_sum),
-        int(ignore_index),
-        stream,
-    )
 
 
 # =============================================================================
