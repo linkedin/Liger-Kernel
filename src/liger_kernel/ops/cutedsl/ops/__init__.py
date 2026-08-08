@@ -15,6 +15,9 @@ from liger_kernel.ops.cutedsl.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_forward
 from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
+from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy_sm90 import LigerFusedLinearCrossEntropySM90Function
+from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy_sm90 import fused_linear_cross_entropy_forward_sm90
+from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy_sm90 import liger_fused_linear_cross_entropy_sm90
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import LigerFusedScaledCrossEntropySM90Function
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_forward
@@ -35,6 +38,9 @@ __all__ = [
     "cross_entropy_backward",
     "cross_entropy_forward",
     "LigerFusedLinearCrossEntropyFunction",
+    "LigerFusedLinearCrossEntropySM90Function",
+    "fused_linear_cross_entropy_forward_sm90",
+    "liger_fused_linear_cross_entropy_sm90",
     "LigerFusedScaledCrossEntropySM90Function",
     "fused_scaled_cross_entropy_backward",
     "fused_scaled_cross_entropy_forward",

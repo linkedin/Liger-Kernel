@@ -11,6 +11,7 @@ CUTILE_PREFIX = "liger_kernel.ops.cutile."
 # Transformer modules bind liger_kernel.ops.* at import time (geglu != GELUMul name).
 TRANSFORMER_MODULES = {
     "LigerCrossEntropyFunction": "liger_kernel.transformers.cross_entropy",
+    "LigerFusedLinearCrossEntropyFunction": "liger_kernel.transformers.fused_linear_cross_entropy",
     "LigerFusedLinearJSDFunction": "liger_kernel.transformers.fused_linear_jsd",
     "LigerGELUMulFunction": "liger_kernel.transformers.geglu",
     "LigerJSDFunction": "liger_kernel.transformers.jsd",

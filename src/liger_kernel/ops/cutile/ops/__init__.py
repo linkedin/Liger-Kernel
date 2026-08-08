@@ -15,6 +15,7 @@ except ImportError as exc:
 from liger_kernel.ops.cutile.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.cutile.ops.cross_entropy import cross_entropy_backward
 from liger_kernel.ops.cutile.ops.cross_entropy import cross_entropy_forward
+from liger_kernel.ops.cutile.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops.cutile.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.ops.cutile.ops.fused_linear_jsd import fused_linear_jsd_backward
 from liger_kernel.ops.cutile.ops.fused_linear_jsd import fused_linear_jsd_forward
@@ -45,6 +46,7 @@ __all__ = [
     "LigerCrossEntropyFunction",
     "cross_entropy_backward",
     "cross_entropy_forward",
+    "LigerFusedLinearCrossEntropyFunction",
     "LigerFusedLinearJSDFunction",
     "fused_linear_jsd_backward",
     "fused_linear_jsd_forward",
