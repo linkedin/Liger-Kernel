@@ -20,6 +20,7 @@ import sys
 
 CUTILE_ENABLED_KERNELS = [
     "cross_entropy",
+    "fused_linear_cross_entropy",
     "fused_linear_jsd",
     "geglu",
     "jsd",

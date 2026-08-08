@@ -38,7 +38,7 @@ def get_optional_dependencies():
         "cuda-tile[tileiras]",
     ]
     cutedsl_deps = [
-        "nvidia-cutlass-dsl>=4.5.2",
+        "nvidia-cutlass-dsl>=4.6.0",
     ]
     dev_deps = [
         "transformers>=4.52.0",
