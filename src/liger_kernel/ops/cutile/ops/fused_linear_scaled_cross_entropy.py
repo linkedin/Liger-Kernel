@@ -282,7 +282,13 @@ def fused_scaled_cross_entropy_backward(
     block_size = _select_cross_entropy_block_size(V)
 
     grad_input = torch.empty_like(_input) if _input.requires_grad else None
-    grad_weight = torch.zeros_like(weight) if weight.requires_grad else None
+    grad_weight = torch.empty_like(weight) if weight.requires_grad else None
+    grad_logits_workspace = torch.empty(
+        min(BT, chunk_size),
+        V,
+        dtype=_input.dtype,
+        device=_input.device,
+    )
     dummy_f32 = torch.empty(1, dtype=torch.float32, device=_input.device)
     dummy_input_dtype = torch.empty(1, dtype=_input.dtype, device=_input.device)
 
@@ -295,7 +301,8 @@ def fused_scaled_cross_entropy_backward(
     for start in range(0, BT, chunk_size):
         end = min(start + chunk_size, BT)
         input_chunk = _input[start:end]
-        grad_logits_chunk = (input_chunk @ weight.t()).contiguous()
+        grad_logits_chunk = grad_logits_workspace[: end - start]
+        torch.mm(input_chunk, weight.t(), out=grad_logits_chunk)
 
         ct.launch(
             torch.cuda.current_stream(),
@@ -318,9 +325,14 @@ def fused_scaled_cross_entropy_backward(
         )
 
         if grad_input is not None:
-            grad_input[start:end] = grad_logits_chunk @ weight
+            torch.mm(grad_logits_chunk, weight, out=grad_input[start:end])
         if grad_weight is not None:
-            grad_weight.add_(grad_logits_chunk.t() @ input_chunk)
+            if start == 0:
+                torch.mm(grad_logits_chunk.t(), input_chunk, out=grad_weight)
+            else:
+                # Accumulate the GEMM directly into grad_weight instead of
+                # materializing a full V x H temporary for every token chunk.
+                torch.addmm(grad_weight, grad_logits_chunk.t(), input_chunk, out=grad_weight)
 
     return grad_input, grad_weight
 

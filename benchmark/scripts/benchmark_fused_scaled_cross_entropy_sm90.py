@@ -171,18 +171,19 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
         raise ValueError(f"Unknown provider {provider!r}")
 
     layer = layer.to(device)
-    return x, lambda: layer(x, target), fixed_grad_output(total_tokens)
+    weight = layer.weight if hasattr(layer, "weight") else layer.linear.weight
+    return x, weight, lambda: layer(x, target), fixed_grad_output(total_tokens)
 
 
-def probe_forward_fn(x, fwd_fn, grad_output):
-    """Adapter for the shared memory-probing helpers (setup returns a 3-tuple)."""
+def probe_forward_fn(x, weight, fwd_fn, grad_output):
+    """Adapter for the shared memory-probing helpers (setup returns a 4-tuple)."""
     return fwd_fn()
 
 
 def bench_speed_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     import triton
 
-    x, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
+    x, weight, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
@@ -199,12 +200,17 @@ def bench_speed_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) 
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    ms_50, ms_20, ms_80 = triton.testing.do_bench(bench_fn, grad_to_none=[x], rep=10, quantiles=QUANTILES)
+    ms_50, ms_20, ms_80 = triton.testing.do_bench(
+        bench_fn,
+        grad_to_none=[x, weight],
+        rep=10,
+        quantiles=QUANTILES,
+    )
     return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
 
 
 def bench_memory_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
+    x, weight, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
@@ -214,11 +220,13 @@ def bench_memory_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput)
 
         def bench_fn():
             x.grad = None
+            weight.grad = None
             y.backward(grad_output, retain_graph=True)
     elif mode == "full":
 
         def bench_fn():
             x.grad = None
+            weight.grad = None
             fwd_fn().backward(grad_output)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
