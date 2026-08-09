@@ -15,6 +15,7 @@ from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_text_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_vision_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.mhc import LigerMHC  # noqa: F401
+from liger_kernel.transformers.mlp import LigerMLP  # noqa: F401
 from liger_kernel.transformers.modulated_rms_norm import LigerModulatedRMSNorm  # noqa: F401
 from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention  # noqa: F401
 from liger_kernel.transformers.poly_norm import LigerPolyNorm  # noqa: F401
@@ -200,6 +201,7 @@ __all__ = [
     "LigerMultiTokenAttention",
     "LigerSoftmax",
     "LigerSparsemax",
+    "LigerMLP",
 ]
 
 # Add transformer-dependent symbols only if available
