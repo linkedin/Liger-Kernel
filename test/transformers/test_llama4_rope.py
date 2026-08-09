@@ -5,6 +5,7 @@ from test.utils import supports_bfloat16
 
 from liger_kernel.ops import LigerLlama4RopeFunction
 from liger_kernel.transformers.llama4_rope import liger_llama4_text_rotary_pos_emb
+from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
 
 try:
@@ -149,13 +150,6 @@ def test_functional_correctness(bsz, seq_len, num_q_heads, num_kv_heads, head_di
     assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol)
 
 
-def _free_device_memory_bytes():
-    if device != "cuda" or not torch.cuda.is_available():
-        return 0
-    free, _total = torch.cuda.mem_get_info()
-    return free
-
-
 # The kernel indexes the flattened batch*seq dimension as
 # `base_offset * q_row_stride`, whose largest value is
 # `(bsz * seq_len - 1) * n_q_heads * head_dim`. That product is one row short of
@@ -165,39 +159,49 @@ _HEAD_DIM = 128
 _N_Q_HEADS = 64
 _ROW = _N_Q_HEADS * _HEAD_DIM
 _SEQ_LEN = (2**31 - 1) // _ROW + 2  # smallest seq_len whose last offset wraps int32
-# q, its `.contiguous()` copy inside the op, and the output.
-_NEEDED_BYTES = 3 * _SEQ_LEN * _ROW * 2
 
 
 @pytest.mark.skipif(not IS_LLAMA4_AVAILABLE, reason="Llama4 is not available in transformers.")
 @pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
-@pytest.mark.skipif(
-    _free_device_memory_bytes() < _NEEDED_BYTES,
-    reason=f"needs about {_NEEDED_BYTES / 1e9:.0f} GB free to build a q tensor past 2**31 elements",
+@pytest.mark.parametrize(
+    "bsz, seq_len, num_q_heads, num_kv_heads, head_dim",
+    [
+        pytest.param(
+            1,
+            _SEQ_LEN,
+            _N_Q_HEADS,
+            1,
+            _HEAD_DIM,
+            marks=pytest.mark.skipif(
+                infer_device() == "cpu" or get_total_gpu_memory() < 20,
+                reason="This test requires a GPU with at least 20GB of memory",
+            ),
+        ),
+    ],
 )
-def test_row_offset_does_not_wrap_int32():
+def test_row_offset_does_not_wrap_int32(bsz, seq_len, num_q_heads, num_kv_heads, head_dim):
     """Regression for #1335: the last token must still be rotated, not read from a wrapped address."""
     dtype = torch.bfloat16
-    n_kv_heads = 1
+    n_kv_heads = num_kv_heads
 
-    q = torch.zeros((1, _SEQ_LEN, _N_Q_HEADS, _HEAD_DIM), device=device, dtype=dtype)
-    k = torch.zeros((1, _SEQ_LEN, n_kv_heads, _HEAD_DIM), device=device, dtype=dtype)
+    q = torch.zeros((bsz, seq_len, num_q_heads, head_dim), device=device, dtype=dtype)
+    k = torch.zeros((bsz, seq_len, n_kv_heads, head_dim), device=device, dtype=dtype)
 
     # Only the final token carries a signal. It sits at the offset that wraps.
     q[0, -1].fill_(1.0)
     k[0, -1].fill_(1.0)
 
     config = Llama4TextConfig(
-        hidden_size=_N_Q_HEADS * _HEAD_DIM,
-        num_attention_heads=_N_Q_HEADS,
+        hidden_size=num_q_heads * head_dim,
+        num_attention_heads=num_q_heads,
         num_key_value_heads=n_kv_heads,
-        head_dim=_HEAD_DIM,
-        max_position_embeddings=_SEQ_LEN,
+        head_dim=head_dim,
+        max_position_embeddings=seq_len,
         rope_theta=10000.0,
         rope_scaling=None,
     )
     rotary_emb = Llama4TextRotaryEmbedding(config=config, device=device)
-    pos_ids = torch.arange(_SEQ_LEN, device=device).unsqueeze(0)
+    pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
     freqs_cis = rotary_emb(q, pos_ids)
 
     q_out, k_out = LigerLlama4RopeFunction.apply(q, k, freqs_cis)
