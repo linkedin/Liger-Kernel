@@ -15,13 +15,13 @@ Sweep parameters (all optional; defaults reproduce the previous behaviour)::
     --providers NAME [NAME ...]     explicit provider list
 
 Providers: ``torch``, ``liger`` (Triton FLCE, ``reduction="none"``),
-and ``cutedsl-sm90`` (fixed 1024-token wave-batched backward).
+``cutile``, and ``cutedsl-sm90`` (fixed 1024-token wave-batched backward).
 
 Example::
 
     python benchmark_fused_scaled_cross_entropy_sm90.py \\
         --tokens 4096 --hidden 4096 --vocab 131072 \\
-        --providers torch liger cutedsl-sm90
+        --providers torch liger cutile cutedsl-sm90
 """
 
 import argparse
@@ -53,6 +53,7 @@ REPRESENTATIVE_CONFIG = {
 }
 
 CUTEDSL_PREFIX = "cutedsl-sm90"
+CUTILE_PREFIX = "cutile"
 # Seed of the fixed per-token upstream gradient, so every provider and every
 # repetition sees byte-identical ``d(NLL)/d(loss)`` values.
 GRAD_SEED = 1234
@@ -110,6 +111,29 @@ class CuteDSLHopperLMHeadScaledCE(torch.nn.Module):
         )
 
 
+class CuTileLMHeadScaledCE(torch.nn.Module):
+    def __init__(self, hidden_size: int, vocab_size: int, dtype: torch.dtype, temperature: float = 1.0):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.empty(vocab_size, hidden_size, dtype=dtype))
+        self.temperature = temperature
+        torch.nn.init.normal_(self.weight, std=hidden_size**-0.5)
+
+    def forward(self, x, target):
+        from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import (
+            LigerFusedLinearScaledCrossEntropyFunction,
+        )
+
+        return LigerFusedLinearScaledCrossEntropyFunction.apply(
+            x,
+            self.weight,
+            target,
+            self.temperature,
+            -100,
+            1,
+            False,
+        )
+
+
 def fixed_grad_output(tokens: int) -> torch.Tensor:
     """The fixed ``[M]`` upstream gradient of the per-token NLL."""
     generator = torch.Generator(device=device).manual_seed(GRAD_SEED)
@@ -137,6 +161,8 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
     provider = input.kernel_provider
     if provider == CUTEDSL_PREFIX:
         layer = CuteDSLHopperLMHeadScaledCE(hidden_size, vocab_size, dtype)
+    elif provider == CUTILE_PREFIX:
+        layer = CuTileLMHeadScaledCE(hidden_size, vocab_size, dtype)
     elif provider == "liger":
         layer = TritonLMHeadCE(hidden_size, vocab_size, dtype)
     elif provider == "torch":
@@ -219,10 +245,10 @@ def parse_sweep_args():
 def resolve_providers(sweep_args):
     if sweep_args.providers:
         for provider in sweep_args.providers:
-            if provider not in ("torch", "liger", CUTEDSL_PREFIX):
+            if provider not in ("torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX):
                 raise ValueError(f"Unknown provider {provider!r}")
         return list(sweep_args.providers)
-    return ["torch", "liger", CUTEDSL_PREFIX]
+    return ["torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX]
 
 
 if __name__ == "__main__":

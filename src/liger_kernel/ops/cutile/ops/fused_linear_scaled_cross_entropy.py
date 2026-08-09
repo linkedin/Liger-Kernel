@@ -11,6 +11,8 @@ from liger_kernel.ops.cutile.ops.utils import _select_cross_entropy_block_size
 
 ConstInt = ct.Constant[int]
 
+_MAX_LOGITS_WORKSPACE_BYTES = 256 * 1024 * 1024
+
 
 def _validate_temperature(temperature):
     if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
@@ -41,6 +43,13 @@ def _validate_inputs(_input, weight, target, ignore_index):
         raise ValueError(
             f"target contains values outside [0, {weight.shape[0]}) that are not ignore_index={ignore_index}"
         )
+
+
+def _calculate_token_chunk_size(token_count, vocab_size, element_size):
+    bytes_per_token = vocab_size * element_size
+    max_tokens_per_chunk = max(1, _MAX_LOGITS_WORKSPACE_BYTES // bytes_per_token)
+    power_of_two_chunk = _next_power_of_2(max_tokens_per_chunk + 1) // 2
+    return min(token_count, power_of_two_chunk)
 
 
 @ct.kernel(occupancy=4)
@@ -133,10 +142,9 @@ def fused_scaled_cross_entropy_forward(
     if not isinstance(return_entropy, bool):
         raise TypeError("return_entropy must be a bool")
 
-    BT, H = _input.shape
+    BT = _input.shape[0]
     V = weight.shape[0]
-    inc_factor = (V + H - 1) // H
-    chunk_size = _next_power_of_2((BT + inc_factor - 1) // inc_factor)
+    chunk_size = _calculate_token_chunk_size(BT, V, _input.element_size())
     block_size = _select_cross_entropy_block_size(V)
 
     nll = torch.empty(BT, dtype=torch.float32, device=_input.device)
@@ -268,10 +276,9 @@ def fused_scaled_cross_entropy_backward(
                 f"got {tuple(entropy.shape)} and {tuple(grad_entropy.shape)}"
             )
 
-    BT, H = _input.shape
+    BT = _input.shape[0]
     V = weight.shape[0]
-    inc_factor = (V + H - 1) // H
-    chunk_size = _next_power_of_2((BT + inc_factor - 1) // inc_factor)
+    chunk_size = _calculate_token_chunk_size(BT, V, _input.element_size())
     block_size = _select_cross_entropy_block_size(V)
 
     grad_input = torch.empty_like(_input) if _input.requires_grad else None

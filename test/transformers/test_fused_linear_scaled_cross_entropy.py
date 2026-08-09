@@ -198,7 +198,7 @@ def test_frontend_fallback_supports_entropy_only_backward():
     ("shape", "dtype", "atol", "rtol"),
     [
         ((17, 31, 257), torch.float32, 6e-5, 6e-5),
-        ((521, 64, 5003), torch.bfloat16, 8e-2, 5e-2),
+        ((1025, 64, 131072), torch.bfloat16, 8e-2, 5e-2),
     ],
     ids=["fp32-ragged", "bf16-multichunk"],
 )
