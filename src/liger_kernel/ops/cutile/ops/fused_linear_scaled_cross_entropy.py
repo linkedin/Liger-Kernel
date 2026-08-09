@@ -122,8 +122,7 @@ def fused_scaled_cross_entropy_forward(
 ):
     """Compute per-token NLL and optional entropy in token chunks.
 
-    Returns ``(nll, entropy, lse, input, weight, hidden_size)``. The final
-    three values are retained by the autograd wrapper for backward.
+    Returns per-token NLL, optional entropy, and log-sum-exp.
     """
     _validate_inputs(_input, weight, target, ignore_index)
     _validate_temperature(temperature)
@@ -169,14 +168,161 @@ def fused_scaled_cross_entropy_forward(
             ),
         )
 
-    return nll, entropy, lse, _input, weight, H
+    return nll, entropy, lse
+
+
+@ct.kernel(occupancy=4)
+def _fused_scaled_cross_entropy_backward_kernel_ct(
+    logits,
+    target,
+    lse,
+    entropy,
+    grad_nll,
+    grad_entropy,
+    vocab_size,
+    inv_temperature,
+    ignore_index,
+    BLOCK_SIZE: ConstInt,
+    HAS_NLL_GRAD: ConstInt,
+    HAS_ENTROPY_GRAD: ConstInt,
+):
+    row_idx = ct.bid(0)
+    target_idx = ct.load(target, row_idx, shape=())
+    num_chunks = (vocab_size + BLOCK_SIZE - 1) // BLOCK_SIZE
+
+    if target_idx == ignore_index:
+        for chunk_idx in range(num_chunks):
+            col_idx = ct.add(ct.arange(BLOCK_SIZE, dtype=ct.int32), chunk_idx * BLOCK_SIZE)
+            zero_chunk = ct.full((BLOCK_SIZE,), 0.0, dtype=logits.dtype)
+            ct.scatter(logits, (row_idx, col_idx), zero_chunk, check_bounds=True)
+        return
+
+    target_col = ct.astype(target_idx, ct.int32)
+    row_lse = ct.astype(ct.load(lse, row_idx, shape=()), ct.float32)
+    row_grad_nll = ct.float32(0.0)
+    if HAS_NLL_GRAD:
+        row_grad_nll = ct.astype(ct.load(grad_nll, row_idx, shape=()), ct.float32)
+    row_entropy = ct.float32(0.0)
+    row_grad_entropy = ct.float32(0.0)
+    if HAS_ENTROPY_GRAD:
+        row_entropy = ct.astype(ct.load(entropy, row_idx, shape=()), ct.float32)
+        row_grad_entropy = ct.astype(ct.load(grad_entropy, row_idx, shape=()), ct.float32)
+
+    for chunk_idx in range(num_chunks):
+        col_idx = ct.add(ct.arange(BLOCK_SIZE, dtype=ct.int32), chunk_idx * BLOCK_SIZE)
+        raw_logits = ct.astype(
+            ct.gather(logits, (row_idx, col_idx), check_bounds=True, padding_value=-math.inf),
+            ct.float32,
+        )
+        scaled_logits = raw_logits * inv_temperature
+        probabilities = ct.exp(scaled_logits - row_lse)
+
+        grad_scaled_logits = probabilities * row_grad_nll
+        is_target = ct.equal(col_idx, target_col)
+        grad_scaled_logits = ct.where(is_target, grad_scaled_logits - row_grad_nll, grad_scaled_logits)
+        if HAS_ENTROPY_GRAD:
+            log_probabilities = scaled_logits - row_lse
+            grad_scaled_logits -= row_grad_entropy * probabilities * (log_probabilities + row_entropy)
+        grad_raw_logits = grad_scaled_logits * inv_temperature
+
+        ct.scatter(
+            logits,
+            (row_idx, col_idx),
+            ct.astype(grad_raw_logits, logits.dtype),
+            check_bounds=True,
+        )
+
+
+def fused_scaled_cross_entropy_backward(
+    grad_nll,
+    _input,
+    weight,
+    target,
+    lse,
+    temperature,
+    ignore_index,
+    *,
+    entropy=None,
+    grad_entropy=None,
+):
+    """Compute gradients for per-token NLL and optional entropy outputs.
+
+    Returns gradients for ``_input`` and ``weight``. ``grad_nll`` may be
+    ``None`` for entropy-only backward; ``entropy`` and ``grad_entropy`` are
+    needed only when entropy contributes to the gradient.
+    """
+    _validate_inputs(_input, weight, target, ignore_index)
+    _validate_temperature(temperature)
+    if grad_nll is None and grad_entropy is None:
+        raise ValueError("at least one of grad_nll or grad_entropy must be provided")
+    if grad_nll is not None and grad_nll.shape != target.shape:
+        raise ValueError(f"grad_nll must have shape {tuple(target.shape)}, got {tuple(grad_nll.shape)}")
+    if lse.shape != target.shape:
+        raise ValueError(f"lse must have shape {tuple(target.shape)}, got {tuple(lse.shape)}")
+    if grad_entropy is not None:
+        if entropy is None:
+            raise ValueError("entropy is required when grad_entropy is provided")
+        if entropy.shape != target.shape or grad_entropy.shape != target.shape:
+            raise ValueError(
+                f"entropy and grad_entropy must have shape {tuple(target.shape)}, "
+                f"got {tuple(entropy.shape)} and {tuple(grad_entropy.shape)}"
+            )
+
+    BT, H = _input.shape
+    V = weight.shape[0]
+    inc_factor = (V + H - 1) // H
+    chunk_size = _next_power_of_2((BT + inc_factor - 1) // inc_factor)
+    block_size = _select_cross_entropy_block_size(V)
+
+    grad_input = torch.empty_like(_input) if _input.requires_grad else None
+    grad_weight = torch.zeros_like(weight) if weight.requires_grad else None
+    dummy_f32 = torch.empty(1, dtype=torch.float32, device=_input.device)
+    dummy_input_dtype = torch.empty(1, dtype=_input.dtype, device=_input.device)
+
+    target = target.contiguous()
+    lse = lse.contiguous()
+    grad_nll = grad_nll.contiguous() if grad_nll is not None else None
+    entropy = entropy.contiguous() if entropy is not None else None
+    grad_entropy = grad_entropy.contiguous() if grad_entropy is not None else None
+
+    for start in range(0, BT, chunk_size):
+        end = min(start + chunk_size, BT)
+        input_chunk = _input[start:end]
+        grad_logits_chunk = (input_chunk @ weight.t()).contiguous()
+
+        ct.launch(
+            torch.cuda.current_stream(),
+            (end - start, 1, 1),
+            _fused_scaled_cross_entropy_backward_kernel_ct,
+            (
+                grad_logits_chunk,
+                target[start:end],
+                lse[start:end],
+                entropy[start:end] if entropy is not None else dummy_input_dtype,
+                grad_nll[start:end] if grad_nll is not None else dummy_f32,
+                grad_entropy[start:end] if grad_entropy is not None else dummy_input_dtype,
+                int(V),
+                float(1.0 / temperature),
+                int(ignore_index),
+                int(block_size),
+                int(grad_nll is not None),
+                int(grad_entropy is not None),
+            ),
+        )
+
+        if grad_input is not None:
+            grad_input[start:end] = grad_logits_chunk @ weight
+        if grad_weight is not None:
+            grad_weight.add_(grad_logits_chunk.t() @ input_chunk)
+
+    return grad_input, grad_weight
 
 
 class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, _input, weight, target, temperature, ignore_index, return_entropy):
         ctx.set_materialize_grads(False)
-        nll, entropy, lse, saved_input, saved_weight, _ = fused_scaled_cross_entropy_forward(
+        nll, entropy, lse = fused_scaled_cross_entropy_forward(
             _input,
             weight,
             target,
@@ -186,7 +332,7 @@ class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function)
         )
 
         saved_entropy = entropy if entropy is not None else _input.new_empty(0)
-        ctx.save_for_backward(saved_input, saved_weight, target, lse, saved_entropy)
+        ctx.save_for_backward(_input, weight, target, lse, saved_entropy)
         ctx.temperature = temperature
         ctx.ignore_index = ignore_index
         ctx.return_entropy = return_entropy
@@ -194,7 +340,19 @@ class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function)
 
     @staticmethod
     def backward(ctx, grad_nll, grad_entropy=None):
-        raise NotImplementedError("cuTile fused linear scaled cross entropy backward is not implemented")
+        _input, weight, target, lse, entropy = ctx.saved_tensors
+        grad_input, grad_weight = fused_scaled_cross_entropy_backward(
+            grad_nll,
+            _input,
+            weight,
+            target,
+            lse,
+            ctx.temperature,
+            ctx.ignore_index,
+            entropy=entropy if ctx.return_entropy else None,
+            grad_entropy=grad_entropy,
+        )
+        return grad_input, grad_weight, None, None, None, None
 
 
 class LigerFusedLinearScaledCrossEntropyFunction:

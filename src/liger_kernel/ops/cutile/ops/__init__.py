@@ -18,6 +18,7 @@ from liger_kernel.ops.cutile.ops.cross_entropy import cross_entropy_forward
 from liger_kernel.ops.cutile.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.ops.cutile.ops.fused_linear_jsd import fused_linear_jsd_backward
 from liger_kernel.ops.cutile.ops.fused_linear_jsd import fused_linear_jsd_forward
+from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
 from liger_kernel.ops.cutile.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.cutile.ops.geglu import geglu_backward
 from liger_kernel.ops.cutile.ops.geglu import geglu_forward
@@ -48,6 +49,7 @@ __all__ = [
     "LigerFusedLinearJSDFunction",
     "fused_linear_jsd_backward",
     "fused_linear_jsd_forward",
+    "LigerFusedLinearScaledCrossEntropyFunction",
     "LigerGELUMulFunction",
     "geglu_backward",
     "geglu_forward",

@@ -1,4 +1,5 @@
 import importlib.util
+import os
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,27 @@ _SPEC = importlib.util.spec_from_file_location("_fused_linear_scaled_cross_entro
 assert _SPEC is not None and _SPEC.loader is not None
 _FRONTEND = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_FRONTEND)
+
+_CUTILE_ENABLED = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower() == "cutile"
+
+
+def _reference_policy_stats(_input, weight, target, temperature, ignore_index):
+    logits = (_input @ weight.t()).float() / temperature
+    log_probs = logits.log_softmax(dim=-1)
+    probabilities = log_probs.exp()
+    valid = target != ignore_index
+    safe_target = target.masked_fill(~valid, 0)
+    nll = torch.where(
+        valid,
+        -log_probs.gather(-1, safe_target.unsqueeze(-1)).squeeze(-1),
+        torch.zeros_like(log_probs[:, 0]),
+    )
+    entropy = torch.where(
+        valid,
+        -(probabilities * log_probs).sum(dim=-1),
+        torch.zeros_like(log_probs[:, 0]),
+    ).to(_input.dtype)
+    return nll, entropy
 
 
 @pytest.mark.parametrize(
@@ -170,6 +192,100 @@ def test_frontend_fallback_supports_entropy_only_backward():
     assert weight.grad is not None
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
+@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
+@pytest.mark.parametrize(
+    ("shape", "dtype", "atol", "rtol"),
+    [
+        ((17, 31, 257), torch.float32, 6e-5, 6e-5),
+        ((521, 64, 5003), torch.bfloat16, 8e-2, 5e-2),
+    ],
+    ids=["fp32-ragged", "bf16-multichunk"],
+)
+def test_cutile_matches_torch_forward_and_combined_backward(shape, dtype, atol, rtol):
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("BF16 is not supported")
+
+    from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+
+    torch.manual_seed(42)
+    token_count, hidden_size, vocab_size = shape
+    temperature = 0.8
+    target = torch.randint(vocab_size, (token_count,), device="cuda", dtype=torch.int64)
+    target[::11] = -100
+    grad_nll = torch.randn(token_count, device="cuda", dtype=torch.float32)
+    grad_entropy = torch.randn(token_count, device="cuda", dtype=dtype)
+
+    actual_input = torch.randn(token_count, hidden_size, device="cuda", dtype=dtype, requires_grad=True)
+    actual_weight = torch.randn(vocab_size, hidden_size, device="cuda", dtype=dtype, requires_grad=True)
+    actual_nll, actual_entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
+        actual_input,
+        actual_weight,
+        target,
+        temperature,
+        -100,
+        3,
+        True,
+    )
+    torch.autograd.backward((actual_nll, actual_entropy), (grad_nll, grad_entropy))
+
+    expected_input = actual_input.detach().clone().requires_grad_(True)
+    expected_weight = actual_weight.detach().clone().requires_grad_(True)
+    expected_nll, expected_entropy = _reference_policy_stats(
+        expected_input,
+        expected_weight,
+        target,
+        temperature,
+        -100,
+    )
+    torch.autograd.backward((expected_nll, expected_entropy), (grad_nll, grad_entropy))
+
+    torch.testing.assert_close(actual_nll, expected_nll, atol=atol, rtol=rtol)
+    torch.testing.assert_close(actual_entropy, expected_entropy, atol=atol, rtol=rtol)
+    torch.testing.assert_close(actual_input.grad, expected_input.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
+@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
+@pytest.mark.parametrize("output", ["nll", "entropy"])
+def test_cutile_supports_single_output_backward(output):
+    from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+
+    torch.manual_seed(43)
+    token_count, hidden_size, vocab_size = 19, 33, 259
+    target = torch.randint(vocab_size, (token_count,), device="cuda", dtype=torch.int64)
+    target[::5] = -100
+    grad_output = torch.randn(token_count, device="cuda")
+
+    actual_input = torch.randn(token_count, hidden_size, device="cuda", requires_grad=True)
+    actual_weight = torch.randn(vocab_size, hidden_size, device="cuda", requires_grad=True)
+    actual_nll, actual_entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
+        actual_input,
+        actual_weight,
+        target,
+        1.2,
+        -100,
+        2,
+        True,
+    )
+    (actual_nll if output == "nll" else actual_entropy).backward(grad_output)
+
+    expected_input = actual_input.detach().clone().requires_grad_(True)
+    expected_weight = actual_weight.detach().clone().requires_grad_(True)
+    expected_nll, expected_entropy = _reference_policy_stats(
+        expected_input,
+        expected_weight,
+        target,
+        1.2,
+        -100,
+    )
+    (expected_nll if output == "nll" else expected_entropy).backward(grad_output)
+
+    torch.testing.assert_close(actual_input.grad, expected_input.grad, atol=6e-5, rtol=6e-5)
+    torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=6e-5, rtol=6e-5)
+
+
 def test_frontend_is_exported_from_ops_root():
     try:
         import liger_kernel.ops as ops
@@ -178,6 +294,9 @@ def test_frontend_is_exported_from_ops_root():
             raise
         pytest.skip("root ops package requires Triton")
 
-    assert ops.LigerFusedLinearScaledCrossEntropyFunction.__module__ == (
-        "liger_kernel.ops.fused_linear_scaled_cross_entropy"
+    expected_module = (
+        "liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy"
+        if _CUTILE_ENABLED
+        else "liger_kernel.ops.fused_linear_scaled_cross_entropy"
     )
+    assert ops.LigerFusedLinearScaledCrossEntropyFunction.__module__ == expected_module
