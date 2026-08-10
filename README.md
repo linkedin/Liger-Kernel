@@ -150,7 +150,7 @@ pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
 - `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
 - `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
-- `nvidia-cutlass-dsl`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
+- `nvidia-cutlass-dsl >= 4.5.2`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -217,7 +217,38 @@ pip install "liger-kernel[cutedsl]"
 LIGER_KERNEL_IMPL=cutedsl python your_script.py
 ```
 
-It currently provides genuine `cutlass.cute` implementations of **RMSNorm** and **cross entropy**. Any op without a CuTe DSL kernel transparently falls back to the default Triton kernel, so selecting the backend is always safe. Selecting it on a non-CUDA device, or without `nvidia-cutlass-dsl` installed, raises an error.
+It currently provides genuine `cutlass.cute` implementations of **RMSNorm**, **cross entropy**, and
+**fused scaled cross entropy** (`LigerFusedLinearScaledCrossEntropyFunction`). The frontend dispatches from the input
+device: Hopper compute capability 9.0 uses `LigerFusedScaledCrossEntropySM90Function`, while other devices and
+NVIDIA compute capabilities use a 512-token chunked PyTorch fallback adapted from Verl's fused linear PPO
+implementation. The scaled operator is an *additional* operator, not a replacement for the Triton
+`LigerFusedLinearCrossEntropyFunction`:
+it fuses `x @ weight.T` with the softmax, takes matching floating-point `input`/`weight` (BF16 on SM90) plus
+`ignore_index`, and returns
+the per-token negative log-likelihood `[M]` plus optional vocabulary entropy — reductions are composed in PyTorch. Backward
+therefore receives the per-token upstream gradient `[M]`, which is used verbatim as the row scale of
+`dZ`; a scalar `grad_output` is rejected rather than silently reduced. `temperature` defaults to
+`1.0` and applies the same `logits / temperature` semantics as Verl.
+Set `return_entropy=True` to additionally return differentiable per-token
+vocabulary entropy in the input dtype; its backward contribution follows Verl's PPO
+formula. Both NLL and entropy are zeroed for `ignore_index` rows.
+On SM90, `m_tiles_per_cluster` (>= 1, default `1`) selects the forward schedule: `1` uses the fastest M-outer self-TMA forward, values `> 1`
+use the M-fast forward with that many live M tiles per cluster. Backward executes `dZ`, `dX = dZ @ W`,
+and `dW = dZ.T @ X` inside one persistent cluster-2 CUDA kernel. Its device-side wave loop aliases
+phase-specific shared memory, uses W multicast for dX, transposed TMA for dW, and HBM atomics between
+waves. Backward uses a fixed reusable BF16 `dZ` workspace covering 1024 tokens; wave zero
+plain-stores BF16 `dW`, and later waves use Hopper BF16 TMA reduce-add. Ops without a CuTe DSL kernel
+transparently fall back to the default Triton kernel. Selecting the backend on a non-CUDA device, or
+without `nvidia-cutlass-dsl` installed, raises an error.
+
+```python
+from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+
+nll, entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
+    x, weight, target, 1.0, -100, 1, True
+)  # [M], [M]
+loss = nll.sum() / (target != -100).sum().clamp_min(1)
+```
 
 
 ## Getting Started
@@ -459,5 +490,3 @@ url={https://openreview.net/forum?id=36SjAIT42G}
         ↑ Back to Top ↑
     </a>
 </p>
-
-
