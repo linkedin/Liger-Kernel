@@ -18,25 +18,6 @@ _SPEC.loader.exec_module(_FRONTEND)
 _CUTILE_ENABLED = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower() == "cutile"
 
 
-def _reference_policy_stats(_input, weight, target, temperature, ignore_index):
-    logits = (_input @ weight.t()).float() / temperature
-    log_probs = logits.log_softmax(dim=-1)
-    probabilities = log_probs.exp()
-    valid = target != ignore_index
-    safe_target = target.masked_fill(~valid, 0)
-    nll = torch.where(
-        valid,
-        -log_probs.gather(-1, safe_target.unsqueeze(-1)).squeeze(-1),
-        torch.zeros_like(log_probs[:, 0]),
-    )
-    entropy = torch.where(
-        valid,
-        -(probabilities * log_probs).sum(dim=-1),
-        torch.zeros_like(log_probs[:, 0]),
-    ).to(_input.dtype)
-    return nll, entropy
-
-
 @pytest.mark.parametrize(
     ("device", "cuda_available", "hip_version"),
     [
@@ -202,11 +183,11 @@ def test_frontend_fallback_supports_entropy_only_backward():
     ],
     ids=["fp32-ragged", "bf16-multichunk"],
 )
-def test_cutile_matches_torch_forward_and_combined_backward(shape, dtype, atol, rtol):
+def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype, atol, rtol):
     if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
         pytest.skip("BF16 is not supported")
 
-    from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
 
     torch.manual_seed(42)
     token_count, hidden_size, vocab_size = shape
@@ -216,8 +197,10 @@ def test_cutile_matches_torch_forward_and_combined_backward(shape, dtype, atol, 
     grad_nll = torch.randn(token_count, device="cuda", dtype=torch.float32)
     grad_entropy = torch.randn(token_count, device="cuda", dtype=dtype)
 
-    actual_input = torch.randn(token_count, hidden_size, device="cuda", dtype=dtype, requires_grad=True)
-    actual_weight = torch.randn(vocab_size, hidden_size, device="cuda", dtype=dtype, requires_grad=True)
+    actual_input = (torch.randn(token_count, hidden_size, device="cuda", dtype=dtype) * 0.25).requires_grad_(True)
+    actual_weight = (
+        torch.randn(vocab_size, hidden_size, device="cuda", dtype=dtype) / hidden_size**0.5
+    ).requires_grad_(True)
     actual_nll, actual_entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
         actual_input,
         actual_weight,
@@ -231,12 +214,13 @@ def test_cutile_matches_torch_forward_and_combined_backward(shape, dtype, atol, 
 
     expected_input = actual_input.detach().clone().requires_grad_(True)
     expected_weight = actual_weight.detach().clone().requires_grad_(True)
-    expected_nll, expected_entropy = _reference_policy_stats(
+    expected_nll, expected_entropy = _FRONTEND._FusedLinearPPOFallbackFunction.apply(
         expected_input,
         expected_weight,
         target,
         temperature,
         -100,
+        True,
     )
     torch.autograd.backward((expected_nll, expected_entropy), (grad_nll, grad_entropy))
 
@@ -250,7 +234,7 @@ def test_cutile_matches_torch_forward_and_combined_backward(shape, dtype, atol, 
 @pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
 @pytest.mark.parametrize("output", ["nll", "entropy"])
 def test_cutile_supports_single_output_backward(output):
-    from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
 
     torch.manual_seed(43)
     token_count, hidden_size, vocab_size = 19, 33, 259
@@ -258,8 +242,8 @@ def test_cutile_supports_single_output_backward(output):
     target[::5] = -100
     grad_output = torch.randn(token_count, device="cuda")
 
-    actual_input = torch.randn(token_count, hidden_size, device="cuda", requires_grad=True)
-    actual_weight = torch.randn(vocab_size, hidden_size, device="cuda", requires_grad=True)
+    actual_input = (torch.randn(token_count, hidden_size, device="cuda") * 0.25).requires_grad_(True)
+    actual_weight = (torch.randn(vocab_size, hidden_size, device="cuda") / hidden_size**0.5).requires_grad_(True)
     actual_nll, actual_entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
         actual_input,
         actual_weight,
@@ -273,12 +257,13 @@ def test_cutile_supports_single_output_backward(output):
 
     expected_input = actual_input.detach().clone().requires_grad_(True)
     expected_weight = actual_weight.detach().clone().requires_grad_(True)
-    expected_nll, expected_entropy = _reference_policy_stats(
+    expected_nll, expected_entropy = _FRONTEND._FusedLinearPPOFallbackFunction.apply(
         expected_input,
         expected_weight,
         target,
         1.2,
         -100,
+        True,
     )
     (expected_nll if output == "nll" else expected_entropy).backward(grad_output)
 
@@ -359,7 +344,7 @@ def test_cutile_rejects_invalid_workspace_override(monkeypatch, value):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
 @pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
 def test_cutile_rejects_out_of_range_target():
-    from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
 
     _input = torch.randn(2, 8, device="cuda")
     weight = torch.randn(16, 8, device="cuda")
