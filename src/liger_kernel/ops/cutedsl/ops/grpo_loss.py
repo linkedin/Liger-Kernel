@@ -13,7 +13,7 @@ from liger_kernel.ops.utils import amp_custom_fwd
 _MAX_LOGITS_CHUNK_SIZE = 1024
 
 
-def native_fused_linear_selective_logprob_supported(_input, weight, temperature=1.0):
+def native_fused_linear_selective_logprob_supported(_input, weight, temperature=1.0, bias=None):
     """Return whether the SM100 selective-logprob path supports these inputs."""
     return (
         _input.ndim == 2
@@ -24,6 +24,7 @@ def native_fused_linear_selective_logprob_supported(_input, weight, temperature=
         and _input.shape[1] == weight.shape[1]
         and _input.dtype == weight.dtype
         and _input.dtype in (torch.bfloat16, torch.float16)
+        and (bias is None or bias.dtype == _input.dtype)
         and isinstance(temperature, (int, float))
         and temperature == 1.0
         and _native_sm100_supported(_input)
@@ -56,6 +57,8 @@ def _validate_inputs(_input, weight, target, bias, temperature):
             raise ValueError(f"bias must have shape ({weight.shape[0]},), got {bias.shape}.")
         if bias.device != _input.device or not torch.is_floating_point(bias):
             raise TypeError("bias must be a floating-point tensor on the same device as _input.")
+        if bias.dtype != _input.dtype:
+            raise TypeError(f"bias must have dtype {_input.dtype}, got {bias.dtype}.")
 
 
 def _logits_storage(token_count, vocab_size, device, dtype):
@@ -186,7 +189,7 @@ class LigerFusedLinearSelectiveLogProbFunction(torch.autograd.Function):
 
 
 def fused_linear_selective_logprob(_input, weight, target, bias=None, temperature=1.0):
-    if not native_fused_linear_selective_logprob_supported(_input, weight, temperature):
+    if not native_fused_linear_selective_logprob_supported(_input, weight, temperature, bias):
         from liger_kernel.ops.grpo_loss import fused_linear_selective_logprob as default_selective_logprob
 
         return default_selective_logprob(_input, weight, target, bias, temperature)

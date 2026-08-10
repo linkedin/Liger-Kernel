@@ -2,6 +2,7 @@ import pytest
 import torch
 
 import liger_kernel.ops.cutedsl.ops.grpo_loss as grpo_ops
+import liger_kernel.ops.grpo_loss as default_grpo_ops
 
 from liger_kernel.ops.cutedsl.ops.grpo_loss import fused_linear_selective_logprob
 
@@ -101,3 +102,35 @@ def test_fused_linear_selective_logprob_accumulates_multichunk_weight_grad_in_fp
     fused_linear_selective_logprob(x, w, target).backward(grad_output)
 
     assert accumulation_dtypes == [torch.float32]
+
+
+def test_fused_linear_selective_logprob_mixed_dtype_bias_falls_back(monkeypatch):
+    x = torch.zeros(1, 128, device="cuda", dtype=torch.bfloat16)
+    w = torch.zeros(2, 128, device="cuda", dtype=torch.bfloat16)
+    target = torch.zeros(1, device="cuda", dtype=torch.long)
+    bias = torch.tensor([100.0, 100.1], device="cuda", dtype=torch.float32)
+    expected = torch.tensor([-0.42], device="cuda", dtype=torch.float32)
+
+    def fallback(_input, weight, selected_token_ids, fallback_bias, temperature):
+        assert _input is x
+        assert weight is w
+        assert selected_token_ids is target
+        assert fallback_bias is bias
+        assert temperature == 1.0
+        return expected
+
+    monkeypatch.setattr(default_grpo_ops, "fused_linear_selective_logprob", fallback)
+
+    actual = fused_linear_selective_logprob(x, w, target, bias)
+
+    assert actual is expected
+
+
+def test_native_fused_linear_selective_logprob_rejects_mixed_dtype_bias():
+    x = torch.zeros(1, 128, device="cuda", dtype=torch.bfloat16)
+    w = torch.zeros(2, 128, device="cuda", dtype=torch.bfloat16)
+    target = torch.zeros(1, device="cuda", dtype=torch.long)
+    bias = torch.zeros(2, device="cuda", dtype=torch.float32)
+
+    with pytest.raises(TypeError, match="bias must have dtype torch.bfloat16"):
+        grpo_ops.LigerFusedLinearSelectiveLogProbFunction.apply(x, w, target, bias)
