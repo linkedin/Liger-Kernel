@@ -21,7 +21,7 @@ def _validate_temperature(temperature):
         raise ValueError("temperature must be finite and > 0")
 
 
-def _validate_inputs(_input, weight, target, ignore_index):
+def _validate_input_metadata(_input, weight, target):
     if _input.ndim != 2 or weight.ndim != 2 or target.ndim != 1:
         raise ValueError("expected input[M,H], weight[V,H], and target[M]")
     if _input.shape[0] != target.shape[0] or _input.shape[1] != weight.shape[1]:
@@ -38,6 +38,9 @@ def _validate_inputs(_input, weight, target, ignore_index):
     if target.dtype != torch.int64:
         raise TypeError("target must be an int64 tensor")
 
+
+def _validate_inputs(_input, weight, target, ignore_index):
+    _validate_input_metadata(_input, weight, target)
     out_of_range = ((target < 0) | (target >= weight.shape[0])) & (target != ignore_index)
     if bool(out_of_range.any()):
         raise ValueError(
@@ -49,7 +52,16 @@ def _calculate_token_chunk_size(token_count, vocab_size, element_size):
     bytes_per_token = vocab_size * element_size
     max_tokens_per_chunk = max(1, _MAX_LOGITS_WORKSPACE_BYTES // bytes_per_token)
     power_of_two_chunk = _next_power_of_2(max_tokens_per_chunk + 1) // 2
-    return min(token_count, power_of_two_chunk)
+    if token_count <= power_of_two_chunk:
+        return token_count
+
+    minimum_chunks = (token_count + max_tokens_per_chunk - 1) // max_tokens_per_chunk
+    power_of_two_chunks = (token_count + power_of_two_chunk - 1) // power_of_two_chunk
+    power_of_two_tail = token_count - (power_of_two_chunks - 1) * power_of_two_chunk
+
+    if power_of_two_chunks > minimum_chunks or power_of_two_tail * 2 < power_of_two_chunk:
+        return (token_count + minimum_chunks - 1) // minimum_chunks
+    return power_of_two_chunk
 
 
 @ct.kernel(occupancy=4)
@@ -259,7 +271,7 @@ def fused_scaled_cross_entropy_backward(
     ``None`` for entropy-only backward; ``entropy`` and ``grad_entropy`` are
     needed only when entropy contributes to the gradient.
     """
-    _validate_inputs(_input, weight, target, ignore_index)
+    _validate_input_metadata(_input, weight, target)
     _validate_temperature(temperature)
     if grad_nll is None and grad_entropy is None:
         raise ValueError("at least one of grad_nll or grad_entropy must be provided")

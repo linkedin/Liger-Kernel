@@ -286,6 +286,36 @@ def test_cutile_supports_single_output_backward(output):
     torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=6e-5, rtol=6e-5)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
+@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
+@pytest.mark.parametrize(
+    ("token_count", "vocab_size", "element_size", "expected"),
+    [
+        (4096, 131072, 2, 1024),
+        (1025, 131072, 2, 513),
+        (2500, 100000, 2, 1250),
+        (5000, 131072, 2, 1024),
+    ],
+)
+def test_cutile_token_chunk_size_balances_small_tails(token_count, vocab_size, element_size, expected):
+    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import _calculate_token_chunk_size
+
+    assert _calculate_token_chunk_size(token_count, vocab_size, element_size) == expected
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
+@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
+def test_cutile_rejects_out_of_range_target():
+    from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+
+    _input = torch.randn(2, 8, device="cuda")
+    weight = torch.randn(16, 8, device="cuda")
+    target = torch.tensor([0, 16], device="cuda", dtype=torch.int64)
+
+    with pytest.raises(ValueError, match=r"outside \[0, 16\)"):
+        LigerFusedLinearScaledCrossEntropyFunction.apply(_input, weight, target)
+
+
 def test_frontend_is_exported_from_ops_root():
     try:
         import liger_kernel.ops as ops
