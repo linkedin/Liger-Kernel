@@ -26,6 +26,8 @@ from liger_kernel.transformers.sparsemax import LigerSparsemax  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerExperts  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerFalconH1SwiGLUMLP  # noqa: F401
+from liger_kernel.transformers.swiglu import LigerLfm2MoeExperts  # noqa: F401
+from liger_kernel.transformers.swiglu import LigerLfm2SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
@@ -56,6 +58,9 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_hunyuan_v1_dense  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_hunyuan_v1_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_internvl  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_lfm2  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_lfm2_moe  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_lfm2_vl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llava  # noqa: F401
@@ -131,6 +136,9 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_gpt_oss",
         "apply_liger_kernel_to_granite",
         "apply_liger_kernel_to_internvl",
+        "apply_liger_kernel_to_lfm2",
+        "apply_liger_kernel_to_lfm2_moe",
+        "apply_liger_kernel_to_lfm2_vl",
         "apply_liger_kernel_to_llama",
         "apply_liger_kernel_to_llava",
         "apply_liger_kernel_to_llama4",
@@ -188,6 +196,8 @@ __all__ = [
     "liger_llama4_text_rotary_pos_emb",
     "liger_llama4_vision_rotary_pos_emb",
     "LigerBlockSparseTop2MLP",
+    "LigerLfm2MoeExperts",
+    "LigerLfm2SwiGLUMLP",
     "LigerFalconH1SwiGLUMLP",
     "LigerPhi3SwiGLUMLP",
     "LigerQwen3MoeSwiGLUMLP",
@@ -222,6 +232,9 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_gpt_oss",
             "apply_liger_kernel_to_granite",
             "apply_liger_kernel_to_internvl",
+            "apply_liger_kernel_to_lfm2",
+            "apply_liger_kernel_to_lfm2_moe",
+            "apply_liger_kernel_to_lfm2_vl",
             "apply_liger_kernel_to_llama",
             "apply_liger_kernel_to_llava",
             "apply_liger_kernel_to_llama4",
