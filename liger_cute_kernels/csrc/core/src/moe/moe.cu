@@ -721,6 +721,24 @@ moe_fused_kernel(
 			p.comm.hidden_dim,
 			p.num_tokens,
 			p.top_k);
+
+		// Keep the optimized TMA path for every complete 32-token tile. The
+		// direct-store path handles only the disjoint 1–31 token tail and uses
+		// no shared memory, so it may run while another WG's final TMA store is
+		// draining.
+		const int tail_begin =
+			(p.num_tokens / kCombineWGTokens) * kCombineWGTokens;
+		if (tail_begin < p.num_tokens) {
+			combine_tokens_tail<Element, kNumThreads>(
+				reinterpret_cast<const Element*>(p.comm.local_output),
+				p.expert_weights,
+				p.sort.token_expert_slots,
+				p.combine_output,
+				p.comm.hidden_dim,
+				tail_begin,
+				p.num_tokens,
+				p.top_k);
+		}
 	}
 
 }

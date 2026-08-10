@@ -12,27 +12,28 @@
 namespace liger {
 
 // ═══════════════════════════════════════════════════════════════════
-// combine_tokens — original direct-store gather-reduce (non-TMA)
+// combine_tokens_tail — direct-store gather-reduce for a token range
 // ═══════════════════════════════════════════════════════════════════
 //
-// One warp per output token, grid-stride. fp32 accumulation across K
-// slots. int4 vectorization (8 elements per load). Used by the fused
-// MoE kernel which needs the inlined signature without TMA plumbing.
+// One warp per output token, grid-stride. FP32 accumulation across K
+// slots. int4 vectorization (8 elements per load). The fused kernel uses
+// this for the 1–31 tokens after the last complete TMA combine tile.
 
 static constexpr int kCombineWarpSize = 32;
 static constexpr int kCombineMaxTopK  = 16;
 
 template <typename Element, int NumThreads>
-__device__ __forceinline__ void combine_tokens(
+__device__ __forceinline__ void combine_tokens_tail(
         const Element* __restrict__ expert_out,        // [total_slots, hidden_dim]
         const Element* __restrict__ expert_weights,    // [num_tokens, top_k]
         const int* __restrict__ token_expert_slots,    // [num_tokens, top_k]
         Element* __restrict__ output,                  // [num_tokens, hidden_dim]
         int hidden_dim,
+        int token_begin,
         int num_tokens,
         int top_k) {
 
-    static_assert(sizeof(Element) == 2, "combine_tokens requires 2-byte element type");
+    static_assert(sizeof(Element) == 2, "combine_tokens_tail requires 2-byte element type");
     static constexpr int kNumWarps     = NumThreads / kCombineWarpSize;
     static constexpr int kElemsPerInt4 = sizeof(int4) / sizeof(Element);  // 8
 
@@ -45,7 +46,7 @@ __device__ __forceinline__ void combine_tokens(
 
     const int cta_id     = blockIdx.x + blockIdx.y * gridDim.x;
     const int grid_warps = gridDim.x * gridDim.y * kNumWarps;
-    int token = cta_id * kNumWarps + warp_id;
+    int token = token_begin + cta_id * kNumWarps + warp_id;
 
     for (; token < num_tokens; token += grid_warps) {
         const int weight_base = token * top_k;
@@ -85,20 +86,20 @@ __device__ __forceinline__ void combine_tokens(
 // ═══════════════════════════════════════════════════════════════════
 //
 // CTA = 12 warps (384 threads) → 3 WGs of 4 warps each.
-// TMA store tile = kCombineWGTokens × kCombineWGHidden = 32 × 128.
+// TMA store tile = kCombineWGTokens × kCombineWGHidden = 32 × 256.
 //
 // Tile decomposition (key for HBM coalescing):
 //   - Each warp owns 1 TOKEN at a time → all 32 lanes share slot/weight
-//   - 32 lanes spread across N=128: lane l holds elements [l·4, l·4+4)
-//   - That's 4 bf16 per lane = 8 B → int2 cp.async load width
-//   - Each warp's load is 32 lanes × 8 B = 256 B *contiguous* in one row
+//   - 32 lanes spread across N=256: lane l holds elements [l·8, l·8+8)
+//   - That's 8 bf16 per lane = 16 B → int4 cp.async load width
+//   - Each warp's load is 32 lanes × 16 B = 512 B *contiguous* in one row
 //     → one coalesced HBM transaction per (warp, token, k)
 //   - 4 warps × 8 tokens (sequential per warp) = 32 tokens per WG tile
 //
-// Cross-token cp.async pipeline (3 stages, 8 tokens per warp):
+// Cross-token cp.async pipeline (2 stages, 8 tokens per warp):
 //   - Prologue: issue tokens 0 and 1
 //   - Iter t = 0..7: issue token t+2 (if any), wait for t, reduce t
-//   - Stages cycle: token t → stage (t % 3)
+//   - Stages cycle: token t → stage (t % 2)
 //   - Slots/weights for different tokens are different, so issues are
 //     necessarily per-token (cannot bulk across tokens).
 
@@ -132,10 +133,8 @@ using CombineSmemLayoutSlot = cute::Layout<
 	cute::Shape <cute::Int<kCombineWGTokens>, cute::Int<kCombineWGHidden>>,
 	cute::Stride<cute::Int<kCombineWGHidden>, cute::_1>>;
 
-// 8-byte cp.async loads use cute::SM80_CP_ASYNC_CACHEALWAYS<int2>.
-// cp.async.cg only supports 16 B width; the .ca variant supports
-// 4/8/16 B. L1 caching is harmless because each cp.async target
-// address is unique within a work item.
+// 16-byte cp.async loads use cute::SM80_CP_ASYNC_CACHEGLOBAL<int4>.
+// Each cp.async target address is unique within a work item.
 
 template <typename Element, int NumThreads, class TmaStore>
 __device__ __forceinline__ void combine_tokens_tma(
