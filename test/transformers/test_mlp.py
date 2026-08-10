@@ -10,6 +10,24 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+FP32_DIFF_THRESHOLD = 1e-5
+
+
+def calc_diff(x: torch.Tensor, y: torch.Tensor):
+    x, y = x.double(), y.double()
+    denominator = (x * x + y * y).sum()
+    if denominator == 0:  # Which means that all elements in x and y are 0
+        return 0.0
+    sim = 2 * (x * y).sum() / denominator
+    return 1 - sim
+
+
+def _assert_close(x: torch.Tensor, y: torch.Tensor, dtype: torch.dtype, atol, rtol):
+    if dtype == torch.float32:
+        assert calc_diff(x, y) < FP32_DIFF_THRESHOLD
+    else:
+        assert torch.allclose(x, y, atol=atol, rtol=rtol)
+
 
 @pytest.mark.parametrize(
     "bsz, seq_len, hidden_size, intermediate_size",
@@ -24,9 +42,7 @@ device = infer_device()
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        # fp32: Triton (fp32 accum) vs cuBLAS (TF32) diverge through 3 chained
-        # GEMMs; activations reach ~1e4 magnitude, so atol must scale accordingly
-        (torch.float32, 2e2, 2e-2),
+        (torch.float32, None, None),
         pytest.param(
             torch.bfloat16,
             1e4,
@@ -67,33 +83,18 @@ def test_correctness_llamamlp(bsz, seq_len, hidden_size, intermediate_size, dtyp
     y1 = llama_mlp(x1)
     y2 = liger_mlp(x2)
 
-    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+    _assert_close(y1, y2, dtype, atol, rtol)
 
     dy = torch.randn_like(y1)
 
     y1.backward(dy.clone(), retain_graph=True)
     y2.backward(dy.clone(), retain_graph=True)
 
-    assert torch.allclose(
-        llama_mlp.gate_proj.weight.grad,
-        liger_mlp.gate_proj.weight.grad,
-        atol=atol,
-        rtol=rtol,
-    )
-    assert torch.allclose(
-        llama_mlp.up_proj.weight.grad,
-        liger_mlp.up_proj.weight.grad,
-        atol=atol,
-        rtol=rtol,
-    )
-    assert torch.allclose(
-        llama_mlp.down_proj.weight.grad,
-        liger_mlp.down_proj.weight.grad,
-        atol=atol,
-        rtol=rtol,
-    )
+    _assert_close(llama_mlp.gate_proj.weight.grad, liger_mlp.gate_proj.weight.grad, dtype, atol, rtol)
+    _assert_close(llama_mlp.up_proj.weight.grad, liger_mlp.up_proj.weight.grad, dtype, atol, rtol)
+    _assert_close(llama_mlp.down_proj.weight.grad, liger_mlp.down_proj.weight.grad, dtype, atol, rtol)
 
-    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+    _assert_close(x1.grad, x2.grad, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(
@@ -109,9 +110,7 @@ def test_correctness_llamamlp(bsz, seq_len, hidden_size, intermediate_size, dtyp
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        # fp32: Triton (fp32 accum) vs cuBLAS (TF32) diverge through 3 chained
-        # GEMMs; activations reach ~1e4 magnitude, so atol must scale accordingly
-        (torch.float32, 2e2, 2e-2),
+        (torch.float32, None, None),
         pytest.param(
             torch.bfloat16,
             1e4,
@@ -151,7 +150,7 @@ def test_correctness_inference_mode(bsz, seq_len, hidden_size, intermediate_size
         y1 = llama_mlp(_input)
         y2 = liger_mlp(_input)
 
-    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+    _assert_close(y1, y2, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(
@@ -185,7 +184,7 @@ def test_supported_hidden_act(hidden_act):
 @pytest.mark.xfail(
     reason="TMA descriptors require 3 * intermediate_size * elem_bytes to be 16-byte aligned; "
     "intermediate_size=431 with bf16 (stride 2586 bytes) violates this",
-    raises=AssertionError,
+    raises=ValueError,
     strict=True,
 )
 def test_misaligned_intermediate_size_not_supported():

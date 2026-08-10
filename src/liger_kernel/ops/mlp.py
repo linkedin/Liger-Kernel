@@ -391,11 +391,24 @@ def _ensure_tma_compatible(t: torch.Tensor) -> torch.Tensor:
     """
     strides = t.stride()
     elem_bytes = t.element_size()
-    if strides[-1] != 1:
-        return t.contiguous()
     for s in strides[:-1]:
         if (s * elem_bytes) % 16 != 0:
-            return t.contiguous()
+            raise ValueError(
+                f"Tensor does not meet TMA descriptor requirements:"
+                f"last stride must be 1, and all stride*elem_size must be multiple of 16."
+                f"Got strides={strides}, elem_size={elem_bytes}"
+            )
+    if strides[-1] != 1:
+        t_contig = t.contiguous()
+        # Must check again.
+        new_strides = t_contig.stride()
+        for s in new_strides[:-1]:
+            if (s * elem_bytes) % 16 != 0:
+                raise ValueError(
+                    f"Tensor after .contiguous() still not TMA-compatible: "
+                    f"last stride must be 1, and all stride*elem_size must be multiple of 16."
+                )
+        return t_contig
     return t
 
 
@@ -415,15 +428,12 @@ def _check_inputs(input, gate_weight, up_weight, down_weight):
     return input, gate_weight, up_weight, down_weight
 
 
-def swiglu_forward(
+def gemm_swiglu(
     input: torch.Tensor,
     gate_weight: torch.Tensor,
     up_weight: torch.Tensor,
-    down_weight: torch.Tensor,
 ) -> torch.Tensor:
-    """Training-mode forward: computes O, and returns AGU."""
-    input, gate_weight, up_weight, down_weight = _check_inputs(input, gate_weight, up_weight, down_weight)
-
+    """Training-mode forward: computes and returns AGU."""
     B, S, dim = input.shape
     hidden_dim = gate_weight.shape[0]
     bucket_M = get_bucket_m(B * S)
@@ -465,19 +475,15 @@ def swiglu_forward(
     )
     fwd_best_config = _swiglu_kernel_forward.best_config
 
-    out = F.linear(A, down_weight)
-
-    return out, AGU, fwd_best_config
+    return AGU, fwd_best_config
 
 
-def swiglu_forward_inference(
+def gemm_swiglu_inference(
     input: torch.Tensor,
     gate_weight: torch.Tensor,
     up_weight: torch.Tensor,
-    down_weight: torch.Tensor,
 ) -> torch.Tensor:
     """Inference-mode forward."""
-    input, gate_weight, up_weight, down_weight = _check_inputs(input, gate_weight, up_weight, down_weight)
     B, S, dim = input.shape
     hidden_dim = gate_weight.shape[0]
     bucket_M = get_bucket_m(B * S)
@@ -509,33 +515,21 @@ def swiglu_forward_inference(
         bucket_M,
     )
 
-    out = F.linear(A, down_weight)
-
-    return out
+    return A
 
 
-def swiglu_backward(
+def swiglu_backward_dGU(
     dO: torch.Tensor,
-    input: torch.Tensor,
-    gate_weight: torch.Tensor,
-    up_weight: torch.Tensor,
     down_weight: torch.Tensor,
     AGU: torch.Tensor,
     fwd_best_config,
 ) -> torch.Tensor:
-    dO = _ensure_tma_compatible(dO)
-    B, S, dim = input.shape
-    hidden_dim = gate_weight.shape[0]
-    bucket_M = get_bucket_m(B * S)
+    B, S, dim = dO.shape
+    hidden_dim = down_weight.shape[1]
 
-    A = AGU[..., :hidden_dim]
     G = AGU[..., hidden_dim : 2 * hidden_dim]
     U = AGU[..., 2 * hidden_dim :]
 
-    # ========================== Compute dWd ===================================
-    dWd = dO.reshape(-1, dim).T @ A.reshape(-1, hidden_dim)  # [dim, hidden_dim]
-
-    # ================= Compute dU and dG by triton kernel =====================
     # Reuse the memory of GU to store dGU, in order to save memory.
     dG, dU = G, U
 
@@ -575,16 +569,23 @@ def swiglu_backward(
         num_stages=fwd_best_config.num_stages,
     )
 
-    # ================== Compute dWug by a single large GEMM ===================
-    dGU = AGU[..., hidden_dim:]
-    dWug = dGU.reshape(-1, 2 * hidden_dim).T @ input.reshape(-1, dim)  # [2*hidden_dim, dim]
-    dWg, dWu = dWug[:hidden_dim], dWug[hidden_dim:]  # [hidden_dim, dim]
 
-    # ====================== Compute dI by triton kernel =======================
+def swiglu_backward_dI(
+    gate_weight: torch.Tensor,
+    up_weight: torch.Tensor,
+    AGU: torch.Tensor,
+) -> torch.Tensor:
+    B, S, _ = AGU.shape
+    hidden_dim, dim = gate_weight.shape
+    bucket_M = get_bucket_m(B * S)
+    dI = torch.empty((B, S, dim), device=gate_weight.device, dtype=gate_weight.dtype)
+    dG = AGU[..., hidden_dim : 2 * hidden_dim]
+    dU = AGU[..., 2 * hidden_dim :]
+
     dummy_block_3D = [1, 1, 1]
     dummy_block_2D = [1, 1]
-
-    dI = torch.empty((B, S, dim), device=input.device, dtype=input.dtype)
+    desc_dG = TensorDescriptor.from_tensor(tensor=dG, block_shape=dummy_block_3D, padding="zero")
+    desc_dU = TensorDescriptor.from_tensor(tensor=dU, block_shape=dummy_block_3D, padding="zero")
     desc_dI = TensorDescriptor.from_tensor(tensor=dI, block_shape=dummy_block_3D, padding="zero")
     desc_Wg = TensorDescriptor.from_tensor(tensor=gate_weight, block_shape=dummy_block_2D, padding="zero")
     desc_Wu = TensorDescriptor.from_tensor(tensor=up_weight, block_shape=dummy_block_2D, padding="zero")
@@ -606,27 +607,48 @@ def swiglu_backward(
         bucket_M,
     )
 
-    return dI, dWg, dWu, dWd
+    return dI
 
 
 class LigerMLPFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, gate_weight, up_weight, down_weight):
         assert input.is_cuda and gate_weight.is_cuda and up_weight.is_cuda and down_weight.is_cuda
+        input, gate_weight, up_weight, down_weight = _check_inputs(input, gate_weight, up_weight, down_weight)
         # Note:
         # PyTorch automatically disables global gradient computation during
         # the forward pass, so torch.is_grad_enabled() cannot be used.
         if any(ctx.needs_input_grad):
-            out, AGU, fwd_best_config = swiglu_forward(input, gate_weight, up_weight, down_weight)
+            AGU, fwd_best_config = gemm_swiglu(input, gate_weight, up_weight)
             ctx.save_for_backward(input, gate_weight, up_weight, down_weight, AGU)
             ctx.fwd_best_config = fwd_best_config
-            return out
+            hidden_dim = gate_weight.shape[0]
+            return F.linear(AGU[..., :hidden_dim], down_weight)
         else:
             # Inference mode: no GU saving.
-            return swiglu_forward_inference(input, gate_weight, up_weight, down_weight)
+            A = gemm_swiglu_inference(input, gate_weight, up_weight)
+            return F.linear(A, down_weight)
 
     @staticmethod
     def backward(ctx, dO):
+        dO = _ensure_tma_compatible(dO)
         input, gate_weight, up_weight, down_weight, AGU = ctx.saved_tensors
-        dI, dWg, dWu, dWd = swiglu_backward(dO, input, gate_weight, up_weight, down_weight, AGU, ctx.fwd_best_config)
+        hidden_dim, dim = gate_weight.shape
+
+        # Compute dWd.
+        A = AGU[..., :hidden_dim]
+        dWd = dO.reshape(-1, dim).T @ A.reshape(-1, hidden_dim)  # [dim, hidden_dim]
+
+        # Compute dU and dG by triton kernel.
+        # The original G and U will be overwritten by dG and dU.
+        swiglu_backward_dGU(dO, down_weight, AGU, ctx.fwd_best_config)
+
+        # Compute dWug by a single large GEMM.
+        dGU = AGU[..., hidden_dim:]
+        dWug = dGU.reshape(-1, 2 * hidden_dim).T @ input.reshape(-1, dim)  # [2*hidden_dim, dim]
+        dWg, dWu = dWug[:hidden_dim], dWug[hidden_dim:]  # [hidden_dim, dim]
+        
+        # Compute dI by triton kernel.
+        dI = swiglu_backward_dI(gate_weight, up_weight, AGU)
+
         return dI, dWg, dWu, dWd
