@@ -150,7 +150,7 @@ pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
 - `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
 - `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
-- `nvidia-cutlass-dsl`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
+- `nvidia-cutlass-dsl >= 4.5.2`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -217,7 +217,40 @@ pip install "liger-kernel[cutedsl]"
 LIGER_KERNEL_IMPL=cutedsl python your_script.py
 ```
 
-It currently provides genuine `cutlass.cute` implementations of **RMSNorm** and **cross entropy**. Any op without a CuTe DSL kernel transparently falls back to the default Triton kernel, so selecting the backend is always safe. Selecting it on a non-CUDA device, or without `nvidia-cutlass-dsl` installed, raises an error.
+It currently provides genuine `cutlass.cute` implementations of **RMSNorm**, **cross entropy**, and **fused scaled cross entropy**. Ops without a CuTe DSL kernel transparently fall back to the default Triton kernel.
+
+### Fused Scaled Cross Entropy
+
+`LigerFusedLinearScaledCrossEntropyFunction` is an additional per-token operator, not a replacement for the reduction-oriented Triton `LigerFusedLinearCrossEntropyFunction`. It takes `input[M, H]`, `weight[V, H]`, and `target[M]`, applies `logits / temperature`, and returns FP32 negative log-likelihood `[M]` plus optional differentiable vocabulary entropy `[M]` in the input dtype. Reductions remain in PyTorch, and rows whose target equals `ignore_index` contribute zero outputs and gradients.
+
+```python
+from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+
+nll, entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
+    x, weight, target, 1.0, -100, 1, True
+)  # [M], [M]
+loss = nll.sum() / (target != -100).sum().clamp_min(1)
+```
+
+The implementations share this public contract but use different schedules:
+
+- **cuTile** (`LIGER_KERNEL_IMPL=cutile`) supports matching floating-point `input` and `weight` tensors on CUDA and a finite positive scalar `temperature`. The portable temporary-logits budget is 256 MiB. Large FP16/BF16 Blackwell workloads (`M >= 4096`, `V >= 131072`) automatically use 512 MiB to improve GEMM utilization. Set `LIGER_CUTILE_SCALED_CE_WORKSPACE_MB` to another positive MiB value for workload-specific tuning; for example, 1024 can help large combined NLL-plus-entropy workloads but is not universally faster. Backward reuses one workspace and writes `dX` and accumulates `dW` directly into their final tensors. `m_tiles_per_cluster` is accepted for API compatibility but does not change the cuTile schedule.
+- **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Forward never writes logits to HBM; `m_tiles_per_cluster=1` selects the fastest M-outer schedule and larger values select the M-fast schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
+- **Fallback** uses a 512-token chunked PyTorch implementation adapted from Verl's fused PPO formulas when the default frontend cannot use the SM90 kernel.
+
+H100 measurements for per-token NLL at `M=4096`, `H=4096`, `V=131072`, BF16:
+
+| Implementation | Forward | Backward | Full | Peak full memory |
+|---|---:|---:|---:|---:|
+| cuTile | 6.45 ms | 20.70 ms | 26.94 ms | 2.43 GiB |
+| CuTe SM90 | 7.26 ms | 19.81 ms | 27.74 ms | 2.43 GiB |
+
+B200 measurements for the same shape, using automatic cuTile workspace selection:
+
+| Implementation | Forward | Backward | Full | Peak full memory |
+|---|---:|---:|---:|---:|
+| cuTile | 2.97 ms | 8.35 ms | 11.36 ms | 2.64 GiB |
+| Torch | 5.24 ms | 7.15 ms | 12.85 ms | 7.22 GiB |
 
 
 ## Getting Started
@@ -459,5 +492,3 @@ url={https://openreview.net/forum?id=36SjAIT42G}
         ↑ Back to Top ↑
     </a>
 </p>
-
-

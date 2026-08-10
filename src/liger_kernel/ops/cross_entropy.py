@@ -245,21 +245,36 @@ def liger_cross_entropy_kernel(
 
             tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
 
-        # dx_y correction: apply the -(1 - label_smoothing) term once at index y
-        # (replaces the per-element tl.where removed above). Barrier first so the loop's
-        # in-place store to X[y] is visible before we read it back.
+        # dx_y correction: recompute the true-class gradient once, in fp32, and overwrite X[y]
+        # (replaces the per-element tl.where removed above). The -(1 - label_smoothing) term must
+        # be folded in *before* the result is rounded to X's dtype: dx_y = (softmax(x_y) - 1) / N
+        # cancels catastrophically as softmax(x_y) -> 1, so a read-modify-write of the value the
+        # loop already stored would lose most of the significant bits in bf16/fp16.
+        # ori_X_y is the (softcapped) fp32 logit at y, so softmax_X_y matches the loop exactly.
+        # Barrier first so the loop's in-place store to X[y] cannot land after this store.
         tl.debug_barrier()
-        dxy = -(1 - label_smoothing)
-        if HAS_WEIGHT:
-            dxy = dxy * weight_y
+        softmax_X_y = tl.exp2((ori_X_y - m) * LOG2_E) / d
+        if not HAS_WEIGHT:
+            dx_y = softmax_X_y
+            dx_y += 2 * lse_square_scale * lse * dx_y
+            dx_y += -eps
+            dx_y += -(1 - label_smoothing)
             if reduction == "mean":
-                dxy = dxy / sum_non_ignore_weight
-        elif reduction == "mean":
-            dxy = dxy / n_non_ignore
+                dx_y = dx_y / n_non_ignore
+        else:
+            dloss_ori_y = (1 - label_smoothing) * softmax_X_y - (1 - label_smoothing)
+            dloss_ori_y = dloss_ori_y * weight_y
+            dloss_smooth_y = eps * (-weight_y + softmax_X_y * weight_sum)
+            dz_loss_y = 2 * lse_square_scale * lse * softmax_X_y
+            if reduction == "mean":
+                dloss_ori_y = dloss_ori_y / sum_non_ignore_weight
+                dloss_smooth_y = dloss_smooth_y / sum_non_ignore_weight
+                dz_loss_y = dz_loss_y / n_non_ignore
+            dx_y = dloss_ori_y + dloss_smooth_y + dz_loss_y
         if HAS_SOFTCAPPING:
             t_y = ori_X_y / softcap
-            dxy = dxy * (1 - t_y * t_y)
-        tl.store(X_ptr + y, tl.load(X_ptr + y) + dxy)
+            dx_y = dx_y * (1 - t_y * t_y)
+        tl.store(X_ptr + y, dx_y)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
     # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/ops/cross_entropy.py#L34

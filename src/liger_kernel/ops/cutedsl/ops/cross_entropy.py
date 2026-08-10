@@ -17,6 +17,8 @@ from cutlass.cutlass_dsl import T
 from cutlass.cutlass_dsl import dsl_user_op
 
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.utils import is_hip
+from liger_kernel.utils import infer_device_arch
 
 # log2(e) and ln(2): the online-softmax math is done in base-2 (hardware ex2.approx)
 # then converted, exactly mirroring the Triton kernel for numerical parity.
@@ -70,6 +72,7 @@ _NUM_STAGES = 4
 # kernel bakes. V/BT are dynamic so one compile serves all shapes. REQUIRED: without it the
 # @cute.jit host fn recompiles on every call (~30 ms that dwarfs the kernel).
 _compile_cache = {}
+_scale_compile_cache = {}
 
 # Per-call host overhead is constant (~25 us): it doesn't scale with BT/V, so it dominates small
 # shapes and vanishes at scale. Cache the CUstream wrapper keyed on torch's raw stream handle so
@@ -143,6 +146,53 @@ def _advance(idx, n: cutlass.Constexpr):
 
 
 # =============================================================================
+# Backward scale kernel
+# =============================================================================
+@cute.kernel
+def _scale_in_place_kernel(mX: cute.Tensor, mScale: cute.Tensor):
+    tid, _, _ = cute.arch.thread_idx()
+    row, _, _ = cute.arch.block_idx()
+    scale = mScale[0].to(Float32)
+
+    gX = mX[row, None]
+    V = gX.shape[0]
+    gX = cute.make_tensor(
+        cute.make_ptr(mX.element_type, gX.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
+        cute.make_layout((V,)),
+    )
+    VEC = const_expr(128 // gX.element_type.width)
+    gXv = cute.tiled_divide(gX, (VEC,))
+    num_vec = V // VEC
+    x_frag = cute.make_rmem_tensor((VEC,), gX.element_type)
+
+    for i in cutlass.range(0, cute.ceil_div(num_vec, 1024)):
+        vec_idx = tid + i * 1024
+        if vec_idx < num_vec:
+            cute.autovec_copy(gXv[None, vec_idx], x_frag)
+            x_frag.store((x_frag.load().to(Float32) * scale).to(gX.element_type))
+            cute.autovec_copy(x_frag, gXv[None, vec_idx])
+
+
+@cute.jit
+def _scale_in_place_host(mX: cute.Tensor, mScale: cute.Tensor, stream: cuda.CUstream = None):
+    _scale_in_place_kernel(mX, mScale).launch(
+        grid=[mX.shape[0], 1, 1],
+        block=[1024, 1, 1],
+        stream=stream,
+    )
+
+
+def _scale_in_place(x, scale):
+    x_ct = to_cute_tensor(x)
+    scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
+    stream = _cute_stream()
+    key = (x.dtype, scale.dtype)
+    if key not in _scale_compile_cache:
+        _scale_compile_cache[key] = cute.compile(_scale_in_place_host, x_ct, scale_ct, stream)
+    _scale_compile_cache[key](x_ct, scale_ct, stream)
+
+
+# =============================================================================
 # Device kernel
 # =============================================================================
 @cute.kernel
@@ -160,6 +210,7 @@ def _ce_fwd_kernel(
     softcap: Float32,  # logit soft-cap threshold; unused if not HAS_SOFTCAP
     label_smoothing: Float32,  # smoothing amount; unused if not HAS_SMOOTHING
     weight_sum: Float32,  # sum of the full weight vector; used only by weighted smoothing
+    logical_vocab_size: Int32,  # excludes aligned workspace padding from softmax/smoothing
     ignore_index: Int32,
     HAS_GRAD: cutlass.Constexpr,
     HAS_ZLOSS: cutlass.Constexpr,  # lse_square_scale != 0 or return_z_loss
@@ -169,6 +220,7 @@ def _ce_fwd_kernel(
     RETURN_PREDICTED_TOKENS: cutlass.Constexpr,  # write per-row argmax column to mPredTok
     HAS_WEIGHT: cutlass.Constexpr,  # scale loss/grad by per-class weight
     HAS_SMOOTHING: cutlass.Constexpr,  # label_smoothing != 0
+    HAS_PADDING: cutlass.Constexpr,  # physical V includes zero columns beyond logical_vocab_size
     NUM_WARPS: cutlass.Constexpr,  # warps/CTA cooperating on one row (8 for 2-byte, 32 for fp32)
 ):
     THREADS = const_expr(32 * NUM_WARPS)
@@ -222,10 +274,11 @@ def _ce_fwd_kernel(
     # label-smoothing per-class mass eps = label_smoothing / V (matches Triton).
     eps = Float32(0.0)
     if const_expr(HAS_SMOOTHING):
-        eps = label_smoothing / Float32(V)
+        eps = label_smoothing / Float32(logical_vocab_size)
 
     # 128-bit vectorization + cp.async pipeline. gXv: (VEC, V//VEC). 256 threads
-    # cooperate; each loads its 128-bit vector per tile. Tail predicated -> V % VEC.
+    # cooperate; each loads its 128-bit vector per tile. FLCE may align physical V
+    # upward; HAS_PADDING removes those zero columns from logical reductions.
     VEC = const_expr(128 // gX.element_type.width)
     gXv = cute.tiled_divide(gX, (VEC,))
     num_vec = V // VEC
@@ -279,16 +332,22 @@ def _ce_fwd_kernel(
         cute.arch.cp_async_wait_group(_NUM_STAGES - 1)
         if r_vidx < num_vec:
             cute.autovec_copy(sTilesV[None, tid, read_stage], x_frag)  # smem -> reg
+            vec_base = r_vidx * VEC
             if const_expr(NEED_ARGMAX):
                 # argmax on the RAW logits: softcap is monotonic, so argmax(softcap(x)) ==
                 # argmax(x) and the column is identical. Smaller j (and earlier, smaller-
                 # column tiles) win ties via the strict `>`.
-                base = r_vidx * VEC
                 for j in cutlass.range_constexpr(VEC):
                     xj = x_frag[j].to(Float32)
-                    if xj > t_am:
-                        t_am = xj
-                        t_acol = Float32(base + j)
+                    if const_expr(HAS_PADDING):
+                        if vec_base + j < logical_vocab_size:
+                            if xj > t_am:
+                                t_am = xj
+                                t_acol = Float32(vec_base + j)
+                    else:
+                        if xj > t_am:
+                            t_am = xj
+                            t_acol = Float32(vec_base + j)
             x_ssa = x_frag.load().to(Float32)  # (VEC,) fp32 TensorSSA
             if const_expr(HAS_SOFTCAP):
                 x_ssa = softcap * cute.math.tanh(x_ssa / softcap)  # cap before max/sum
@@ -302,6 +361,18 @@ def _ce_fwd_kernel(
                 else:
                     t_sxs = t_sxs + (x_ssa * neg_eps).reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
             local_max = x_ssa.reduce(cute.ReductionOp.MAX, Float32(NEG_INF_F32), 0)
+            if const_expr(HAS_PADDING):
+                xj = Float32(NEG_INF_F32)
+                x_exp_j = Float32(0.0)
+                if r_vidx == num_vec - 1:
+                    local_max = Float32(NEG_INF_F32)
+                    for j in cutlass.range_constexpr(VEC):
+                        xj = Float32(NEG_INF_F32)
+                        if vec_base + j < logical_vocab_size:
+                            xj = x_frag[j].to(Float32)
+                            if const_expr(HAS_SOFTCAP):
+                                xj = softcap * cute.math.tanh(xj / softcap)
+                        local_max = fmax(local_max, xj)
             m_new = fmax(m, local_max)
             # FMA-fold: exp2((x - m_new)*LOG2_E) == exp2(x*LOG2_E + (-m_new*LOG2_E)).
             # Hoisting the per-tile scalar neg_m2 lets the per-element arg compile to one
@@ -309,6 +380,18 @@ def _ce_fwd_kernel(
             neg_m2 = m_new * NEG_LOG2_E
             x_exp = cute.math.exp2(x_ssa * LOG2_E + neg_m2, fastmath=True)
             local_sum = x_exp.reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
+            if const_expr(HAS_PADDING):
+                if r_vidx == num_vec - 1:
+                    local_sum = Float32(0.0)
+                    for j in cutlass.range_constexpr(VEC):
+                        xj = Float32(NEG_INF_F32)
+                        x_exp_j = Float32(0.0)
+                        if vec_base + j < logical_vocab_size:
+                            xj = x_frag[j].to(Float32)
+                            if const_expr(HAS_SOFTCAP):
+                                xj = softcap * cute.math.tanh(xj / softcap)
+                            x_exp_j = cute.math.exp2(xj * LOG2_E + neg_m2, fastmath=True)
+                        local_sum = local_sum + x_exp_j
             d = d * cute.math.exp2((m - m_new) * LOG2_E, fastmath=True) + local_sum
             m = m_new
         read_stage = _advance(read_stage, _NUM_STAGES)
@@ -316,7 +399,6 @@ def _ce_fwd_kernel(
         r_vidx = r_vidx + THREADS
         w_vidx = w_vidx + THREADS
     cute.arch.cp_async_wait_group(0)  # drain remaining prefetches
-
     # warp-level reduce (collective: all 32 lanes) -> each lane has the warp's (m, d)
     m, d = _warp_online_combine(m, d)
     if const_expr(NEED_ARGMAX):
@@ -531,6 +613,7 @@ def _ce_fwd_host(
     softcap: Float32,
     label_smoothing: Float32,
     weight_sum: Float32,
+    logical_vocab_size: Int32,
     ignore_index: Int32,
     HAS_GRAD: cutlass.Constexpr,
     HAS_ZLOSS: cutlass.Constexpr,
@@ -540,6 +623,7 @@ def _ce_fwd_host(
     RETURN_PREDICTED_TOKENS: cutlass.Constexpr,
     HAS_WEIGHT: cutlass.Constexpr,
     HAS_SMOOTHING: cutlass.Constexpr,
+    HAS_PADDING: cutlass.Constexpr,
     NUM_WARPS: cutlass.Constexpr,
     stream: cuda.CUstream = None,
 ):
@@ -563,6 +647,7 @@ def _ce_fwd_host(
         softcap,
         label_smoothing,
         weight_sum,
+        logical_vocab_size,
         ignore_index,
         HAS_GRAD,
         HAS_ZLOSS,
@@ -572,6 +657,7 @@ def _ce_fwd_host(
         RETURN_PREDICTED_TOKENS,
         HAS_WEIGHT,
         HAS_SMOOTHING,
+        HAS_PADDING,
         NUM_WARPS,
     ).launch(
         grid=[BT, 1, 1],
@@ -600,11 +686,11 @@ def _launch_ce_fwd(
     token_acc_out=None,
     pred_tok_out=None,
     inv_n_z=None,
+    logical_vocab_size=None,
 ):
-    vec = 16 // x.element_size()  # 128-bit vectorization width: 8 bf16 / 4 fp32
-    assert x.shape[-1] % vec == 0, (
-        f"cutedsl CE needs V % {vec} == 0 for {x.dtype} (128-bit vectorized loads); "
-        f"got V={x.shape[-1]}. The 256-thread tail is predicated, so only V % VEC is required."
+    assert x.stride(0) * x.element_size() % 16 == 0, (
+        "cutedsl CE needs each row to start on a 16-byte boundary for vectorized loads; "
+        f"got row stride {x.stride(0)} for {x.dtype}."
     )
     # inv_n_z defaults to inv_n_loss: on the core / no-class-weight path the main loss and the
     # z_loss share one normalizer. Keeping inv_n_z a trailing keyword (not a 5th positional)
@@ -620,6 +706,10 @@ def _launch_ce_fwd(
     has_softcap = softcap is not None
     has_weight = weight is not None
     has_smoothing = bool(label_smoothing != 0.0)
+    logical_vocab_size = x.shape[-1] if logical_vocab_size is None else int(logical_vocab_size)
+    if not 0 < logical_vocab_size <= x.shape[-1]:
+        raise ValueError(f"logical_vocab_size must be in [1, {x.shape[-1]}], got {logical_vocab_size}.")
+    has_padding = logical_vocab_size != x.shape[-1]
     softcap_val = float(softcap) if has_softcap else 0.0
     x_ct = to_cute_tensor(x)
     y_ct = to_cute_tensor(y, assumed_align=8)  # int64
@@ -642,10 +732,18 @@ def _launch_ce_fwd(
     pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
     # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.
     w_ct = to_cute_tensor(weight, assumed_align=4) if has_weight else y_ct
-    # warps/CTA: mirror Triton's Blackwell CE convention — 2-byte dtypes (bf16/fp16) are
-    # instruction-issue-bound -> 8 warps; fp32 is bandwidth-bound -> 32 warps. Baked into the
-    # kernel, so it's part of the compile key.
-    num_warps = 8 if x.element_size() == 2 else 32
+    # warps/CTA: mirror the Triton CE convention exactly (arch- and dtype-dependent):
+    #   Blackwell (B200, sm_100+) bf16/fp16 -> 8 (instruction-issue-bound); fp32 -> 32
+    #   Hopper (H100, sm_90) and earlier    -> 32 for all dtypes (bandwidth-bound)
+    #   AMD (ROCm)                          -> 16
+    # On Hopper the 8-warp bf16 kernel underfills the SMs and loses to the 32-warp Triton
+    # forward, so we gate the 8-warp choice on Blackwell only (matches ops/cross_entropy.py).
+    # Baked into the kernel, so it's part of the compile key.
+    if is_hip():
+        num_warps = 16
+    else:
+        is_blackwell = infer_device_arch().startswith("blackwell")
+        num_warps = 8 if (x.element_size() == 2 and is_blackwell) else 32
     key = (
         x.dtype,
         y.dtype,
@@ -658,6 +756,7 @@ def _launch_ce_fwd(
         bool(return_predicted_tokens),
         has_weight,
         has_smoothing,
+        has_padding,
         num_warps,
     )
     if key not in _compile_cache:
@@ -676,6 +775,7 @@ def _launch_ce_fwd(
             float(softcap_val),
             float(label_smoothing),
             float(weight_sum),
+            logical_vocab_size,
             int(ignore_index),
             has_grad,
             has_zloss,
@@ -685,6 +785,7 @@ def _launch_ce_fwd(
             bool(return_predicted_tokens),
             has_weight,
             has_smoothing,
+            has_padding,
             num_warps,
             stream,
         )
@@ -703,6 +804,7 @@ def _launch_ce_fwd(
         float(softcap_val),
         float(label_smoothing),
         float(weight_sum),
+        logical_vocab_size,
         int(ignore_index),
         stream,
     )
@@ -827,9 +929,12 @@ def cross_entropy_backward(_input, grad_output):
     # reduction="none": per-row upstream grad.
     if grad_output.ndim > 0:
         return _input * grad_output.unsqueeze(dim=1)
-    # reduction in {mean, sum}: scalar upstream grad. Fresh tensor (not in-place)
-    # to avoid the autograd anomalies the Triton path uses a kernel to dodge.
-    return _input * grad_output
+    # reduction in {mean, sum}: scalar upstream grad. Scale the saved gradient IN PLACE so we
+    # never materialize a second BT×V buffer (Triton-parity peak memory: 1x logits, not 2x).
+    # A raw CuTe DSL kernel is used instead of `_input *= grad_output` because the torch op
+    # bumps the forward output's autograd version counter and breaks repeated backward.
+    _scale_in_place(_input, grad_output)
+    return _input
 
 
 class LigerCrossEntropyFunction(torch.autograd.Function):

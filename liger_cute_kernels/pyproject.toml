@@ -1,0 +1,14 @@
+# Build config for the independent lck wheel (see setup.py).
+# Build with --no-build-isolation so it links the LOCAL torch/CUDA; the
+# `requires` below document what that environment must already provide.
+[build-system]
+requires = [
+    "setuptools>=64",
+    "wheel",
+    "pybind11>=2.11",
+    "cmake>=3.24",
+    "ninja",
+    "torch",
+    "apache-tvm-ffi",
+]
+build-backend = "setuptools.build_meta"

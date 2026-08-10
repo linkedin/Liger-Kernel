@@ -19,6 +19,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 from liger_kernel.ops.utils import set_large_grf_mode
@@ -105,6 +106,14 @@ def _rms_norm_forward_kernel(
     if casting_mode == _CASTING_MODE_NONE:
         eps = eps.to(X_row_dtype)
         offset = offset.to(X_row_dtype)
+    else:
+        # Scalar kernel params are specialized to fp32 by eager Triton but to
+        # fp64 by Inductor when this kernel is launched from inside
+        # torch.compile. An fp64 scalar silently promotes mean_square, rsqrt
+        # and the weight multiply to float64, roughly halving throughput.
+        # Pinning to fp32 is a no-op in eager and keeps both paths identical.
+        eps = eps.to(tl.float32)
+        offset = offset.to(tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
     rstd = rsqrt(mean_square + eps)
@@ -170,7 +179,8 @@ def _rms_norm_backward_kernel(
 
     if elementwise_affine:
         W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
-        W_row = W_row + offset
+        # Pin the fp64 scalar Inductor passes to fp32 (see _rms_norm_forward_kernel).
+        W_row = W_row + offset.to(tl.float32)
 
     for row_idx in range(row_start, row_end):
         dy_base = dY_ptr + row_idx * dY_row_stride
@@ -279,6 +289,10 @@ def _block_rms_norm_forward_kernel(
     if casting_mode == _CASTING_MODE_NONE:
         eps = eps.to(X_row_dtype)
         offset = offset.to(X_row_dtype)
+    else:
+        # See _rms_norm_forward_kernel: pin fp64 scalars from Inductor to fp32.
+        eps = eps.to(tl.float32)
+        offset = offset.to(tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=1) / n_cols
     rstd = rsqrt(mean_square + eps)
@@ -347,7 +361,8 @@ def _block_rms_norm_backward_kernel(
         dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
         W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
-        W_row = W_row + offset
+        # Pin the fp64 scalar Inductor passes to fp32 (see _rms_norm_forward_kernel).
+        W_row = W_row + offset.to(tl.float32)
 
     for start in range(pid * BLOCK_ROW, n_rows, NUM_SMS * BLOCK_ROW):
         row_idx = start + tl.arange(0, BLOCK_ROW)
@@ -450,47 +465,48 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     kernel_args = {}
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
-    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
-        _rms_norm_forward_kernel[(n_rows,)](
-            Y,
-            Y.stride(0),
-            X,
-            X.stride(0),
-            W,
-            W.stride(0) if elementwise_affine else 0,
-            RSTD,
-            RSTD.stride(0),
-            n_cols,
-            eps,
-            offset,
-            casting_mode,
-            elementwise_affine=elementwise_affine,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            **kernel_args,  # XPU-specific optimization
-        )
-    else:
-        BLOCK_ROW = 16
-        kernel_args["BLOCK_ROW"] = BLOCK_ROW
-        _block_rms_norm_forward_kernel[(triton.cdiv(n_rows, BLOCK_ROW),)](
-            Y,
-            Y.stride(0),
-            X,
-            X.stride(0),
-            W,
-            W.stride(0) if elementwise_affine else 0,
-            RSTD,
-            RSTD.stride(0),
-            n_rows,
-            n_cols,
-            eps,
-            offset,
-            casting_mode,
-            elementwise_affine=elementwise_affine,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            **kernel_args,  # XPU-specific optimization
-        )
+    with device_context(X.device):
+        if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+            _rms_norm_forward_kernel[(n_rows,)](
+                Y,
+                Y.stride(0),
+                X,
+                X.stride(0),
+                W,
+                W.stride(0) if elementwise_affine else 0,
+                RSTD,
+                RSTD.stride(0),
+                n_cols,
+                eps,
+                offset,
+                casting_mode,
+                elementwise_affine=elementwise_affine,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
+                **kernel_args,  # XPU-specific optimization
+            )
+        else:
+            BLOCK_ROW = 16
+            kernel_args["BLOCK_ROW"] = BLOCK_ROW
+            _block_rms_norm_forward_kernel[(triton.cdiv(n_rows, BLOCK_ROW),)](
+                Y,
+                Y.stride(0),
+                X,
+                X.stride(0),
+                W,
+                W.stride(0) if elementwise_affine else 0,
+                RSTD,
+                RSTD.stride(0),
+                n_rows,
+                n_cols,
+                eps,
+                offset,
+                casting_mode,
+                elementwise_affine=elementwise_affine,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
+                **kernel_args,  # XPU-specific optimization
+            )
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
@@ -531,57 +547,58 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
 
-    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
-        _rms_norm_backward_kernel[grid](
-            dY,
-            dY.stride(0),
-            dX,
-            dX.stride(0),
-            X,
-            X.stride(0),
-            torch_to_triton_dtype[X.dtype],
-            W,
-            W.stride(0) if elementwise_affine else 0,
-            RSTD,
-            RSTD.stride(0),
-            _dW,
-            _dW.stride(0) if elementwise_affine else 0,
-            n_rows,
-            n_cols,
-            offset,
-            rows_per_program,
-            casting_mode,
-            elementwise_affine=elementwise_affine,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            **kernel_args,  # XPU-specific optimization
-        )
-    else:
-        BLOCK_ROW = 16
-        kernel_args["BLOCK_ROW"] = BLOCK_ROW
-        _block_rms_norm_backward_kernel[grid](
-            dY,
-            dY.stride(0),
-            dX,
-            dX.stride(0),
-            X,
-            X.stride(0),
-            torch_to_triton_dtype[X.dtype],
-            W,
-            W.stride(0) if elementwise_affine else 0,
-            RSTD,
-            RSTD.stride(0),
-            _dW,
-            _dW.stride(0) if elementwise_affine else 0,
-            n_rows,
-            n_cols,
-            offset,
-            casting_mode,
-            elementwise_affine=elementwise_affine,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            **kernel_args,  # XPU-specific optimization
-        )
+    with device_context(X.device):
+        if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+            _rms_norm_backward_kernel[grid](
+                dY,
+                dY.stride(0),
+                dX,
+                dX.stride(0),
+                X,
+                X.stride(0),
+                torch_to_triton_dtype[X.dtype],
+                W,
+                W.stride(0) if elementwise_affine else 0,
+                RSTD,
+                RSTD.stride(0),
+                _dW,
+                _dW.stride(0) if elementwise_affine else 0,
+                n_rows,
+                n_cols,
+                offset,
+                rows_per_program,
+                casting_mode,
+                elementwise_affine=elementwise_affine,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
+                **kernel_args,  # XPU-specific optimization
+            )
+        else:
+            BLOCK_ROW = 16
+            kernel_args["BLOCK_ROW"] = BLOCK_ROW
+            _block_rms_norm_backward_kernel[grid](
+                dY,
+                dY.stride(0),
+                dX,
+                dX.stride(0),
+                X,
+                X.stride(0),
+                torch_to_triton_dtype[X.dtype],
+                W,
+                W.stride(0) if elementwise_affine else 0,
+                RSTD,
+                RSTD.stride(0),
+                _dW,
+                _dW.stride(0) if elementwise_affine else 0,
+                n_rows,
+                n_cols,
+                offset,
+                casting_mode,
+                elementwise_affine=elementwise_affine,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
+                **kernel_args,  # XPU-specific optimization
+            )
     dX = dX.view(*shape)
 
     if elementwise_affine:
