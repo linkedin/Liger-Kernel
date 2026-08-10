@@ -10,7 +10,7 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
-FP32_DIFF_THRESHOLD = 1e-5
+DIFF_THRESHOLD = 1e-5
 
 
 def calc_diff(x: torch.Tensor, y: torch.Tensor):
@@ -22,11 +22,8 @@ def calc_diff(x: torch.Tensor, y: torch.Tensor):
     return 1 - sim
 
 
-def _assert_close(x: torch.Tensor, y: torch.Tensor, dtype: torch.dtype, atol, rtol):
-    if dtype == torch.float32:
-        assert calc_diff(x, y) < FP32_DIFF_THRESHOLD
-    else:
-        assert torch.allclose(x, y, atol=atol, rtol=rtol)
+def _assert_close(x: torch.Tensor, y: torch.Tensor):
+    assert calc_diff(x, y) < DIFF_THRESHOLD
 
 
 @pytest.mark.parametrize(
@@ -40,19 +37,17 @@ def _assert_close(x: torch.Tensor, y: torch.Tensor, dtype: torch.dtype, atol, rt
     ],
 )
 @pytest.mark.parametrize(
-    "dtype, atol, rtol",
+    "dtype",
     [
-        (torch.float32, None, None),
+        torch.float32,
         pytest.param(
             torch.bfloat16,
-            1e4,
-            1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
-        (torch.float16, 1e2, 1e-2),
+        torch.float16,
     ],
 )
-def test_correctness_llamamlp(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol):
+def test_correctness_llamamlp(bsz, seq_len, hidden_size, intermediate_size, dtype):
     config = LlamaConfig(
         hidden_size=hidden_size,
         intermediate_size=intermediate_size,
@@ -83,18 +78,18 @@ def test_correctness_llamamlp(bsz, seq_len, hidden_size, intermediate_size, dtyp
     y1 = llama_mlp(x1)
     y2 = liger_mlp(x2)
 
-    _assert_close(y1, y2, dtype, atol, rtol)
+    _assert_close(y1, y2)
 
     dy = torch.randn_like(y1)
 
     y1.backward(dy.clone(), retain_graph=True)
     y2.backward(dy.clone(), retain_graph=True)
 
-    _assert_close(llama_mlp.gate_proj.weight.grad, liger_mlp.gate_proj.weight.grad, dtype, atol, rtol)
-    _assert_close(llama_mlp.up_proj.weight.grad, liger_mlp.up_proj.weight.grad, dtype, atol, rtol)
-    _assert_close(llama_mlp.down_proj.weight.grad, liger_mlp.down_proj.weight.grad, dtype, atol, rtol)
+    _assert_close(llama_mlp.gate_proj.weight.grad, liger_mlp.gate_proj.weight.grad)
+    _assert_close(llama_mlp.up_proj.weight.grad, liger_mlp.up_proj.weight.grad)
+    _assert_close(llama_mlp.down_proj.weight.grad, liger_mlp.down_proj.weight.grad)
 
-    _assert_close(x1.grad, x2.grad, dtype, atol, rtol)
+    _assert_close(x1.grad, x2.grad)
 
 
 @pytest.mark.parametrize(
@@ -108,19 +103,17 @@ def test_correctness_llamamlp(bsz, seq_len, hidden_size, intermediate_size, dtyp
     ],
 )
 @pytest.mark.parametrize(
-    "dtype, atol, rtol",
+    "dtype",
     [
-        (torch.float32, None, None),
+        torch.float32,
         pytest.param(
             torch.bfloat16,
-            1e4,
-            1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
-        (torch.float16, 1e2, 1e-2),
+        torch.float16,
     ],
 )
-def test_correctness_inference_mode(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol):
+def test_correctness_inference_mode(bsz, seq_len, hidden_size, intermediate_size, dtype):
     """Exercise the inference forward path (no GU saved for backward)."""
     config = LlamaConfig(
         hidden_size=hidden_size,
@@ -150,7 +143,7 @@ def test_correctness_inference_mode(bsz, seq_len, hidden_size, intermediate_size
         y1 = llama_mlp(_input)
         y2 = liger_mlp(_input)
 
-    _assert_close(y1, y2, dtype, atol, rtol)
+    _assert_close(y1, y2)
 
 
 @pytest.mark.parametrize(
