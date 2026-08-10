@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +14,7 @@ _PATCH_MARKER = "__liger_patched__"
 def apply_liger_kernel_to_megatron(
     rms_norm: bool = True,
     cross_entropy: bool = False,
+    rope: bool = False,
 ) -> None:
     """Patch Megatron-Core to use Liger Triton kernels.
 
@@ -38,6 +41,15 @@ def apply_liger_kernel_to_megatron(
             wrapper additionally honors a runtime ``label_smoothing``
             argument, matching native's
             ``(logits, target, label_smoothing=0.0, tp_group=None)``.
+        rope: When ``True`` replace
+            ``megatron.core.models.common.embeddings.rope_utils.apply_rotary_pos_emb``
+            (and every module that imported the symbol, e.g.
+            ``megatron.core.transformer.attention``) with Liger's Triton RoPE.
+            Default ``False`` so adopters opt in explicitly. Only the standard
+            unfused non-packed path is routed through Liger; fused (TE/Apex) RoPE,
+            packed ``thd`` sequences, interleaved rotation, multi-latent
+            attention, ``mscale != 1`` and per-batch ``freqs`` transparently
+            fall back to Megatron's native implementation.
 
     Notes:
         Call this BEFORE building your model. Patching after instantiation
@@ -61,6 +73,8 @@ def apply_liger_kernel_to_megatron(
     if cross_entropy:
         _patch_fused_vocab_parallel_cross_entropy()
         _patch_vocab_parallel_cross_entropy()
+    if rope:
+        _patch_apply_rotary_pos_emb()
 
 
 def _patch_local_spec_provider_layer_norm() -> None:
@@ -259,4 +273,103 @@ def _patch_vocab_parallel_cross_entropy() -> None:
 
     logger.info(
         "Patched megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy with Liger cross-entropy."
+    )
+
+
+def _patch_apply_rotary_pos_emb() -> None:
+    """Replace ``rope_utils.apply_rotary_pos_emb`` with Liger's Triton RoPE.
+
+    Megatron's RoPE dispatcher lives in
+    ``megatron.core.models.common.embeddings.rope_utils`` but is imported by
+    value into consumer modules (``megatron.core.transformer.attention`` does
+    ``from ...rope_utils import apply_rotary_pos_emb`` at import time). Rebinding
+    only the definition module would therefore miss the copy attention already
+    holds. We rebind the symbol on *every* module whose ``apply_rotary_pos_emb``
+    still points at the original, so all live call sites pick up Liger.
+
+    Only the standard unfused non-packed path is routed through Liger. Fused RoPE,
+    packed ``thd`` sequences, interleaved rotation, multi-latent attention,
+    ``mscale != 1`` and per-batch ``freqs`` delegate to the captured original so
+    numerics never silently change.
+    """
+    try:
+        import megatron.core.models.common.embeddings.rope_utils as rope_utils
+    except ImportError as exc:
+        raise ImportError(
+            "apply_liger_kernel_to_megatron(rope=True) requires megatron-core to be "
+            "installed. Expected symbol path: "
+            "megatron.core.models.common.embeddings.rope_utils.apply_rotary_pos_emb."
+        ) from exc
+
+    if not hasattr(rope_utils, "apply_rotary_pos_emb"):
+        raise ImportError(
+            "megatron.core.models.common.embeddings.rope_utils.apply_rotary_pos_emb not "
+            "found. The symbol path may have changed in your Megatron-LM version. Please file "
+            "an issue on https://github.com/linkedin/Liger-Kernel with your megatron-core version."
+        )
+
+    if getattr(rope_utils.apply_rotary_pos_emb, _PATCH_MARKER, False):
+        return  # already patched
+
+    original = rope_utils.apply_rotary_pos_emb
+
+    from liger_kernel.megatron.rope import liger_apply_rotary_pos_emb_bshd
+
+    original_parameters = inspect.signature(original).parameters
+    original_accepts_mla_interleaving = "mla_rotary_interleaved" in original_parameters
+
+    def liger_apply_rotary_pos_emb(
+        t,
+        freqs,
+        config,
+        cu_seqlens=None,
+        mscale=1.0,
+        cp_group=None,
+        mla_rotary_interleaved=False,
+    ):
+        # Route only the standard unfused non-packed path to Liger; everything else
+        # (fused TE/Apex RoPE, packed thd, interleaved, multi-latent attention,
+        # mscale scaling, per-batch/mRoPE freqs) falls back to native so we
+        # never change numerics for configs Liger's kernel does not cover.
+        unsupported = (
+            cu_seqlens is not None
+            or mscale != 1.0
+            or getattr(config, "apply_rope_fusion", False)
+            or getattr(config, "rotary_interleaved", False)
+            or bool(mla_rotary_interleaved)
+            or getattr(config, "multi_latent_attention", False)
+            or freqs.shape[1] != 1
+            or freqs.shape[2] != 1
+        )
+        if unsupported:
+            fallback_kwargs = {
+                "cu_seqlens": cu_seqlens,
+                "mscale": mscale,
+                "cp_group": cp_group,
+            }
+            if original_accepts_mla_interleaving:
+                fallback_kwargs["mla_rotary_interleaved"] = mla_rotary_interleaved
+            return original(t, freqs, config, **fallback_kwargs)
+        return liger_apply_rotary_pos_emb_bshd(t, freqs)
+
+    setattr(liger_apply_rotary_pos_emb, _PATCH_MARKER, True)
+    setattr(liger_apply_rotary_pos_emb, "__wrapped__", original)
+
+    # Rebind on every module that imported the original symbol by value.
+    patched_modules = []
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        if getattr(module, "apply_rotary_pos_emb", None) is original:
+            module.apply_rotary_pos_emb = liger_apply_rotary_pos_emb
+            patched_modules.append(name)
+
+    # Guarantee the definition module is patched even if the scan missed it.
+    if rope_utils.apply_rotary_pos_emb is original:
+        rope_utils.apply_rotary_pos_emb = liger_apply_rotary_pos_emb
+        patched_modules.append(rope_utils.__name__)
+
+    logger.info(
+        "Patched apply_rotary_pos_emb with Liger RoPE on modules: %s.",
+        ", ".join(sorted(set(patched_modules))),
     )

@@ -20,6 +20,7 @@ Liger learns to patch:
   3. RMSNorm patch tests
   4. Cross-kernel public-API surface tests
   5. End-to-end integration through patched CE symbols
+  6. RoPE patch tests
 """
 
 import sys
@@ -188,6 +189,90 @@ def _install_fake_megatron_rms_norm(
     return backends, transformer_block
 
 
+# Sentinel returned by the stub's native ``apply_rotary_pos_emb`` so delegation
+# (unsupported-path fallback) is observable without a real megatron install.
+_NATIVE_ROPE_SENTINEL = object()
+
+
+def _install_fake_megatron_rope(
+    with_symbol: bool = True,
+    with_consumer: bool = True,
+    with_mla_interleaving_parameter: bool = True,
+):
+    """Install the RoPE slice of the Megatron stub.
+
+    Returns ``(rope_utils_module, attention_module)`` so tests can inspect the
+    rebind. The ``attention`` stub holds ``apply_rotary_pos_emb`` *by value*
+    (mirroring Megatron's ``from …rope_utils import apply_rotary_pos_emb`` at
+    import time) so tests can verify the patch rebinds every importer, not just
+    the definition module.
+    """
+    _, megatron_core = _ensure_megatron_roots()
+
+    models = sys.modules.get("megatron.core.models") or types.ModuleType("megatron.core.models")
+    common = sys.modules.get("megatron.core.models.common") or types.ModuleType("megatron.core.models.common")
+    embeddings = sys.modules.get("megatron.core.models.common.embeddings") or types.ModuleType(
+        "megatron.core.models.common.embeddings"
+    )
+    rope_utils = types.ModuleType("megatron.core.models.common.embeddings.rope_utils")
+    rope_utils._last_call = None
+
+    if with_symbol:
+        if with_mla_interleaving_parameter:
+
+            def original_apply_rotary_pos_emb(
+                t,
+                freqs,
+                config,
+                cu_seqlens=None,
+                mscale=1.0,
+                cp_group=None,
+                mla_rotary_interleaved=False,
+            ):
+                rope_utils._last_call = {
+                    "cu_seqlens": cu_seqlens,
+                    "mscale": mscale,
+                    "cp_group": cp_group,
+                    "mla_rotary_interleaved": mla_rotary_interleaved,
+                }
+                return _NATIVE_ROPE_SENTINEL
+
+        else:
+
+            def original_apply_rotary_pos_emb(t, freqs, config, cu_seqlens=None, mscale=1.0, cp_group=None):
+                rope_utils._last_call = {
+                    "cu_seqlens": cu_seqlens,
+                    "mscale": mscale,
+                    "cp_group": cp_group,
+                }
+                return _NATIVE_ROPE_SENTINEL
+
+        rope_utils.apply_rotary_pos_emb = original_apply_rotary_pos_emb
+
+    sys.modules["megatron.core.models"] = models
+    sys.modules["megatron.core.models.common"] = common
+    sys.modules["megatron.core.models.common.embeddings"] = embeddings
+    sys.modules["megatron.core.models.common.embeddings.rope_utils"] = rope_utils
+    megatron_core.models = models
+    models.common = common
+    common.embeddings = embeddings
+    embeddings.rope_utils = rope_utils
+
+    attention = None
+    if with_consumer:
+        transformer = sys.modules.get("megatron.core.transformer") or types.ModuleType("megatron.core.transformer")
+        attention = types.ModuleType("megatron.core.transformer.attention")
+        # Value-copy the symbol, exactly like Megatron's attention module does.
+        if with_symbol:
+            attention.apply_rotary_pos_emb = rope_utils.apply_rotary_pos_emb
+        sys.modules["megatron.core.transformer"] = transformer
+        sys.modules["megatron.core.transformer.attention"] = attention
+        megatron_core.transformer = transformer
+        transformer.attention = attention
+
+    return rope_utils, attention
+
+
 def _uninstall_fake_megatron():
     """Tear down every stub module installed by either installer."""
     for mod in [
@@ -202,7 +287,12 @@ def _uninstall_fake_megatron():
         "megatron.core.models",
         "megatron.core.transformer.transformer_block",
         "megatron.core.transformer.torch_norm",
+        "megatron.core.transformer.attention",
         "megatron.core.transformer",
+        # RoPE side
+        "megatron.core.models.common.embeddings.rope_utils",
+        "megatron.core.models.common.embeddings",
+        "megatron.core.models.common",
         # Shared roots
         "megatron.core",
         "megatron",
@@ -224,6 +314,15 @@ def fake_megatron_rms_norm():
     backends, transformer_block = _install_fake_megatron_rms_norm()
     try:
         yield backends, transformer_block
+    finally:
+        _uninstall_fake_megatron()
+
+
+@pytest.fixture
+def fake_megatron_rope():
+    rope_utils, attention = _install_fake_megatron_rope()
+    try:
+        yield rope_utils, attention
     finally:
         _uninstall_fake_megatron()
 
@@ -793,7 +892,9 @@ def test_import_from_root():
     try:
         from liger_kernel.megatron import LigerMegatronCrossEntropy  # noqa: F401
         from liger_kernel.megatron import LigerMegatronRMSNorm  # noqa: F401
+        from liger_kernel.megatron import LigerMegatronRopeFunction  # noqa: F401
         from liger_kernel.megatron import apply_liger_kernel_to_megatron  # noqa: F401
+        from liger_kernel.megatron import liger_apply_rotary_pos_emb_bshd  # noqa: F401
     except Exception:
         pytest.fail("Importing public Megatron symbols from liger_kernel.megatron failed.")
 
@@ -1023,3 +1124,247 @@ def test_rms_norm_only_patch_does_not_touch_ce_symbols(fake_megatron_ce):
 
     assert fused_ce.fused_vocab_parallel_cross_entropy is fused_before
     assert unfused_ce.vocab_parallel_cross_entropy is unfused_before
+
+
+# ===========================================================================
+# 6. RoPE patch tests
+# ===========================================================================
+# Liger's RoPE patch replaces a single dispatcher,
+# ``megatron.core.models.common.embeddings.rope_utils.apply_rotary_pos_emb``.
+# The wrinkle is that Megatron imports the symbol *by value* into consumer
+# modules (``megatron.core.transformer.attention`` does
+# ``from …rope_utils import apply_rotary_pos_emb``), so the patch must rebind
+# the name on every module that holds the original — not just the definition
+# module. It also routes only the standard unfused non-packed path through Liger,
+# delegating fused / thd / interleaved / MLA / mscale / mRoPE configs back to
+# the captured native function so numerics never silently change.
+
+
+# ---------------------------------------------------------------------------
+# 6.1 Symbol replacement + rebind-everywhere.
+# ---------------------------------------------------------------------------
+
+
+def test_rope_patch_replaces_definition_module_symbol(fake_megatron_rope):
+    rope_utils, _ = fake_megatron_rope
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    original = rope_utils.apply_rotary_pos_emb
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+    assert rope_utils.apply_rotary_pos_emb is not original
+    assert rope_utils.apply_rotary_pos_emb.__name__ == "liger_apply_rotary_pos_emb"
+    assert getattr(rope_utils.apply_rotary_pos_emb, "__liger_patched__", False) is True
+    assert rope_utils.apply_rotary_pos_emb.__wrapped__ is original
+
+
+def test_rope_patch_rebinds_symbol_on_consumer_module(fake_megatron_rope):
+    """The core contract: a module that imported the symbol by value (like
+    ``attention``) must be rebound too, otherwise live call sites keep the
+    original function."""
+    rope_utils, attention = fake_megatron_rope
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    original = attention.apply_rotary_pos_emb
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+    assert attention.apply_rotary_pos_emb is not original
+    assert attention.apply_rotary_pos_emb is rope_utils.apply_rotary_pos_emb
+    assert attention.apply_rotary_pos_emb.__name__ == "liger_apply_rotary_pos_emb"
+
+
+def test_rope_patch_with_rope_false_leaves_symbol_untouched(fake_megatron_rope):
+    rope_utils, attention = fake_megatron_rope
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    before_def = rope_utils.apply_rotary_pos_emb
+    before_consumer = attention.apply_rotary_pos_emb
+
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=False)
+
+    assert rope_utils.apply_rotary_pos_emb is before_def
+    assert attention.apply_rotary_pos_emb is before_consumer
+
+
+def test_rope_patch_is_idempotent(fake_megatron_rope):
+    rope_utils, attention = fake_megatron_rope
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+    def_first = rope_utils.apply_rotary_pos_emb
+    consumer_first = attention.apply_rotary_pos_emb
+
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+    assert rope_utils.apply_rotary_pos_emb is def_first
+    assert attention.apply_rotary_pos_emb is consumer_first
+    # __wrapped__ chains back to the original native function, not the first wrapper.
+    assert def_first.__wrapped__.__name__ == "original_apply_rotary_pos_emb"
+
+
+# ---------------------------------------------------------------------------
+# 6.2 Missing-megatron / missing-symbol errors.
+# ---------------------------------------------------------------------------
+
+
+def test_rope_patch_raises_when_megatron_not_installed():
+    _uninstall_fake_megatron()
+    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+
+    def blocking_import(name, *args, **kwargs):
+        if name == "megatron" or name.startswith("megatron."):
+            raise ImportError(f"No module named {name!r}")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=blocking_import):
+        from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+        with pytest.raises(ImportError, match="requires megatron-core"):
+            apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+
+def test_rope_patch_raises_when_symbol_missing():
+    _install_fake_megatron_rope(with_symbol=False)
+    try:
+        from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+        with pytest.raises(ImportError, match="symbol path may have changed"):
+            apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+    finally:
+        _uninstall_fake_megatron()
+
+
+# ---------------------------------------------------------------------------
+# 6.3 Unsupported-path delegation to native.
+# ---------------------------------------------------------------------------
+
+
+def _rope_config(apply_rope_fusion=False, rotary_interleaved=False, multi_latent_attention=False):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        apply_rope_fusion=apply_rope_fusion,
+        rotary_interleaved=rotary_interleaved,
+        multi_latent_attention=multi_latent_attention,
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs, config_kwargs",
+    [
+        ({"cu_seqlens": True}, {}),  # packed thd
+        ({"mscale": 2.0}, {}),  # yarn/mscale scaling
+        ({}, {"apply_rope_fusion": True}),  # fused TE/Apex path
+        ({}, {"rotary_interleaved": True}),  # interleaved rotation
+        ({}, {"multi_latent_attention": True}),  # MLA
+    ],
+)
+def test_rope_patch_delegates_unsupported_paths_to_native(fake_megatron_rope, kwargs, config_kwargs):
+    """Every path Liger's standard RoPE adapter doesn't cover must fall through to the
+    captured native function (observable via the sentinel it returns)."""
+    rope_utils, _ = fake_megatron_rope
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+    t = torch.zeros(4, 1, 2, 8)
+    freqs = torch.zeros(4, 1, 1, 8)
+    call_kwargs = dict(kwargs)
+    if call_kwargs.get("cu_seqlens") is True:
+        call_kwargs["cu_seqlens"] = torch.zeros(2, dtype=torch.int32)
+
+    result = rope_utils.apply_rotary_pos_emb(t, freqs, _rope_config(**config_kwargs), **call_kwargs)
+    assert result is _NATIVE_ROPE_SENTINEL
+
+
+def test_rope_patch_delegates_mla_interleaving_to_native(fake_megatron_rope):
+    """Current Megatron passes MLA interleaving as a call-time argument."""
+    rope_utils, _ = fake_megatron_rope
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+    t = torch.zeros(4, 1, 2, 8)
+    freqs = torch.zeros(4, 1, 1, 8)
+    result = rope_utils.apply_rotary_pos_emb(
+        t,
+        freqs,
+        _rope_config(),
+        mla_rotary_interleaved=True,
+    )
+
+    assert result is _NATIVE_ROPE_SENTINEL
+    assert rope_utils._last_call["mla_rotary_interleaved"] is True
+
+
+def test_rope_patch_delegates_with_older_megatron_signature():
+    """Fallback remains compatible with Megatron versions predating the MLA argument."""
+    rope_utils, _ = _install_fake_megatron_rope(with_mla_interleaving_parameter=False)
+    try:
+        from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+        apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+        t = torch.zeros(4, 1, 2, 8)
+        freqs = torch.zeros(4, 1, 1, 8)
+        result = rope_utils.apply_rotary_pos_emb(
+            t,
+            freqs,
+            _rope_config(apply_rope_fusion=True),
+        )
+
+        assert result is _NATIVE_ROPE_SENTINEL
+    finally:
+        _uninstall_fake_megatron()
+
+
+def test_rope_patch_delegates_per_batch_freqs_to_native(fake_megatron_rope):
+    """mRoPE-style per-batch ``freqs`` (shape[1] > 1) is not covered by the
+    non-packed adapter and must delegate to native."""
+    rope_utils, _ = fake_megatron_rope
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+    t = torch.zeros(4, 2, 2, 8)
+    freqs = torch.zeros(4, 2, 1, 8)  # batch dim > 1
+    result = rope_utils.apply_rotary_pos_emb(t, freqs, _rope_config())
+    assert result is _NATIVE_ROPE_SENTINEL
+
+
+# ---------------------------------------------------------------------------
+# 6.4 End-to-end: patched symbol produces correct RoPE on the supported path.
+# ---------------------------------------------------------------------------
+
+
+def _ref_rope_sbhd(t, freqs):
+    """Native Megatron RoPE (non-interleaved, mscale=1) for the supported path."""
+    rot_dim = freqs.shape[-1]
+    t_rot, t_pass = t[..., :rot_dim], t[..., rot_dim:]
+    cos_ = torch.cos(freqs).to(t.dtype)
+    sin_ = torch.sin(freqs).to(t.dtype)
+    x1, x2 = torch.chunk(t_rot, 2, dim=-1)
+    rotated = (t_rot * cos_) + (torch.cat((-x2, x1), dim=-1) * sin_)
+    return torch.cat((rotated, t_pass), dim=-1)
+
+
+@pytest.mark.skipif(_device == "cpu", reason="Liger Triton kernels require an accelerator.")
+def test_rope_patch_end_to_end_matches_native(fake_megatron_rope):
+    rope_utils, attention = fake_megatron_rope
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+    seq, batch, heads, head_dim = 32, 2, 4, 64
+    torch.manual_seed(0)
+    t = torch.randn(seq, batch, heads, head_dim, device=_device, dtype=torch.float32)
+    half = head_dim // 2
+    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, half, device=_device, dtype=torch.float32) / half))
+    theta = torch.outer(torch.arange(seq, device=_device, dtype=torch.float32), inv_freq)
+    freqs = torch.cat((theta, theta), dim=-1).reshape(seq, 1, 1, head_dim)
+
+    ref = _ref_rope_sbhd(t.clone(), freqs)
+    # Call through the consumer-module binding — proves attention picks up Liger.
+    got = attention.apply_rotary_pos_emb(t.clone(), freqs, _rope_config())
+
+    assert got.shape == t.shape
+    assert_verbose_allclose(got.float(), ref.float(), atol=1e-4, rtol=1e-4)
