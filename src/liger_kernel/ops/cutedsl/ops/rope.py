@@ -885,7 +885,7 @@ def _apply_qk_tma(q, k, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast
 # ---------------------------------------------------------------------------
 def rope_forward(q, k, cos, sin):
     with device_context(q.device):
-            # q,k arrive as (bsz, n_head, seq, hd) but are physically stored as
+        # q,k arrive as (bsz, n_head, seq, hd) but are physically stored as
         # (bsz, seq, n_head, hd) (they come from a projection's .transpose(1,2)).
         # Transposing back exposes that NATIVE contiguous storage for free, so the
         # following .contiguous() is a no-op for the standard layout -- exactly like
@@ -928,7 +928,7 @@ def rope_forward(q, k, cos, sin):
 
 def rope_backward(dq, dk, cos, sin):
     with device_context(dq.device):
-            # dq,dk arrive as (bsz, n_head, seq, hd) -- grads of the forward outputs.
+        # dq,dk arrive as (bsz, n_head, seq, hd) -- grads of the forward outputs.
         #
         # Fast path: an already-contiguous grad (eager attn, or a .contiguous() after
         # RoPE) is head-major/seq-innermost, so rotate it in place via SEQ_INNER

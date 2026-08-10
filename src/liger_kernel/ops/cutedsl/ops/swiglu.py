@@ -63,9 +63,9 @@ from cutlass.cute.runtime import from_dlpack
 
 from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.utils import infer_device_arch
-from liger_kernel.ops.utils import device_context
 
 # log2(e); sigmoid(x) = 1 / (1 + exp(-x)) = 1 / (1 + exp2(-x * LOG2E))
 _LOG2E = 1.4426950408889634

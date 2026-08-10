@@ -10,8 +10,8 @@ from liger_kernel.ops.cutedsl.ops.cross_entropy import _launch_ce_fwd
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import compare_version
-from liger_kernel.utils import infer_device_arch
 from liger_kernel.ops.utils import device_context
+from liger_kernel.utils import infer_device_arch
 
 _SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
 _FORWARD_GRAD_MIN_CHUNK = 512
