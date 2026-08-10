@@ -1,6 +1,7 @@
 """cuTile interface for fused linear scaled cross entropy."""
 
 import math
+import os
 
 import cuda.tile as ct
 import torch
@@ -8,10 +9,16 @@ import torch
 from liger_kernel.ops.cutile.ops.utils import LOG2E
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.cutile.ops.utils import _select_cross_entropy_block_size
+from liger_kernel.utils import infer_device_arch
 
 ConstInt = ct.Constant[int]
 
-_MAX_LOGITS_WORKSPACE_BYTES = 256 * 1024 * 1024
+_MIB = 1024 * 1024
+_PORTABLE_LOGITS_WORKSPACE_BYTES = 256 * _MIB
+_BLACKWELL_LOGITS_WORKSPACE_BYTES = 512 * _MIB
+_BLACKWELL_MIN_TOKENS = 4096
+_BLACKWELL_MIN_VOCAB_SIZE = 131072
+_WORKSPACE_MB_ENV = "LIGER_CUTILE_SCALED_CE_WORKSPACE_MB"
 
 
 def _validate_temperature(temperature):
@@ -48,9 +55,35 @@ def _validate_inputs(_input, weight, target, ignore_index):
         )
 
 
-def _calculate_token_chunk_size(token_count, vocab_size, element_size):
+def _select_logits_workspace_bytes(device_id, token_count, vocab_size, element_size):
+    workspace_override = os.environ.get(_WORKSPACE_MB_ENV)
+    if workspace_override is not None:
+        try:
+            workspace_mb = int(workspace_override)
+        except ValueError as exc:
+            raise ValueError(f"{_WORKSPACE_MB_ENV} must be a positive integer, got {workspace_override!r}") from exc
+        if workspace_mb <= 0:
+            raise ValueError(f"{_WORKSPACE_MB_ENV} must be a positive integer, got {workspace_override!r}")
+        return workspace_mb * _MIB
+
+    if (
+        element_size == 2
+        and token_count >= _BLACKWELL_MIN_TOKENS
+        and vocab_size >= _BLACKWELL_MIN_VOCAB_SIZE
+        and infer_device_arch(device_id).startswith("blackwell")
+    ):
+        return _BLACKWELL_LOGITS_WORKSPACE_BYTES
+    return _PORTABLE_LOGITS_WORKSPACE_BYTES
+
+
+def _calculate_token_chunk_size(
+    token_count,
+    vocab_size,
+    element_size,
+    workspace_bytes=_PORTABLE_LOGITS_WORKSPACE_BYTES,
+):
     bytes_per_token = vocab_size * element_size
-    max_tokens_per_chunk = max(1, _MAX_LOGITS_WORKSPACE_BYTES // bytes_per_token)
+    max_tokens_per_chunk = max(1, workspace_bytes // bytes_per_token)
     power_of_two_chunk = _next_power_of_2(max_tokens_per_chunk + 1) // 2
     if token_count <= power_of_two_chunk:
         return token_count
@@ -156,7 +189,9 @@ def fused_scaled_cross_entropy_forward(
 
     BT = _input.shape[0]
     V = weight.shape[0]
-    chunk_size = _calculate_token_chunk_size(BT, V, _input.element_size())
+    device_id = _input.device.index if _input.device.index is not None else torch.cuda.current_device()
+    workspace_bytes = _select_logits_workspace_bytes(device_id, BT, V, _input.element_size())
+    chunk_size = _calculate_token_chunk_size(BT, V, _input.element_size(), workspace_bytes)
     block_size = _select_cross_entropy_block_size(V)
 
     nll = torch.empty(BT, dtype=torch.float32, device=_input.device)
@@ -290,7 +325,9 @@ def fused_scaled_cross_entropy_backward(
 
     BT = _input.shape[0]
     V = weight.shape[0]
-    chunk_size = _calculate_token_chunk_size(BT, V, _input.element_size())
+    device_id = _input.device.index if _input.device.index is not None else torch.cuda.current_device()
+    workspace_bytes = _select_logits_workspace_bytes(device_id, BT, V, _input.element_size())
+    chunk_size = _calculate_token_chunk_size(BT, V, _input.element_size(), workspace_bytes)
     block_size = _select_cross_entropy_block_size(V)
 
     grad_input = torch.empty_like(_input) if _input.requires_grad else None

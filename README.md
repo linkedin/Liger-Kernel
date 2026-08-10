@@ -234,7 +234,7 @@ loss = nll.sum() / (target != -100).sum().clamp_min(1)
 
 The implementations share this public contract but use different schedules:
 
-- **cuTile** (`LIGER_KERNEL_IMPL=cutile`) supports matching floating-point `input` and `weight` tensors on CUDA and a finite positive scalar `temperature`. Forward and backward bound the temporary logits workspace to 256 MiB. Backward reuses one workspace and writes `dX` and accumulates `dW` directly into their final tensors. `m_tiles_per_cluster` is accepted for API compatibility but does not change the cuTile schedule.
+- **cuTile** (`LIGER_KERNEL_IMPL=cutile`) supports matching floating-point `input` and `weight` tensors on CUDA and a finite positive scalar `temperature`. The portable temporary-logits budget is 256 MiB. Large FP16/BF16 Blackwell workloads (`M >= 4096`, `V >= 131072`) automatically use 512 MiB to improve GEMM utilization. Set `LIGER_CUTILE_SCALED_CE_WORKSPACE_MB` to another positive MiB value for workload-specific tuning; for example, 1024 can help large combined NLL-plus-entropy workloads but is not universally faster. Backward reuses one workspace and writes `dX` and accumulates `dW` directly into their final tensors. `m_tiles_per_cluster` is accepted for API compatibility but does not change the cuTile schedule.
 - **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Forward never writes logits to HBM; `m_tiles_per_cluster=1` selects the fastest M-outer schedule and larger values select the M-fast schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
 - **Fallback** uses a 512-token chunked PyTorch implementation adapted from Verl's fused PPO formulas when the default frontend cannot use the SM90 kernel.
 
@@ -244,6 +244,13 @@ H100 measurements for per-token NLL at `M=4096`, `H=4096`, `V=131072`, BF16:
 |---|---:|---:|---:|---:|
 | cuTile | 6.45 ms | 20.70 ms | 26.94 ms | 2.43 GiB |
 | CuTe SM90 | 7.26 ms | 19.81 ms | 27.74 ms | 2.43 GiB |
+
+B200 measurements for the same shape, using automatic cuTile workspace selection:
+
+| Implementation | Forward | Backward | Full | Peak full memory |
+|---|---:|---:|---:|---:|
+| cuTile | 2.97 ms | 8.35 ms | 11.36 ms | 2.64 GiB |
+| Torch | 5.24 ms | 7.15 ms | 12.85 ms | 7.22 GiB |
 
 
 ## Getting Started

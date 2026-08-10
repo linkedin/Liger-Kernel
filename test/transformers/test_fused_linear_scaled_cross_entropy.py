@@ -305,6 +305,59 @@ def test_cutile_token_chunk_size_balances_small_tails(token_count, vocab_size, e
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
 @pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
+@pytest.mark.parametrize(
+    ("architecture", "token_count", "vocab_size", "element_size", "expected_mb"),
+    [
+        ("hopper", 4096, 131072, 2, 256),
+        ("blackwell", 4096, 131072, 2, 512),
+        ("blackwell_ultra", 4096, 131072, 2, 512),
+        ("blackwell", 2048, 131072, 2, 256),
+        ("blackwell", 4096, 65536, 2, 256),
+        ("blackwell", 4096, 131072, 4, 256),
+    ],
+)
+def test_cutile_selects_workspace_by_architecture(
+    monkeypatch,
+    architecture,
+    token_count,
+    vocab_size,
+    element_size,
+    expected_mb,
+):
+    import liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy as scaled_ce
+
+    monkeypatch.delenv(scaled_ce._WORKSPACE_MB_ENV, raising=False)
+    monkeypatch.setattr(scaled_ce, "infer_device_arch", lambda _: architecture)
+
+    actual = scaled_ce._select_logits_workspace_bytes(0, token_count, vocab_size, element_size)
+    assert actual == expected_mb * scaled_ce._MIB
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
+@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
+def test_cutile_workspace_override(monkeypatch):
+    import liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy as scaled_ce
+
+    monkeypatch.setenv(scaled_ce._WORKSPACE_MB_ENV, "1024")
+    workspace_bytes = scaled_ce._select_logits_workspace_bytes(0, 4096, 131072, 2)
+
+    assert workspace_bytes == 1024 * scaled_ce._MIB
+    assert scaled_ce._calculate_token_chunk_size(4096, 131072, 2, workspace_bytes) == 4096
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
+@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
+@pytest.mark.parametrize("value", ["invalid", "0", "-1"])
+def test_cutile_rejects_invalid_workspace_override(monkeypatch, value):
+    import liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy as scaled_ce
+
+    monkeypatch.setenv(scaled_ce._WORKSPACE_MB_ENV, value)
+    with pytest.raises(ValueError, match=scaled_ce._WORKSPACE_MB_ENV):
+        scaled_ce._select_logits_workspace_bytes(0, 4096, 131072, 2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
+@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
 def test_cutile_rejects_out_of_range_target():
     from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
 
