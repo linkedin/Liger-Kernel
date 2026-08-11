@@ -8,9 +8,11 @@ training path is:
 This script compares that path with ``LigerMegatronFusedLinearCrossEntropy``,
 which saves low-precision CE state to avoid projection recomputation. The
 ``liger-triton`` provider additionally replaces all three local GEMMs with
-portable Triton kernels. When Megatron-Core is installed, the ``megatron-core``
-provider uses its fused CE. The always-available ``megatron-compatible``
-provider uses Liger's drop-in Megatron CE.
+portable Triton kernels. ``liger-cutile`` replaces all local compute with
+CuTile, while ``liger-cutedsl`` uses a persistent SM100 CuTe DSL projection.
+When Megatron-Core is installed, the ``megatron-core`` provider uses its fused
+CE. The always-available ``megatron-compatible`` provider uses Liger's drop-in
+Megatron CE.
 
 Backward timing creates a fresh graph outside each timed event pair, so only
 backward execution is measured while respecting Megatron's single-use fused CE
@@ -49,6 +51,16 @@ from liger_kernel.megatron import LigerMegatronFusedLinearCrossEntropy
 from liger_kernel.ops.triton.ops.megatron_fused_linear_cross_entropy import (
     liger_megatron_fused_linear_cross_entropy as triton_megatron_fused_linear_cross_entropy,
 )
+
+try:
+    from liger_kernel.ops.cutedsl.ops.megatron_fused_linear_cross_entropy import (
+        liger_megatron_fused_linear_cross_entropy as cutedsl_megatron_fused_linear_cross_entropy,
+    )
+
+    _CUTEDSL_AVAILABLE = True
+except ImportError:
+    cutedsl_megatron_fused_linear_cross_entropy = None
+    _CUTEDSL_AVAILABLE = False
 
 try:
     from liger_kernel.ops.cutile.ops.megatron_fused_linear_cross_entropy import (
@@ -115,6 +127,16 @@ def _make_state(
         forward = lambda: loss(hidden, weight, target, bias=bias, tp_group=tp_group)
     elif provider == "liger-triton":
         forward = lambda: triton_megatron_fused_linear_cross_entropy(
+            hidden,
+            weight,
+            target,
+            bias=bias,
+            tp_group=tp_group,
+        )
+    elif provider == "liger-cutedsl":
+        if not _CUTEDSL_AVAILABLE:
+            raise RuntimeError("provider 'liger-cutedsl' requires nvidia-cutlass-dsl.")
+        forward = lambda: cutedsl_megatron_fused_linear_cross_entropy(
             hidden,
             weight,
             target,
@@ -479,7 +501,14 @@ def main():
     parser.add_argument(
         "--providers",
         nargs="+",
-        choices=["liger", "liger-triton", "liger-cutile", "megatron-compatible", "megatron-core"],
+        choices=[
+            "liger",
+            "liger-triton",
+            "liger-cutedsl",
+            "liger-cutile",
+            "megatron-compatible",
+            "megatron-core",
+        ],
     )
     parser.add_argument(
         "--output",
@@ -496,6 +525,8 @@ def main():
         providers.insert(1, "megatron-core")
     if "megatron-core" in providers and not _MEGATRON_CORE_AVAILABLE:
         raise RuntimeError("provider 'megatron-core' requested, but megatron-core is not installed.")
+    if "liger-cutedsl" in providers and not _CUTEDSL_AVAILABLE:
+        raise RuntimeError("provider 'liger-cutedsl' requested, but nvidia-cutlass-dsl is not installed.")
     if "liger-cutile" in providers and not _CUTILE_AVAILABLE:
         raise RuntimeError("provider 'liger-cutile' requested, but cuda-tile is not installed.")
     if min(args.token_counts) <= 0 or args.hidden_size <= 0 or min(args.vocab_sizes) <= 0:

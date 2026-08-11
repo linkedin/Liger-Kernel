@@ -98,17 +98,22 @@ You can also use the Patching APIs to use the kernels for a specific model archi
 
 Liger also exposes a patch for the [Megatron-LM](https://github.com/NVIDIA/Megatron-LM)
 training framework, replacing Megatron's native RMSNorm and both vocab-parallel
-cross-entropy paths (fused and unfused) with Liger's Triton kernels.
+cross-entropy paths (fused and unfused) with Liger kernels. Liger also exposes
+a hidden-state-to-loss FLCE module for contiguous tensor-parallel vocabulary
+shards.
 
 | **Framework** | **API**                                                | **Supported Operations** |
 |---------------|--------------------------------------------------------|--------------------------|
 | Megatron-LM   | `liger_kernel.megatron.apply_liger_kernel_to_megatron` | RMSNorm, CrossEntropyLoss |
+| Megatron-LM   | `liger_kernel.megatron.LigerMegatronFusedLinearCrossEntropy` | Fused output projection + CrossEntropyLoss |
 
-**Scope**: Initial release supports `tensor_model_parallel_size=1` only for
-cross-entropy. Vocab-parallel cross-entropy (TP>1) is follow-up work — with
-TP>1, each rank holds a sharded `[N, V/tp]` logits slice and cross-entropy
-requires cross-rank all-reduces that Liger's kernel does not perform. The
-patch raises a `RuntimeError` at patch time or call time if TP>1 is detected.
+`LigerMegatronFusedLinearCrossEntropy` accepts replicated hidden states,
+the calling rank's contiguous `[V_local, H]` output-weight shard, and global
+target indices. It supports TP1 and TP>1 through the supplied process group.
+The default implementation uses cuBLAS, Triton CE, and NCCL. Set
+`LIGER_KERNEL_IMPL=triton`, `cutile`, or `cutedsl` before importing Liger to
+select an all-Triton local path, a CuTile local path, or the SM100 CuTe DSL
+persistent projection.
 
 **Usage**:
 
@@ -118,6 +123,12 @@ from liger_kernel.megatron import apply_liger_kernel_to_megatron
 # Call before Megatron's forward pass reaches compute_language_model_loss.
 # Defaults match Megatron's native CE behavior; no CE-specific config needed.
 apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True)
+
+# Or wire the hidden-state-to-loss operation into a vocab-sharded output layer.
+from liger_kernel.megatron import LigerMegatronFusedLinearCrossEntropy
+
+loss_fn = LigerMegatronFusedLinearCrossEntropy(ignore_index=-100)
+loss = loss_fn(hidden, local_output_weight, global_targets, tp_group=tp_group)
 ```
 
 Both the fused (`config.cross_entropy_loss_fusion=True`,
@@ -129,6 +140,12 @@ For training setups that need explicit kernel configuration (custom
 `ignore_index`, `label_smoothing`, etc.), instantiate
 `LigerMegatronCrossEntropy` directly and wire it into your model — see
 `examples/megatron/run_mode2_hand_spec.py`.
+
+::: liger_kernel.megatron.LigerMegatronFusedLinearCrossEntropy
+    options:
+      extra:
+        show_docstring: true
+        show_signature: true
 
 ::: liger_kernel.megatron.apply_liger_kernel_to_megatron
     options:

@@ -1,46 +1,81 @@
-"""Materialized tensor-parallel fused linear cross entropy for Megatron.
+"""CuTe DSL tensor-parallel fused linear cross entropy for Megatron.
 
-Each tensor-parallel rank owns a contiguous vocabulary shard. Forward performs
-one local projection GEMM, computes globally normalized cross entropy, and saves
-shifted exponentials in the projection dtype. Backward converts that buffer to
-dlogits in-place, avoiding projection recomputation before forming dX and dW.
+The SM100 path uses a persistent CuTe DSL GEMM for the local vocabulary
+projection, Triton for vocabulary-parallel cross entropy, and NCCL for
+tensor-parallel collectives. Shifted exponentials overwrite the projection
+buffer and are reused by backward.
 """
 
 from __future__ import annotations
 
 import operator
 
+import cutlass
+import cutlass.cute as cute
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import K_ALIGNMENT
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import run_epilogue_gemm
+from liger_kernel.ops.megatron_fused_linear_cross_entropy import _tp_rank_and_world
+from liger_kernel.ops.megatron_fused_linear_cross_entropy import (
+    liger_megatron_fused_linear_cross_entropy as default_megatron_fused_linear_cross_entropy,
+)
 from liger_kernel.ops.utils import compare_version
 
 _SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
 
 
-def _tp_rank_and_world(tp_group) -> tuple[int, int]:
-    if tp_group is None:
-        return 0, 1
-    world = dist.get_world_size(tp_group)
-    if world == 1:
-        return 0, 1
-    return dist.get_rank(tp_group), world
+@cute.jit
+def _identity_epilogue(accumulator, output):
+    output_dtype = output.element_type
+    for element in cutlass.range_constexpr(cute.size(accumulator)):
+        output[element] = accumulator[element].to(output_dtype)
+
+
+def _native_cutedsl_supported(hidden: torch.Tensor, weight: torch.Tensor) -> bool:
+    if hidden.device.type != "cuda" or hidden.dtype not in (torch.bfloat16, torch.float16):
+        return False
+    if weight.device != hidden.device or weight.dtype != hidden.dtype:
+        return False
+    try:
+        return torch.cuda.get_device_capability(hidden.device)[0] >= 10
+    except (AssertionError, RuntimeError):
+        return False
+
+
+def _cutedsl_projection(
+    hidden: torch.Tensor,
+    weight: torch.Tensor,
+) -> torch.Tensor:
+    padding = (-hidden.shape[1]) % K_ALIGNMENT
+    if padding:
+        hidden = F.pad(hidden, (0, padding))
+        weight = F.pad(weight, (0, padding))
+    logits = torch.empty(
+        hidden.shape[0],
+        weight.shape[0],
+        device=hidden.device,
+        dtype=hidden.dtype,
+    )
+    run_epilogue_gemm(hidden, weight, logits, _identity_epilogue)
+    return logits
 
 
 def _materialized_backward(ctx, grad_output: torch.Tensor):
-    """Convert saved CE state to dlogits and form projection gradients."""
     from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
     from liger_kernel.ops.vocab_parallel_cross_entropy import liger_vocab_parallel_ce_backward_kernel
 
-    hidden, weight, exp_buf, sum_exp_global, target = ctx.saved_tensors
-    grad_out = grad_output.contiguous().reshape(-1).float()
+    hidden, weight, exp_buffer, sum_exp, target = ctx.saved_tensors
+    grad_output_1d = grad_output.contiguous().reshape(-1).float()
     num_warps = _get_num_warps(ctx.ce_block_size)
     liger_vocab_parallel_ce_backward_kernel[(hidden.shape[0],)](
-        EXP_ptr=exp_buf,
-        EXP_stride=exp_buf.stride(0),
-        sum_exp_ptr=sum_exp_global,
+        EXP_ptr=exp_buffer,
+        EXP_stride=exp_buffer.stride(0),
+        sum_exp_ptr=sum_exp,
         Y_ptr=target,
-        grad_out_ptr=grad_out,
+        grad_out_ptr=grad_output_1d,
         vocab_start=ctx.vocab_start,
         n_cols=weight.shape[0],
         ignore_index=ctx.ignore_index,
@@ -52,9 +87,9 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
     )
 
     if _SUPPORTS_OUT_DTYPE:
-        grad_hidden = torch.mm(exp_buf, weight, out_dtype=torch.float32)
+        grad_hidden = torch.mm(exp_buffer, weight, out_dtype=torch.float32)
     else:
-        grad_hidden = exp_buf.float() @ weight.float()
+        grad_hidden = exp_buffer.float() @ weight.float()
     reduce_work = (
         dist.all_reduce(
             grad_hidden,
@@ -65,17 +100,17 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
         if ctx.tp_world > 1
         else None
     )
-    grad_weight = exp_buf.t() @ hidden
-    grad_bias = exp_buf.sum(dim=0, dtype=torch.float32).to(ctx.bias_dtype) if ctx.has_bias else None
-
+    grad_weight = exp_buffer.t() @ hidden
+    grad_bias = exp_buffer.sum(dim=0, dtype=torch.float32).to(ctx.bias_dtype) if ctx.has_bias else None
     if reduce_work is not None:
         reduce_work.wait()
+
     grad_hidden = grad_hidden.to(ctx.hidden_dtype).reshape(ctx.original_hidden_shape)
     return grad_hidden, grad_weight, grad_bias
 
 
 class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
-    """Hidden-to-loss tensor-parallel FLCE with saved low-precision CE state."""
+    """Megatron FLCE using a persistent CuTe DSL SM100 projection."""
 
     @staticmethod
     def forward(
@@ -107,14 +142,11 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 raise ValueError(f"bias must have shape ({weight.shape[0]},), got {tuple(bias.shape)}.")
             if bias.device != hidden.device or bias.dtype != hidden.dtype:
                 raise TypeError("bias must have the same device and dtype as hidden.")
-        if hidden.device.type != "cuda" or hidden.dtype not in (torch.bfloat16, torch.float16):
-            raise RuntimeError("Megatron FLCE requires a CUDA GPU and float16 or bfloat16 inputs.")
 
         tp_rank, tp_world = _tp_rank_and_world(tp_group)
         vocab_local = weight.shape[0]
         vocab_global = vocab_local * tp_world
         vocab_start = tp_rank * vocab_local
-
         flat_target = target.reshape(-1).to(torch.int64).contiguous()
         valid = flat_target != ignore_index
         invalid = valid & ((flat_target < 0) | (flat_target >= vocab_global))
@@ -128,8 +160,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         hidden_2d = hidden.reshape(-1, hidden.shape[-1]).contiguous()
         weight_2d = weight.contiguous()
         bias_1d = bias.contiguous() if bias is not None else None
-
-        logits = torch.mm(hidden_2d, weight_2d.t())
+        logits = _cutedsl_projection(hidden_2d, weight_2d)
         if bias_1d is not None:
             logits.add_(bias_1d)
 
@@ -141,7 +172,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         from liger_kernel.ops.vocab_parallel_cross_entropy import _select_block_size
         from liger_kernel.ops.vocab_parallel_cross_entropy import liger_vocab_parallel_ce_forward_kernel
 
-        exp_buf = logits
+        exp_buffer = logits
         stats = torch.empty((2, hidden_2d.shape[0]), device=hidden.device, dtype=torch.float32)
         predicted_logit = stats[0]
         sum_exp = stats[1]
@@ -150,8 +181,8 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         liger_vocab_parallel_ce_forward_kernel[(hidden_2d.shape[0],)](
             X_ptr=logits,
             X_stride=logits.stride(0),
-            EXP_ptr=exp_buf,
-            EXP_stride=exp_buf.stride(0),
+            EXP_ptr=exp_buffer,
+            EXP_stride=exp_buffer.stride(0),
             logits_max_ptr=logits_max,
             Y_ptr=flat_target,
             pred_ptr=predicted_logit,
@@ -167,8 +198,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
 
         loss = torch.log(sum_exp) - predicted_logit
         loss = torch.where(valid, loss, torch.zeros_like(loss))
-
-        ctx.save_for_backward(hidden_2d, weight_2d, exp_buf, sum_exp, flat_target)
+        ctx.save_for_backward(hidden_2d, weight_2d, exp_buffer, sum_exp, flat_target)
         ctx.has_bias = bias is not None
         ctx.bias_dtype = bias.dtype if bias is not None else None
         ctx.tp_group = tp_group
@@ -194,7 +224,16 @@ def liger_megatron_fused_linear_cross_entropy(
     tp_group=None,
     ignore_index: int = -100,
 ) -> torch.Tensor:
-    """Compute per-token loss from replicated hidden states and a local vocab shard."""
+    """Compute Megatron FLCE with a CuTe DSL projection and NCCL TP collectives."""
+    if not _native_cutedsl_supported(hidden, weight):
+        return default_megatron_fused_linear_cross_entropy(
+            hidden,
+            weight,
+            target,
+            bias=bias,
+            tp_group=tp_group,
+            ignore_index=ignore_index,
+        )
     return LigerMegatronFusedLinearCrossEntropyFunction.apply(
         hidden,
         weight,

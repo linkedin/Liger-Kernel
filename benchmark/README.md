@@ -187,3 +187,24 @@ python ../benchmarks_visualizer.py \
     --kernel-name cross_entropy --metric-name speed \
     --data-file data/all_benchmark_data_cutedsl.csv
 ```
+
+### Megatron fused linear cross-entropy
+
+The Megatron FLCE benchmark checks loss and gradient parity before measuring
+the default cuBLAS/Triton implementation and the opt-in Triton, CuTile, and
+CuTe DSL backends:
+
+```bash
+cd benchmark/scripts
+python benchmark_megatron_fused_linear_cross_entropy.py \
+    --tp-size 4 --token-counts 512 2048 --vocab-sizes 32000 128256 \
+    --providers megatron-compatible liger liger-triton liger-cutile
+
+# SM100 with nvidia-cutlass-dsl installed
+python benchmark_megatron_fused_linear_cross_entropy.py \
+    --tp-size 4 --providers megatron-compatible liger-cutedsl
+```
+
+Targets are global vocabulary indices; each rank owns a contiguous vocabulary
+shard. Results include forward, backward, full-step latency, and peak Torch
+memory.

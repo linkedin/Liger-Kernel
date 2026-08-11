@@ -459,11 +459,21 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
     )
 
     grad_hidden = _triton_dx_matmul(exp_buf, weight)
+    reduce_work = (
+        dist.all_reduce(
+            grad_hidden,
+            op=dist.ReduceOp.SUM,
+            group=ctx.tp_group,
+            async_op=True,
+        )
+        if ctx.tp_world > 1
+        else None
+    )
     grad_weight = _triton_matmul(exp_buf.t(), hidden)
     grad_bias = _triton_column_sum(exp_buf).to(ctx.bias_dtype) if ctx.has_bias else None
 
-    if ctx.tp_world > 1:
-        dist.all_reduce(grad_hidden, op=dist.ReduceOp.SUM, group=ctx.tp_group)
+    if reduce_work is not None:
+        reduce_work.wait()
     grad_hidden = grad_hidden.to(ctx.hidden_dtype).reshape(ctx.original_hidden_shape)
     return grad_hidden, grad_weight, grad_bias
 
@@ -533,14 +543,10 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         if tp_world > 1:
             dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=tp_group)
 
-        exp_buf = torch.empty(
-            hidden_2d.shape[0],
-            vocab_local,
-            device=hidden.device,
-            dtype=hidden.dtype,
-        )
-        predicted_logit = torch.empty(hidden_2d.shape[0], device=hidden.device, dtype=torch.float32)
-        sum_exp = torch.empty_like(predicted_logit)
+        exp_buf = logits
+        stats = torch.empty((2, hidden_2d.shape[0]), device=hidden.device, dtype=torch.float32)
+        predicted_logit = stats[0]
+        sum_exp = stats[1]
         num_warps = _get_num_warps(ce_block_size)
         liger_vocab_parallel_ce_forward_kernel[(hidden_2d.shape[0],)](
             X_ptr=logits,
@@ -558,8 +564,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
             num_warps=num_warps,
         )
         if tp_world > 1:
-            dist.all_reduce(predicted_logit, op=dist.ReduceOp.SUM, group=tp_group)
-            dist.all_reduce(sum_exp, op=dist.ReduceOp.SUM, group=tp_group)
+            dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=tp_group)
 
         loss = _triton_loss(sum_exp, predicted_logit, flat_target, ignore_index)
 
