@@ -247,6 +247,34 @@ count the common projection work, `2*M*H*V`:
 | 2048 | Yes | **3.13 ms / 703 TFLOPS** | 3.25 ms / 676 TFLOPS | 11.37 ms / 193 TFLOPS |
 | 4096 | No | **6.05 ms / 727 TFLOPS** | 6.28 ms / 701 TFLOPS | 22.62 ms / 194 TFLOPS |
 | 4096 | Yes | **6.11 ms / 720 TFLOPS** | 6.39 ms / 688 TFLOPS | 22.68 ms / 194 TFLOPS |
+| 8192 | No | **12.25 ms / 718 TFLOPS** | 12.41 ms / 709 TFLOPS | 45.35 ms / 194 TFLOPS |
+| 8192 | Yes | **12.30 ms / 715 TFLOPS** | 12.70 ms / 693 TFLOPS | 45.59 ms / 193 TFLOPS |
+| 16384 | No | 27.20 ms / 647 TFLOPS | **25.59 ms / 687 TFLOPS** | 90.96 ms / 193 TFLOPS |
+| 16384 | Yes | 27.45 ms / 641 TFLOPS | **26.55 ms / 663 TFLOPS** | 91.00 ms / 193 TFLOPS |
+| 32768 | No | 56.68 ms / 621 TFLOPS | **54.21 ms / 649 TFLOPS** | 180.18 ms / 195 TFLOPS |
+| 32768 | Yes | 56.28 ms / 625 TFLOPS | **55.02 ms / 640 TFLOPS** | 179.69 ms / 196 TFLOPS |
+
+Backward effective TFLOPS count `6*M*H*V`:
+
+| M | Entropy | CuTe SM90 | cuTile | Verl Torch fallback |
+|---:|:---:|---:|---:|---:|
+| 8192 | No | **37.93 ms / 696 TFLOPS** | 42.55 ms / 620 TFLOPS | 85.17 ms / 310 TFLOPS |
+| 8192 | Yes | **37.89 ms / 696 TFLOPS** | 41.43 ms / 637 TFLOPS | 121.00 ms / 218 TFLOPS |
+| 16384 | No | **79.71 ms / 662 TFLOPS** | 84.73 ms / 623 TFLOPS | 167.38 ms / 315 TFLOPS |
+| 16384 | Yes | **78.11 ms / 676 TFLOPS** | 83.29 ms / 634 TFLOPS | 239.33 ms / 221 TFLOPS |
+| 32768 | No | **163.11 ms / 647 TFLOPS** | 164.24 ms / 643 TFLOPS | 331.45 ms / 318 TFLOPS |
+| 32768 | Yes | **160.15 ms / 659 TFLOPS** | 161.17 ms / 655 TFLOPS | 477.21 ms / 221 TFLOPS |
+
+Full forward-and-backward effective TFLOPS count `8*M*H*V`:
+
+| M | Entropy | CuTe SM90 | cuTile | Verl Torch fallback |
+|---:|:---:|---:|---:|---:|
+| 8192 | No | **50.39 ms / 698 TFLOPS** | 57.15 ms / 616 TFLOPS | 128.76 ms / 273 TFLOPS |
+| 8192 | Yes | **50.22 ms / 701 TFLOPS** | 56.86 ms / 619 TFLOPS | 165.63 ms / 212 TFLOPS |
+| 16384 | No | **108.78 ms / 647 TFLOPS** | 111.34 ms / 632 TFLOPS | 254.67 ms / 276 TFLOPS |
+| 16384 | Yes | **107.26 ms / 656 TFLOPS** | 110.73 ms / 636 TFLOPS | 328.34 ms / 214 TFLOPS |
+| 32768 | No | **217.95 ms / 646 TFLOPS** | 222.10 ms / 634 TFLOPS | 507.70 ms / 277 TFLOPS |
+| 32768 | Yes | **216.33 ms / 651 TFLOPS** | 221.03 ms / 637 TFLOPS | 655.02 ms / 215 TFLOPS |
 
 B200 measurements for the same shape, using automatic cuTile workspace selection:
 
