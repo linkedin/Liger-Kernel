@@ -155,10 +155,10 @@ def _init(rank: int, world_size: int, init_file: str):
     nvshmem.init_from_pg()
 
 
-def _make_inputs(rank: int, world_size: int):
+def _make_inputs(rank: int, world_size: int, tokens: int = _T):
     experts_per_pe = _E // world_size
     torch.manual_seed(0)
-    X = torch.randn(_T, _D, dtype=torch.bfloat16, device="cuda")
+    X = torch.randn(tokens, _D, dtype=torch.bfloat16, device="cuda")
     gate_W = torch.randn(_E, _D, dtype=torch.bfloat16, device="cuda")
     torch.manual_seed(100 + rank)
     all_B = torch.randn(experts_per_pe, _I, _D, dtype=torch.bfloat16, device="cuda")
@@ -168,9 +168,9 @@ def _make_inputs(rank: int, world_size: int):
     return X, gate_W, all_B, all_C, all_A, expert_indices, expert_weights
 
 
-def _configure(world_size: int):
+def _configure(world_size: int, max_tokens: int = _T):
     tvm_ffi.moe_configure_symmetric(
-        max_tokens=_T,
+        max_tokens=max_tokens,
         hidden_dim=_D,
         max_num_experts=_E,
         max_top_k=_K,
@@ -180,11 +180,16 @@ def _configure(world_size: int):
     )
 
 
-def _run(world_size: int, worker):
+def _run(world_size: int, worker, *worker_args):
     rdzv = tempfile.mkdtemp(prefix="lck_graph_")
     init_file = os.path.join(rdzv, "store")
     try:
-        mp.spawn(worker, args=(world_size, init_file), nprocs=world_size, join=True)
+        mp.spawn(
+            worker,
+            args=(world_size, init_file, *worker_args),
+            nprocs=world_size,
+            join=True,
+        )
     finally:
         shutil.rmtree(rdzv, ignore_errors=True)
 
@@ -349,6 +354,197 @@ def _fwd_bwd_graph_worker(rank: int, world_size: int, init_file: str):
     _check_close(dA_c, dA_ref)
 
 
+# ── forward: partial combine tile ─────────────────────────────────────────────
+
+
+def _unaligned_fwd_worker(
+    rank: int,
+    world_size: int,
+    init_file: str,
+    unaligned_tokens: int = 45,
+):
+    _init(rank, world_size, init_file)
+    team = nvshmem.team_world()
+    try:
+        _configure(world_size, max_tokens=unaligned_tokens)
+        X, _gate_W, all_B, all_C, all_A, ei, ew = _make_inputs(
+            rank,
+            world_size,
+            tokens=unaligned_tokens,
+        )
+
+        all_B_g = _gather_experts(all_B, dist.group.WORLD)
+        all_C_g = _gather_experts(all_C, dist.group.WORLD)
+        all_A_g = _gather_experts(all_A, dist.group.WORLD)
+        Y_ref = _torch_reference_moe(X, ei, ew, all_B_g, all_C_g, all_A_g, _K).cpu()
+
+        Y = tvm_ffi.moe_fused_fwd_bf16(
+            X,
+            ei,
+            ew,
+            all_B,
+            all_C,
+            all_A,
+            num_experts=_E,
+            top_k=_K,
+            team_handle=team,
+        )[0].clone()
+        tvm_ffi.moe_pop_fwd()
+        torch.cuda.synchronize()
+        Y_cpu = Y.detach().cpu()
+
+        dist.barrier()
+        nvshmem.finalize()
+        dist.destroy_process_group()
+    except BaseException:
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        raise
+
+    assert torch.count_nonzero(Y_ref) > 0
+    _check_close(Y_cpu, Y_ref)
+    if unaligned_tokens > 32:
+        _check_close(Y_cpu[32:], Y_ref[32:])
+
+
+# ── forward + backward: partial combine tile ─────────────────────────────────
+
+
+def _unaligned_fwd_bwd_worker(rank: int, world_size: int, init_file: str):
+    _init(rank, world_size, init_file)
+    team = nvshmem.team_world()
+    unaligned_tokens = 45
+    aligned_tokens = 64
+    try:
+        _configure(world_size, max_tokens=aligned_tokens)
+        X, _gate_W, all_B, all_C, all_A, ei, ew = _make_inputs(
+            rank,
+            world_size,
+            tokens=unaligned_tokens,
+        )
+        torch.manual_seed(1000 + rank)
+        dY = torch.randn_like(X)
+
+        unaligned_out = tvm_ffi.moe_fused_fwd_bf16(
+            X,
+            ei,
+            ew,
+            all_B,
+            all_C,
+            all_A,
+            num_experts=_E,
+            top_k=_K,
+            team_handle=team,
+        )
+        unaligned_grads = tvm_ffi.moe_fused_bwd_bf16(
+            dY,
+            unaligned_out[2],
+            unaligned_out[1],
+            unaligned_out[4],
+            unaligned_out[5],
+            unaligned_out[3],
+            ei,
+            ew,
+            all_B,
+            all_C,
+            all_A,
+            num_experts=_E,
+            top_k=_K,
+            team_handle=team,
+            fwd_tile_m=unaligned_out[6],
+        )
+        torch.cuda.synchronize()
+        unaligned_cpu = [tensor.detach().cpu().clone() for tensor in unaligned_grads]
+        tvm_ffi.moe_pop_fwd()
+
+        X_padded = torch.zeros(
+            aligned_tokens,
+            _D,
+            dtype=X.dtype,
+            device=X.device,
+        )
+        X_padded[:unaligned_tokens].copy_(X)
+        dY_padded = torch.zeros_like(X_padded)
+        dY_padded[:unaligned_tokens].copy_(dY)
+        ei_padded = torch.empty(
+            aligned_tokens,
+            _K,
+            dtype=ei.dtype,
+            device=ei.device,
+        )
+        ew_padded = torch.empty(
+            aligned_tokens,
+            _K,
+            dtype=ew.dtype,
+            device=ew.device,
+        )
+        ei_padded[:unaligned_tokens].copy_(ei)
+        ew_padded[:unaligned_tokens].copy_(ew)
+        dummy_experts = torch.arange(
+            0,
+            _E,
+            _E // _K,
+            dtype=ei.dtype,
+            device=ei.device,
+        )
+        ei_padded[unaligned_tokens:].copy_(dummy_experts.expand(aligned_tokens - unaligned_tokens, -1))
+        ew_padded[unaligned_tokens:].fill_(1.0 / _K)
+
+        padded_out = tvm_ffi.moe_fused_fwd_bf16(
+            X_padded,
+            ei_padded,
+            ew_padded,
+            all_B,
+            all_C,
+            all_A,
+            num_experts=_E,
+            top_k=_K,
+            team_handle=team,
+        )
+        padded_grads = tvm_ffi.moe_fused_bwd_bf16(
+            dY_padded,
+            padded_out[2],
+            padded_out[1],
+            padded_out[4],
+            padded_out[5],
+            padded_out[3],
+            ei_padded,
+            ew_padded,
+            all_B,
+            all_C,
+            all_A,
+            num_experts=_E,
+            top_k=_K,
+            team_handle=team,
+            fwd_tile_m=padded_out[6],
+        )
+        torch.cuda.synchronize()
+        padded_cpu = [tensor.detach().cpu().clone() for tensor in padded_grads]
+        tvm_ffi.moe_pop_fwd()
+
+        dist.barrier()
+        nvshmem.finalize()
+        dist.destroy_process_group()
+    except BaseException:
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        raise
+
+    for name, unaligned, padded in zip(
+        ("dX", "dB", "dC", "dA", "dW"),
+        unaligned_cpu,
+        padded_cpu,
+    ):
+        if name in ("dX", "dW"):
+            padded = padded[:unaligned_tokens]
+        assert torch.isfinite(unaligned).all(), f"{name} has non-finite values"
+        _check_close(unaligned, padded)
+
+
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 
@@ -371,3 +567,17 @@ def test_moe_fwd_bwd_cuda_graph():
     grads from the replayed graphs must match the eager reference.
     """
     _run(_world_size(), _fwd_bwd_graph_worker)
+
+
+@pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
+def test_moe_fwd_unaligned_tokens():
+    """A partial 32-token combine tile must produce every output row."""
+
+    _run(_world_size(), _unaligned_fwd_worker)
+
+
+@pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
+def test_moe_fwd_bwd_unaligned_tokens_match_padded():
+    """Unaligned forward/backward must match zero-padded execution."""
+
+    _run(_world_size(), _unaligned_fwd_bwd_worker)
