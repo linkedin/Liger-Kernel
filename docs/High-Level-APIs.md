@@ -107,12 +107,18 @@ shards.
 | Megatron-LM   | `liger_kernel.megatron.apply_liger_kernel_to_megatron` | RMSNorm, CrossEntropyLoss |
 | Megatron-LM   | `liger_kernel.megatron.LigerMegatronFusedLinearCrossEntropy` | Fused output projection + CrossEntropyLoss |
 
-`LigerMegatronFusedLinearCrossEntropy` accepts replicated hidden states,
-the calling rank's contiguous `[V_local, H]` output-weight shard, and global
-target indices. It supports TP1 and TP>1 through the supplied process group.
-The default implementation uses Triton local kernels and NCCL. Set
-`LIGER_KERNEL_IMPL=cutile` or `cutedsl` before importing Liger to select a
-CuTile local path or the SM100 CuTe DSL persistent projection.
+**Scope**: The monkey patch supports `tensor_model_parallel_size=1` only for
+cross-entropy. Vocab-parallel cross-entropy patching (TP>1) remains follow-up
+work; the patch raises a `RuntimeError` at patch time or call time if TP>1 is
+detected.
+
+The separately wired `LigerMegatronFusedLinearCrossEntropy` module accepts
+replicated hidden states, the calling rank's contiguous `[V_local, H]`
+output-weight shard, and global target indices. It supports TP1 and TP>1
+through the supplied process group. The default implementation uses Triton
+local kernels and NCCL. Set `LIGER_KERNEL_IMPL=cutile` or `cutedsl` before
+importing Liger to select a CuTile local path or the SM100 CuTe DSL persistent
+projection.
 
 **Usage**:
 

@@ -422,7 +422,7 @@ def _triton_dx_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     m, k = a.shape
     n = b.shape[1]
     if m > 1024 or k < 4096:
-        return _triton_matmul(a, b, output_dtype=torch.float32)
+        return _triton_matmul(a, b)
 
     output = torch.zeros((m, n), device=a.device, dtype=torch.float32)
     grid = lambda meta: (
@@ -562,6 +562,38 @@ def _tp_rank_and_world(tp_group) -> tuple[int, int]:
     return dist.get_rank(tp_group), world
 
 
+def _validate_megatron_flce_inputs(
+    hidden: torch.Tensor,
+    weight: torch.Tensor,
+    target: torch.Tensor,
+    bias: torch.Tensor | None,
+) -> None:
+    if hidden.ndim < 2:
+        raise ValueError(f"hidden must have at least 2 dimensions, got shape {tuple(hidden.shape)}.")
+    if weight.ndim != 2:
+        raise ValueError(f"weight must be 2-D [V_local, H], got shape {tuple(weight.shape)}.")
+    if tuple(target.shape) != tuple(hidden.shape[:-1]):
+        raise ValueError(
+            f"target shape must equal hidden.shape[:-1]; got target={tuple(target.shape)}, "
+            f"hidden={tuple(hidden.shape)}."
+        )
+    if target.dtype != torch.long:
+        raise TypeError(f"target must have dtype torch.long, got {target.dtype}.")
+    if hidden.shape[-1] != weight.shape[1]:
+        raise ValueError(f"hidden size mismatch: hidden has H={hidden.shape[-1]}, weight has H={weight.shape[1]}.")
+    if target.numel() == 0 or hidden.shape[-1] == 0 or weight.shape[0] == 0:
+        raise ValueError("hidden, weight, and target dimensions must be non-empty.")
+    if hidden.dtype != weight.dtype:
+        raise TypeError(f"hidden and weight must have the same dtype, got {hidden.dtype} and {weight.dtype}.")
+    if hidden.device != weight.device or hidden.device != target.device:
+        raise ValueError("hidden, weight, and target must be on the same device.")
+    if bias is not None:
+        if bias.ndim != 1 or bias.shape[0] != weight.shape[0]:
+            raise ValueError(f"bias must have shape ({weight.shape[0]},), got {tuple(bias.shape)}.")
+        if bias.device != hidden.device or bias.dtype != hidden.dtype:
+            raise TypeError("bias must have the same device and dtype as hidden.")
+
+
 def _materialized_backward(ctx, grad_output: torch.Tensor):
     """Convert saved logits to dlogits and form projection gradients."""
     hidden, weight, logits, logits_max, sum_exp_global, target = ctx.saved_tensors
@@ -577,7 +609,7 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
         ctx.ce_block_size,
     )
 
-    grad_hidden = _triton_dx_matmul(logits, weight)
+    grad_hidden = _triton_dx_matmul(logits, weight).to(ctx.hidden_dtype)
     reduce_work = (
         dist.all_reduce(
             grad_hidden,
@@ -593,7 +625,7 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
 
     if reduce_work is not None:
         reduce_work.wait()
-    grad_hidden = grad_hidden.to(ctx.hidden_dtype).reshape(ctx.original_hidden_shape)
+    grad_hidden = grad_hidden.reshape(ctx.original_hidden_shape)
     return grad_hidden, grad_weight, grad_bias
 
 
@@ -610,26 +642,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         tp_group,
         ignore_index: int,
     ) -> torch.Tensor:
-        if hidden.ndim < 2:
-            raise ValueError(f"hidden must have at least 2 dimensions, got shape {tuple(hidden.shape)}.")
-        if weight.ndim != 2:
-            raise ValueError(f"weight must be 2-D [V_local, H], got shape {tuple(weight.shape)}.")
-        if tuple(target.shape) != tuple(hidden.shape[:-1]):
-            raise ValueError(
-                f"target shape must equal hidden.shape[:-1]; got target={tuple(target.shape)}, "
-                f"hidden={tuple(hidden.shape)}."
-            )
-        if hidden.shape[-1] != weight.shape[1]:
-            raise ValueError(f"hidden size mismatch: hidden has H={hidden.shape[-1]}, weight has H={weight.shape[1]}.")
-        if hidden.dtype != weight.dtype:
-            raise TypeError(f"hidden and weight must have the same dtype, got {hidden.dtype} and {weight.dtype}.")
-        if hidden.device != weight.device or hidden.device != target.device:
-            raise ValueError("hidden, weight, and target must be on the same device.")
-        if bias is not None:
-            if bias.ndim != 1 or bias.shape[0] != weight.shape[0]:
-                raise ValueError(f"bias must have shape ({weight.shape[0]},), got {tuple(bias.shape)}.")
-            if bias.device != hidden.device or bias.dtype != hidden.dtype:
-                raise TypeError("bias must have the same device and dtype as hidden.")
+        _validate_megatron_flce_inputs(hidden, weight, target, bias)
         if hidden.device.type != "cuda" or hidden.dtype not in (torch.bfloat16, torch.float16):
             raise RuntimeError("Megatron FLCE requires a CUDA GPU and float16 or bfloat16 inputs.")
 
@@ -638,7 +651,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         vocab_global = vocab_local * tp_world
         vocab_start = tp_rank * vocab_local
 
-        flat_target = target.reshape(-1).to(torch.int64).contiguous()
+        flat_target = target.reshape(-1).contiguous()
         valid = flat_target != ignore_index
         invalid = valid & ((flat_target < 0) | (flat_target >= vocab_global))
         valid_targets = ~torch.any(invalid)

@@ -109,6 +109,16 @@ def test_megatron_flce_rejects_cpu_inputs():
         liger_megatron_fused_linear_cross_entropy(hidden, weight, target)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Megatron FLCE requires CUDA")
+def test_megatron_flce_rejects_non_long_targets():
+    hidden = torch.randn(2, 3, 8, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(16, 8, device="cuda", dtype=torch.bfloat16)
+    target = torch.zeros(2, 3, device="cuda", dtype=torch.int32)
+
+    with pytest.raises(TypeError, match="target must have dtype torch.long"):
+        liger_megatron_fused_linear_cross_entropy(hidden, weight, target)
+
+
 def _tp_worker(rank, world_size, file_name, dtype):
     dist.init_process_group(
         backend="nccl",

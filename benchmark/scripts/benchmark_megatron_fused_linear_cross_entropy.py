@@ -29,6 +29,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 import tempfile
 
@@ -245,9 +246,12 @@ def _memory(state: _ProviderState, tp_group) -> tuple[float, float, float]:
 
     full_step()
     torch.cuda.synchronize()
+    state.clear_grads()
+    gc.collect()
     samples = []
     for _ in range(_MEMORY_SAMPLES):
         state.clear_grads()
+        gc.collect()
         torch.cuda.reset_peak_memory_stats()
         full_step()
         torch.cuda.synchronize()
@@ -326,9 +330,7 @@ def _check_correctness(
     dist.broadcast(upstream, src=0)
     outputs = {}
     correctness_providers = ["megatron-compatible"]
-    correctness_providers.extend(
-        provider for provider in ("liger", "liger-cutile", "liger-cutedsl") if provider in providers
-    )
+    correctness_providers.extend(provider for provider in providers if provider != "megatron-compatible")
     for provider in correctness_providers:
         state = _make_state(provider, hidden, weight, bias, target, tp_group, tp_size)
         loss = state.forward()
@@ -517,11 +519,11 @@ def main():
         raise RuntimeError("provider 'liger-cutedsl' requested, but nvidia-cutlass-dsl is not installed.")
     if "liger-cutedsl" in providers:
         unsupported_devices = [
-            index for index in range(args.tp_size) if torch.cuda.get_device_capability(index)[0] < 10
+            index for index in range(args.tp_size) if torch.cuda.get_device_capability(index) != (10, 0)
         ]
         if unsupported_devices:
             raise RuntimeError(
-                "provider 'liger-cutedsl' requires SM100 or newer; "
+                "provider 'liger-cutedsl' requires SM100 (compute capability 10.0); "
                 f"unsupported CUDA device indices: {unsupported_devices}."
             )
     if "liger-cutile" in providers and not _CUTILE_AVAILABLE:
