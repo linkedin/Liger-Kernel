@@ -9,17 +9,11 @@ from typing import Optional
 import cuda.tile as ct
 import torch
 
-from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.cutile.ops.utils import LOG2E
+from liger_kernel.ops.cutile.ops.utils import _select_cross_entropy_block_size
 
 ConstFloat = ct.Constant[float]
 ConstInt = ct.Constant[int]
-
-MAX_FUSED_SIZE = 65536 // 2
-LOG2E = 1.4426950408889634
-
-
-def _select_cross_entropy_block_size(vocab_size: int) -> int:
-    return min(4096, min(MAX_FUSED_SIZE, _next_power_of_2(vocab_size)))
 
 
 @ct.kernel(occupancy=4)
