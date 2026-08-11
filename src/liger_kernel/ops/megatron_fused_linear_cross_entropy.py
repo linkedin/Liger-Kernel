@@ -2,9 +2,9 @@
 
 Each tensor-parallel rank owns a contiguous vocabulary shard. Forward performs
 one Triton projection GEMM, computes globally normalized cross entropy, and
-saves shifted exponentials in the projection dtype. Backward converts that
-buffer to dlogits in-place before Triton dX and dW GEMMs. Tensor-parallel
-collectives remain NCCL/RCCL calls between architecture-independent kernels.
+saves the local logits in the projection dtype. Backward converts that buffer
+to dlogits in-place before Triton dX and dW GEMMs. Tensor-parallel collectives
+remain NCCL/RCCL calls between architecture-independent kernels.
 """
 
 from __future__ import annotations
@@ -275,6 +275,80 @@ def _row_max_kernel(
 
 
 @triton.jit
+def _ce_forward_stats_kernel(
+    logits_ptr,
+    logits_stride,
+    logits_max_ptr,
+    target_ptr,
+    predicted_logit_ptr,
+    sum_exp_ptr,
+    vocab_start,
+    n_cols,
+    ignore_index,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0).to(tl.int64)
+    row_ptr = logits_ptr + row * logits_stride
+    target = tl.load(target_ptr + row)
+    maximum = tl.load(logits_max_ptr + row).to(tl.float32)
+    target_off_rank = (target < vocab_start) | (target >= vocab_start + n_cols)
+
+    if target == ignore_index or target_off_rank:
+        predicted_logit = 0.0
+    else:
+        predicted_logit = tl.load(row_ptr + target - vocab_start).to(tl.float32) - maximum
+
+    sum_exp = 0.0
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offsets = start + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_cols
+        logits = tl.load(row_ptr + offsets, mask=mask, other=-float("inf")).to(tl.float32)
+        sum_exp += tl.sum(tl.exp(logits - maximum))
+
+    tl.store(predicted_logit_ptr + row, predicted_logit)
+    tl.store(sum_exp_ptr + row, sum_exp)
+
+
+@triton.jit
+def _ce_backward_from_logits_kernel(
+    logits_ptr,
+    logits_stride,
+    logits_max_ptr,
+    sum_exp_ptr,
+    target_ptr,
+    grad_output_ptr,
+    vocab_start,
+    n_cols,
+    ignore_index,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0).to(tl.int64)
+    row_ptr = logits_ptr + row * logits_stride
+    target = tl.load(target_ptr + row)
+
+    if target == ignore_index:
+        for start in range(0, n_cols, BLOCK_SIZE):
+            offsets = start + tl.arange(0, BLOCK_SIZE)
+            tl.store(row_ptr + offsets, 0.0, mask=offsets < n_cols)
+        return
+
+    maximum = tl.load(logits_max_ptr + row).to(tl.float32)
+    sum_exp = tl.load(sum_exp_ptr + row).to(tl.float32)
+    grad_output = tl.load(grad_output_ptr + row).to(tl.float32)
+    target_off_rank = (target < vocab_start) | (target >= vocab_start + n_cols)
+    target_local = target - vocab_start
+
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offsets = start + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_cols
+        logits = tl.load(row_ptr + offsets, mask=mask, other=-float("inf")).to(tl.float32)
+        gradient = tl.exp(logits - maximum) / sum_exp
+        if not target_off_rank:
+            gradient = tl.where(offsets == target_local, gradient - 1.0, gradient)
+        tl.store(row_ptr + offsets, gradient * grad_output, mask=mask)
+
+
+@triton.jit
 def _loss_kernel(
     sum_exp_ptr,
     predicted_logit_ptr,
@@ -387,6 +461,60 @@ def _triton_row_max(input: torch.Tensor, block_size: int) -> torch.Tensor:
     return output
 
 
+def _ce_forward_stats(
+    logits: torch.Tensor,
+    logits_max: torch.Tensor,
+    target: torch.Tensor,
+    vocab_start: int,
+    ignore_index: int,
+    block_size: int,
+) -> torch.Tensor:
+    from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
+
+    stats = torch.empty((2, logits.shape[0]), device=logits.device, dtype=torch.float32)
+    _ce_forward_stats_kernel[(logits.shape[0],)](
+        logits,
+        logits.stride(0),
+        logits_max,
+        target,
+        stats[0],
+        stats[1],
+        vocab_start,
+        logits.shape[1],
+        ignore_index,
+        BLOCK_SIZE=block_size,
+        num_warps=_get_num_warps(block_size),
+    )
+    return stats
+
+
+def _ce_backward_from_logits(
+    logits: torch.Tensor,
+    logits_max: torch.Tensor,
+    sum_exp: torch.Tensor,
+    target: torch.Tensor,
+    grad_output: torch.Tensor,
+    vocab_start: int,
+    ignore_index: int,
+    block_size: int,
+) -> None:
+    from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
+
+    _ce_backward_from_logits_kernel[(logits.shape[0],)](
+        logits,
+        logits.stride(0),
+        logits_max,
+        sum_exp,
+        target,
+        grad_output,
+        vocab_start,
+        logits.shape[1],
+        ignore_index,
+        BLOCK_SIZE=block_size,
+        num_warps=_get_num_warps(block_size),
+    )
+
+
 def _triton_loss(
     sum_exp: torch.Tensor,
     predicted_logit: torch.Tensor,
@@ -435,30 +563,21 @@ def _tp_rank_and_world(tp_group) -> tuple[int, int]:
 
 
 def _materialized_backward(ctx, grad_output: torch.Tensor):
-    """Convert saved CE state to dlogits and form projection gradients."""
-    from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
-    from liger_kernel.ops.vocab_parallel_cross_entropy import liger_vocab_parallel_ce_backward_kernel
-
-    hidden, weight, exp_buf, sum_exp_global, target = ctx.saved_tensors
+    """Convert saved logits to dlogits and form projection gradients."""
+    hidden, weight, logits, logits_max, sum_exp_global, target = ctx.saved_tensors
     grad_out = grad_output.contiguous().reshape(-1).float()
-    num_warps = _get_num_warps(ctx.ce_block_size)
-    liger_vocab_parallel_ce_backward_kernel[(hidden.shape[0],)](
-        EXP_ptr=exp_buf,
-        EXP_stride=exp_buf.stride(0),
-        sum_exp_ptr=sum_exp_global,
-        Y_ptr=target,
-        grad_out_ptr=grad_out,
-        vocab_start=ctx.vocab_start,
-        n_cols=weight.shape[0],
-        ignore_index=ctx.ignore_index,
-        alpha_eff=0.0,
-        eps_eff=0.0,
-        HAS_LABEL_SMOOTHING=False,
-        BLOCK_SIZE=ctx.ce_block_size,
-        num_warps=num_warps,
+    _ce_backward_from_logits(
+        logits,
+        logits_max,
+        sum_exp_global,
+        target,
+        grad_out,
+        ctx.vocab_start,
+        ctx.ignore_index,
+        ctx.ce_block_size,
     )
 
-    grad_hidden = _triton_dx_matmul(exp_buf, weight)
+    grad_hidden = _triton_dx_matmul(logits, weight)
     reduce_work = (
         dist.all_reduce(
             grad_hidden,
@@ -469,8 +588,8 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
         if ctx.tp_world > 1
         else None
     )
-    grad_weight = _triton_matmul(exp_buf.t(), hidden)
-    grad_bias = _triton_column_sum(exp_buf).to(ctx.bias_dtype) if ctx.has_bias else None
+    grad_weight = _triton_matmul(logits.t(), hidden)
+    grad_bias = _triton_column_sum(logits).to(ctx.bias_dtype) if ctx.has_bias else None
 
     if reduce_work is not None:
         reduce_work.wait()
@@ -533,9 +652,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         weight_2d = weight.contiguous()
         bias_1d = bias.contiguous() if bias is not None else None
 
-        from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
         from liger_kernel.ops.vocab_parallel_cross_entropy import _select_block_size
-        from liger_kernel.ops.vocab_parallel_cross_entropy import liger_vocab_parallel_ce_forward_kernel
 
         logits = _triton_matmul(hidden_2d, weight_2d.t(), bias=bias_1d)
         ce_block_size = _select_block_size(vocab_local)
@@ -543,32 +660,22 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         if tp_world > 1:
             dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=tp_group)
 
-        exp_buf = logits
-        stats = torch.empty((2, hidden_2d.shape[0]), device=hidden.device, dtype=torch.float32)
+        stats = _ce_forward_stats(
+            logits,
+            logits_max,
+            flat_target,
+            vocab_start,
+            ignore_index,
+            ce_block_size,
+        )
         predicted_logit = stats[0]
         sum_exp = stats[1]
-        num_warps = _get_num_warps(ce_block_size)
-        liger_vocab_parallel_ce_forward_kernel[(hidden_2d.shape[0],)](
-            X_ptr=logits,
-            X_stride=logits.stride(0),
-            EXP_ptr=exp_buf,
-            EXP_stride=exp_buf.stride(0),
-            logits_max_ptr=logits_max,
-            Y_ptr=flat_target,
-            pred_ptr=predicted_logit,
-            sum_exp_ptr=sum_exp,
-            vocab_start=vocab_start,
-            n_cols=vocab_local,
-            ignore_index=ignore_index,
-            BLOCK_SIZE=ce_block_size,
-            num_warps=num_warps,
-        )
         if tp_world > 1:
             dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=tp_group)
 
         loss = _triton_loss(sum_exp, predicted_logit, flat_target, ignore_index)
 
-        ctx.save_for_backward(hidden_2d, weight_2d, exp_buf, sum_exp, flat_target)
+        ctx.save_for_backward(hidden_2d, weight_2d, logits, logits_max, sum_exp, flat_target)
         ctx.has_bias = bias is not None
         ctx.bias_dtype = bias.dtype if bias is not None else None
         ctx.tp_group = tp_group

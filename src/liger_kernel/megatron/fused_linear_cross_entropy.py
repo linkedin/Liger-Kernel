@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops import liger_megatron_fused_linear_cross_entropy
+from liger_kernel.ops import LigerMegatronFusedLinearCrossEntropyFunction
 
 
 class LigerMegatronFusedLinearCrossEntropy(nn.Module):
@@ -30,13 +30,13 @@ class LigerMegatronFusedLinearCrossEntropy(nn.Module):
         bias: torch.Tensor | None = None,
         tp_group=None,
     ) -> torch.Tensor:
-        return liger_megatron_fused_linear_cross_entropy(
+        return LigerMegatronFusedLinearCrossEntropyFunction.apply(
             hidden,
             weight,
             target,
-            bias=bias,
-            tp_group=tp_group,
-            ignore_index=self.ignore_index,
+            bias,
+            tp_group,
+            self.ignore_index,
         )
 
     def extra_repr(self) -> str:

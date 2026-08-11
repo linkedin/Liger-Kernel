@@ -32,6 +32,7 @@ import argparse
 import os
 import tempfile
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,9 +92,9 @@ class _ProviderState:
     weight: torch.Tensor
     bias: torch.Tensor | None
     target: torch.Tensor
-    forward: object
+    forward: Callable[[], torch.Tensor]
 
-    def clear_grads(self):
+    def clear_grads(self) -> None:
         self.hidden.grad = None
         self.weight.grad = None
         if self.bias is not None:
@@ -325,7 +326,9 @@ def _check_correctness(
     dist.broadcast(upstream, src=0)
     outputs = {}
     correctness_providers = ["megatron-compatible"]
-    correctness_providers.extend(provider for provider in ("liger", "liger-cutile") if provider in providers)
+    correctness_providers.extend(
+        provider for provider in ("liger", "liger-cutile", "liger-cutedsl") if provider in providers
+    )
     for provider in correctness_providers:
         state = _make_state(provider, hidden, weight, bias, target, tp_group, tp_size)
         loss = state.forward()
@@ -512,6 +515,15 @@ def main():
         raise RuntimeError("provider 'megatron-core' requested, but megatron-core is not installed.")
     if "liger-cutedsl" in providers and not _CUTEDSL_AVAILABLE:
         raise RuntimeError("provider 'liger-cutedsl' requested, but nvidia-cutlass-dsl is not installed.")
+    if "liger-cutedsl" in providers:
+        unsupported_devices = [
+            index for index in range(args.tp_size) if torch.cuda.get_device_capability(index)[0] < 10
+        ]
+        if unsupported_devices:
+            raise RuntimeError(
+                "provider 'liger-cutedsl' requires SM100 or newer; "
+                f"unsupported CUDA device indices: {unsupported_devices}."
+            )
     if "liger-cutile" in providers and not _CUTILE_AVAILABLE:
         raise RuntimeError("provider 'liger-cutile' requested, but cuda-tile is not installed.")
     if min(args.token_counts) <= 0 or args.hidden_size <= 0 or min(args.vocab_sizes) <= 0:

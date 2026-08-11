@@ -75,7 +75,7 @@ def test_cutile_megatron_flce_backend_dispatch():
             "-c",
             (
                 "from liger_kernel.megatron.fused_linear_cross_entropy import "
-                "liger_megatron_fused_linear_cross_entropy as fn; print(fn.__module__)"
+                "LigerMegatronFusedLinearCrossEntropyFunction as fn; print(fn.__module__)"
             ),
         ],
         check=True,

@@ -2,8 +2,8 @@
 
 The SM100 path uses a persistent CuTe DSL GEMM for the local vocabulary
 projection, Triton for vocabulary-parallel cross entropy, and NCCL for
-tensor-parallel collectives. Shifted exponentials overwrite the projection
-buffer and are reused by backward.
+tensor-parallel collectives. Backward converts the saved projection buffer to
+dlogits in-place.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ import torch.nn.functional as F
 
 from liger_kernel.ops.cutedsl.ops._sm100_gemm import K_ALIGNMENT
 from liger_kernel.ops.cutedsl.ops._sm100_gemm import run_epilogue_gemm
+from liger_kernel.ops.megatron_fused_linear_cross_entropy import _ce_backward_from_logits
+from liger_kernel.ops.megatron_fused_linear_cross_entropy import _ce_forward_stats
 from liger_kernel.ops.megatron_fused_linear_cross_entropy import _tp_rank_and_world
 from liger_kernel.ops.megatron_fused_linear_cross_entropy import (
     liger_megatron_fused_linear_cross_entropy as default_megatron_fused_linear_cross_entropy,
@@ -64,32 +66,23 @@ def _cutedsl_projection(
 
 
 def _materialized_backward(ctx, grad_output: torch.Tensor):
-    from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
-    from liger_kernel.ops.vocab_parallel_cross_entropy import liger_vocab_parallel_ce_backward_kernel
-
-    hidden, weight, exp_buffer, sum_exp, target = ctx.saved_tensors
+    hidden, weight, logits, logits_max, sum_exp, target = ctx.saved_tensors
     grad_output_1d = grad_output.contiguous().reshape(-1).float()
-    num_warps = _get_num_warps(ctx.ce_block_size)
-    liger_vocab_parallel_ce_backward_kernel[(hidden.shape[0],)](
-        EXP_ptr=exp_buffer,
-        EXP_stride=exp_buffer.stride(0),
-        sum_exp_ptr=sum_exp,
-        Y_ptr=target,
-        grad_out_ptr=grad_output_1d,
-        vocab_start=ctx.vocab_start,
-        n_cols=weight.shape[0],
-        ignore_index=ctx.ignore_index,
-        alpha_eff=0.0,
-        eps_eff=0.0,
-        HAS_LABEL_SMOOTHING=False,
-        BLOCK_SIZE=ctx.ce_block_size,
-        num_warps=num_warps,
+    _ce_backward_from_logits(
+        logits,
+        logits_max,
+        sum_exp,
+        target,
+        grad_output_1d,
+        ctx.vocab_start,
+        ctx.ignore_index,
+        ctx.ce_block_size,
     )
 
     if _SUPPORTS_OUT_DTYPE:
-        grad_hidden = torch.mm(exp_buffer, weight, out_dtype=torch.float32)
+        grad_hidden = torch.mm(logits, weight, out_dtype=torch.float32)
     else:
-        grad_hidden = exp_buffer.float() @ weight.float()
+        grad_hidden = logits.float() @ weight.float()
     reduce_work = (
         dist.all_reduce(
             grad_hidden,
@@ -100,8 +93,8 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
         if ctx.tp_world > 1
         else None
     )
-    grad_weight = exp_buffer.t() @ hidden
-    grad_bias = exp_buffer.sum(dim=0, dtype=torch.float32).to(ctx.bias_dtype) if ctx.has_bias else None
+    grad_weight = logits.t() @ hidden
+    grad_bias = logits.sum(dim=0, dtype=torch.float32).to(ctx.bias_dtype) if ctx.has_bias else None
     if reduce_work is not None:
         reduce_work.wait()
 
@@ -168,37 +161,25 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         if tp_world > 1:
             dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=tp_group)
 
-        from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
         from liger_kernel.ops.vocab_parallel_cross_entropy import _select_block_size
-        from liger_kernel.ops.vocab_parallel_cross_entropy import liger_vocab_parallel_ce_forward_kernel
 
-        exp_buffer = logits
-        stats = torch.empty((2, hidden_2d.shape[0]), device=hidden.device, dtype=torch.float32)
+        ce_block_size = _select_block_size(vocab_local)
+        stats = _ce_forward_stats(
+            logits,
+            logits_max,
+            flat_target,
+            vocab_start,
+            ignore_index,
+            ce_block_size,
+        )
         predicted_logit = stats[0]
         sum_exp = stats[1]
-        ce_block_size = _select_block_size(vocab_local)
-        num_warps = _get_num_warps(ce_block_size)
-        liger_vocab_parallel_ce_forward_kernel[(hidden_2d.shape[0],)](
-            X_ptr=logits,
-            X_stride=logits.stride(0),
-            EXP_ptr=exp_buffer,
-            EXP_stride=exp_buffer.stride(0),
-            logits_max_ptr=logits_max,
-            Y_ptr=flat_target,
-            pred_ptr=predicted_logit,
-            sum_exp_ptr=sum_exp,
-            vocab_start=vocab_start,
-            n_cols=vocab_local,
-            ignore_index=ignore_index,
-            BLOCK_SIZE=ce_block_size,
-            num_warps=num_warps,
-        )
         if tp_world > 1:
             dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=tp_group)
 
         loss = torch.log(sum_exp) - predicted_logit
         loss = torch.where(valid, loss, torch.zeros_like(loss))
-        ctx.save_for_backward(hidden_2d, weight_2d, exp_buffer, sum_exp, flat_target)
+        ctx.save_for_backward(hidden_2d, weight_2d, logits, logits_max, sum_exp, flat_target)
         ctx.has_bias = bias is not None
         ctx.bias_dtype = bias.dtype if bias is not None else None
         ctx.tp_group = tp_group

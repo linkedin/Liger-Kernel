@@ -184,12 +184,6 @@ def _vocab_parallel_ce_forward_kernel(
             running_sum + ct.sum(exponentials, 0, keepdims=False),
             dtype=ct.float32,
         )
-        ct.scatter(
-            logits,
-            (row, columns),
-            ct.astype(exponentials, logits.dtype),
-            check_bounds=True,
-        )
 
     ct.scatter(predicted_logit, row, predicted)
     ct.scatter(sum_exp, row, ct.sum(sum_exp_tile, 0, keepdims=False))
@@ -197,7 +191,8 @@ def _vocab_parallel_ce_forward_kernel(
 
 @ct.kernel(occupancy=4)
 def _vocab_parallel_ce_backward_kernel(
-    exp_buffer,
+    logits,
+    logits_max,
     sum_exp,
     target,
     grad_output,
@@ -213,29 +208,31 @@ def _vocab_parallel_ce_backward_kernel(
     if y_global == ignore_index:
         for chunk in range(num_chunks):
             columns = ct.arange(BLOCK_SIZE, dtype=ct.int32) + chunk * BLOCK_SIZE
-            zeros = ct.full((BLOCK_SIZE,), 0.0, dtype=exp_buffer.dtype)
-            ct.scatter(exp_buffer, (row, columns), zeros, check_bounds=True)
+            zeros = ct.full((BLOCK_SIZE,), 0.0, dtype=logits.dtype)
+            ct.scatter(logits, (row, columns), zeros, check_bounds=True)
         return
 
     target_off_rank = (y_global < vocab_start) or (y_global >= vocab_start + n_cols)
     y_local = ct.astype(y_global - vocab_start, ct.int32)
+    maximum = ct.astype(ct.load(logits_max, row, shape=()), ct.float32)
     global_sum = ct.astype(ct.load(sum_exp, row, shape=()), ct.float32)
     upstream = ct.astype(ct.load(grad_output, row, shape=()), ct.float32)
 
     for chunk in range(num_chunks):
         columns = ct.arange(BLOCK_SIZE, dtype=ct.int32) + chunk * BLOCK_SIZE
-        exponentials = ct.astype(
-            ct.gather(exp_buffer, (row, columns), check_bounds=True, padding_value=0.0),
+        values = ct.astype(
+            ct.gather(logits, (row, columns), check_bounds=True, padding_value=-math.inf),
             ct.float32,
         )
+        exponentials = ct.exp2((values - maximum) * LOG2E, flush_to_zero=True)
         gradient = exponentials / global_sum
         if not target_off_rank:
             gradient = ct.where(columns == y_local, gradient - 1.0, gradient)
         gradient = gradient * upstream
         ct.scatter(
-            exp_buffer,
+            logits,
             (row, columns),
-            ct.astype(gradient, exp_buffer.dtype),
+            ct.astype(gradient, logits.dtype),
             check_bounds=True,
         )
 
@@ -371,7 +368,7 @@ def _cutile_ce_forward(
     target: torch.Tensor,
     vocab_start: int,
     ignore_index: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     rows, vocab_local = logits.shape
     stats = torch.empty((2, rows), device=logits.device, dtype=torch.float32)
     predicted_logit = stats[0]
@@ -393,29 +390,31 @@ def _cutile_ce_forward(
             int(block_size),
         ),
     )
-    return logits, stats
+    return stats
 
 
 def _cutile_ce_backward(
-    exp_buffer: torch.Tensor,
+    logits: torch.Tensor,
+    logits_max: torch.Tensor,
     sum_exp: torch.Tensor,
     target: torch.Tensor,
     grad_output: torch.Tensor,
     vocab_start: int,
     ignore_index: int,
 ) -> None:
-    block_size = min(2048, _select_row_block_size(exp_buffer.shape[1]))
+    block_size = min(2048, _select_row_block_size(logits.shape[1]))
     ct.launch(
         torch.cuda.current_stream(),
-        (exp_buffer.shape[0], 1, 1),
+        (logits.shape[0], 1, 1),
         _vocab_parallel_ce_backward_kernel,
         (
-            exp_buffer,
+            logits,
+            logits_max,
             sum_exp,
             target,
             grad_output,
             int(vocab_start),
-            int(exp_buffer.shape[1]),
+            int(logits.shape[1]),
             int(ignore_index),
             int(block_size),
         ),
@@ -451,10 +450,11 @@ def _cutile_column_sum(input: torch.Tensor, output_dtype: torch.dtype) -> torch.
 
 
 def _materialized_backward(ctx, grad_output: torch.Tensor):
-    hidden, weight, exp_buffer, sum_exp, target = ctx.saved_tensors
+    hidden, weight, logits, logits_max, sum_exp, target = ctx.saved_tensors
     grad_output_1d = grad_output.contiguous().reshape(-1).float()
     _cutile_ce_backward(
-        exp_buffer,
+        logits,
+        logits_max,
         sum_exp,
         target,
         grad_output_1d,
@@ -463,10 +463,10 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
     )
 
     grad_hidden = _cutile_matmul(
-        exp_buffer,
+        logits,
         weight,
         operation="dx",
-        output_dtype=torch.float32 if exp_buffer.shape[0] <= 1024 else None,
+        output_dtype=torch.float32 if logits.shape[0] <= 1024 else None,
     )
     reduce_work = (
         dist.all_reduce(
@@ -478,8 +478,8 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
         if ctx.tp_world > 1
         else None
     )
-    grad_weight = _cutile_matmul(exp_buffer.t(), hidden, operation="dw")
-    grad_bias = _cutile_column_sum(exp_buffer, ctx.bias_dtype) if ctx.has_bias else None
+    grad_weight = _cutile_matmul(logits.t(), hidden, operation="dw")
+    grad_bias = _cutile_column_sum(logits, ctx.bias_dtype) if ctx.has_bias else None
 
     if reduce_work is not None:
         reduce_work.wait()
@@ -547,7 +547,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         if tp_world > 1:
             dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=tp_group)
 
-        exp_buffer, stats = _cutile_ce_forward(
+        stats = _cutile_ce_forward(
             logits,
             logits_max,
             flat_target,
@@ -561,7 +561,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
 
         loss = _cutile_loss(sum_exp, predicted_logit, flat_target, ignore_index)
 
-        ctx.save_for_backward(hidden_2d, weight_2d, exp_buffer, sum_exp, flat_target)
+        ctx.save_for_backward(hidden_2d, weight_2d, logits, logits_max, sum_exp, flat_target)
         ctx.has_bias = bias is not None
         ctx.bias_dtype = bias.dtype if bias is not None else None
         ctx.tp_group = tp_group
