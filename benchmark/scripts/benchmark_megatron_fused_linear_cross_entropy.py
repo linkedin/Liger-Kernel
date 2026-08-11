@@ -6,9 +6,8 @@ training path is:
     vocab-parallel linear -> materialized local logits -> fused vocab-parallel CE
 
 This script compares that path with ``LigerMegatronFusedLinearCrossEntropy``,
-which saves low-precision CE state to avoid projection recomputation. The
-``liger-triton`` provider additionally replaces all three local GEMMs with
-portable Triton kernels. ``liger-cutile`` replaces all local compute with
+which uses portable Triton kernels and saves low-precision CE state to avoid
+projection recomputation. ``liger-cutile`` replaces all local compute with
 CuTile, while ``liger-cutedsl`` uses a persistent SM100 CuTe DSL projection.
 When Megatron-Core is installed, the ``megatron-core`` provider uses its fused
 CE. The always-available ``megatron-compatible`` provider uses Liger's drop-in
@@ -48,9 +47,6 @@ from utils import update_benchmark_data_csv
 
 from liger_kernel.megatron import LigerMegatronCrossEntropy
 from liger_kernel.megatron import LigerMegatronFusedLinearCrossEntropy
-from liger_kernel.ops.triton.ops.megatron_fused_linear_cross_entropy import (
-    liger_megatron_fused_linear_cross_entropy as triton_megatron_fused_linear_cross_entropy,
-)
 
 try:
     from liger_kernel.ops.cutedsl.ops.megatron_fused_linear_cross_entropy import (
@@ -125,14 +121,6 @@ def _make_state(
     if provider == "liger":
         loss = LigerMegatronFusedLinearCrossEntropy()
         forward = lambda: loss(hidden, weight, target, bias=bias, tp_group=tp_group)
-    elif provider == "liger-triton":
-        forward = lambda: triton_megatron_fused_linear_cross_entropy(
-            hidden,
-            weight,
-            target,
-            bias=bias,
-            tp_group=tp_group,
-        )
     elif provider == "liger-cutedsl":
         if not _CUTEDSL_AVAILABLE:
             raise RuntimeError("provider 'liger-cutedsl' requires nvidia-cutlass-dsl.")
@@ -337,9 +325,7 @@ def _check_correctness(
     dist.broadcast(upstream, src=0)
     outputs = {}
     correctness_providers = ["megatron-compatible"]
-    correctness_providers.extend(
-        provider for provider in ("liger", "liger-triton", "liger-cutile") if provider in providers
-    )
+    correctness_providers.extend(provider for provider in ("liger", "liger-cutile") if provider in providers)
     for provider in correctness_providers:
         state = _make_state(provider, hidden, weight, bias, target, tp_group, tp_size)
         loss = state.forward()
@@ -503,7 +489,6 @@ def main():
         nargs="+",
         choices=[
             "liger",
-            "liger-triton",
             "liger-cutedsl",
             "liger-cutile",
             "megatron-compatible",

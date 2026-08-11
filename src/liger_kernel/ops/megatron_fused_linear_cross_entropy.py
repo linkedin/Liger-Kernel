@@ -1,21 +1,428 @@
-"""Materialized tensor-parallel fused linear cross entropy for Megatron.
+"""Portable all-Triton tensor-parallel fused linear cross entropy for Megatron.
 
 Each tensor-parallel rank owns a contiguous vocabulary shard. Forward performs
-one local projection GEMM, computes globally normalized cross entropy, and saves
-shifted exponentials in the projection dtype. Backward converts that buffer to
-dlogits in-place, avoiding projection recomputation before forming dX and dW.
+one Triton projection GEMM, computes globally normalized cross entropy, and
+saves shifted exponentials in the projection dtype. Backward converts that
+buffer to dlogits in-place before Triton dX and dW GEMMs. Tensor-parallel
+collectives remain NCCL/RCCL calls between architecture-independent kernels.
 """
 
 from __future__ import annotations
 
-import operator
-
 import torch
 import torch.distributed as dist
+import triton
+import triton.language as tl
 
-from liger_kernel.ops.utils import compare_version
 
-_SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
+def _matmul_autotune_configs():
+    return [
+        triton.Config(
+            {"BLOCK_SIZE_M": 256, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 64, "GROUP_SIZE_M": 8},
+            num_stages=3,
+            num_warps=8,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 256, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 64, "GROUP_SIZE_M": 8},
+            num_stages=3,
+            num_warps=8,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8},
+            num_stages=3,
+            num_warps=8,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 64, "GROUP_SIZE_M": 8},
+            num_stages=3,
+            num_warps=8,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8},
+            num_stages=4,
+            num_warps=4,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8},
+            num_stages=4,
+            num_warps=4,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8},
+            num_stages=4,
+            num_warps=4,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8},
+            num_stages=4,
+            num_warps=4,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8},
+            num_stages=3,
+            num_warps=4,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 4},
+            num_stages=3,
+            num_warps=4,
+        ),
+        triton.Config(
+            {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 32, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 4},
+            num_stages=3,
+            num_warps=4,
+        ),
+    ]
+
+
+def _split_k_matmul_autotune_configs():
+    return [
+        triton.Config(
+            {
+                "BLOCK_SIZE_M": 64,
+                "BLOCK_SIZE_N": 128,
+                "BLOCK_SIZE_K": 64,
+                "GROUP_SIZE_M": 8,
+                "SPLIT_K": 2,
+            },
+            num_stages=3,
+            num_warps=4,
+        ),
+        triton.Config(
+            {
+                "BLOCK_SIZE_M": 64,
+                "BLOCK_SIZE_N": 128,
+                "BLOCK_SIZE_K": 64,
+                "GROUP_SIZE_M": 8,
+                "SPLIT_K": 4,
+            },
+            num_stages=3,
+            num_warps=4,
+        ),
+        triton.Config(
+            {
+                "BLOCK_SIZE_M": 64,
+                "BLOCK_SIZE_N": 128,
+                "BLOCK_SIZE_K": 64,
+                "GROUP_SIZE_M": 8,
+                "SPLIT_K": 8,
+            },
+            num_stages=3,
+            num_warps=4,
+        ),
+        triton.Config(
+            {
+                "BLOCK_SIZE_M": 128,
+                "BLOCK_SIZE_N": 128,
+                "BLOCK_SIZE_K": 64,
+                "GROUP_SIZE_M": 8,
+                "SPLIT_K": 4,
+            },
+            num_stages=3,
+            num_warps=8,
+        ),
+        triton.Config(
+            {
+                "BLOCK_SIZE_M": 64,
+                "BLOCK_SIZE_N": 256,
+                "BLOCK_SIZE_K": 64,
+                "GROUP_SIZE_M": 8,
+                "SPLIT_K": 4,
+            },
+            num_stages=3,
+            num_warps=8,
+        ),
+        triton.Config(
+            {
+                "BLOCK_SIZE_M": 128,
+                "BLOCK_SIZE_N": 256,
+                "BLOCK_SIZE_K": 64,
+                "GROUP_SIZE_M": 8,
+                "SPLIT_K": 4,
+            },
+            num_stages=3,
+            num_warps=8,
+        ),
+    ]
+
+
+@triton.autotune(configs=_matmul_autotune_configs(), key=["M", "N", "K"])
+@triton.jit
+def _matmul_kernel(
+    a_ptr,
+    b_ptr,
+    bias_ptr,
+    output_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_om,
+    stride_on,
+    HAS_BIAS: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + (pid % num_pid_in_group) % group_size_m
+    pid_n = (pid % num_pid_in_group) // group_size_m
+
+    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_k = tl.arange(0, BLOCK_SIZE_K)
+    a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+    b_ptrs = b_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+    for k_start in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+        k_remaining = K - k_start * BLOCK_SIZE_K
+        a = tl.load(a_ptrs, mask=(offs_m[:, None] < M) & (offs_k[None, :] < k_remaining), other=0.0)
+        b = tl.load(b_ptrs, mask=(offs_k[:, None] < k_remaining) & (offs_n[None, :] < N), other=0.0)
+        accumulator = tl.dot(a, b, accumulator)
+        a_ptrs += BLOCK_SIZE_K * stride_ak
+        b_ptrs += BLOCK_SIZE_K * stride_bk
+
+    if HAS_BIAS:
+        bias = tl.load(bias_ptr + offs_n, mask=offs_n < N, other=0.0).to(tl.float32)
+        accumulator += bias[None, :]
+
+    output_ptrs = output_ptr + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
+    tl.store(output_ptrs, accumulator, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
+
+
+@triton.autotune(
+    configs=_split_k_matmul_autotune_configs(),
+    key=["M", "N", "K"],
+    reset_to_zero=["output_ptr"],
+)
+@triton.jit
+def _split_k_matmul_kernel(
+    a_ptr,
+    b_ptr,
+    output_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_om,
+    stride_on,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
+    SPLIT_K: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    split_k_id = tl.program_id(1)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + (pid % num_pid_in_group) % group_size_m
+    pid_n = (pid % num_pid_in_group) // group_size_m
+
+    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_k = split_k_id * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+    a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+    b_ptrs = b_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+    for k_start in range(0, tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)):
+        k_remaining = K - k_start * BLOCK_SIZE_K * SPLIT_K
+        a = tl.load(a_ptrs, mask=(offs_m[:, None] < M) & (offs_k[None, :] < k_remaining), other=0.0)
+        b = tl.load(b_ptrs, mask=(offs_k[:, None] < k_remaining) & (offs_n[None, :] < N), other=0.0)
+        accumulator = tl.dot(a, b, accumulator)
+        a_ptrs += BLOCK_SIZE_K * SPLIT_K * stride_ak
+        b_ptrs += BLOCK_SIZE_K * SPLIT_K * stride_bk
+
+    output_ptrs = output_ptr + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
+    tl.atomic_add(output_ptrs, accumulator, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
+
+
+@triton.jit
+def _row_max_kernel(
+    input_ptr,
+    output_ptr,
+    n_cols,
+    input_row_stride,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0).to(tl.int64)
+    row_ptr = input_ptr + row * input_row_stride
+    row_max = -float("inf")
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offsets = start + tl.arange(0, BLOCK_SIZE)
+        values = tl.load(row_ptr + offsets, mask=offsets < n_cols, other=-float("inf")).to(tl.float32)
+        row_max = tl.maximum(row_max, tl.max(values))
+    tl.store(output_ptr + row, row_max)
+
+
+@triton.jit
+def _loss_kernel(
+    sum_exp_ptr,
+    predicted_logit_ptr,
+    target_ptr,
+    loss_ptr,
+    n_rows,
+    ignore_index,
+    BLOCK_SIZE: tl.constexpr,
+):
+    offsets = tl.program_id(0).to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_rows
+    sum_exp = tl.load(sum_exp_ptr + offsets, mask=mask, other=1.0)
+    predicted_logit = tl.load(predicted_logit_ptr + offsets, mask=mask, other=0.0)
+    target = tl.load(target_ptr + offsets, mask=mask, other=ignore_index)
+    loss = tl.log(sum_exp) - predicted_logit
+    loss = tl.where(target == ignore_index, 0.0, loss)
+    tl.store(loss_ptr + offsets, loss, mask=mask)
+
+
+@triton.jit
+def _column_sum_kernel(
+    input_ptr,
+    output_ptr,
+    n_rows,
+    input_row_stride,
+    BLOCK_SIZE: tl.constexpr,
+):
+    col = tl.program_id(0).to(tl.int64)
+    offsets = tl.arange(0, BLOCK_SIZE)
+    total = 0.0
+    for start in range(0, n_rows, BLOCK_SIZE):
+        rows = start + offsets
+        values = tl.load(input_ptr + rows * input_row_stride + col, mask=rows < n_rows, other=0.0)
+        total += tl.sum(values.to(tl.float32))
+    tl.store(output_ptr + col, total)
+
+
+def _triton_matmul(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    *,
+    bias: torch.Tensor | None = None,
+    output_dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    if a.ndim != 2 or b.ndim != 2 or a.shape[1] != b.shape[0]:
+        raise ValueError(f"matmul expects [M, K] @ [K, N], got {tuple(a.shape)} and {tuple(b.shape)}.")
+    m, k = a.shape
+    n = b.shape[1]
+    output = torch.empty((m, n), device=a.device, dtype=output_dtype or a.dtype)
+    grid = lambda meta: (triton.cdiv(m, meta["BLOCK_SIZE_M"]) * triton.cdiv(n, meta["BLOCK_SIZE_N"]),)
+    _matmul_kernel[grid](
+        a,
+        b,
+        bias if bias is not None else output,
+        output,
+        m,
+        n,
+        k,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        output.stride(0),
+        output.stride(1),
+        HAS_BIAS=bias is not None,
+    )
+    return output
+
+
+def _triton_dx_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    m, k = a.shape
+    n = b.shape[1]
+    if m > 1024 or k < 4096:
+        return _triton_matmul(a, b, output_dtype=torch.float32)
+
+    output = torch.zeros((m, n), device=a.device, dtype=torch.float32)
+    grid = lambda meta: (
+        triton.cdiv(m, meta["BLOCK_SIZE_M"]) * triton.cdiv(n, meta["BLOCK_SIZE_N"]),
+        meta["SPLIT_K"],
+    )
+    _split_k_matmul_kernel[grid](
+        a,
+        b,
+        output,
+        m,
+        n,
+        k,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        output.stride(0),
+        output.stride(1),
+    )
+    return output
+
+
+def _triton_row_max(input: torch.Tensor, block_size: int) -> torch.Tensor:
+    from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
+
+    output = torch.empty(input.shape[0], device=input.device, dtype=torch.float32)
+    _row_max_kernel[(input.shape[0],)](
+        input,
+        output,
+        input.shape[1],
+        input.stride(0),
+        BLOCK_SIZE=block_size,
+        num_warps=_get_num_warps(block_size),
+    )
+    return output
+
+
+def _triton_loss(
+    sum_exp: torch.Tensor,
+    predicted_logit: torch.Tensor,
+    target: torch.Tensor,
+    ignore_index: int,
+) -> torch.Tensor:
+    output = torch.empty_like(sum_exp)
+    block_size = 256
+    _loss_kernel[(triton.cdiv(target.numel(), block_size),)](
+        sum_exp,
+        predicted_logit,
+        target,
+        output,
+        target.numel(),
+        ignore_index,
+        BLOCK_SIZE=block_size,
+        num_warps=4,
+    )
+    return output
+
+
+def _triton_column_sum(input: torch.Tensor) -> torch.Tensor:
+    from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
+    from liger_kernel.ops.vocab_parallel_cross_entropy import _select_block_size
+
+    block_size = _select_block_size(input.shape[0])
+    output = torch.empty(input.shape[1], device=input.device, dtype=torch.float32)
+    _column_sum_kernel[(input.shape[1],)](
+        input,
+        output,
+        input.shape[0],
+        input.stride(0),
+        BLOCK_SIZE=block_size,
+        num_warps=_get_num_warps(block_size),
+    )
+    return output
 
 
 def _tp_rank_and_world(tp_group) -> tuple[int, int]:
@@ -51,10 +458,7 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
         num_warps=num_warps,
     )
 
-    if _SUPPORTS_OUT_DTYPE:
-        grad_hidden = torch.mm(exp_buf, weight, out_dtype=torch.float32)
-    else:
-        grad_hidden = exp_buf.float() @ weight.float()
+    grad_hidden = _triton_dx_matmul(exp_buf, weight)
     reduce_work = (
         dist.all_reduce(
             grad_hidden,
@@ -65,8 +469,8 @@ def _materialized_backward(ctx, grad_output: torch.Tensor):
         if ctx.tp_world > 1
         else None
     )
-    grad_weight = exp_buf.t() @ hidden
-    grad_bias = exp_buf.sum(dim=0, dtype=torch.float32).to(ctx.bias_dtype) if ctx.has_bias else None
+    grad_weight = _triton_matmul(exp_buf.t(), hidden)
+    grad_bias = _triton_column_sum(exp_buf).to(ctx.bias_dtype) if ctx.has_bias else None
 
     if reduce_work is not None:
         reduce_work.wait()
@@ -129,23 +533,20 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         weight_2d = weight.contiguous()
         bias_1d = bias.contiguous() if bias is not None else None
 
-        logits = torch.mm(hidden_2d, weight_2d.t())
-        if bias_1d is not None:
-            logits.add_(bias_1d)
-
-        logits_max = logits.amax(dim=-1).float()
-        if tp_world > 1:
-            dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=tp_group)
-
         from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
         from liger_kernel.ops.vocab_parallel_cross_entropy import _select_block_size
         from liger_kernel.ops.vocab_parallel_cross_entropy import liger_vocab_parallel_ce_forward_kernel
+
+        logits = _triton_matmul(hidden_2d, weight_2d.t(), bias=bias_1d)
+        ce_block_size = _select_block_size(vocab_local)
+        logits_max = _triton_row_max(logits, ce_block_size)
+        if tp_world > 1:
+            dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=tp_group)
 
         exp_buf = logits
         stats = torch.empty((2, hidden_2d.shape[0]), device=hidden.device, dtype=torch.float32)
         predicted_logit = stats[0]
         sum_exp = stats[1]
-        ce_block_size = _select_block_size(vocab_local)
         num_warps = _get_num_warps(ce_block_size)
         liger_vocab_parallel_ce_forward_kernel[(hidden_2d.shape[0],)](
             X_ptr=logits,
@@ -165,8 +566,7 @@ class LigerMegatronFusedLinearCrossEntropyFunction(torch.autograd.Function):
         if tp_world > 1:
             dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=tp_group)
 
-        loss = torch.log(sum_exp) - predicted_logit
-        loss = torch.where(valid, loss, torch.zeros_like(loss))
+        loss = _triton_loss(sum_exp, predicted_logit, flat_target, ignore_index)
 
         ctx.save_for_backward(hidden_2d, weight_2d, exp_buf, sum_exp, flat_target)
         ctx.has_bias = bias is not None

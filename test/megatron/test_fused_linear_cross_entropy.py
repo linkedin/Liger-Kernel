@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tempfile
 
 import pytest
@@ -13,14 +10,6 @@ import torch.nn.functional as F
 
 from liger_kernel.megatron import LigerMegatronFusedLinearCrossEntropy
 from liger_kernel.ops.megatron_fused_linear_cross_entropy import liger_megatron_fused_linear_cross_entropy
-from liger_kernel.ops.triton.ops.megatron_fused_linear_cross_entropy import (
-    liger_megatron_fused_linear_cross_entropy as triton_megatron_fused_linear_cross_entropy,
-)
-
-_IMPLEMENTATIONS = [
-    pytest.param(liger_megatron_fused_linear_cross_entropy, id="cublas"),
-    pytest.param(triton_megatron_fused_linear_cross_entropy, id="triton"),
-]
 
 
 def _reference_loss(hidden, weight, target, bias=None, ignore_index=-100):
@@ -39,8 +28,7 @@ def _reference_loss(hidden, weight, target, bias=None, ignore_index=-100):
 @pytest.mark.parametrize("shape", [(2, 3, 8, 16), (3, 2, 17, 32)])
 @pytest.mark.parametrize("with_bias", [False, True])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize("implementation", _IMPLEMENTATIONS)
-def test_megatron_flce_tp1_matches_pytorch(shape, with_bias, dtype, implementation):
+def test_megatron_flce_tp1_matches_pytorch(shape, with_bias, dtype):
     s, b, h, v = shape
     torch.manual_seed(42)
     hidden_base = torch.randn(s, b, h, device="cuda", dtype=dtype)
@@ -58,7 +46,7 @@ def test_megatron_flce_tp1_matches_pytorch(shape, with_bias, dtype, implementati
     bias_liger = bias_base.clone().requires_grad_(True) if bias_base is not None else None
 
     reference = _reference_loss(hidden_ref, weight_ref, target, bias_ref)
-    actual = implementation(
+    actual = liger_megatron_fused_linear_cross_entropy(
         hidden_liger,
         weight_liger,
         target,
@@ -103,33 +91,13 @@ def test_megatron_flce_triton_split_k_dx_matches_pytorch(dtype):
     weight_triton = weight_base.clone().requires_grad_(True)
 
     reference = _reference_loss(hidden_ref, weight_ref, target)
-    actual = triton_megatron_fused_linear_cross_entropy(hidden_triton, weight_triton, target)
+    actual = liger_megatron_fused_linear_cross_entropy(hidden_triton, weight_triton, target)
     torch.testing.assert_close(actual, reference, atol=5e-3, rtol=5e-2)
 
     reference.backward(upstream)
     actual.backward(upstream)
     torch.testing.assert_close(hidden_triton.grad, hidden_ref.grad, atol=5e-3, rtol=5e-2)
     torch.testing.assert_close(weight_triton.grad, weight_ref.grad, atol=5e-3, rtol=5e-2)
-
-
-def test_megatron_flce_triton_backend_dispatch():
-    env = os.environ.copy()
-    env["LIGER_KERNEL_IMPL"] = "triton"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "from liger_kernel.megatron.fused_linear_cross_entropy import "
-                "liger_megatron_fused_linear_cross_entropy as fn; print(fn.__module__)"
-            ),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    assert result.stdout.strip() == "liger_kernel.ops.triton.ops.megatron_fused_linear_cross_entropy"
 
 
 def test_megatron_flce_rejects_cpu_inputs():
@@ -141,7 +109,7 @@ def test_megatron_flce_rejects_cpu_inputs():
         liger_megatron_fused_linear_cross_entropy(hidden, weight, target)
 
 
-def _tp_worker(rank, world_size, file_name, dtype, implementation_name):
+def _tp_worker(rank, world_size, file_name, dtype):
     dist.init_process_group(
         backend="nccl",
         init_method=f"file://{file_name}",
@@ -151,11 +119,6 @@ def _tp_worker(rank, world_size, file_name, dtype, implementation_name):
     torch.cuda.set_device(rank)
     device = torch.device("cuda", rank)
     tp_group = dist.group.WORLD
-    implementation = (
-        triton_megatron_fused_linear_cross_entropy
-        if implementation_name == "triton"
-        else liger_megatron_fused_linear_cross_entropy
-    )
     s, b, h, v_global = 3, 2, 17, 32
     v_local = v_global // world_size
 
@@ -175,7 +138,7 @@ def _tp_worker(rank, world_size, file_name, dtype, implementation_name):
     weight_local = weight_global[start:end].clone().requires_grad_(True)
     bias_local = bias_global[start:end].clone().requires_grad_(True)
 
-    actual = implementation(
+    actual = liger_megatron_fused_linear_cross_entropy(
         hidden_liger,
         weight_local,
         target,
@@ -202,12 +165,11 @@ def _tp_worker(rank, world_size, file_name, dtype, implementation_name):
     reason="requires at least two CUDA GPUs",
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize("implementation_name", ["cublas", "triton"])
-def test_megatron_flce_tp2_matches_global_reference(dtype, implementation_name):
+def test_megatron_flce_tp2_matches_global_reference(dtype):
     with tempfile.NamedTemporaryFile() as rendezvous:
         mp.spawn(
             _tp_worker,
-            args=(2, rendezvous.name, dtype, implementation_name),
+            args=(2, rendezvous.name, dtype),
             nprocs=2,
             join=True,
         )

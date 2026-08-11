@@ -110,10 +110,9 @@ shards.
 `LigerMegatronFusedLinearCrossEntropy` accepts replicated hidden states,
 the calling rank's contiguous `[V_local, H]` output-weight shard, and global
 target indices. It supports TP1 and TP>1 through the supplied process group.
-The default implementation uses cuBLAS, Triton CE, and NCCL. Set
-`LIGER_KERNEL_IMPL=triton`, `cutile`, or `cutedsl` before importing Liger to
-select an all-Triton local path, a CuTile local path, or the SM100 CuTe DSL
-persistent projection.
+The default implementation uses Triton local kernels and NCCL. Set
+`LIGER_KERNEL_IMPL=cutile` or `cutedsl` before importing Liger to select a
+CuTile local path or the SM100 CuTe DSL persistent projection.
 
 **Usage**:
 
