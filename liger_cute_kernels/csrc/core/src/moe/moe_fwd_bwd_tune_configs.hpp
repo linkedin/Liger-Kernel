@@ -80,7 +80,10 @@
 // static_assert (won't compile) and bwd_shape_valid (would reject). PR
 // #104 used Stages3=4 on its pre-K-split kernel; the K-loop split
 // (4e39e50) redistributes work across CTAs but does NOT shrink per-CTA
-// smem, so Stages3=2 is the deepest Phase-2 pipe that fits here.
+// smem, so Stages3=2 is the deepest Phase-2 pipe that fits here — for
+// the classic 1SM (single-CTA) kernel. SM100 always selects the paired-CTA
+// 2SM path for both mlp3 and mlp4, using the canonical joined 256x256 shape;
+// S3/EN34 drive the shared 2SM Stages/EpiChunkN tuning surface.
 //
 // ── X-macro structure caveat ────────────────────────────────────────
 // Inside a `#define`, the `\` line-continuation joins lines BEFORE

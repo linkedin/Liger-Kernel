@@ -238,20 +238,24 @@ static bool fwd_shape_valid(int D, int I, const TunerEntryFwd& e) {
 	return true;
 }
 
-// Bwd validity (mirrors tune_moe_bwd.cu / tuned_config_valid_bwd).
+// Bwd validity (mirrors tune_moe_bwd.cu / tuned_config_valid_bwd in moe_bwd.cu
+// — keep both in sync).
 static bool bwd_shape_valid(int D, int I, const TunerEntryBwd& e) {
 	if (D % e.TileK1 != 0)        return false;
 	if (D % (2 * e.TileN1) != 0)  return false;
-	if (D % e.TileM3 != 0)        return false;
 	if (I % (2 * e.TileN1) != 0)  return false;
-	if (I % e.TileN3 != 0)        return false;
 	if (I % e.TileK1 != 0)        return false;
 	if (I % e.TileK3 != 0)        return false;
 	if (D % 8 != 0 || I % 8 != 0) return false;
 
-	// Phase-2 cooperative layout (#102) supports only (256,128)/(128,256).
-	if (!((e.TileM3 == 256 && e.TileN3 == 128) ||
-	      (e.TileM3 == 128 && e.TileN3 == 256))) return false;
+	const bool is_2sm = e.Compute == 100;
+	if (is_2sm) {
+		if (D % 256 != 0 || I % 256 != 0) return false;
+	} else {
+		if (!((e.TileM3 == 256 && e.TileN3 == 128) ||
+		      (e.TileM3 == 128 && e.TileN3 == 256))) return false;
+		if (D % e.TileM3 != 0 || I % e.TileN3 != 0) return false;
+	}
 
 	// SMEM-fit guard (mirrors the per-phase estimate in
 	// moe_fwd_bwd_tune_configs.hpp). The MoeBwdSmem union takes the max across
@@ -264,8 +268,16 @@ static bool bwd_shape_valid(int D, int I, const TunerEntryBwd& e) {
 		const int EN1 = e.EpiChunkN1, EN25 = e.EpiChunkN25, EN34 = e.EpiChunkN34;
 		int mlp1 = 2 * ((TM + 2 * TN1) * TK1 * S1) + 6 * 128 * EN1;
 		int mlp25 = 2 * ((128 + 256) * TK1 * S1) + 2 * 128 * EN25;   // mlp2_t / mlp5
-		int mlp3 = 2 * ((TM3 + 2 * TN3) * TK3 * S3) + 4 * TM3 * EN34;
-		int mlp4 = 2 * ((2 * TN3 + TM3) * TK3 * S3) + 4 * TN3 * EN34;
+		// SM100 mlp3/mlp4 2SM: sizeof(Mlp3FusedSmem2Sm<...>) /
+		// sizeof(Mlp4FusedSmem<...>) at the fixed joined TileN=256 collapse to
+		// the same closed form, empirically fit from the real trait
+		// instantiations: 32768*S3 + 512*EN34 + 128.
+		int mlp3 = is_2sm
+			? 32768 * S3 + 512 * EN34 + 128
+			: 2 * ((TM3 + 2 * TN3) * TK3 * S3) + 4 * TM3 * EN34;
+		int mlp4 = is_2sm
+			? 32768 * S3 + 512 * EN34 + 128
+			: 2 * ((2 * TN3 + TM3) * TK3 * S3) + 4 * TN3 * EN34;
 		int smem = mlp1;
 		smem = mlp25 > smem ? mlp25 : smem;
 		smem = mlp3  > smem ? mlp3  : smem;

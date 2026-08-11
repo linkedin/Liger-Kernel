@@ -217,29 +217,11 @@ pip install "liger-kernel[cutedsl]"
 LIGER_KERNEL_IMPL=cutedsl python your_script.py
 ```
 
-It currently provides genuine `cutlass.cute` implementations of **RMSNorm**, **cross entropy**, and
-**fused scaled cross entropy** (`LigerFusedLinearScaledCrossEntropyFunction`). The frontend dispatches from the input
-device: Hopper compute capability 9.0 uses `LigerFusedScaledCrossEntropySM90Function`, while other devices and
-NVIDIA compute capabilities use a 512-token chunked PyTorch fallback adapted from Verl's fused linear PPO
-implementation. The scaled operator is an *additional* operator, not a replacement for the Triton
-`LigerFusedLinearCrossEntropyFunction`:
-it fuses `x @ weight.T` with the softmax, takes matching floating-point `input`/`weight` (BF16 on SM90) plus
-`ignore_index`, and returns
-the per-token negative log-likelihood `[M]` plus optional vocabulary entropy — reductions are composed in PyTorch. Backward
-therefore receives the per-token upstream gradient `[M]`, which is used verbatim as the row scale of
-`dZ`; a scalar `grad_output` is rejected rather than silently reduced. `temperature` defaults to
-`1.0` and applies the same `logits / temperature` semantics as Verl.
-Set `return_entropy=True` to additionally return differentiable per-token
-vocabulary entropy in the input dtype; its backward contribution follows Verl's PPO
-formula. Both NLL and entropy are zeroed for `ignore_index` rows.
-On SM90, `m_tiles_per_cluster` (>= 1, default `1`) selects the forward schedule: `1` uses the fastest M-outer self-TMA forward, values `> 1`
-use the M-fast forward with that many live M tiles per cluster. Backward executes `dZ`, `dX = dZ @ W`,
-and `dW = dZ.T @ X` inside one persistent cluster-2 CUDA kernel. Its device-side wave loop aliases
-phase-specific shared memory, uses W multicast for dX, transposed TMA for dW, and HBM atomics between
-waves. Backward uses a fixed reusable BF16 `dZ` workspace covering 1024 tokens; wave zero
-plain-stores BF16 `dW`, and later waves use Hopper BF16 TMA reduce-add. Ops without a CuTe DSL kernel
-transparently fall back to the default Triton kernel. Selecting the backend on a non-CUDA device, or
-without `nvidia-cutlass-dsl` installed, raises an error.
+It currently provides genuine `cutlass.cute` implementations of **RMSNorm**, **cross entropy**, and **fused scaled cross entropy**. Ops without a CuTe DSL kernel transparently fall back to the default Triton kernel.
+
+### Fused Scaled Cross Entropy
+
+`LigerFusedLinearScaledCrossEntropyFunction` is an additional per-token operator, not a replacement for the reduction-oriented Triton `LigerFusedLinearCrossEntropyFunction`. It takes `input[M, H]`, `weight[V, H]`, and `target[M]`, applies `logits / temperature`, and returns FP32 negative log-likelihood `[M]` plus optional differentiable vocabulary entropy `[M]` in the input dtype. Reductions remain in PyTorch, and rows whose target equals `ignore_index` contribute zero outputs and gradients.
 
 ```python
 from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
@@ -249,6 +231,59 @@ nll, entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
 )  # [M], [M]
 loss = nll.sum() / (target != -100).sum().clamp_min(1)
 ```
+
+The implementations share this public contract but use different schedules:
+
+- **cuTile** (`LIGER_KERNEL_IMPL=cutile`) supports matching floating-point `input` and `weight` tensors on CUDA and a finite positive scalar `temperature`. The portable temporary-logits budget is 256 MiB. Large FP16/BF16 Blackwell workloads (`M >= 4096`, `V >= 131072`) automatically use 512 MiB to improve GEMM utilization. Set `LIGER_CUTILE_SCALED_CE_WORKSPACE_MB` to another positive MiB value for workload-specific tuning; for example, 1024 can help large combined NLL-plus-entropy workloads but is not universally faster. Backward reuses one workspace and writes `dX` and accumulates `dW` directly into their final tensors. `m_tiles_per_cluster` is accepted for API compatibility but does not change the cuTile schedule.
+- **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Its sole forward uses the fixed cluster-M2 N160 fragment kernel, with a measured split-N lookup for profiled long-sequence shapes, and never writes logits to HBM; `m_tiles_per_cluster` remains accepted for API compatibility but does not change that schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
+- **Fallback** uses a 512-token chunked PyTorch implementation adapted from Verl's fused PPO formulas when the default frontend cannot use the SM90 kernel.
+
+H100 BF16 forward medians from 60 interleaved samples per provider at
+`H=4096`, `V=131072`. Effective TFLOPS count the common projection work,
+`2*M*H*V`:
+
+| M | Entropy | CuTe SM90 | cuTile | Verl Torch fallback |
+|---:|:---:|---:|---:|---:|
+| 2048 | No | **3.12 ms / 706 TFLOPS** | 3.19 ms / 690 TFLOPS | 11.36 ms / 194 TFLOPS |
+| 2048 | Yes | **3.13 ms / 703 TFLOPS** | 3.25 ms / 676 TFLOPS | 11.37 ms / 193 TFLOPS |
+| 4096 | No | **6.05 ms / 727 TFLOPS** | 6.28 ms / 701 TFLOPS | 22.62 ms / 194 TFLOPS |
+| 4096 | Yes | **6.11 ms / 720 TFLOPS** | 6.39 ms / 688 TFLOPS | 22.68 ms / 194 TFLOPS |
+| 8192 | No | **12.25 ms / 718 TFLOPS** | 12.41 ms / 709 TFLOPS | 45.35 ms / 194 TFLOPS |
+| 8192 | Yes | **12.30 ms / 715 TFLOPS** | 12.70 ms / 693 TFLOPS | 45.59 ms / 193 TFLOPS |
+| 16384 | No | **23.84 ms / 738 TFLOPS** | 25.11 ms / 700 TFLOPS | 90.81 ms / 194 TFLOPS |
+| 16384 | Yes | **24.09 ms / 730 TFLOPS** | 26.10 ms / 674 TFLOPS | 90.97 ms / 193 TFLOPS |
+| 32768 | No | **49.69 ms / 708 TFLOPS** | 54.31 ms / 648 TFLOPS | 180.01 ms / 195 TFLOPS |
+| 32768 | Yes | **49.85 ms / 706 TFLOPS** | 55.69 ms / 632 TFLOPS | 179.85 ms / 196 TFLOPS |
+
+Backward medians use 30 interleaved samples per provider. Effective TFLOPS
+count `6*M*H*V`:
+
+| M | Entropy | CuTe SM90 | cuTile | Verl Torch fallback |
+|---:|:---:|---:|---:|---:|
+| 8192 | No | **37.93 ms / 696 TFLOPS** | 42.55 ms / 620 TFLOPS | 85.17 ms / 310 TFLOPS |
+| 8192 | Yes | **37.89 ms / 696 TFLOPS** | 41.43 ms / 637 TFLOPS | 121.00 ms / 218 TFLOPS |
+| 16384 | No | **79.42 ms / 665 TFLOPS** | 83.78 ms / 630 TFLOPS | 166.85 ms / 316 TFLOPS |
+| 16384 | Yes | **78.20 ms / 675 TFLOPS** | 84.12 ms / 627 TFLOPS | 239.39 ms / 220 TFLOPS |
+| 32768 | No | 163.34 ms / 646 TFLOPS | **163.21 ms / 647 TFLOPS** | 331.08 ms / 319 TFLOPS |
+| 32768 | Yes | **160.64 ms / 657 TFLOPS** | 161.73 ms / 653 TFLOPS | 477.51 ms / 221 TFLOPS |
+
+Full forward-and-backward effective TFLOPS count `8*M*H*V`:
+
+| M | Entropy | CuTe SM90 | cuTile | Verl Torch fallback |
+|---:|:---:|---:|---:|---:|
+| 8192 | No | **50.39 ms / 698 TFLOPS** | 57.15 ms / 616 TFLOPS | 128.76 ms / 273 TFLOPS |
+| 8192 | Yes | **50.22 ms / 701 TFLOPS** | 56.86 ms / 619 TFLOPS | 165.63 ms / 212 TFLOPS |
+| 16384 | No | **104.77 ms / 672 TFLOPS** | 112.03 ms / 628 TFLOPS | 254.91 ms / 276 TFLOPS |
+| 16384 | Yes | **103.65 ms / 679 TFLOPS** | 111.21 ms / 633 TFLOPS | 328.37 ms / 214 TFLOPS |
+| 32768 | No | **211.30 ms / 666 TFLOPS** | 221.34 ms / 636 TFLOPS | 508.33 ms / 277 TFLOPS |
+| 32768 | Yes | **210.60 ms / 668 TFLOPS** | 221.39 ms / 636 TFLOPS | 655.89 ms / 215 TFLOPS |
+
+B200 measurements for the same shape, using automatic cuTile workspace selection:
+
+| Implementation | Forward | Backward | Full | Peak full memory |
+|---|---:|---:|---:|---:|
+| cuTile | 2.97 ms | 8.35 ms | 11.36 ms | 2.64 GiB |
+| Torch | 5.24 ms | 7.15 ms | 12.85 ms | 7.22 GiB |
 
 
 ## Getting Started
