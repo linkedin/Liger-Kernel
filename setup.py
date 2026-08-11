@@ -4,6 +4,7 @@ import subprocess
 
 from typing import Literal
 
+from setuptools import find_packages
 from setuptools import setup
 
 
@@ -37,7 +38,7 @@ def get_optional_dependencies():
         "cuda-tile[tileiras]",
     ]
     cutedsl_deps = [
-        "nvidia-cutlass-dsl",
+        "nvidia-cutlass-dsl>=4.5.2",
     ]
     flydsl_deps = [
         "flydsl",
@@ -45,7 +46,7 @@ def get_optional_dependencies():
     dev_deps = [
         "transformers>=4.52.0",
         "matplotlib>=3.7.2",
-        "ruff>=0.12.0",
+        "ruff>=0.12.0,<0.16.0",
         "pytest>=7.1.2",
         "pytest-xdist",
         "pytest-cov",
@@ -131,7 +132,7 @@ def get_platform() -> Literal["cuda", "rocm", "cpu", "xpu", "npu"]:
 setup(
     name="liger_kernel",
     package_dir={"": "src"},
-    packages=["liger_kernel"],
+    packages=find_packages(where="src"),
     install_requires=get_default_dependencies(),
     extras_require=get_optional_dependencies(),
     classifiers=[
