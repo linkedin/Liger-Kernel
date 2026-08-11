@@ -8,7 +8,7 @@ Liger patches into Megatron, this file verifies:
 - patching is idempotent (calling apply twice doesn't stack wrappers)
 - the patch is a no-op when the kernel flag is False
 - missing megatron-core / missing symbol path raise helpful ``ImportError``\\s
-- kernel-specific dispatch contracts (e.g. CE TP>1 raises; RMSNorm only displaces the
+- kernel-specific dispatch contracts (e.g. FLCE configuration guards; RMSNorm only displaces the
   ``WrappedTorchNorm`` fallback, not TE / Apex)
 - end-to-end: the patched symbol invoked with real tensors produces correct output
 
@@ -66,6 +66,10 @@ def _install_fake_megatron_ce(
     tensor_parallel = types.ModuleType("megatron.core.tensor_parallel")
     unfused_ce = types.ModuleType("megatron.core.tensor_parallel.cross_entropy")
     parallel_state = types.ModuleType("megatron.core.parallel_state")
+    models = sys.modules.get("megatron.core.models") or types.ModuleType("megatron.core.models")
+    common = types.ModuleType("megatron.core.models.common")
+    language_module_package = types.ModuleType("megatron.core.models.common.language_module")
+    language_module = types.ModuleType("megatron.core.models.common.language_module.language_module")
 
     if with_fused_symbol:
 
@@ -73,6 +77,7 @@ def _install_fake_megatron_ce(
             raise AssertionError("original megatron fused kernel called — patch failed")
 
         fused_ce.fused_vocab_parallel_cross_entropy = original_fused_vocab_parallel_cross_entropy
+        language_module.fused_vocab_parallel_cross_entropy = original_fused_vocab_parallel_cross_entropy
 
     if with_unfused_symbol:
 
@@ -85,6 +90,7 @@ def _install_fake_megatron_ce(
             raise AssertionError("original megatron unfused kernel called — patch failed")
 
         unfused_ce.vocab_parallel_cross_entropy = original_vocab_parallel_cross_entropy
+        tensor_parallel.vocab_parallel_cross_entropy = original_vocab_parallel_cross_entropy
 
     parallel_state.get_tensor_model_parallel_world_size = lambda: tp_size
 
@@ -93,12 +99,21 @@ def _install_fake_megatron_ce(
     sys.modules["megatron.core.tensor_parallel"] = tensor_parallel
     sys.modules["megatron.core.tensor_parallel.cross_entropy"] = unfused_ce
     sys.modules["megatron.core.parallel_state"] = parallel_state
+    sys.modules["megatron.core.models"] = models
+    sys.modules["megatron.core.models.common"] = common
+    sys.modules["megatron.core.models.common.language_module"] = language_module_package
+    sys.modules["megatron.core.models.common.language_module.language_module"] = language_module
 
     megatron_core.fusions = fusions
     megatron_core.tensor_parallel = tensor_parallel
     megatron_core.parallel_state = parallel_state
+    megatron_core.models = models
     fusions.fused_cross_entropy = fused_ce
     tensor_parallel.cross_entropy = unfused_ce
+    models.common = common
+    common.language_module = language_module_package
+    language_module_package.language_module = language_module
+    language_module.tensor_parallel = tensor_parallel
 
     return fused_ce, unfused_ce
 
@@ -195,6 +210,11 @@ def _uninstall_fake_megatron():
         # CE side
         "megatron.core.parallel_state",
         "megatron.core.fusions.fused_cross_entropy",
+        "megatron.core.models.common.language_module.language_module",
+        "megatron.core.models.common.language_module",
+        "megatron.core.models.common",
+        "megatron.core.models.gpt.gpt_model",
+        "megatron.core.models.gpt",
         # RMSNorm side
         "megatron.core.models.backends",
         "megatron.core.models",
@@ -214,6 +234,43 @@ def _uninstall_fake_megatron():
         "megatron",
     ]:
         sys.modules.pop(mod, None)
+
+
+def _install_fake_megatron_gpt(with_output_processor: bool = True):
+    _, megatron_core = _ensure_megatron_roots()
+    models = sys.modules.get("megatron.core.models") or types.ModuleType("megatron.core.models")
+    gpt = types.ModuleType("megatron.core.models.gpt")
+    gpt_model = types.ModuleType("megatron.core.models.gpt.gpt_model")
+
+    if with_output_processor:
+
+        class GPTModel:
+            def _postprocess(self, labels=None, output_processor=None):
+                return output_processor
+
+    else:
+
+        class GPTModel:
+            def _postprocess(self, labels=None):
+                return labels
+
+    gpt_model.GPTModel = GPTModel
+    sys.modules["megatron.core.models"] = models
+    sys.modules["megatron.core.models.gpt"] = gpt
+    sys.modules["megatron.core.models.gpt.gpt_model"] = gpt_model
+    megatron_core.models = models
+    models.gpt = gpt
+    gpt.gpt_model = gpt_model
+    return gpt_model
+
+
+@pytest.fixture
+def fake_megatron_gpt():
+    gpt_model = _install_fake_megatron_gpt()
+    try:
+        yield gpt_model
+    finally:
+        _uninstall_fake_megatron()
 
 
 @pytest.fixture
@@ -399,6 +456,30 @@ def test_patch_replaces_both_fused_and_unfused_symbols_in_one_call(fake_megatron
     assert unfused_ce.vocab_parallel_cross_entropy.__name__ == "liger_vocab_parallel_cross_entropy"
 
 
+def test_patch_rebinds_loaded_language_module_fused_consumer(fake_megatron_ce):
+    fused_ce, _ = fake_megatron_ce
+    language_module = sys.modules["megatron.core.models.common.language_module.language_module"]
+    original = language_module.fused_vocab_parallel_cross_entropy
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+
+    assert language_module.fused_vocab_parallel_cross_entropy is fused_ce.fused_vocab_parallel_cross_entropy
+    assert language_module.fused_vocab_parallel_cross_entropy is not original
+
+
+def test_patch_rebinds_loaded_tensor_parallel_export(fake_megatron_ce):
+    _, unfused_ce = fake_megatron_ce
+    tensor_parallel = sys.modules["megatron.core.tensor_parallel"]
+    original = tensor_parallel.vocab_parallel_cross_entropy
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+
+    assert tensor_parallel.vocab_parallel_cross_entropy is unfused_ce.vocab_parallel_cross_entropy
+    assert tensor_parallel.vocab_parallel_cross_entropy is not original
+
+
 def test_patch_with_cross_entropy_false_leaves_ce_symbols_untouched(fake_megatron_ce):
     """Default ``cross_entropy=False`` must not touch the CE symbols even if the call runs."""
     fused_ce, unfused_ce = fake_megatron_ce
@@ -423,10 +504,19 @@ def test_patch_is_idempotent_for_both_symbols(fake_megatron_ce):
     fused_first = fused_ce.fused_vocab_parallel_cross_entropy
     unfused_first = unfused_ce.vocab_parallel_cross_entropy
 
+    # Model a consumer restoring its import-time binding after the definitions
+    # were patched; the idempotent path must repair these stale references.
+    language_module = sys.modules["megatron.core.models.common.language_module.language_module"]
+    tensor_parallel = sys.modules["megatron.core.tensor_parallel"]
+    language_module.fused_vocab_parallel_cross_entropy = fused_first.__wrapped__
+    tensor_parallel.vocab_parallel_cross_entropy = unfused_first.__wrapped__
+
     apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
     # Same identity → no stacked wrapping.
     assert fused_ce.fused_vocab_parallel_cross_entropy is fused_first
     assert unfused_ce.vocab_parallel_cross_entropy is unfused_first
+    assert language_module.fused_vocab_parallel_cross_entropy is fused_first
+    assert tensor_parallel.vocab_parallel_cross_entropy is unfused_first
     # __wrapped__ still references the original Megatron symbol, not the first Liger wrapper.
     assert fused_first.__wrapped__.__name__ == "original_fused_vocab_parallel_cross_entropy"
     assert unfused_first.__wrapped__.__name__ == "original_vocab_parallel_cross_entropy"
@@ -920,9 +1010,11 @@ def test_import_from_root():
     accidental __init__.py removals so the docs' import snippets keep working."""
     try:
         from liger_kernel.megatron import LigerMegatronCrossEntropy  # noqa: F401
+        from liger_kernel.megatron import LigerMegatronFusedLinearCrossEntropy  # noqa: F401
         from liger_kernel.megatron import LigerMegatronRMSNorm  # noqa: F401
         from liger_kernel.megatron import LigerMegatronSwiGLU  # noqa: F401
         from liger_kernel.megatron import apply_liger_kernel_to_megatron  # noqa: F401
+        from liger_kernel.megatron import liger_megatron_fused_linear_cross_entropy_output_processor  # noqa: F401
     except Exception:
         pytest.fail("Importing public Megatron symbols from liger_kernel.megatron failed.")
 
@@ -941,6 +1033,59 @@ def test_public_apply_function_has_no_ce_specific_kwargs():
         f"apply_liger_kernel_to_megatron has re-grown CE-specific kwargs: {sorted(leaked)}. "
         f"Those belong on LigerMegatronCrossEntropy, not on the framework patch entry point."
     )
+
+
+def test_flce_patch_injects_output_processor_for_labeled_gpt_calls(fake_megatron_gpt):
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+    from liger_kernel.megatron import liger_megatron_fused_linear_cross_entropy_output_processor
+
+    original = fake_megatron_gpt.GPTModel._postprocess
+    apply_liger_kernel_to_megatron(rms_norm=False, fused_linear_cross_entropy=True)
+    patched = fake_megatron_gpt.GPTModel._postprocess
+
+    assert patched is not original
+    assert patched.__wrapped__ is original
+    assert patched(object(), labels=object()) is liger_megatron_fused_linear_cross_entropy_output_processor
+    assert patched(object(), labels=None) is None
+
+
+def test_flce_patch_is_opt_in(fake_megatron_gpt):
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    original = fake_megatron_gpt.GPTModel._postprocess
+    apply_liger_kernel_to_megatron(rms_norm=False)
+
+    assert fake_megatron_gpt.GPTModel._postprocess is original
+
+
+def test_flce_patch_preserves_custom_output_processor(fake_megatron_gpt):
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    custom = object()
+    apply_liger_kernel_to_megatron(rms_norm=False, fused_linear_cross_entropy=True)
+
+    assert fake_megatron_gpt.GPTModel()._postprocess(labels=object(), output_processor=custom) is custom
+
+
+def test_flce_patch_is_idempotent(fake_megatron_gpt):
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, fused_linear_cross_entropy=True)
+    first = fake_megatron_gpt.GPTModel._postprocess
+    apply_liger_kernel_to_megatron(rms_norm=False, fused_linear_cross_entropy=True)
+
+    assert fake_megatron_gpt.GPTModel._postprocess is first
+
+
+def test_flce_patch_requires_megatron_output_processor_hook():
+    _install_fake_megatron_gpt(with_output_processor=False)
+    try:
+        from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+        with pytest.raises(ImportError, match="Megatron-Core 0.18 or newer"):
+            apply_liger_kernel_to_megatron(rms_norm=False, fused_linear_cross_entropy=True)
+    finally:
+        _uninstall_fake_megatron()
 
 
 # ===========================================================================

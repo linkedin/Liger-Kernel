@@ -12,10 +12,12 @@ Public API:
         offload, and neither touches the bias or MoE-routed variants.
     LigerMegatronFusedLinearCrossEntropy — hidden-state-to-loss fused output
         projection for tensor-parallel vocabulary shards.
+    liger_megatron_fused_linear_cross_entropy_output_processor — adapts FLCE
+        to Megatron's GPT output-processor hook.
     apply_liger_kernel_to_megatron — patches Megatron-Core so existing training
         scripts pick up Liger kernels with one line. Currently supports
         RMSNorm (via BackendSpecProvider), both the fused and unfused
-        vocab-parallel cross-entropy paths, and SwiGLU.
+        vocab-parallel cross-entropy paths, opt-in GPT FLCE, and SwiGLU.
 
 The general-purpose ``LigerVocabParallelCrossEntropy`` Module lives under
 ``liger_kernel.transformers`` alongside the other nn.Module wrappers; the
@@ -26,6 +28,7 @@ the general-purpose (non-Megatron-default) variant.
 
 from liger_kernel.megatron.cross_entropy import LigerMegatronCrossEntropy
 from liger_kernel.megatron.fused_linear_cross_entropy import LigerMegatronFusedLinearCrossEntropy
+from liger_kernel.megatron.fused_linear_cross_entropy import liger_megatron_fused_linear_cross_entropy_output_processor
 from liger_kernel.megatron.monkey_patch import apply_liger_kernel_to_megatron
 from liger_kernel.megatron.rms_norm import LigerMegatronRMSNorm
 from liger_kernel.megatron.swiglu import LigerMegatronSwiGLU
@@ -36,4 +39,5 @@ __all__ = [
     "LigerMegatronRMSNorm",
     "LigerMegatronSwiGLU",
     "apply_liger_kernel_to_megatron",
+    "liger_megatron_fused_linear_cross_entropy_output_processor",
 ]

@@ -98,38 +98,45 @@ You can also use the Patching APIs to use the kernels for a specific model archi
 
 Liger also exposes a patch for the [Megatron-LM](https://github.com/NVIDIA/Megatron-LM)
 training framework, replacing Megatron's native RMSNorm and both vocab-parallel
-cross-entropy paths (fused and unfused) with Liger kernels. Liger also exposes
-a hidden-state-to-loss FLCE module for contiguous tensor-parallel vocabulary
-shards.
+cross-entropy paths (fused and unfused) with Liger kernels. An additional
+opt-in patch fuses the GPT output projection with vocab-parallel
+cross-entropy, avoiding a separately returned logits tensor between the
+projection and loss.
 
 | **Framework** | **API**                                                | **Supported Operations** |
 |---------------|--------------------------------------------------------|--------------------------|
-| Megatron-LM   | `liger_kernel.megatron.apply_liger_kernel_to_megatron` | RMSNorm, CrossEntropyLoss |
+| Megatron-LM   | `liger_kernel.megatron.apply_liger_kernel_to_megatron` | RMSNorm, CrossEntropyLoss, fused output projection + CrossEntropyLoss |
 | Megatron-LM   | `liger_kernel.megatron.LigerMegatronFusedLinearCrossEntropy` | Fused output projection + CrossEntropyLoss |
 
-**Scope**: The monkey patch supports `tensor_model_parallel_size=1` only for
-cross-entropy. Vocab-parallel cross-entropy patching (TP>1) remains follow-up
-work; the patch raises a `RuntimeError` at patch time or call time if TP>1 is
-detected.
+**Scope**: Both cross-entropy patches and FLCE support TP1 and TP>1. The FLCE
+patch requires Megatron-Core 0.18 or newer and a native
+`ColumnParallelLinear` output layer in BF16 or FP16. It intentionally rejects
+gathered logits, sequence parallelism, gradient-accumulation fusion, deferred
+embedding wgrad, disabled output dgrad reduction, MTP, MuP output scaling, and
+separately returned output bias. A caller-supplied `output_processor` takes
+precedence and is left unchanged.
 
-The separately wired `LigerMegatronFusedLinearCrossEntropy` module accepts
-replicated hidden states, the calling rank's contiguous `[V_local, H]`
-output-weight shard, and global target indices. It supports TP1 and TP>1
-through the supplied process group. The default implementation uses Triton
-local kernels and NCCL. Set `LIGER_KERNEL_IMPL=cutile` or `cutedsl` before
-importing Liger to select a CuTile local path or the SM100 CuTe DSL persistent
-projection.
+The patch installs FLCE through Megatron's `GPTModel._postprocess`
+`output_processor` hook. For custom model integrations, the
+`LigerMegatronFusedLinearCrossEntropy` module accepts replicated hidden
+states, the calling rank's contiguous `[V_local, H]` output-weight shard, and
+global target indices. The default implementation uses Triton local kernels
+and NCCL. Set `LIGER_KERNEL_IMPL=cutile` or `cutedsl` before importing Liger
+to select a CuTile local path or the SM100 CuTe DSL persistent projection.
 
 **Usage**:
 
 ```python
 from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
-# Call before Megatron's forward pass reaches compute_language_model_loss.
-# Defaults match Megatron's native CE behavior; no CE-specific config needed.
-apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True)
+# Call before constructing the GPT model. FLCE is separately opt-in.
+apply_liger_kernel_to_megatron(
+    rms_norm=True,
+    cross_entropy=True,
+    fused_linear_cross_entropy=True,
+)
 
-# Or wire the hidden-state-to-loss operation into a vocab-sharded output layer.
+# Or wire FLCE into a custom vocab-sharded output layer directly.
 from liger_kernel.megatron import LigerMegatronFusedLinearCrossEntropy
 
 loss_fn = LigerMegatronFusedLinearCrossEntropy(ignore_index=-100)
@@ -139,7 +146,8 @@ loss = loss_fn(hidden, local_output_weight, global_targets, tp_group=tp_group)
 Both the fused (`config.cross_entropy_loss_fusion=True`,
 `cross_entropy_fusion_impl='native'`) and unfused
 (`config.cross_entropy_loss_fusion=False`) CE paths are patched in a single
-call, so Megatron picks up Liger regardless of which path your config selects.
+call. When `fused_linear_cross_entropy=True`, labeled standard GPT forwards
+bypass both materialized-logit paths and use FLCE directly.
 
 For training setups that need explicit kernel configuration (custom
 `ignore_index`, `label_smoothing`, etc.), instantiate
@@ -147,6 +155,12 @@ For training setups that need explicit kernel configuration (custom
 `examples/megatron/run_mode2_hand_spec.py`.
 
 ::: liger_kernel.megatron.LigerMegatronFusedLinearCrossEntropy
+    options:
+      extra:
+        show_docstring: true
+        show_signature: true
+
+::: liger_kernel.megatron.liger_megatron_fused_linear_cross_entropy_output_processor
     options:
       extra:
         show_docstring: true

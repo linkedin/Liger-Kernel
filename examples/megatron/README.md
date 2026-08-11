@@ -11,6 +11,7 @@ so you can see which slots picked up Liger.
 |---|---|---|---|---|
 | RMSNorm | `rms_norm=True` (on by default) | `LocalSpecProvider.layer_norm`, `transformer_block.LayerNormImpl` | `LigerMegatronRMSNorm` | every norm slot, incl. block-level `final_layernorm` |
 | Cross-entropy | `cross_entropy=True` (opt-in) | `fused_cross_entropy.fused_vocab_parallel_cross_entropy`, `tensor_parallel.cross_entropy.vocab_parallel_cross_entropy` | `LigerMegatronCrossEntropy` | none — `GPTModel` subclass overriding `compute_language_model_loss` |
+| Fused output projection + cross-entropy | `fused_linear_cross_entropy=True` (opt-in) | `GPTModel._postprocess` | `LigerMegatronFusedLinearCrossEntropy` | custom GPT `output_processor` |
 | SwiGLU | `swiglu=True` (opt-in) | `fusions.fused_bias_swiglu.SwiGLUFunction` | `LigerMegatronSwiGLU` | the `mlp` module slot — an `MLP` subclass |
 
 Notes that apply to the table:
@@ -23,6 +24,10 @@ Notes that apply to the table:
   Megatron.
 - Cross-entropy and SwiGLU are wired through subclasses (no dedicated spec
   slot).
+- FLCE requires Megatron-Core 0.18 or newer, BF16/FP16, the native
+  `ColumnParallelLinear` output layer, and no sequence parallelism or
+  gradient-accumulation fusion. The example script keeps its small FP32
+  configuration and therefore does not enable this flag.
 
 ## Prerequisites
 

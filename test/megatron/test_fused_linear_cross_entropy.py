@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.distributed as dist
@@ -9,6 +11,7 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 
 from liger_kernel.megatron import LigerMegatronFusedLinearCrossEntropy
+from liger_kernel.megatron import liger_megatron_fused_linear_cross_entropy_output_processor
 from liger_kernel.ops.megatron_fused_linear_cross_entropy import liger_megatron_fused_linear_cross_entropy
 
 
@@ -74,6 +77,71 @@ def test_megatron_flce_module_contract():
     reference = _reference_loss(hidden, weight, target, ignore_index=-1)
     torch.testing.assert_close(actual, reference, atol=5e-3, rtol=5e-2)
     assert "ignore_index=-1" in repr(module)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Megatron FLCE requires CUDA")
+def test_megatron_flce_output_processor_matches_materialized_path():
+    class ColumnParallelLinear:
+        def __init__(self, weight, bias):
+            self.weight = weight
+            self.bias = bias
+            self.tp_group = None
+            self.gather_output = False
+            self.sequence_parallel = False
+            self.gradient_accumulation_fusion = False
+            self.disable_grad_reduce = False
+            self.explicit_expert_comm = False
+            self.skip_bias_add = False
+
+    torch.manual_seed(43)
+    hidden = torch.randn(3, 2, 8, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(16, 8, device="cuda", dtype=torch.bfloat16) * 0.02
+    bias = torch.randn(16, device="cuda", dtype=torch.bfloat16) * 0.02
+    labels = torch.randint(16, (2, 3), device="cuda")
+    output_layer = ColumnParallelLinear(weight, bias)
+    config = SimpleNamespace(
+        defer_embedding_wgrad_compute=False,
+        mtp_num_layers=None,
+        use_mup=False,
+    )
+
+    actual = liger_megatron_fused_linear_cross_entropy_output_processor(
+        hidden_states=hidden,
+        output_layer=output_layer,
+        output_weight=None,
+        labels=labels,
+        runtime_gather_output=None,
+        config=config,
+    )
+    reference = _reference_loss(hidden, weight, labels.t().contiguous(), bias).t().contiguous()
+    torch.testing.assert_close(actual, reference, atol=5e-3, rtol=5e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Megatron FLCE requires CUDA")
+def test_megatron_flce_output_processor_rejects_gathered_logits():
+    output_layer = SimpleNamespace(
+        gather_output=True,
+        sequence_parallel=False,
+        gradient_accumulation_fusion=False,
+        disable_grad_reduce=False,
+        explicit_expert_comm=False,
+        skip_bias_add=False,
+    )
+    config = SimpleNamespace(
+        defer_embedding_wgrad_compute=False,
+        mtp_num_layers=None,
+        use_mup=False,
+    )
+
+    with pytest.raises(RuntimeError, match="not Megatron's native ColumnParallelLinear.*gathers TP logits"):
+        liger_megatron_fused_linear_cross_entropy_output_processor(
+            hidden_states=torch.empty(1, 1, 8, device="cuda", dtype=torch.bfloat16),
+            output_layer=output_layer,
+            output_weight=None,
+            labels=torch.zeros(1, 1, device="cuda", dtype=torch.long),
+            runtime_gather_output=None,
+            config=config,
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Megatron FLCE requires CUDA")
