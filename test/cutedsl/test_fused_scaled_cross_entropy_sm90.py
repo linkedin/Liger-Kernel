@@ -412,6 +412,44 @@ def test_sm90_m_tiles_dispatch_selects_expected_forward(monkeypatch, m_tiles_per
         assert calls == {"m_fast": (1.0, m_tiles_per_cluster)}
 
 
+def test_sm90_forward_config_lookup_selects_profiled_n160_shapes():
+    module = _sm90_module()
+
+    for tokens in (2048, 4096):
+        config = module._select_forward_config(tokens, 4096, 131072, False)
+        assert isinstance(config, module.ScaledCEForwardFragmentConfig)
+        assert config is module._N160_FRAGMENT_CONFIG
+
+    assert module._select_forward_config(8192, 4096, 131072, False) is None
+    assert module._select_forward_config(4096, 4096, 131072, True) is None
+
+
+def test_sm90_profiled_shape_dispatches_fragment_forward(monkeypatch):
+    module = _sm90_module()
+    config = module._N160_FRAGMENT_CONFIG
+    calls = []
+
+    def fake_fragment(x, weight, target, temperature, ignore_index, return_entropy, config):
+        calls.append((temperature, ignore_index, return_entropy, config))
+        zeros = torch.zeros(x.shape[0], device=x.device)
+        return zeros, None, zeros
+
+    monkeypatch.setattr(module, "_select_forward_config", lambda *_: config)
+    monkeypatch.setattr(module, "scaled_ce_forward_fragment", fake_fragment)
+    monkeypatch.setattr(
+        module,
+        "scaled_ce_forward",
+        lambda *_args, **_kwargs: pytest.fail("profiled shape must not use M-outer forward"),
+    )
+
+    x = torch.randn(4, 16, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(16, 16, device="cuda", dtype=torch.bfloat16)
+    target = torch.zeros(4, device="cuda", dtype=torch.long)
+    module.fused_scaled_cross_entropy_forward(x, weight, target)
+
+    assert calls == [(1.0, -100, False, config)]
+
+
 def test_sm90_rejects_scalar_and_mismatched_grad_output():
     set_seed(3)
     module = _sm90_module()

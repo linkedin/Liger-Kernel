@@ -147,8 +147,8 @@ Two gotchas worth recording
 1. **Register-pool deadlock.**  ``2*128*mma_registers + 128*epi_registers`` must
    be ``<= 64512``, *not* ``<= 65536``.  At exactly 65536 (216/80) the hardware
    granted ``setmaxnreg.inc`` to only one MMA warp per SM sub-partition and the
-   other four spun forever in ``USETMAXREG.TRY_ALLOC.CTAPOOL``; both production
-   (232/40) and the pingpong ablation (240/24) also total 64512.  Diagnosed by
+   other four spun forever in ``USETMAXREG.TRY_ALLOC.CTAPOOL``; both this kernel
+   (232/40) and the fragment forward (240/24) also total 64512.  Diagnosed by
    attaching ``cuda-gdb -p <pid> -ex "info cuda warps"`` to the hung process.
 2. **``llvm.nvvm.mapa`` ICEs** this toolchain ("only supported when pointer size
    is >= 64 bits"), independent of the SMEM offset.  The DSMEM helpers below
@@ -384,8 +384,8 @@ class ScaledCEForwardConfig:
     the CTA is resident alone, but requesting the full file deadlocks: the
     hardware could only satisfy one ``setmaxnreg.inc`` per sub-partition and the
     remaining four MMA warps spun forever in ``USETMAXREG.TRY_ALLOC.CTAPOOL``
-    (observed with cuda-gdb at 216/80 = exactly 65536).  Production (232/40) and
-    the pingpong ablation (240/24) both stop at 64512, i.e. they leave one
+    (observed with cuda-gdb at 216/80 = exactly 65536).  This kernel (232/40)
+    and the fragment forward (240/24) both stop at 64512, i.e. they leave one
     1024-register (8 regs/thread x 128 threads) reserve.
     """
 

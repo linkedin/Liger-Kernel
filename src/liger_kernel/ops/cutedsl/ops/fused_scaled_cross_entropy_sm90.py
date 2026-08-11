@@ -35,17 +35,17 @@ Kernels
 =========================  =========================================
 phase                      module
 =========================  =========================================
+forward (fragment N160)    ``_fused_scaled_cross_entropy_forward_fragment_sm90``
 forward (M-outer)          ``_fused_scaled_cross_entropy_forward_sm90``
 forward (M-fast)           ``_fused_scaled_cross_entropy_forward_mfast_sm90``
 backward dZ+dX+dW          ``_fused_scaled_cross_entropy_backward_fused_sm90``
 =========================  =========================================
 
 ``m_tiles_per_cluster`` (>= 1, default 1) is the forward scheduling knob.  The
-default dispatches to the M-outer self-TMA forward, which is the fastest
-measured forward at ``M=4096, H=4096, V=131072``.  Values > 1 dispatch to the
-M-fast (N-outer / M-inner) forward with that many live ``M128`` online-softmax
-slots per cluster; it is correct everywhere but measured slower at the
-representative shape, and exists for tuning other shapes.
+default uses the fragment N160 forward for profiled ``M=2048/4096, H=4096,
+V=131072`` NLL-only shapes and the M-outer self-TMA forward otherwise.
+Values > 1 dispatch to the M-fast (N-outer / M-inner) forward with that many
+live ``M128`` online-softmax slots per cluster.
 
 Backward runs in one persistent cluster-2 CUDA kernel.  Its device-side wave
 loop executes dZ, dX, and dW with phase-local schedulers over a phase-serial
@@ -74,6 +74,8 @@ import torch
 
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_backward_fused_sm90 import FusedBackwardConfig
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_backward_fused_sm90 import fused_backward_one_kernel
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_sm90 import ScaledCEForwardFragmentConfig
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_sm90 import scaled_ce_forward_fragment
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_mfast_sm90 import ScaledCEForwardMFastConfig
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_mfast_sm90 import scaled_ce_forward_mfast
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import scaled_ce_forward
@@ -91,6 +93,18 @@ BACKWARD_M_TILE = 128
 # V = 131072 instead of the ~1 GiB a 4096-token batch would need.
 BACKWARD_M_TILES_PER_WAVE = 8
 VALIDATE_TARGETS_ENV = "LIGER_SCALED_CE_SM90_VALIDATE_TARGETS"
+
+_N160_FRAGMENT_CONFIG = ScaledCEForwardFragmentConfig()
+# Exact-shape entries are added only after matched correctness and performance
+# validation. Entropy and unlisted shapes retain the production M-outer path.
+_FORWARD_CONFIG_BY_SHAPE = {
+    (2048, 4096, 131072, False): _N160_FRAGMENT_CONFIG,
+    (4096, 4096, 131072, False): _N160_FRAGMENT_CONFIG,
+}
+
+
+def _select_forward_config(tokens, hidden_size, vocab_size, return_entropy):
+    return _FORWARD_CONFIG_BY_SHAPE.get((tokens, hidden_size, vocab_size, return_entropy))
 
 
 def _validate_temperature(temperature):
@@ -182,14 +196,31 @@ def fused_scaled_cross_entropy_forward(
     target = target.contiguous()
 
     if m_tiles_per_cluster == 1:
-        nll, entropy, lse = scaled_ce_forward(
-            x_padded,
-            weight_padded,
-            target,
-            temperature,
-            ignore_index,
+        forward_config = _select_forward_config(
+            x_padded.shape[0],
+            x_padded.shape[1],
+            weight_padded.shape[0],
             return_entropy,
         )
+        if forward_config is None:
+            nll, entropy, lse = scaled_ce_forward(
+                x_padded,
+                weight_padded,
+                target,
+                temperature,
+                ignore_index,
+                return_entropy,
+            )
+        else:
+            nll, entropy, lse = scaled_ce_forward_fragment(
+                x_padded,
+                weight_padded,
+                target,
+                temperature,
+                ignore_index,
+                return_entropy,
+                config=forward_config,
+            )
     else:
         config = ScaledCEForwardMFastConfig(slots_per_wave=m_tiles_per_cluster)
         nll, entropy, lse = scaled_ce_forward_mfast(
