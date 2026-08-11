@@ -235,15 +235,18 @@ loss = nll.sum() / (target != -100).sum().clamp_min(1)
 The implementations share this public contract but use different schedules:
 
 - **cuTile** (`LIGER_KERNEL_IMPL=cutile`) supports matching floating-point `input` and `weight` tensors on CUDA and a finite positive scalar `temperature`. The portable temporary-logits budget is 256 MiB. Large FP16/BF16 Blackwell workloads (`M >= 4096`, `V >= 131072`) automatically use 512 MiB to improve GEMM utilization. Set `LIGER_CUTILE_SCALED_CE_WORKSPACE_MB` to another positive MiB value for workload-specific tuning; for example, 1024 can help large combined NLL-plus-entropy workloads but is not universally faster. Backward reuses one workspace and writes `dX` and accumulates `dW` directly into their final tensors. `m_tiles_per_cluster` is accepted for API compatibility but does not change the cuTile schedule.
-- **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Forward never writes logits to HBM; `m_tiles_per_cluster=1` selects the fastest M-outer schedule and larger values select the M-fast schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
+- **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Its sole forward uses the fixed cluster-M2 N160 fragment schedule and never writes logits to HBM; `m_tiles_per_cluster` remains accepted for API compatibility but does not change that schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
 - **Fallback** uses a 512-token chunked PyTorch implementation adapted from Verl's fused PPO formulas when the default frontend cannot use the SM90 kernel.
 
-H100 measurements for per-token NLL at `M=4096`, `H=4096`, `V=131072`, BF16:
+H100 BF16 forward measurements at `H=4096`, `V=131072`. Effective TFLOPS
+count the common projection work, `2*M*H*V`:
 
-| Implementation | Forward | Backward | Full | Peak full memory |
-|---|---:|---:|---:|---:|
-| cuTile | 6.45 ms | 20.70 ms | 26.94 ms | 2.43 GiB |
-| CuTe SM90 | 7.26 ms | 19.81 ms | 27.74 ms | 2.43 GiB |
+| M | Entropy | CuTe SM90 | cuTile | Verl Torch fallback |
+|---:|:---:|---:|---:|---:|
+| 2048 | No | **3.12 ms / 706 TFLOPS** | 3.19 ms / 690 TFLOPS | 11.36 ms / 194 TFLOPS |
+| 2048 | Yes | **3.13 ms / 703 TFLOPS** | 3.25 ms / 676 TFLOPS | 11.37 ms / 193 TFLOPS |
+| 4096 | No | **6.05 ms / 727 TFLOPS** | 6.28 ms / 701 TFLOPS | 22.62 ms / 194 TFLOPS |
+| 4096 | Yes | **6.11 ms / 720 TFLOPS** | 6.39 ms / 688 TFLOPS | 22.68 ms / 194 TFLOPS |
 
 B200 measurements for the same shape, using automatic cuTile workspace selection:
 

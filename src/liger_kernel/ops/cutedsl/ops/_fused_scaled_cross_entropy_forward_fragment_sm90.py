@@ -14,12 +14,10 @@ one-stage lag prevents TMA from overwriting operands still consumed by WGMMA.
 Each N160 accumulator is staged as two N80 slices through two padded FP16 SMEM
 buffers, producing four online-softmax folds per logical N320 tile. Vocabulary
 tiles are split over cluster pairs; each CTA writes compact FP32
-``(max, sum, target)`` statistics to HBM and a small finalizer reduces the
-splits into per-token NLL/LSE.
-
-The fragment kernel does not compute differentiable entropy. The public SM90
-operator dispatches entropy requests to the general forward; direct calls to
-this module reject ``return_entropy=True``.
+``(max, sum, target[, weighted])`` statistics to HBM and a small finalizer
+reduces the splits into per-token NLL/LSE and optional BF16 entropy. Entropy
+uses the same online max rescaling as the softmax sum and is compiled out when
+not requested.
 """
 
 from dataclasses import dataclass
@@ -40,16 +38,16 @@ from cutlass.pipeline.helpers import pipeline_init_wait
 from cutlass.utils import LayoutEnum
 from cutlass.utils import hopper_helpers
 
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import HOPPER_MAX_SMEM_BYTES
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import LN2
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import LOG2_E
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import MASK_F32
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import NEG_INF_F32
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import _cute_stream
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import _fmax
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import _max_active_clusters
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import _pad_hidden
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import _validate
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import HOPPER_MAX_SMEM_BYTES
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import LN2
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import LOG2_E
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import MASK_F32
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import NEG_INF_F32
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import _cute_stream
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import _fmax
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import _max_active_clusters
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import _pad_hidden
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import _validate
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
 
 THREADS_PER_CTA = 384
@@ -72,7 +70,7 @@ EPILOGUE_BARRIER_ID = 4
 PRODUCER_REGISTERS = 24
 MMA_REGISTERS = 240
 USABLE_REGISTER_BUDGET = 64512
-SHARED_MEMORY_BYTES_ESTIMATE = (
+SHARED_MEMORY_BYTES_BASE = (
     (TILE_M + LOGICAL_N) * TILE_K * 2 * STAGES
     + LOGIT_BUFFERS * TILE_M * LOGIT_STRIDE * 2
     + 3 * TILE_M * 4
@@ -85,9 +83,13 @@ _compile_cache = {}
 
 @dataclass(frozen=True)
 class ScaledCEForwardFragmentConfig:
-    """Vocabulary-split tuning for the fixed M128xN320 fragment kernel."""
+    """Vocabulary-split tuning for the fixed M128xN320 fragment kernel.
+
+    ``return_entropy`` compile-time enables weighted softmax statistics.
+    """
 
     fast_math: bool = True
+    return_entropy: bool = False
     split_n: int = 0
     base_split_n: int = 0
     extra_m_pairs: int = 0
@@ -95,7 +97,7 @@ class ScaledCEForwardFragmentConfig:
     max_split_n: int = 9
 
     def smem_bytes(self):
-        return SHARED_MEMORY_BYTES_ESTIMATE
+        return SHARED_MEMORY_BYTES_BASE + (TILE_M if self.return_entropy else 1) * 4
 
     def register_total(self):
         return 128 * PRODUCER_REGISTERS + NUM_MMA_WARP_GROUPS * 128 * MMA_REGISTERS
@@ -104,6 +106,7 @@ class ScaledCEForwardFragmentConfig:
 class _ScaledCEForwardFragmentSM90:
     def __init__(self, config: ScaledCEForwardFragmentConfig):
         self.fast_math = config.fast_math
+        self.return_entropy = config.return_entropy
         self.split_n = config.split_n
         self.base_split_n = config.base_split_n
         self.extra_m_pairs = config.extra_m_pairs
@@ -140,6 +143,7 @@ class _ScaledCEForwardFragmentSM90:
         partial_max: cute.Tensor,
         partial_sum: cute.Tensor,
         partial_target: cute.Tensor,
+        partial_weighted: cute.Tensor,
         inverse_temperature: Float32,
         stream: cuda.CUstream,
     ):
@@ -199,6 +203,10 @@ class _ScaledCEForwardFragmentSM90:
             segment_max: cute.struct.Align[cute.struct.MemRange[Float32, TILE_M], 16]
             segment_sum: cute.struct.Align[cute.struct.MemRange[Float32, TILE_M], 16]
             segment_target: cute.struct.Align[cute.struct.MemRange[Float32, TILE_M], 16]
+            segment_weighted: cute.struct.Align[
+                cute.struct.MemRange[Float32, TILE_M if self.return_entropy else 1],
+                16,
+            ]
 
         self.shared_storage = SharedStorage
         num_m_tiles = cute.ceil_div(x.shape[0], TILE_M)
@@ -214,6 +222,7 @@ class _ScaledCEForwardFragmentSM90:
             partial_max,
             partial_sum,
             partial_target,
+            partial_weighted,
             inverse_temperature,
             tiled_mma,
             a_smem_layout,
@@ -259,6 +268,7 @@ class _ScaledCEForwardFragmentSM90:
         run_max: Float32,
         run_sum: Float32,
         run_target: Float32,
+        run_weighted: Float32,
     ):
         segment_n = EPILOGUE_SLICE_N // 2
         segment_base = segment * segment_n
@@ -281,26 +291,42 @@ class _ScaledCEForwardFragmentSM90:
 
             new_max = _fmax(run_max, chunk_max)
             chunk_sum = Float32(0.0)
-            for j in cutlass.range_constexpr(CHUNK_N):
-                chunk_sum += cute.math.exp2(
-                    (values[j] - new_max) * LOG2_E,
-                    fastmath=self.fast_math,
-                )
-            run_sum = (
-                run_sum
-                * cute.math.exp2(
+            if cutlass.const_expr(self.return_entropy):
+                chunk_weighted = Float32(0.0)
+                for j in cutlass.range_constexpr(CHUNK_N):
+                    exp_value = cute.math.exp2(
+                        (values[j] - new_max) * LOG2_E,
+                        fastmath=self.fast_math,
+                    )
+                    chunk_sum += exp_value
+                    chunk_weighted += exp_value * values[j]
+                old_scale = cute.math.exp2(
                     (run_max - new_max) * LOG2_E,
                     fastmath=self.fast_math,
                 )
-                + chunk_sum
-            )
+                run_sum = run_sum * old_scale + chunk_sum
+                run_weighted = run_weighted * old_scale + chunk_weighted
+            else:
+                for j in cutlass.range_constexpr(CHUNK_N):
+                    chunk_sum += cute.math.exp2(
+                        (values[j] - new_max) * LOG2_E,
+                        fastmath=self.fast_math,
+                    )
+                run_sum = (
+                    run_sum
+                    * cute.math.exp2(
+                        (run_max - new_max) * LOG2_E,
+                        fastmath=self.fast_math,
+                    )
+                    + chunk_sum
+                )
             run_max = new_max
 
         target_begin = slice_global_base + segment_base
         target_end = target_begin + segment_n
         if target_col >= target_begin and target_col < target_end:
             run_target += Float32(s_logits[buffer, row, target_col - slice_global_base]) * inverse_temperature
-        return run_max, run_sum, run_target
+        return run_max, run_sum, run_target, run_weighted
 
     @cute.kernel
     def kernel(
@@ -313,6 +339,7 @@ class _ScaledCEForwardFragmentSM90:
         output_partial_max: cute.Tensor,
         output_partial_sum: cute.Tensor,
         output_partial_target: cute.Tensor,
+        output_partial_weighted: cute.Tensor,
         inverse_temperature: Float32,
         tiled_mma: cute.TiledMma,
         a_smem_layout: cute.ComposedLayout,
@@ -369,6 +396,9 @@ class _ScaledCEForwardFragmentSM90:
         segment_max = storage.segment_max.get_tensor(cute.make_layout(TILE_M))
         segment_sum = storage.segment_sum.get_tensor(cute.make_layout(TILE_M))
         segment_target = storage.segment_target.get_tensor(cute.make_layout(TILE_M))
+        segment_weighted = storage.segment_weighted.get_tensor(
+            cute.make_layout(TILE_M if cutlass.const_expr(self.return_entropy) else 1)
+        )
 
         g_x = cute.local_tile(
             x,
@@ -504,6 +534,7 @@ class _ScaledCEForwardFragmentSM90:
             run_max = Float32(NEG_INF_F32)
             run_sum = Float32(0.0)
             run_target = Float32(0.0)
+            run_weighted = Float32(0.0)
             read_index = Int32(0)
             read_phase = Int32(0)
             release_index = Int32(0)
@@ -592,7 +623,7 @@ class _ScaledCEForwardFragmentSM90:
                     col_base,
                     Int32(EPILOGUE_SLICE_N),
                 )
-                run_max, run_sum, run_target = self._fold_slice(
+                run_max, run_sum, run_target, run_weighted = self._fold_slice(
                     s_logits,
                     Int32(0),
                     epi_row,
@@ -604,10 +635,11 @@ class _ScaledCEForwardFragmentSM90:
                     run_max,
                     run_sum,
                     run_target,
+                    run_weighted,
                 )
                 self.epilogue_barrier.arrive_and_wait()
                 self._stage_slice(accum1, s_logits, Int32(0), row_base, col_base, Int32(0))
-                run_max, run_sum, run_target = self._fold_slice(
+                run_max, run_sum, run_target, run_weighted = self._fold_slice(
                     s_logits,
                     Int32(1),
                     epi_row,
@@ -619,6 +651,7 @@ class _ScaledCEForwardFragmentSM90:
                     run_max,
                     run_sum,
                     run_target,
+                    run_weighted,
                 )
                 self.epilogue_barrier.arrive_and_wait()
                 self._stage_slice(
@@ -629,7 +662,7 @@ class _ScaledCEForwardFragmentSM90:
                     col_base,
                     Int32(EPILOGUE_SLICE_N),
                 )
-                run_max, run_sum, run_target = self._fold_slice(
+                run_max, run_sum, run_target, run_weighted = self._fold_slice(
                     s_logits,
                     Int32(0),
                     epi_row,
@@ -641,9 +674,10 @@ class _ScaledCEForwardFragmentSM90:
                     run_max,
                     run_sum,
                     run_target,
+                    run_weighted,
                 )
                 self.epilogue_barrier.arrive_and_wait()
-                run_max, run_sum, run_target = self._fold_slice(
+                run_max, run_sum, run_target, run_weighted = self._fold_slice(
                     s_logits,
                     Int32(1),
                     epi_row,
@@ -655,6 +689,7 @@ class _ScaledCEForwardFragmentSM90:
                     run_max,
                     run_sum,
                     run_target,
+                    run_weighted,
                 )
                 self.epilogue_barrier.arrive_and_wait()
 
@@ -662,31 +697,48 @@ class _ScaledCEForwardFragmentSM90:
                 segment_max[epi_row] = run_max
                 segment_sum[epi_row] = run_sum
                 segment_target[epi_row] = run_target
+                if cutlass.const_expr(self.return_entropy):
+                    segment_weighted[epi_row] = run_weighted
             self.epilogue_barrier.arrive_and_wait()
 
             if epi_segment == 0 and store_enabled:
                 other_max = segment_max[epi_row]
                 combined_max = _fmax(run_max, other_max)
-                combined_sum = run_sum * cute.math.exp2(
-                    (run_max - combined_max) * LOG2_E,
-                    fastmath=self.fast_math,
-                ) + segment_sum[epi_row] * cute.math.exp2(
-                    (other_max - combined_max) * LOG2_E,
-                    fastmath=self.fast_math,
-                )
+                if cutlass.const_expr(self.return_entropy):
+                    run_scale = cute.math.exp2(
+                        (run_max - combined_max) * LOG2_E,
+                        fastmath=self.fast_math,
+                    )
+                    other_scale = cute.math.exp2(
+                        (other_max - combined_max) * LOG2_E,
+                        fastmath=self.fast_math,
+                    )
+                    combined_sum = run_sum * run_scale + segment_sum[epi_row] * other_scale
+                    combined_weighted = run_weighted * run_scale + segment_weighted[epi_row] * other_scale
+                else:
+                    combined_sum = run_sum * cute.math.exp2(
+                        (run_max - combined_max) * LOG2_E,
+                        fastmath=self.fast_math,
+                    ) + segment_sum[epi_row] * cute.math.exp2(
+                        (other_max - combined_max) * LOG2_E,
+                        fastmath=self.fast_math,
+                    )
                 output_partial_max[output_work, epi_row] = combined_max
                 output_partial_sum[output_work, epi_row] = combined_sum
                 output_partial_target[output_work, epi_row] = run_target + segment_target[epi_row]
+                if cutlass.const_expr(self.return_entropy):
+                    output_partial_weighted[output_work, epi_row] = combined_weighted
 
 
 class _ScaledCEForwardFragmentFinalizeSM90:
-    """Combine split vocabulary statistics into final per-token NLL/LSE."""
+    """Combine split vocabulary statistics into final NLL/LSE/entropy."""
 
-    def __init__(self, split_n, base_split_n, extra_m_pairs, fast_math):
+    def __init__(self, split_n, base_split_n, extra_m_pairs, fast_math, return_entropy):
         self.split_n = split_n
         self.base_split_n = base_split_n
         self.extra_m_pairs = extra_m_pairs
         self.fast_math = fast_math
+        self.return_entropy = return_entropy
 
     @cute.jit
     def __call__(
@@ -694,9 +746,11 @@ class _ScaledCEForwardFragmentFinalizeSM90:
         partial_max: cute.Tensor,
         partial_sum: cute.Tensor,
         partial_target: cute.Tensor,
+        partial_weighted: cute.Tensor,
         target: cute.Tensor,
         lse: cute.Tensor,
         token_loss: cute.Tensor,
+        entropy: cute.Tensor,
         ignore_index: Int32,
         stream: cuda.CUstream,
     ):
@@ -705,9 +759,11 @@ class _ScaledCEForwardFragmentFinalizeSM90:
             partial_max,
             partial_sum,
             partial_target,
+            partial_weighted,
             target,
             lse,
             token_loss,
+            entropy,
             ignore_index,
         ).launch(
             grid=(num_m_tiles, 1, 1),
@@ -722,9 +778,11 @@ class _ScaledCEForwardFragmentFinalizeSM90:
         partial_max: cute.Tensor,
         partial_sum: cute.Tensor,
         partial_target: cute.Tensor,
+        partial_weighted: cute.Tensor,
         target: cute.Tensor,
         lse: cute.Tensor,
         token_loss: cute.Tensor,
+        entropy: cute.Tensor,
         ignore_index: Int32,
     ):
         tid, _, _ = cute.arch.thread_idx()
@@ -746,21 +804,34 @@ class _ScaledCEForwardFragmentFinalizeSM90:
                 row_target += partial_target[work_id, tid]
 
         row_sum = Float32(0.0)
+        row_weighted = Float32(0.0)
         for split_id in cutlass.range_constexpr(self.split_n):
             if split_id < split_count:
                 work_id = pid_m * self.split_n + split_id
-                row_sum += partial_sum[work_id, tid] * cute.math.exp2(
-                    (partial_max[work_id, tid] - row_max) * LOG2_E,
-                    fastmath=self.fast_math,
-                )
+                if cutlass.const_expr(self.return_entropy):
+                    split_scale = cute.math.exp2(
+                        (partial_max[work_id, tid] - row_max) * LOG2_E,
+                        fastmath=self.fast_math,
+                    )
+                    row_sum += partial_sum[work_id, tid] * split_scale
+                    row_weighted += partial_weighted[work_id, tid] * split_scale
+                else:
+                    row_sum += partial_sum[work_id, tid] * cute.math.exp2(
+                        (partial_max[work_id, tid] - row_max) * LOG2_E,
+                        fastmath=self.fast_math,
+                    )
 
         if row < target.shape[0]:
             row_lse = row_max + cute.math.log2(row_sum, fastmath=self.fast_math) * LN2
             lse[row] = row_lse
             if target[row] == ignore_index:
                 token_loss[row] = Float32(0.0)
+                if cutlass.const_expr(self.return_entropy):
+                    entropy[row] = BFloat16(0.0)
             else:
                 token_loss[row] = row_lse - row_target
+                if cutlass.const_expr(self.return_entropy):
+                    entropy[row] = BFloat16(row_lse - row_weighted / row_sum)
 
 
 def _resolve_split(config, tokens, vocab_size):
@@ -800,10 +871,10 @@ def scaled_ce_forward_fragment(
 ):
     """Run the fixed two-N160/four-N80 fragment forward."""
     _validate(_input, weight, target)
-    if return_entropy:
-        raise NotImplementedError("the fragment forward does not support entropy")
     if config is None:
         config = ScaledCEForwardFragmentConfig()
+    if config.return_entropy != return_entropy:
+        config = replace(config, return_entropy=return_entropy)
     if min(config.split_n, config.base_split_n, config.extra_m_pairs, config.target_cluster_pairs) < 0:
         raise ValueError("split and cluster tuning values must be non-negative")
     if config.max_split_n < 1:
@@ -844,8 +915,22 @@ def scaled_ce_forward_fragment(
     partial_max = torch.empty(partial_shape, device=_input.device, dtype=torch.float32)
     partial_sum = torch.empty_like(partial_max)
     partial_target = torch.empty_like(partial_max)
+    partial_weighted = (
+        torch.empty_like(partial_max)
+        if return_entropy
+        else torch.empty(
+            1,
+            device=_input.device,
+            dtype=torch.float32,
+        )
+    )
     lse = torch.empty(tokens, device=_input.device, dtype=torch.float32)
     token_loss = torch.empty(tokens, device=_input.device, dtype=torch.float32)
+    entropy = torch.empty(
+        tokens if return_entropy else 1,
+        device=_input.device,
+        dtype=torch.bfloat16,
+    )
 
     x_cute = to_cute_tensor(x_padded.unsqueeze(-1), leading_dim=1, assumed_align=16)
     weight_cute = to_cute_tensor(weight_padded.unsqueeze(-1), leading_dim=1, assumed_align=16)
@@ -853,8 +938,14 @@ def scaled_ce_forward_fragment(
     partial_max_cute = to_cute_tensor(partial_max, leading_dim=1, assumed_align=4)
     partial_sum_cute = to_cute_tensor(partial_sum, leading_dim=1, assumed_align=4)
     partial_target_cute = to_cute_tensor(partial_target, leading_dim=1, assumed_align=4)
+    partial_weighted_cute = to_cute_tensor(
+        partial_weighted,
+        leading_dim=1 if return_entropy else None,
+        assumed_align=4,
+    )
     lse_cute = to_cute_tensor(lse, assumed_align=4)
     token_loss_cute = to_cute_tensor(token_loss, assumed_align=4)
+    entropy_cute = to_cute_tensor(entropy, assumed_align=2)
     stream = _cute_stream()
     inverse_temperature = Float32(1.0 / temperature)
 
@@ -869,6 +960,7 @@ def scaled_ce_forward_fragment(
             partial_max_cute,
             partial_sum_cute,
             partial_target_cute,
+            partial_weighted_cute,
             inverse_temperature,
             stream,
         )
@@ -880,6 +972,7 @@ def scaled_ce_forward_fragment(
         partial_max_cute,
         partial_sum_cute,
         partial_target_cute,
+        partial_weighted_cute,
         inverse_temperature,
         stream,
     )
@@ -890,6 +983,7 @@ def scaled_ce_forward_fragment(
         base_split_n,
         extra_m_pairs,
         config.fast_math,
+        config.return_entropy,
     )
     finalize = _compile_cache.get(finalize_key)
     if finalize is None:
@@ -899,13 +993,16 @@ def scaled_ce_forward_fragment(
                 base_split_n,
                 extra_m_pairs,
                 config.fast_math,
+                config.return_entropy,
             ),
             partial_max_cute,
             partial_sum_cute,
             partial_target_cute,
+            partial_weighted_cute,
             target_cute,
             lse_cute,
             token_loss_cute,
+            entropy_cute,
             Int32(ignore_index),
             stream,
         )
@@ -914,10 +1011,12 @@ def scaled_ce_forward_fragment(
         partial_max_cute,
         partial_sum_cute,
         partial_target_cute,
+        partial_weighted_cute,
         target_cute,
         lse_cute,
         token_loss_cute,
+        entropy_cute,
         Int32(ignore_index),
         stream,
     )
-    return token_loss, None, lse
+    return token_loss, entropy if return_entropy else None, lse

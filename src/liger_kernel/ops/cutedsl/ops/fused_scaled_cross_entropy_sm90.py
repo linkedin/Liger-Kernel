@@ -32,24 +32,21 @@ shapes and dtypes.
 
 Kernels
 -------
-=========================  =========================================
+=========================  ==================================================
 phase                      module
-=========================  =========================================
-forward (fragment N160)    ``_fused_scaled_cross_entropy_forward_fragment_sm90``
-forward (M-outer)          ``_fused_scaled_cross_entropy_forward_sm90``
-forward (M-fast)           ``_fused_scaled_cross_entropy_forward_mfast_sm90``
+=========================  ==================================================
+forward                    ``_fused_scaled_cross_entropy_forward_fragment_sm90``
 backward dZ+dX+dW          ``_fused_scaled_cross_entropy_backward_fused_sm90``
-=========================  =========================================
+=========================  ==================================================
 
-``m_tiles_per_cluster`` (>= 1, default 1) is the forward scheduling knob.  The
-default uses the fragment N160 forward for profiled ``M=2048/4096, H=4096,
-V=131072`` NLL-only shapes and the M-outer self-TMA forward otherwise.
-Values > 1 dispatch to the M-fast (N-outer / M-inner) forward with that many
-live ``M128`` online-softmax slots per cluster.
+The fixed forward uses cluster-M2 weight multicast, two N160 accumulators and
+four N80 online-softmax folds per logical N320 vocabulary tile.
+``m_tiles_per_cluster`` remains accepted for API compatibility, but every
+positive value selects this same forward.
 
 Backward runs in one persistent cluster-2 CUDA kernel.  Its device-side wave
 loop executes dZ, dX, and dW with phase-local schedulers over a phase-serial
-shared-memory arena: dZ uses the static M-fast scheduler, dX interprets each
+shared-memory arena: dZ uses its static persistent scheduler, dX interprets each
 cluster pair as W-multicast peers, and dW treats both CTAs as independent
 output-tile workers with transposed (``order=(1, 0, 2)``) TMA.  A GPU-wide HBM
 atomic barrier publishes dZ and protects the reusable workspace between waves.
@@ -74,17 +71,13 @@ import torch
 
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_backward_fused_sm90 import FusedBackwardConfig
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_backward_fused_sm90 import fused_backward_one_kernel
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_sm90 import ScaledCEForwardFragmentConfig
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_sm90 import scaled_ce_forward_fragment
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_mfast_sm90 import ScaledCEForwardMFastConfig
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_mfast_sm90 import scaled_ce_forward_mfast
-from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_sm90 import scaled_ce_forward
 from liger_kernel.ops.cutedsl.ops.utils import ensure_cuda_context
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 
-# All five kernels tile the hidden dimension by 64, so one padding of H covers
-# the forward, dZ, dX and dW phases.
+# The forward and every backward phase tile the hidden dimension by 64, so one
+# padding of H covers the full operation.
 HIDDEN_TILE = 64
 # dZ and dX both tile the token dimension by 128, so a backward wave is counted
 # in M128 tiles.
@@ -93,18 +86,6 @@ BACKWARD_M_TILE = 128
 # V = 131072 instead of the ~1 GiB a 4096-token batch would need.
 BACKWARD_M_TILES_PER_WAVE = 8
 VALIDATE_TARGETS_ENV = "LIGER_SCALED_CE_SM90_VALIDATE_TARGETS"
-
-_N160_FRAGMENT_CONFIG = ScaledCEForwardFragmentConfig()
-# Exact-shape entries are added only after matched correctness and performance
-# validation. Entropy and unlisted shapes retain the production M-outer path.
-_FORWARD_CONFIG_BY_SHAPE = {
-    (2048, 4096, 131072, False): _N160_FRAGMENT_CONFIG,
-    (4096, 4096, 131072, False): _N160_FRAGMENT_CONFIG,
-}
-
-
-def _select_forward_config(tokens, hidden_size, vocab_size, return_entropy):
-    return _FORWARD_CONFIG_BY_SHAPE.get((tokens, hidden_size, vocab_size, return_entropy))
 
 
 def _validate_temperature(temperature):
@@ -195,43 +176,14 @@ def fused_scaled_cross_entropy_forward(
     x_padded, weight_padded, hidden_size = _pad_hidden(_input, weight)
     target = target.contiguous()
 
-    if m_tiles_per_cluster == 1:
-        forward_config = _select_forward_config(
-            x_padded.shape[0],
-            x_padded.shape[1],
-            weight_padded.shape[0],
-            return_entropy,
-        )
-        if forward_config is None:
-            nll, entropy, lse = scaled_ce_forward(
-                x_padded,
-                weight_padded,
-                target,
-                temperature,
-                ignore_index,
-                return_entropy,
-            )
-        else:
-            nll, entropy, lse = scaled_ce_forward_fragment(
-                x_padded,
-                weight_padded,
-                target,
-                temperature,
-                ignore_index,
-                return_entropy,
-                config=forward_config,
-            )
-    else:
-        config = ScaledCEForwardMFastConfig(slots_per_wave=m_tiles_per_cluster)
-        nll, entropy, lse = scaled_ce_forward_mfast(
-            x_padded,
-            weight_padded,
-            target,
-            temperature,
-            ignore_index,
-            return_entropy,
-            config=config,
-        )
+    nll, entropy, lse = scaled_ce_forward_fragment(
+        x_padded,
+        weight_padded,
+        target,
+        temperature,
+        ignore_index,
+        return_entropy,
+    )
     return nll, entropy, lse, x_padded, weight_padded, hidden_size
 
 
@@ -291,8 +243,8 @@ class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
     m_tiles_per_cluster=1, return_entropy=False)``.
 
     Forward returns the per-token NLL ``[M]`` (FP32).  Backward expects the
-    per-token upstream gradient ``[M]``.  ``m_tiles_per_cluster`` schedules the
-    forward; backward always uses fixed 1024-token waves.
+    per-token upstream gradient ``[M]``.  ``m_tiles_per_cluster`` is retained
+    for API compatibility; backward always uses fixed 1024-token waves.
     """
 
     @staticmethod
@@ -307,6 +259,7 @@ class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
         m_tiles_per_cluster=1,
         return_entropy=False,
     ):
+        ctx.set_materialize_grads(False)
         _validate_temperature(temperature)
         nll, entropy, lse, x_padded, weight_padded, hidden_size = fused_scaled_cross_entropy_forward(
             _input,
@@ -330,6 +283,8 @@ class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
     @amp_custom_bwd
     def backward(ctx, grad_output, grad_entropy=None):
         x_padded, weight_padded, target, lse, entropy = ctx.saved_tensors
+        if grad_output is None:
+            grad_output = torch.zeros(target.shape[0], device=target.device, dtype=torch.float32)
         grad_input, grad_weight = fused_scaled_cross_entropy_backward(
             grad_output,
             x_padded,

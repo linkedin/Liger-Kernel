@@ -199,6 +199,34 @@ def test_sm90_differentiable_entropy_matches_torch(m_tiles_per_cluster):
     assert_verbose_allclose(wa.grad.float(), wr.grad.float(), atol=3e-2, rtol=1.5e-1)
 
 
+def test_sm90_entropy_only_backward_matches_torch():
+    set_seed(144)
+    x, weight, target = _make_inputs(193, 70, 517, ignore_stride=7)
+    grad_entropy = torch.rand(193, device="cuda", dtype=torch.float32) - 0.5
+
+    function = _frontend_function()
+    actual_x = x.detach().clone().requires_grad_(True)
+    actual_weight = weight.detach().clone().requires_grad_(True)
+    _, actual_entropy = function.apply(
+        actual_x,
+        actual_weight,
+        target,
+        0.8,
+        -100,
+        1,
+        True,
+    )
+    actual_entropy.backward(grad_entropy.to(actual_entropy.dtype))
+
+    expected_x = x.detach().clone().requires_grad_(True)
+    expected_weight = weight.detach().clone().requires_grad_(True)
+    _, expected_entropy = _reference_nll_entropy(expected_x, expected_weight, target, -100, 0.8)
+    expected_entropy.backward(grad_entropy)
+
+    assert_verbose_allclose(actual_x.grad.float(), expected_x.grad.float(), atol=3e-2, rtol=1.5e-1)
+    assert_verbose_allclose(actual_weight.grad.float(), expected_weight.grad.float(), atol=3e-2, rtol=1.5e-1)
+
+
 def test_sm90_matches_verl_fused_ppo_formulas():
     set_seed(45)
     x, weight, target = _make_inputs(193, 70, 517)
@@ -386,68 +414,33 @@ def test_sm90_backward_uses_one_fused_kernel(monkeypatch):
 
 
 @pytest.mark.parametrize("m_tiles_per_cluster", [1, 3], ids=["mtiles1", "mtiles3"])
-def test_sm90_m_tiles_dispatch_selects_expected_forward(monkeypatch, m_tiles_per_cluster):
+@pytest.mark.parametrize("return_entropy", [False, True], ids=["nll", "entropy"])
+def test_sm90_m_tiles_values_route_fragment_forward(monkeypatch, m_tiles_per_cluster, return_entropy):
     module = _sm90_module()
-    calls = {}
-
-    def fake_m_outer(x, weight, target, temperature, ignore_index, return_entropy):
-        calls["m_outer"] = (temperature, ignore_index)
-        return torch.zeros(x.shape[0], device=x.device), None, torch.zeros(x.shape[0], device=x.device)
-
-    def fake_m_fast(x, weight, target, temperature, ignore_index, return_entropy, config=None):
-        calls["m_fast"] = (temperature, config.slots_per_wave)
-        return torch.zeros(x.shape[0], device=x.device), None, torch.zeros(x.shape[0], device=x.device)
-
-    monkeypatch.setattr(module, "scaled_ce_forward", fake_m_outer)
-    monkeypatch.setattr(module, "scaled_ce_forward_mfast", fake_m_fast)
-
-    x = torch.randn(4, 16, device="cuda", dtype=torch.bfloat16)
-    weight = torch.randn(16, 16, device="cuda", dtype=torch.bfloat16)
-    target = torch.zeros(4, device="cuda", dtype=torch.long)
-    module.fused_scaled_cross_entropy_forward(x, weight, target, 1.0, -100, m_tiles_per_cluster)
-
-    if m_tiles_per_cluster == 1:
-        assert calls == {"m_outer": (1.0, -100)}
-    else:
-        assert calls == {"m_fast": (1.0, m_tiles_per_cluster)}
-
-
-def test_sm90_forward_config_lookup_selects_profiled_n160_shapes():
-    module = _sm90_module()
-
-    for tokens in (2048, 4096):
-        config = module._select_forward_config(tokens, 4096, 131072, False)
-        assert isinstance(config, module.ScaledCEForwardFragmentConfig)
-        assert config is module._N160_FRAGMENT_CONFIG
-
-    assert module._select_forward_config(8192, 4096, 131072, False) is None
-    assert module._select_forward_config(4096, 4096, 131072, True) is None
-
-
-def test_sm90_profiled_shape_dispatches_fragment_forward(monkeypatch):
-    module = _sm90_module()
-    config = module._N160_FRAGMENT_CONFIG
     calls = []
 
-    def fake_fragment(x, weight, target, temperature, ignore_index, return_entropy, config):
-        calls.append((temperature, ignore_index, return_entropy, config))
+    def fake_fragment(x, weight, target, temperature, ignore_index, return_entropy):
+        calls.append((temperature, ignore_index, return_entropy))
         zeros = torch.zeros(x.shape[0], device=x.device)
-        return zeros, None, zeros
+        entropy = zeros.to(torch.bfloat16) if return_entropy else None
+        return zeros, entropy, zeros
 
-    monkeypatch.setattr(module, "_select_forward_config", lambda *_: config)
     monkeypatch.setattr(module, "scaled_ce_forward_fragment", fake_fragment)
-    monkeypatch.setattr(
-        module,
-        "scaled_ce_forward",
-        lambda *_args, **_kwargs: pytest.fail("profiled shape must not use M-outer forward"),
-    )
 
     x = torch.randn(4, 16, device="cuda", dtype=torch.bfloat16)
     weight = torch.randn(16, 16, device="cuda", dtype=torch.bfloat16)
     target = torch.zeros(4, device="cuda", dtype=torch.long)
-    module.fused_scaled_cross_entropy_forward(x, weight, target)
+    module.fused_scaled_cross_entropy_forward(
+        x,
+        weight,
+        target,
+        1.0,
+        -100,
+        m_tiles_per_cluster,
+        return_entropy,
+    )
 
-    assert calls == [(1.0, -100, False, config)]
+    assert calls == [(1.0, -100, return_entropy)]
 
 
 def test_sm90_rejects_scalar_and_mismatched_grad_output():
