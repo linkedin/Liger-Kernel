@@ -687,6 +687,7 @@ def _launch_ce_fwd(
     pred_tok_out=None,
     inv_n_z=None,
     logical_vocab_size=None,
+    _split_fp32_features=True,
 ):
     assert x.stride(0) * x.element_size() % 16 == 0, (
         "cutedsl CE needs each row to start on a 16-byte boundary for vectorized loads; "
@@ -710,6 +711,57 @@ def _launch_ce_fwd(
     if not 0 < logical_vocab_size <= x.shape[-1]:
         raise ValueError(f"logical_vocab_size must be in [1, {x.shape[-1]}], got {logical_vocab_size}.")
     has_padding = logical_vocab_size != x.shape[-1]
+
+    # The combined FP32 gradient specializations for z-loss, softcap, and smoothing produce
+    # accurate gradients but reduced-precision public outputs with current CuTe DSL toolchains.
+    # Preserve those gradients while sourcing the outputs from the accurate no-gradient path.
+    if _split_fp32_features and x.dtype == torch.float32 and has_grad and (has_zloss or has_softcap or has_smoothing):
+        _launch_ce_fwd(
+            x=x,
+            y=y,
+            loss=loss,
+            inv_n_loss=inv_n_loss,
+            ignore_index=ignore_index,
+            has_grad=False,
+            lse_sq_scale=lse_sq_scale,
+            z_loss_out=z_loss_out,
+            return_z_loss=return_z_loss,
+            softcap=softcap,
+            label_smoothing=label_smoothing,
+            weight=weight,
+            weight_sum=weight_sum,
+            return_token_accuracy=return_token_accuracy,
+            return_predicted_tokens=return_predicted_tokens,
+            token_acc_out=token_acc_out,
+            pred_tok_out=pred_tok_out,
+            inv_n_z=inv_n_z,
+            logical_vocab_size=logical_vocab_size,
+            _split_fp32_features=False,
+        )
+        _launch_ce_fwd(
+            x=x,
+            y=y,
+            loss=torch.empty_like(loss),
+            inv_n_loss=inv_n_loss,
+            ignore_index=ignore_index,
+            has_grad=True,
+            lse_sq_scale=lse_sq_scale,
+            z_loss_out=None,
+            return_z_loss=False,
+            softcap=softcap,
+            label_smoothing=label_smoothing,
+            weight=weight,
+            weight_sum=weight_sum,
+            return_token_accuracy=False,
+            return_predicted_tokens=False,
+            token_acc_out=None,
+            pred_tok_out=None,
+            inv_n_z=inv_n_z,
+            logical_vocab_size=logical_vocab_size,
+            _split_fp32_features=False,
+        )
+        return
+
     softcap_val = float(softcap) if has_softcap else 0.0
     x_ct = to_cute_tensor(x)
     y_ct = to_cute_tensor(y, assumed_align=8)  # int64
