@@ -456,9 +456,7 @@ def _unaligned_fwd_bwd_worker(rank: int, world_size: int, init_file: str):
             fwd_tile_m=unaligned_out[6],
         )
         torch.cuda.synchronize()
-        unaligned_cpu = [
-            tensor.detach().cpu().clone() for tensor in unaligned_grads
-        ]
+        unaligned_cpu = [tensor.detach().cpu().clone() for tensor in unaligned_grads]
         tvm_ffi.moe_pop_fwd()
 
         X_padded = torch.zeros(
@@ -491,9 +489,7 @@ def _unaligned_fwd_bwd_worker(rank: int, world_size: int, init_file: str):
             dtype=ei.dtype,
             device=ei.device,
         )
-        ei_padded[unaligned_tokens:].copy_(
-            dummy_experts.expand(aligned_tokens - unaligned_tokens, -1)
-        )
+        ei_padded[unaligned_tokens:].copy_(dummy_experts.expand(aligned_tokens - unaligned_tokens, -1))
         ew_padded[unaligned_tokens:].fill_(1.0 / _K)
 
         padded_out = tvm_ffi.moe_fused_fwd_bf16(
@@ -525,9 +521,7 @@ def _unaligned_fwd_bwd_worker(rank: int, world_size: int, init_file: str):
             fwd_tile_m=padded_out[6],
         )
         torch.cuda.synchronize()
-        padded_cpu = [
-            tensor.detach().cpu().clone() for tensor in padded_grads
-        ]
+        padded_cpu = [tensor.detach().cpu().clone() for tensor in padded_grads]
         tvm_ffi.moe_pop_fwd()
 
         dist.barrier()
