@@ -11,75 +11,8 @@
 
 namespace liger {
 
-// ═══════════════════════════════════════════════════════════════════
-// combine_tokens_tail — direct-store gather-reduce for a token range
-// ═══════════════════════════════════════════════════════════════════
-//
-// One warp per output token, grid-stride. FP32 accumulation across K
-// slots. int4 vectorization (8 elements per load). The fused kernel uses
-// this for the 1–31 tokens after the last complete TMA combine tile.
-
 static constexpr int kCombineWarpSize = 32;
 static constexpr int kCombineMaxTopK  = 16;
-
-template <typename Element, int NumThreads>
-__device__ __forceinline__ void combine_tokens_tail(
-        const Element* __restrict__ expert_out,        // [total_slots, hidden_dim]
-        const Element* __restrict__ expert_weights,    // [num_tokens, top_k]
-        const int* __restrict__ token_expert_slots,    // [num_tokens, top_k]
-        Element* __restrict__ output,                  // [num_tokens, hidden_dim]
-        int hidden_dim,
-        int token_begin,
-        int num_tokens,
-        int top_k) {
-
-    static_assert(sizeof(Element) == 2, "combine_tokens_tail requires 2-byte element type");
-    static constexpr int kNumWarps     = NumThreads / kCombineWarpSize;
-    static constexpr int kElemsPerInt4 = sizeof(int4) / sizeof(Element);  // 8
-
-    const int warp_id = threadIdx.x / kCombineWarpSize;
-    const int lane    = threadIdx.x % kCombineWarpSize;
-    const int int4_per_row = hidden_dim / kElemsPerInt4;
-
-    const int4* src_base = reinterpret_cast<const int4*>(expert_out);
-    int4*       dst_base = reinterpret_cast<int4*>(output);
-
-    const int cta_id     = blockIdx.x + blockIdx.y * gridDim.x;
-    const int grid_warps = gridDim.x * gridDim.y * kNumWarps;
-    int token = token_begin + cta_id * kNumWarps + warp_id;
-
-    for (; token < num_tokens; token += grid_warps) {
-        const int weight_base = token * top_k;
-
-        int   slots[kCombineMaxTopK];
-        float ws   [kCombineMaxTopK];
-        for (int k = 0; k < top_k; ++k) {
-            slots[k] = __ldg(&token_expert_slots[weight_base + k]);
-            ws[k]    = to_float<Element>(
-                ldg_elem<Element>(&expert_weights[weight_base + k]));
-        }
-
-        for (int i = lane; i < int4_per_row; i += kCombineWarpSize) {
-            float acc[kElemsPerInt4] = {};
-
-            for (int k = 0; k < top_k; ++k) {
-                const int    slot = slots[k];
-                const int4   raw  = __ldg(&src_base[slot * int4_per_row + i]);
-                const Element* e  = reinterpret_cast<const Element*>(&raw);
-                CUTE_UNROLL
-                for (int j = 0; j < kElemsPerInt4; ++j)
-                    acc[j] += ws[k] * to_float<Element>(e[j]);
-            }
-
-            int4 out_chunk;
-            Element* oe = reinterpret_cast<Element*>(&out_chunk);
-            CUTE_UNROLL
-            for (int j = 0; j < kElemsPerInt4; ++j)
-                oe[j] = from_float<Element>(acc[j]);
-            dst_base[token * int4_per_row + i] = out_chunk;
-        }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // combine_tokens_tma — 1-token-per-warp + cp.async pipeline + TMA store
@@ -102,6 +35,8 @@ __device__ __forceinline__ void combine_tokens_tail(
 //   - Stages cycle: token t → stage (t % 2)
 //   - Slots/weights for different tokens are different, so issues are
 //     necessarily per-token (cannot bulk across tokens).
+//   - In the final partial tile, invalid token rows use cp.async zero-fill;
+//     their output rows are zero in SMEM and discarded by the TMA OOB store.
 
 static constexpr int kCombineWarpsPerWG    = 4;
 static constexpr int kCombineWGTokens      = 32;
@@ -170,7 +105,8 @@ __device__ __forceinline__ void combine_tokens_tma(
 	// cp.async granularity. One int4 = 8 bf16 elements.
 	const int int4_per_row   = hidden_dim / kCombineElemsPerLane;
 	const int n_n_chunks     = hidden_dim / kCombineWGHidden;
-	const int n_m_tiles      = num_tokens / kCombineWGTokens;
+	const int n_m_tiles      =
+		(num_tokens + kCombineWGTokens - 1) / kCombineWGTokens;
 	const int n_work_items   = n_m_tiles * n_n_chunks;
 
 	const int4* src_int4 = reinterpret_cast<const int4*>(expert_out);
@@ -200,6 +136,8 @@ __device__ __forceinline__ void combine_tokens_tma(
 		//   token(t) = m_tile · 32 + warp_in_wg · 8 + t
 		const int warp_token_base = m_tile * kCombineWGTokens
 		                          + warp_in_wg * kCombineTokensPerWarp;
+		const bool warp_all_valid =
+			warp_token_base + kCombineTokensPerWarp <= num_tokens;
 
 		// Helper: issue cp.async for token (warp's t) into ring stage S.
 		// Each lane issues K cp.asyncs (one per slot, 16 B each).
@@ -208,12 +146,26 @@ __device__ __forceinline__ void combine_tokens_tma(
 			const int my_token    = warp_token_base + T;
 			const int weight_base = my_token * top_k;
 			int4* stage_base = &smem.load_buf[wg_id][S][warp_in_wg][0][0];
-			for (int k = 0; k < top_k; ++k) {
-				const int slot = __ldg(&token_expert_slots[weight_base + k]);
-				const int4* src = &src_int4[slot * int4_per_row
-				                            + n_base_int4 + lane];
-				int4* dst = stage_base + k * kCombineWarpSize + lane;
-				cute::SM80_CP_ASYNC_CACHEGLOBAL<int4>::copy(*src, *dst);
+			if (warp_all_valid) {
+				for (int k = 0; k < top_k; ++k) {
+					const int slot = __ldg(&token_expert_slots[weight_base + k]);
+					const int4* src = &src_int4[slot * int4_per_row
+					                            + n_base_int4 + lane];
+					int4* dst = stage_base + k * kCombineWarpSize + lane;
+					cute::SM80_CP_ASYNC_CACHEGLOBAL<int4>::copy(*src, *dst);
+				}
+			} else {
+				const bool token_valid = my_token < num_tokens;
+				for (int k = 0; k < top_k; ++k) {
+					const int slot = token_valid
+						? __ldg(&token_expert_slots[weight_base + k])
+						: 0;
+					const int4* src = &src_int4[slot * int4_per_row
+					                            + n_base_int4 + lane];
+					int4* dst = stage_base + k * kCombineWarpSize + lane;
+					cute::SM80_CP_ASYNC_CACHEGLOBAL_ZFILL<int4>::copy(
+						*src, *dst, token_valid);
+				}
 			}
 			cute::cp_async_fence();
 		};
@@ -225,14 +177,16 @@ __device__ __forceinline__ void combine_tokens_tma(
 			int4* stage_base = &smem.load_buf[wg_id][S][warp_in_wg][0][0];
 
 			float acc[kCombineElemsPerLane] = {};
-			for (int k = 0; k < top_k; ++k) {
-				const float w = to_float<Element>(
-					ldg_elem<Element>(&expert_weights[weight_base + k]));
-				const int4 raw = stage_base[k * kCombineWarpSize + lane];
-				const Element* e = reinterpret_cast<const Element*>(&raw);
-				CUTE_UNROLL
-				for (int j = 0; j < kCombineElemsPerLane; ++j)
-					acc[j] += w * to_float<Element>(e[j]);
+			if (warp_all_valid || my_token < num_tokens) {
+				for (int k = 0; k < top_k; ++k) {
+					const float w = to_float<Element>(
+						ldg_elem<Element>(&expert_weights[weight_base + k]));
+					const int4 raw = stage_base[k * kCombineWarpSize + lane];
+					const Element* e = reinterpret_cast<const Element*>(&raw);
+					CUTE_UNROLL
+					for (int j = 0; j < kCombineElemsPerLane; ++j)
+						acc[j] += w * to_float<Element>(e[j]);
+				}
 			}
 
 			// Write 8 elements as one int4 to the output SMEM tile.
