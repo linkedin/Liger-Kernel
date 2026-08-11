@@ -24,6 +24,9 @@ from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_forward
 from liger_kernel.ops.cutedsl.ops.rope import LigerRopeFunction
 from liger_kernel.ops.cutedsl.ops.rope import rope_backward
 from liger_kernel.ops.cutedsl.ops.rope import rope_forward
+from liger_kernel.ops.cutedsl.ops.swiglu import LigerSiLUMulCuteDSLFunction as LigerSiLUMulFunction
+from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_backward
+from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_forward
 
 # The SM90 fused scaled cross entropy implementation is selected by the
 # root-level ``LigerFusedLinearScaledCrossEntropyFunction`` frontend. It
@@ -44,4 +47,7 @@ __all__ = [
     "LigerRopeFunction",
     "rope_backward",
     "rope_forward",
+    "LigerSiLUMulFunction",
+    "swiglu_backward",
+    "swiglu_forward",
 ]

@@ -2,7 +2,10 @@
 Shared helpers for the CuTe DSL backend ops.
 """
 
+from typing import Optional
+
 import cuda.bindings.driver as driver
+import cutlass.cute as cute
 import torch
 
 from cutlass import BFloat16
@@ -84,3 +87,25 @@ def _dyn(t: torch.Tensor):
     # layout lets one compiled object serve both contiguous forward tensors and
     # transposed backward views.
     return from_dlpack(t.detach()).mark_layout_dynamic()
+
+
+# ---------------------------------------------------------------------------
+# Abstract-tensor builder for the TVM-FFI fast path.
+#
+# This backs the TVM-FFI fast path (``swiglu``), which compiles a kernel once per
+# dtype against an abstract tensor so PyTorch tensors can be passed straight
+# through, skipping the per-call ``from_dlpack`` / memref-construction host
+# overhead.
+# ---------------------------------------------------------------------------
+def make_fake_tensor(dtype, shape, divisibility=1, leading_dim=-1) -> Optional[cute.Tensor]:
+    """Build an abstract ``cute.Tensor`` for ``cute.compile`` (TVM-FFI fast path).
+
+    Every non-leading stride is symbolic (runtime) with the given ``divisibility``;
+    the ``leading_dim`` is contiguous (stride 1). Returns ``None`` for ``dtype=None``.
+    """
+    if leading_dim < 0:
+        leading_dim = len(shape) + leading_dim
+    if dtype is None:
+        return None
+    stride = tuple(cute.sym_int64(divisibility=divisibility) if i != leading_dim else 1 for i in range(len(shape)))
+    return cute.runtime.make_fake_tensor(dtype, shape, stride=stride, assumed_align=divisibility * dtype.width // 8)
