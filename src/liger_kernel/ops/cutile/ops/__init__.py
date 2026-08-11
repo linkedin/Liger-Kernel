@@ -33,6 +33,8 @@ from liger_kernel.ops.cutile.ops.layer_norm import LigerLayerNormFunction
 from liger_kernel.ops.cutile.ops.layer_norm import layer_norm_backward
 from liger_kernel.ops.cutile.ops.layer_norm import layer_norm_forward
 from liger_kernel.ops.cutile.ops.llama4_rope import LigerLlama4RopeFunction
+from liger_kernel.ops.cutile.ops.megatron_fused_linear_cross_entropy import LigerMegatronFusedLinearCrossEntropyFunction
+from liger_kernel.ops.cutile.ops.megatron_fused_linear_cross_entropy import liger_megatron_fused_linear_cross_entropy
 from liger_kernel.ops.cutile.ops.multi_token_attention import LigerMultiTokenAttentionFunction
 from liger_kernel.ops.cutile.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.cutile.ops.rope import LigerRopeFunction
@@ -64,6 +66,8 @@ __all__ = [
     "layer_norm_backward",
     "layer_norm_forward",
     "LigerLlama4RopeFunction",
+    "LigerMegatronFusedLinearCrossEntropyFunction",
+    "liger_megatron_fused_linear_cross_entropy",
     "LigerMultiTokenAttentionFunction",
     "LigerQwen2VLMRopeFunction",
     "LigerRopeFunction",

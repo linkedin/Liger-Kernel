@@ -10,6 +10,8 @@ Public API:
         experts. Mode 1 patches ``fused_bias_swiglu.SwiGLUFunction`` instead;
         both fall back to Megatron for FP8 input store and CPU activation
         offload, and neither touches the bias or MoE-routed variants.
+    LigerMegatronFusedLinearCrossEntropy — hidden-state-to-loss fused output
+        projection for tensor-parallel vocabulary shards.
     apply_liger_kernel_to_megatron — patches Megatron-Core so existing training
         scripts pick up Liger kernels with one line. Currently supports
         RMSNorm (via BackendSpecProvider), both the fused and unfused
@@ -23,12 +25,14 @@ the general-purpose (non-Megatron-default) variant.
 """
 
 from liger_kernel.megatron.cross_entropy import LigerMegatronCrossEntropy
+from liger_kernel.megatron.fused_linear_cross_entropy import LigerMegatronFusedLinearCrossEntropy
 from liger_kernel.megatron.monkey_patch import apply_liger_kernel_to_megatron
 from liger_kernel.megatron.rms_norm import LigerMegatronRMSNorm
 from liger_kernel.megatron.swiglu import LigerMegatronSwiGLU
 
 __all__ = [
     "LigerMegatronCrossEntropy",
+    "LigerMegatronFusedLinearCrossEntropy",
     "LigerMegatronRMSNorm",
     "LigerMegatronSwiGLU",
     "apply_liger_kernel_to_megatron",
