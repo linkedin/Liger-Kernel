@@ -4,12 +4,13 @@ This module owns two device kernels used by
 :mod:`liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy_sm90`:
 
 ``_TileGemmSM90``
-    A warp-specialised WGMMA GEMM that computes ``C[M, N] = A[M, K] @ B[N, K].T``
-    with BF16 operands and an FP32 accumulator.  Each operand may be either
-    *K-major* (the contraction dim is contiguous, ``leading_dim`` points at it)
-    or *MN-major* (the M/N dim is contiguous).  A single tiled-MMA topology
-    (cooperative split-M over two WGMMA warp groups, ``M128 x N256 x K64``,
-    3 stages) drives all three logical GEMMs of the FLCE:
+    The static WGMMA fallback computes ``C[M, N] = A[M, K] @ B[N, K].T`` with
+    BF16 operands and an FP32 accumulator. Each operand may be either *K-major*
+    (the contraction dim is contiguous, ``leading_dim`` points at it) or
+    *MN-major* (the M/N dim is contiguous). Its cooperative split-M topology
+    (two WGMMA warp groups, ``M128 x N256 x K64``, 3 stages) drives dX and
+    remains available for logits/dW with ``FLCE_LOGITS_PERSISTENT=0`` /
+    ``FLCE_DW_CLUSTERED_PERSISTENT=0``:
 
     ==========  ==========================  ==============  ==============
     GEMM        maths                        A layout        B layout
@@ -19,7 +20,12 @@ This module owns two device kernels used by
     dW          ``dZ.T[V,M] @ X[M,H]``       MN-major (V)    MN-major (H)
     ==========  ==========================  ==============  ==============
 
-    The mainloop is the proven "warp-0-of-WG0 issues every TMA" software
+    The default logits and dW phases use :mod:`_sm90_persistent_gemm`: a
+    cluster-2, four-stage CUTLASS persistent template with one DMA and two WGMMA
+    warp groups plus a TMA-store epilogue. dW's scalar autograd scale is fused
+    into that epilogue.
+
+    The static mainloop is the proven "warp-0-of-WG0 issues every TMA" software
     pipeline: a single linear ``cp.async.bulk.tensor`` load stream feeds a
     3-stage SMEM buffer, one WGMMA group stays in flight across each
     release+refill, and the pipeline is drained exactly once per output tile.
@@ -1226,6 +1232,41 @@ def tile_gemm(
     persistent=False,
 ):
     """C[M,N] = A[M,K] @ B[N,K].T. ``*_leading`` names each operand's contiguous dim."""
+    import os
+
+    # Dispatch logits to the NVIDIA StaticPersistent WGMMA template for the
+    # logits GEMM (K-major A+B, no output scale, default grid orientation).
+    # The cluster-2 path raises tensor activity from 89.67% to 95.45% on H200.
+    # Set FLCE_LOGITS_PERSISTENT=0 to retain the original static fallback.
+    if (
+        os.environ.get("FLCE_LOGITS_PERSISTENT", "1") != "0"
+        and a_leading == 1
+        and b_leading == 1
+        and output_scale is None
+        and not swap_grid
+        and not persistent
+    ):
+        from liger_kernel.ops.cutedsl.ops._sm90_persistent_gemm import logits_persistent_gemm
+
+        logits_persistent_gemm(a, b, c, a_leading, b_leading, stream)
+        return
+
+    # The same persistent cluster improves dW while preserving its scalar
+    # autograd scale in the TMA epilogue. The old static raster remains
+    # available independently of the legacy FLCE_DW_PERSISTENT experiment.
+    if (
+        os.environ.get("FLCE_DW_CLUSTERED_PERSISTENT", "1") != "0"
+        and a_leading == 0
+        and b_leading == 0
+        and output_scale is not None
+        and swap_grid
+        and not persistent
+    ):
+        from liger_kernel.ops.cutedsl.ops._sm90_persistent_gemm import dw_persistent_gemm
+
+        dw_persistent_gemm(a, b, c, a_leading, b_leading, stream, output_scale)
+        return
+
     a_c = to_cute_tensor(a.unsqueeze(-1), leading_dim=a_leading, assumed_align=16)
     b_c = to_cute_tensor(b.unsqueeze(-1), leading_dim=b_leading, assumed_align=16)
     c_c = to_cute_tensor(c, assumed_align=(2 if c.dtype == torch.bfloat16 else 4))

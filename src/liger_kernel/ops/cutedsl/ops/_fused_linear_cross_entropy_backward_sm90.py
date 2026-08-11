@@ -69,7 +69,10 @@ def flce_dw(dz, x, out_dtype=torch.bfloat16, output_scale=None):
         stream = cuda.CUstream(torch.cuda.current_stream(dz.device).cuda_stream)
         # A = dZ.T[V, M], V contiguous -> leading_dim 0
         # B = X.T[H, M],  H contiguous -> leading_dim 0
-        # dW scheduling.  ``swap_grid=True`` transposes the launch grid so the GPU's
+        # dW scheduling. The default clustered persistent helper is selected inside
+        # ``tile_gemm`` and fuses ``output_scale`` into its TMA-store epilogue.
+        # ``FLCE_DW_CLUSTERED_PERSISTENT=0`` restores this static fallback.
+        # ``swap_grid=True`` transposes the fallback launch grid so the GPU's
         # x-fastest CTA order makes consecutive CTAs share the same A tile (an M-tile
         # of dZ.T) across all N columns; that A tile is fetched from DRAM once and
         # reused out of L2, and the 32 MB B operand stays L2-resident.  This static
@@ -77,7 +80,7 @@ def flce_dw(dz, x, out_dtype=torch.bfloat16, output_scale=None):
         # tensor-pipe active, 6.47 ms NCU on M=4096,H=4096,V=128256) at zero extra
         # complexity.
         #
-        # A fully persistent one-wave scheduler (``persistent=True`` -> the
+        # The older unclustered one-wave scheduler (``persistent=True`` -> the
         # ``kernel_persistent`` path with a continuous TMA pipeline + async TMA-store
         # epilogue) reaches an even better memory profile (81.8% L2 hit, 19% DRAM,
         # waves=1 -- matching QuACK's) but is net *slower* (7.07 ms, 83% tensor): its
