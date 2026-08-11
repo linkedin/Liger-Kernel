@@ -419,8 +419,8 @@ def test_sm90_m_tiles_values_route_fragment_forward(monkeypatch, m_tiles_per_clu
     module = _sm90_module()
     calls = []
 
-    def fake_fragment(x, weight, target, temperature, ignore_index, return_entropy):
-        calls.append((temperature, ignore_index, return_entropy))
+    def fake_fragment(x, weight, target, temperature, ignore_index, return_entropy, config):
+        calls.append((temperature, ignore_index, return_entropy, config))
         zeros = torch.zeros(x.shape[0], device=x.device)
         entropy = zeros.to(torch.bfloat16) if return_entropy else None
         return zeros, entropy, zeros
@@ -440,7 +440,18 @@ def test_sm90_m_tiles_values_route_fragment_forward(monkeypatch, m_tiles_per_clu
         return_entropy,
     )
 
-    assert calls == [(1.0, -100, return_entropy)]
+    assert calls == [(1.0, -100, return_entropy, None)]
+
+
+def test_sm90_long_sequence_forward_tuning_table():
+    module = _sm90_module()
+
+    assert module._select_forward_config(8192, 4096, 131072, False) is None
+    assert module._select_forward_config(16384, 4096, 131072, False).split_n == 4
+    assert module._select_forward_config(16384, 4096, 131072, True).split_n == 2
+    assert module._select_forward_config(32768, 4096, 131072, False).split_n == 2
+    assert module._select_forward_config(32768, 4096, 131072, True).split_n == 2
+    assert module._select_forward_config(32768, 4096, 65536, False) is None
 
 
 def test_sm90_rejects_scalar_and_mismatched_grad_output():

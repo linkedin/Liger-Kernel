@@ -42,7 +42,8 @@ backward dZ+dX+dW          ``_fused_scaled_cross_entropy_backward_fused_sm90``
 The fixed forward uses cluster-M2 weight multicast, two N160 accumulators and
 four N80 online-softmax folds per logical N320 vocabulary tile.
 ``m_tiles_per_cluster`` remains accepted for API compatibility, but every
-positive value selects this same forward.
+positive value selects this same forward.  Profiled long-sequence shapes use
+a split-N lookup table; all other shapes retain the hardware-derived split.
 
 Backward runs in one persistent cluster-2 CUDA kernel.  Its device-side wave
 loop executes dZ, dX, and dW with phase-local schedulers over a phase-serial
@@ -71,6 +72,7 @@ import torch
 
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_backward_fused_sm90 import FusedBackwardConfig
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_backward_fused_sm90 import fused_backward_one_kernel
+from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_sm90 import ScaledCEForwardFragmentConfig
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_sm90 import scaled_ce_forward_fragment
 from liger_kernel.ops.cutedsl.ops.utils import ensure_cuda_context
 from liger_kernel.ops.utils import amp_custom_bwd
@@ -86,6 +88,19 @@ BACKWARD_M_TILE = 128
 # V = 131072 instead of the ~1 GiB a 4096-token batch would need.
 BACKWARD_M_TILES_PER_WAVE = 8
 VALIDATE_TARGETS_ENV = "LIGER_SCALED_CE_SM90_VALIDATE_TARGETS"
+
+# Measured H100 winners for the representative large-vocabulary workload.
+# Unlisted shapes retain the fragment kernel's hardware-derived split.
+_FORWARD_CONFIG_BY_SHAPE = {
+    (16384, 4096, 131072, False): ScaledCEForwardFragmentConfig(split_n=4),
+    (16384, 4096, 131072, True): ScaledCEForwardFragmentConfig(split_n=2),
+    (32768, 4096, 131072, False): ScaledCEForwardFragmentConfig(split_n=2),
+    (32768, 4096, 131072, True): ScaledCEForwardFragmentConfig(split_n=2),
+}
+
+
+def _select_forward_config(tokens, hidden_size, vocab_size, return_entropy):
+    return _FORWARD_CONFIG_BY_SHAPE.get((tokens, hidden_size, vocab_size, return_entropy))
 
 
 def _validate_temperature(temperature):
@@ -183,6 +198,12 @@ def fused_scaled_cross_entropy_forward(
         temperature,
         ignore_index,
         return_entropy,
+        config=_select_forward_config(
+            x_padded.shape[0],
+            x_padded.shape[1],
+            weight_padded.shape[0],
+            return_entropy,
+        ),
     )
     return nll, entropy, lse, x_padded, weight_padded, hidden_size
 
