@@ -79,6 +79,20 @@ void RequireCudaTensor(ffi::TensorView tensor, int ndim, DLDataType dtype, const
   TVM_FFI_ICHECK_EQ(tensor.device().device_type, kDLCUDA) << name;
 }
 
+void RequireCudaMoeWeight(ffi::TensorView tensor, DLDataType dtype, const char* name) {
+  TVM_FFI_ICHECK_EQ(tensor.ndim(), 3) << name;
+  TVM_FFI_ICHECK_EQ(tensor.dtype(), dtype) << name;
+  TVM_FFI_ICHECK_EQ(tensor.device().device_type, kDLCUDA) << name;
+  TVM_FFI_ICHECK_EQ(tensor.stride(2), 1)
+      << name << " hidden dimension must be contiguous";
+  TVM_FFI_ICHECK_EQ(tensor.stride(1), tensor.size(2))
+      << name << " intermediate rows must be contiguous";
+  TVM_FFI_ICHECK_GE(tensor.stride(0), tensor.size(1) * tensor.size(2))
+      << name << " expert stride overlaps adjacent experts";
+  TVM_FFI_ICHECK_EQ(tensor.stride(0) % tensor.size(2), 0)
+      << name << " expert stride must contain complete hidden-dimension rows";
+}
+
 void RequireRank(ffi::TensorView tensor, int ndim, const char* name) {
   TVM_FFI_ICHECK_EQ(tensor.ndim(), ndim) << name;
   TVM_FFI_ICHECK(tensor.IsContiguous()) << name;
@@ -229,8 +243,8 @@ void moe_fused_fwd_bf16(
   RequireCudaTensor(X, 2, bf16, "X");
   RequireCudaTensor(expert_indices, 2, i32, "expert_indices");
   RequireCudaTensor(expert_weights, 2, bf16, "expert_weights");
-  RequireCudaTensor(all_B, 3, bf16, "all_B");
-  RequireCudaTensor(all_C, 3, bf16, "all_C");
+  RequireCudaMoeWeight(all_B, bf16, "all_B");
+  RequireCudaMoeWeight(all_C, bf16, "all_C");
   RequireCudaTensor(all_A, 3, bf16, "all_A");
   RequireCudaTensor(Y, 2, bf16, "Y");
   RequireCudaTensor(token_expert_slots, 1, i32, "token_expert_slots");
@@ -244,6 +258,14 @@ void moe_fused_fwd_bf16(
   const int64_t hidden_dim = X.size(1);
   const int64_t intermediate_dim = all_B.size(1);
   const int64_t experts_per_pe = all_B.size(0);
+  TVM_FFI_ICHECK_EQ(all_C.size(0), experts_per_pe);
+  TVM_FFI_ICHECK_EQ(all_C.size(1), intermediate_dim);
+  TVM_FFI_ICHECK_EQ(all_C.size(2), hidden_dim);
+  TVM_FFI_ICHECK_EQ(all_B.stride(0), all_C.stride(0))
+      << "all_B and all_C must use the same expert stride";
+  TVM_FFI_ICHECK_EQ(all_A.size(0), experts_per_pe);
+  TVM_FFI_ICHECK_EQ(all_A.size(1), hidden_dim);
+  TVM_FFI_ICHECK_EQ(all_A.size(2), intermediate_dim);
   TVM_FFI_ICHECK_EQ(hidden_dim, cfg.hidden_dim);
   TVM_FFI_ICHECK_EQ(num_experts, cfg.max_num_experts);
   TVM_FFI_ICHECK(top_k >= 1 && top_k <= cfg.max_top_k);
@@ -266,6 +288,7 @@ void moe_fused_fwd_bf16(
   args.all_B = all_B.data_ptr();
   args.all_C = all_C.data_ptr();
   args.all_A = all_A.data_ptr();
+  args.weight_expert_stride = all_B.stride(0);
   args.num_tokens = static_cast<int>(num_tokens);
   args.hidden_dim = static_cast<int>(hidden_dim);
   args.intermediate_dim = static_cast<int>(intermediate_dim);
