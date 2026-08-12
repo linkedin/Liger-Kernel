@@ -258,6 +258,8 @@ void moe_fused_fwd_bf16(
   const int64_t hidden_dim = X.size(1);
   const int64_t intermediate_dim = all_B.size(1);
   const int64_t experts_per_pe = all_B.size(0);
+  TVM_FFI_ICHECK_EQ(all_B.size(2), hidden_dim)
+      << "all_B hidden dimension must match X";
   TVM_FFI_ICHECK_EQ(all_C.size(0), experts_per_pe);
   TVM_FFI_ICHECK_EQ(all_C.size(1), intermediate_dim);
   TVM_FFI_ICHECK_EQ(all_C.size(2), hidden_dim);
