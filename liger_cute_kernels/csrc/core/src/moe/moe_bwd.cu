@@ -22,6 +22,12 @@
 
 #include <cute/tensor.hpp>
 #include <cute/atom/copy_traits_sm90_tma.hpp>
+// SM100 2SM (paired-CTA cluster) TMA descriptor factories (make_tma_copy_A_sm100
+// / make_tma_copy_B_sm100) and the SM100_TMA_2SM_LOAD copy atom used below to
+// build pair-aware Phase-2 mlp3/mlp4 descriptors. Already pulled in
+// transitively via moe_bwd.cuh -> mlp_bwd.cuh -> mlp3.cuh/mlp4.cuh; included
+// directly here too since this TU calls these factories itself.
+#include <cute/atom/copy_traits_sm100_tma.hpp>
 
 #include "liger_cute/moe.h"
 #include "liger_cute/check.h"
@@ -132,8 +138,20 @@ struct MoeBwdConfig {
 	using Element  = Element_;
 	using Traits1  = Mlp1Traits <Element, TileM1_, TileN1_, TileK1_, Stages1_, EpiChunkN1_>;   // Phase 1a
 	using Traits2T = Mlp2TTraits<Element, TileM2T_, TileN2_, TileK2_, Stages2_, EpiChunkN25_>;  // Phase 1b'
-	using Traits3  = Mlp3Traits <Element, TileM3_, TileN3_, TileK3_, Stages3_, EpiChunkN34_>;  // Phase 2 mlp3
-	using Traits4  = Mlp4Traits <Element, TileM4_, TileN4_, TileK4_, Stages4_, EpiChunkN34_>;  // Phase 2 mlp4
+	// Blackwell always uses the paired-CTA MLP3/MLP4 path. Hopper keeps the
+	// existing single-CTA traits and never instantiates SM100-only machinery.
+	// The existing TileK3_/Stages3_/EpiChunkN34_ fields remain the shared
+	// tuning surface for both weight-gradient kernels.
+	static constexpr bool kUsesTwoSm = Compute_ == 100;
+	static constexpr int  kClusterM  = kUsesTwoSm ? 2 : 1;
+	using Traits3  = cute::conditional_t<
+		kUsesTwoSm,
+		Mlp3Traits2Sm<Element, 256, 256, TileK3_, Stages3_, EpiChunkN34_>,
+		Mlp3Traits   <Element, TileM3_, TileN3_, TileK3_, Stages3_, EpiChunkN34_>>;  // Phase 2 mlp3
+	using Traits4  = cute::conditional_t<
+		kUsesTwoSm,
+		Mlp4Traits2Sm<Element, 256, 256, TileK4_, Stages4_, EpiChunkN34_>,
+		Mlp4Traits   <Element, TileM4_, TileN4_, TileK4_, Stages4_, EpiChunkN34_>>;  // Phase 2 mlp4
 	using Traits5  = Mlp5Traits <Element, TileM5_, TileN5_, TileK5_, Stages5_, EpiChunkN25_>;  // Phase 1d
 
 	// No divisibility constraints between NSplit/NC/CommNumStages.
@@ -841,6 +859,13 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	int n_gemm     = num_sms - num_sms % static_nsplit;  // static seed floor_NS
 	int grid_x     = n_gemm / static_nsplit;             // initial Phase 1 column count
 	int num_blocks = num_sms;
+	// Even-grid handling for the SM100 2SM paired-CTA cluster path: a
+	// cudaLaunchKernelEx cluster launch requires gridDim.x to be an exact
+	// multiple of ClusterM so every CTA pairs off cleanly (no partial
+	// cluster at the tail). Rounds DOWN so num_blocks never exceeds the
+	// device's SM count. No-op (kClusterM == 1) for every 1SM config.
+	if constexpr (Config::kUsesTwoSm)
+		num_blocks -= num_blocks % Config::kClusterM;
 	int max_runtime_grid_x = (num_blocks + 1) / 2;       // min runtime NS candidate = 2
 	dim3 grid(num_blocks);
 	LIGER_CHECK(top_k <= kCombineMaxTopK,
@@ -1141,38 +1166,88 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits5::SmemLayoutStore_1{});
 
-	// Phase 2 TMAs.
-	auto tma_load_dyt3 = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pDY),
+	// Phase 2 TMAs. mlp3's dY^T / Z operands and mlp4's X / dU^T / dV^T
+	// operands need pair-aware SM100_TMA_2SM_LOAD descriptors (built via
+	// make_tma_copy_A_sm100 / make_tma_copy_B_sm100, keyed off the joined
+	// TileShape + TiledMma2Sm) when Config::kUsesTwoSm (all SM100 configs);
+	// the dA/dB/dC TMA_REDUCE_ADD outputs are unchanged either way (each
+	// peer CTA still reduce-adds its own CtaTileM rows independently).
+	auto tma_load_dyt3 = [&] {
+		auto tensor = make_tensor(make_gmem_ptr(pDY),
 			make_shape(hidden_dim, max_total_slots),
-			make_stride(Int<1>{}, hidden_dim)),
-		typename Traits3::SmemLayoutDYT_1{});
-	auto tma_load_zt3 = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.z_buf)),
+			make_stride(Int<1>{}, hidden_dim));
+		if constexpr (Config::kUsesTwoSm) {
+			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+				typename Traits3::SmemLayoutDYT_1{},
+				typename Traits3::TileShape{},
+				typename Traits3::TiledMma2Sm{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{}, tensor,
+				typename Traits3::SmemLayoutDYT_1{});
+		}
+	}();
+	auto tma_load_zt3 = [&] {
+		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.z_buf)),
 			make_shape(intermediate_dim, max_total_slots),
-			make_stride(Int<1>{}, intermediate_dim)),
-		typename Traits3::SmemLayoutZ_1{});
+			make_stride(Int<1>{}, intermediate_dim));
+		if constexpr (Config::kUsesTwoSm) {
+			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+				typename Traits3::SmemLayoutZ_1{},
+				typename Traits3::TileShape{},
+				typename Traits3::TiledMma2Sm{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{}, tensor,
+				typename Traits3::SmemLayoutZ_1{});
+		}
+	}();
 	auto tma_reduce_da = make_tma_copy(TmaReduceAddAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dA)),
 			make_shape(total_k_cols_2, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits3::SmemLayoutStore{});
 
-	auto tma_load_xt4 = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pX),
+	auto tma_load_xt4 = [&] {
+		auto tensor = make_tensor(make_gmem_ptr(pX),
 			make_shape(hidden_dim, max_total_slots),
-			make_stride(Int<1>{}, hidden_dim)),
-		typename Traits4::SmemLayoutX_1{});
-	auto tma_load_dut4 = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.du_buf)),
+			make_stride(Int<1>{}, hidden_dim));
+		if constexpr (Config::kUsesTwoSm) {
+			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+				typename Traits4::SmemLayoutX_1{},
+				typename Traits4::TileShape{},
+				typename Traits4::TiledMma2Sm{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{}, tensor,
+				typename Traits4::SmemLayoutX_1{});
+		}
+	}();
+	auto tma_load_dut4 = [&] {
+		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.du_buf)),
 			make_shape(intermediate_dim, max_total_slots),
-			make_stride(Int<1>{}, intermediate_dim)),
-		typename Traits4::SmemLayoutA_1{});
-	auto tma_load_dvt4 = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dv_buf)),
+			make_stride(Int<1>{}, intermediate_dim));
+		if constexpr (Config::kUsesTwoSm) {
+			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+				typename Traits4::SmemLayoutA_1{},
+				typename Traits4::TileShape{},
+				typename Traits4::TiledMma2Sm{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{}, tensor,
+				typename Traits4::SmemLayoutA_1{});
+		}
+	}();
+	auto tma_load_dvt4 = [&] {
+		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dv_buf)),
 			make_shape(intermediate_dim, max_total_slots),
-			make_stride(Int<1>{}, intermediate_dim)),
-		typename Traits4::SmemLayoutA_1{});
+			make_stride(Int<1>{}, intermediate_dim));
+		if constexpr (Config::kUsesTwoSm) {
+			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+				typename Traits4::SmemLayoutA_1{},
+				typename Traits4::TileShape{},
+				typename Traits4::TiledMma2Sm{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{}, tensor,
+				typename Traits4::SmemLayoutA_1{});
+		}
+	}();
 	auto tma_reduce_db = make_tma_copy(TmaReduceAddAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dB)),
 			make_shape(total_n_rows_1, hidden_dim),
@@ -1209,16 +1284,34 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	// point at LOCAL dy_sorted/x_sorted), so dA/dB/dC for cross-PE-routed
 	// tokens used the wrong rows. These descriptors pull from the same
 	// staging buffers that Phase 1/2 of the remote pass already use.
-	auto tma_load_dyt3_remote = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dy_staging)),
+	auto tma_load_dyt3_remote = [&] {
+		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dy_staging)),
 			make_shape(hidden_dim, remote_total_rows),
-			make_stride(Int<1>{}, hidden_dim)),
-		typename Traits3::SmemLayoutDYT_1{});
-	auto tma_load_xt4_remote = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.x_staging)),
+			make_stride(Int<1>{}, hidden_dim));
+		if constexpr (Config::kUsesTwoSm) {
+			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+				typename Traits3::SmemLayoutDYT_1{},
+				typename Traits3::TileShape{},
+				typename Traits3::TiledMma2Sm{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{}, tensor,
+				typename Traits3::SmemLayoutDYT_1{});
+		}
+	}();
+	auto tma_load_xt4_remote = [&] {
+		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.x_staging)),
 			make_shape(hidden_dim, remote_total_rows),
-			make_stride(Int<1>{}, hidden_dim)),
-		typename Traits4::SmemLayoutX_1{});
+			make_stride(Int<1>{}, hidden_dim));
+		if constexpr (Config::kUsesTwoSm) {
+			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+				typename Traits4::SmemLayoutX_1{},
+				typename Traits4::TileShape{},
+				typename Traits4::TiledMma2Sm{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{}, tensor,
+				typename Traits4::SmemLayoutX_1{});
+		}
+	}();
 
 	// ── GET-via-TMA descriptors for the bwd comm path (#111 port) ────
 	// Per-peer source maps over nvshmem_ptr(x_sorted/dy_sorted, peer) + one
@@ -1265,14 +1358,30 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	smem_mlp = (smem_mlp + sizeof(int) - 1) & ~(sizeof(int) - 1);
 	smem_mlp += num_pes * (experts_per_pe + 1) * sizeof(int);  // remote_offsets
 
+	// Query the device's actual opt-in dynamic-smem cap rather than trust
+	// Config::kSmemBudget's compile-time 228 KiB constant: the 2SM paired-CTA
+	// path (Mlp3Traits2Sm / Mlp4Traits2Sm) pushes some candidates close to
+	// that ceiling, and the real per-SKU limit is what
+	// cudaFuncAttributeMaxDynamicSharedMemorySize is actually bounded by.
+	int device = 0;
+	int dynamic_smem_limit = 0;
+	if (cudaError_t e = cudaGetDevice(&device); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_bwd: cudaGetDevice failed: ", cudaGetErrorString(e));
+	if (cudaError_t e = cudaDeviceGetAttribute(&dynamic_smem_limit,
+			cudaDevAttrMaxSharedMemoryPerBlockOptin, device); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_bwd: querying the opt-in shared-memory limit failed: ",
+			cudaGetErrorString(e));
+
 	// GET-via-TMA bounce: append a 128-aligned region after remote_offsets
 	// (the kernel computes the same offset). The bwd union sits near the
-	// 228 KiB cap, so disable the TMA-get path if the bounce won't fit — that
-	// config just keeps the original 2-get/1-put getmem layout (no regression).
+	// device's dynamic-smem cap, so disable the TMA-get path if the bounce
+	// won't fit against the QUERIED limit (not the static 228 KiB constant)
+	// — that config just keeps the original 2-get/1-put getmem layout (no
+	// regression).
 	if (get_descs_bwd.enabled) {
 		size_t mlp_with_bounce =
 			((smem_mlp + 127) & ~((size_t)127)) + get_bounce_bytes_bwd;
-		if (mlp_with_bounce <= (size_t)Config::kSmemBudget) smem_mlp = mlp_with_bounce;
+		if (mlp_with_bounce <= static_cast<size_t>(dynamic_smem_limit)) smem_mlp = mlp_with_bounce;
 		else get_descs_bwd.enabled = 0;
 	}
 	// Unified BWD comm layout always uses one get warp and one put warp.
@@ -1295,8 +1404,22 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		decltype(tma_load_x_remote), decltype(tma_load_dy_remote), decltype(tma_store_dx_remote),
 		decltype(tma_load_dyt3_remote), decltype(tma_load_xt4_remote)>;
 
-	cudaFuncSetAttribute(kernel_fn,
-		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+	if (cudaError_t e = cudaFuncSetAttribute(kernel_fn,
+			cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_bwd: cudaFuncSetAttribute(MaxDynamicSharedMemorySize=",
+			smem_size, ", device opt-in limit=", dynamic_smem_limit, ") failed: ",
+			cudaGetErrorString(e));
+	// The SM100 2SM paired-CTA cluster path launches with an explicit
+	// clusterDim; opt in to non-portable cluster sizes (the CUDA default
+	// portable max is 8, so ClusterM=2 is already portable in practice,
+	// but every 2SM launch enables this defensively, mirroring CUTLASS's
+	// own cluster-launch helpers).
+	if constexpr (Config::kUsesTwoSm) {
+		if (cudaError_t e = cudaFuncSetAttribute(kernel_fn,
+				cudaFuncAttributeNonPortableClusterSizeAllowed, 1); e != cudaSuccess)
+			LIGER_FAIL_CUDA("moe_bwd: enabling non-portable cluster size (ClusterM=",
+				Config::kClusterM, ") failed: ", cudaGetErrorString(e));
+	}
 
 	// Fresh per-call counter resets.
 	cudaMemsetAsync(buf.cta_counter,     0, sizeof(int),               stream);
@@ -1361,16 +1484,43 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_bwd: CUDA error before kernel launch: ", cudaGetErrorString(e));
 
-	kernel_fn<<<grid, kNumThreads, smem_size, stream>>>(
-		tma_load_x, tma_load_b_fwd, tma_load_c_fwd,
-		tma_store_z, tma_store_u, tma_store_v,
-		tma_load_dy, tma_load_a_col, tma_store_dz,
-		tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col, tma_store_dx,
-		tma_load_dyt3, tma_load_zt3, tma_reduce_da,
-		tma_load_xt4, tma_load_dut4, tma_load_dvt4, tma_reduce_db, tma_reduce_dc,
-		tma_load_x_remote, tma_load_dy_remote, tma_store_dx_remote,
-		tma_load_dyt3_remote, tma_load_xt4_remote,
-		mlp_dims, mlp_bufs, p, static_nsplit, get_descs_bwd);
+	// Compute=90 keeps the ordinary <<<>>> launch. Compute=100 always uses
+	// the explicit paired-CTA cluster launch below.
+	if constexpr (Config::kUsesTwoSm) {
+		cudaLaunchConfig_t launch_config = {};
+		launch_config.gridDim = grid;
+		launch_config.blockDim = kNumThreads;
+		launch_config.dynamicSmemBytes = smem_size;
+		launch_config.stream = stream;
+		cudaLaunchAttribute cluster_attr = {};
+		cluster_attr.id = cudaLaunchAttributeClusterDimension;
+		cluster_attr.val.clusterDim.x = Config::kClusterM;
+		cluster_attr.val.clusterDim.y = 1;
+		cluster_attr.val.clusterDim.z = 1;
+		launch_config.attrs = &cluster_attr;
+		launch_config.numAttrs = 1;
+		cudaLaunchKernelEx(&launch_config, kernel_fn,
+			tma_load_x, tma_load_b_fwd, tma_load_c_fwd,
+			tma_store_z, tma_store_u, tma_store_v,
+			tma_load_dy, tma_load_a_col, tma_store_dz,
+			tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col, tma_store_dx,
+			tma_load_dyt3, tma_load_zt3, tma_reduce_da,
+			tma_load_xt4, tma_load_dut4, tma_load_dvt4, tma_reduce_db, tma_reduce_dc,
+			tma_load_x_remote, tma_load_dy_remote, tma_store_dx_remote,
+			tma_load_dyt3_remote, tma_load_xt4_remote,
+			mlp_dims, mlp_bufs, p, static_nsplit, get_descs_bwd);
+	} else {
+		kernel_fn<<<grid, kNumThreads, smem_size, stream>>>(
+			tma_load_x, tma_load_b_fwd, tma_load_c_fwd,
+			tma_store_z, tma_store_u, tma_store_v,
+			tma_load_dy, tma_load_a_col, tma_store_dz,
+			tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col, tma_store_dx,
+			tma_load_dyt3, tma_load_zt3, tma_reduce_da,
+			tma_load_xt4, tma_load_dut4, tma_load_dvt4, tma_reduce_db, tma_reduce_dc,
+			tma_load_x_remote, tma_load_dy_remote, tma_store_dx_remote,
+			tma_load_dyt3_remote, tma_load_xt4_remote,
+			mlp_dims, mlp_bufs, p, static_nsplit, get_descs_bwd);
+	}
 	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_bwd: kernel launch failed for grid=", grid.x,
 			" threads=", kNumThreads, " smem=", smem_size, ": ",
@@ -1564,15 +1714,19 @@ static bool tuned_config_valid_bwd(int D, int I, const TunedConfigBwd& c) {
 	// 128-row comm tile. Keep mirrored SM90 TileM=64 tuning rows out of SM100
 	// auto-dispatch until that TMEM epilogue layout is implemented.
 	if (c.Compute == 100 && c.TileM != 128) return false;
-	if (c.Compute == 100 && (c.TileM3 != 128 || c.TileN3 != 256)) return false;
 	if (D % c.TileK1 != 0)        return false;  // mlp1/mlp2_t/mlp5 K
 	if (D % (2 * c.TileN1) != 0)  return false;  // mlp5 N (= TileN2)
-	if (D % c.TileM3 != 0)        return false;  // mlp3 M, mlp4 N
 	if (I % (2 * c.TileN1) != 0)  return false;  // mlp2_t N
-	if (I % c.TileN3 != 0)        return false;  // mlp3 N, mlp4 M
 	if (I % c.TileK1 != 0)        return false;  // mlp5 K
 	if (I % c.TileK3 != 0)        return false;  // mlp3/mlp4 K
 	if (D % 8 != 0 || I % 8 != 0) return false;  // vectorization
+	if (c.Compute == 100) {
+		if (D % 256 != 0 || I % 256 != 0) return false;
+	} else {
+		if (!((c.TileM3 == 256 && c.TileN3 == 128) ||
+		      (c.TileM3 == 128 && c.TileN3 == 256))) return false;
+		if (D % c.TileM3 != 0 || I % c.TileN3 != 0) return false;
+	}
 	return true;
 }
 
@@ -1674,7 +1828,8 @@ void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
 	const int TK = T * top_k;
 	const int n_pes = nvshmem_team_n_pes(a.team);
 	const int E_local = (n_pes > 0) ? std::max(1, num_experts / n_pes) : num_experts;
-	const int TKE = TK / E_local;
+	// Keep backward lookup consistent with forward for tiny token batches.
+	const int TKE = std::max(1, TK / E_local);
 	const int compute = moe_detect_compute_dispatch_key(a.device, "moe_fused_bwd_bf16_auto");
 
 	if (const char* s = std::getenv("LIGER_MOE_BWD_FORCE_CONFIG")) {

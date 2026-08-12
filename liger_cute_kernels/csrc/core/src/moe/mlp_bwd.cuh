@@ -39,6 +39,48 @@ static constexpr int kMlpBwdBarrierThreadsFor = (Compute == 100 ? 10 : 9) * 32;
 static_assert(kMlpBwdBarrierThreadsFor<90> == 288);
 static_assert(kMlpBwdBarrierThreadsFor<100> == 320);
 
+// Compute == 100 (Blackwell/SM100) always means the Phase-2 GEMMs (mlp3 AND
+// mlp4) run the SM100 ClusterM=2 paired-CTA path; Compute == 90 (Hopper/SM90)
+// always means plain 1SM. There is no per-phase or per-trait choice anymore
+// (see mlp3.cuh / mlp4.cuh's unified mlp{3,4}_producer<Traits, Compute> /
+// mlp{3,4}_consumer<Traits, Compute>), so `Compute == 100` alone drives the
+// TMEM allocator choice (Allocator2Sm vs Allocator1Sm) and the extra
+// tmem_pair_barrier below: both mlp3 and mlp4 share ONE TMEM allocation per
+// CTA-pair, so the pair must rendezvous around the allocate/free calls.
+
+// ── Compute == 100 (paired-CTA) caller contract ──
+//
+// This header only builds the __device__ Phase-2 GEMM bodies; it does not
+// launch the kernel or build TMA descriptors, so the following invariants
+// must hold at the call site (host launcher, e.g. moe_bwd.cu) whenever
+// Compute == 100 is selected — violating any of them is a silent-corruption
+// or launch-failure risk, not something this file can assert at compile time:
+//   • Grid must be launched EVEN (gridDim.x·gridDim.y divisible by
+//     Traits{3,4}::ClusterM) — the flat cell-walk above (cell_start =
+//     flat_id / ClusterM, cell_stride = total_phase2_ctas / ClusterM)
+//     assumes every CTA has a live cluster peer.
+//   • Launch via cudaLaunchKernelEx with clusterDim = (ClusterM, 1, 1) (or
+//     the ClusterShape Traits{3,4} defines) and the
+//     cudaLaunchAttributeClusterDimension /
+//     NonPortableClusterSizeAllowed attribute set (ClusterM > 8 or any
+//     non-default shape needs the "non-portable" opt-in).
+//   • The dYT/Z (mlp3) and X/dU^T/dV^T (mlp4) TMA descriptors passed in
+//     (TmaLoadDYT3/TmaLoadZT3/... below) must be built with
+//     make_tma_copy_A_sm100 / make_tma_copy_B_sm100 (2-CTA-aware multicast
+//     descriptors) — a plain SM90 make_tma_copy descriptor does not carry
+//     the multicast-mask semantics mlp{3,4}_producer's Compute == 100
+//     `copy(tma.with(barrier, mcast_mask), ...)` calls rely on.
+//   • MlpFusedBwdSmem's static size (larger for the Compute == 100
+//     Mlp3FusedSmem2Sm variant) must fit within the dynamically-queried
+//     cudaDevAttrMaxSharedMemoryPerBlockOptin limit, and the kernel's
+//     cudaFuncAttributeMaxDynamicSharedMemorySize must be opted in to that
+//     size before launch — this header assumes the smem struct it defines
+//     already fits whatever the host allocated.
+// See Compute == 100's use below (TMEM Allocator2Sm + tmem_pair_barrier) and
+// the Compute == 90/100 static_asserts in mlp_fused_bwd_run_batches /
+// mlp_fused_bwd / mlp_fused_bwd_dual for the invariants this file DOES
+// enforce.
+
 // ═══════════════════════════════════════════════════════════════════
 // Phase-1 sub-batch grouping (mlp1/2/5 small chunks, mlp3/4 one big batch)
 // ═══════════════════════════════════════════════════════════════════
@@ -77,7 +119,16 @@ struct MlpFusedBwdSmem {
 		Mlp1FusedActSmem<Traits1> mlp1;     // TileM=128 cooperative-M-split
 		Mlp2TFusedSmem<Traits2T>  mlp2t;    // TileM=128 cooperative-M-split (mlp2_t.cuh)
 		Mlp5Smem<Traits5>         mlp5;     // TileM=128 cooperative-M-split
-		Mlp3FusedSmem<Traits3>    mlp3;
+		// mlp4's fused smem is traits-conditional internally (see mlp4.cuh),
+		// so it needs no separate 2SM specialization here. mlp3 instead uses
+		// a wholly distinct 2SM smem layout (Mlp3FusedSmem2Sm — paired-CTA
+		// accumulator pipeline in place of mlp3's normal AccumulatorPipeline),
+		// selected purely by Compute == 100 (Blackwell always pairs mlp3's
+		// Phase-2 GEMM across CTAs; Compute == 90 never does).
+		cute::conditional_t<
+			Compute == 100,
+			Mlp3FusedSmem2Sm<Traits3>,
+			Mlp3FusedSmem<Traits3>> mlp3;
 		Mlp4FusedSmem<Traits4>    mlp4;
 	};
 
@@ -97,6 +148,15 @@ struct MlpFusedBwdSmem {
 	typename Mlp3MainloopPipelineFor<Traits3, Compute>::SharedStorage p3_pipe;
 	typename Mlp4MainloopPipelineFor<Traits4, Compute>::SharedStorage p4_pipe;
 	alignas(16) uint32_t tmem_base;
+	// Rendezvous barrier for the paired-CTA TMEM allocation window
+	// (Compute == 100 only — one CTA-pair shares one TMEM allocation, so
+	// both peers must arrive before either frees it). Collapses to a plain
+	// uint32_t placeholder (no ClusterBarrier construction/arrive/wait) on
+	// Compute == 90, which never pairs CTAs.
+	alignas(16) cute::conditional_t<
+		Compute == 100,
+		cutlass::arch::ClusterBarrier,
+		uint32_t> tmem_pair_barrier;
 };
 
 template <typename Traits1, typename Traits2T, typename Traits3,
@@ -496,6 +556,18 @@ __device__ __forceinline__ void mlp_bwd_phase_2_build_ranges(
 	cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 }
 
+// ── mlp4 Phase-2 runner ──
+//
+// Unified over Compute: Compute == 90 (Hopper) drives the adaptive kMSplit
+// ternary walk over plain per-CTA cells; Compute == 100 (Blackwell) always
+// drives the SM100 ClusterM=2 paired-CTA path (fixed M-split — the paired
+// UMMA atom only supports the shared-N/split-M cooperative layout — and
+// cell = CTA-PAIR, not CTA). Calls the unified mlp4_producer<Traits4,
+// Compute> / mlp4_consumer<Traits4, Compute> (mlp4.cuh), which do their own
+// internal Compute == 100 dispatch to the paired-CTA multicast TMA path.
+// Reuses the plain Mlp4FusedSmem<Traits4> smem type (see MlpFusedBwdSmem —
+// mlp4.cuh's Mlp4FusedSmem is traits-compatible internally, no separate
+// Compute-conditional smem needed here).
 template <typename Traits1, typename Traits4, int NSplit2, int Compute = 90,
           typename TmaLoadXT4, typename TmaLoaddUT4, typename TmaLoaddVT4,
           typename TmaReduceDB, typename TmaReduceDC>
@@ -515,6 +587,10 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 		const MlpBwdDims& dims,
 		uint32_t tmem_base,
 		int ring_kb = 0) {
+	static_assert(Compute == 90 || Compute == 100,
+		"mlp_bwd_run_phase_2_mlp4: Compute must be 90 (Hopper 1SM) or "
+		"100 (Blackwell ClusterM=2 paired-CTA) — only Compute == 100 "
+		"executes the paired-CTA (ClusterM/NumPairs) code below.");
 	constexpr int kMlpBwdBarrierThreads = kMlpBwdBarrierThreadsFor<Compute>;
 	auto s = mlp_bwd_resume_state<Mlp4MainloopPipelineFor<Traits4, Compute>>(
 		p4_count, warp_id == 0);
@@ -528,17 +604,15 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 	int batch_kb_end   = batch_kb_start
 		+ (bk_tiles * Traits1::TileM) / Traits4::TileK;
 
-	// Flat cell index over all Phase 2 CTAs. mlp4 holds the SHARED operand
-	// and walks the cooperation (split) axis (see mlp4.cuh):
-	//   kMSplit=true  (M-split): chunk = (e, n_tile), lane partitions num_m_tiles_4
-	//   kMSplit=false (N-split): chunk = (e, m_tile), lane partitions num_n_tiles_4
-	// Adaptive split: largest pow2 divisor of walk_extent so total_cells
-	// covers all Phase 2 CTAs.
+	// Flat cell index over all Phase 2 CTAs. cell_start = phase2_div·NSplit2
+	// + phase2_mod = flat_id ∈ [0,num_blocks) (the div/mod from the caller
+	// recombine to the flat id), so coverage is complete and disjoint for
+	// ANY num_blocks — no NSplit2 divisibility.
+	int flat_id = phase2_div * NSplit2 + phase2_mod;
 	// Phase 2 uses ALL launched CTAs (flat grid-stride over cells), so the
-	// cell stride is the full launched count gridDim.x·gridDim.y = num_blocks.
-	// cell_start = phase2_div·NSplit2 + phase2_mod = flat_id ∈ [0,num_blocks)
-	// (the div/mod from the caller recombine to the flat id), so coverage is
-	// complete and disjoint for ANY num_blocks — no NSplit2 divisibility.
+	// cell stride is the full launched count gridDim.x·gridDim.y = num_blocks
+	// on Compute == 90; Compute == 100 pairs CTAs (ClusterM=2), so the stride
+	// is in CTA-PAIRS instead.
 	int total_phase2_ctas = (int)gridDim.x * (int)gridDim.y;
 	// Size outer_split from the experts LIVE in this batch's K-window, NOT the
 	// global expert set. Sizing from experts_per_pe under-splits when only ~1
@@ -549,41 +623,85 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 	for (int e = 0; e < experts_per_pe; ++e)
 		if (k_starts[e] < batch_kb_end && k_ends[e] > batch_kb_start) live_experts_4++;
 	if (live_experts_4 < 1) live_experts_4 = 1;
-	int total_chunks_4    = Traits4::kMSplit
-		? (live_experts_4 * dims.num_n_tiles_4)
-		: (live_experts_4 * dims.num_m_tiles_4);
-	int walk_extent_4 = Traits4::kMSplit ? dims.num_m_tiles_4 : dims.num_n_tiles_4;
-	int outer_split_4 = 1;
-	{
-		int target_cells = 2 * total_phase2_ctas;
-		while (outer_split_4 * 2 <= walk_extent_4
-		       && total_chunks_4 * outer_split_4 < target_cells) {
-			outer_split_4 *= 2;
+
+	int cell_start, cell_stride, outer_split_4, k_split_4;
+	if constexpr (Compute == 100) {
+		// SM100 ClusterM=2 paired-CTA path: fixed M-split (no kMSplit
+		// ternary — the paired-CTA MMA atom only supports the shared-N/
+		// split-M cooperative layout), cell = CTA-PAIR.
+		int num_clusters = total_phase2_ctas / Traits4::ClusterM;
+		int total_chunks = live_experts_4 * dims.num_n_tiles_4;
+		int walk_extent   = dims.num_m_tiles_4;
+		outer_split_4 = 1;
+		{
+			int target_cells = 2 * num_clusters;
+			while (outer_split_4 * 2 * Traits4::NumPairs <= walk_extent
+			       && total_chunks * outer_split_4 < target_cells)
+				outer_split_4 *= 2;
+			while (walk_extent % outer_split_4 != 0)
+				outer_split_4 /= 2;
+			if (outer_split_4 < 1) outer_split_4 = 1;
 		}
-		while (walk_extent_4 % outer_split_4 != 0) outer_split_4 /= 2;
-		if (outer_split_4 < 1) outer_split_4 = 1;
-	}
-	// K-split (KS): split each cell's K-loop across k_split_4 CTAs when the live
-	// cells don't fill the grid (see mlp3 helper). TMA_REDUCE_ADD sums partials.
-	int k_split_4 = 1;
-	{
-		int active_cells  = total_chunks_4 * outer_split_4;
-		int batch_k_tiles = batch_kb_end - batch_kb_start;
-		constexpr int kKMin = 8;
-		int max_by_depth = batch_k_tiles / kKMin;
-		if (max_by_depth < 1) max_by_depth = 1;
-		// Split whenever the live cells don't fill the grid (refine later).
-		if (active_cells > 0 && active_cells < total_phase2_ctas) {
-			k_split_4 = (total_phase2_ctas + active_cells - 1) / active_cells;
-			if (k_split_4 > max_by_depth) k_split_4 = max_by_depth;
-			if (k_split_4 < 1) k_split_4 = 1;
+		// K-split (KS): split each cell's K-loop across k_split_4 CTA-pairs
+		// when the live cells don't fill the grid. TMA_REDUCE_ADD sums
+		// partials.
+		k_split_4 = 1;
+		{
+			int active_cells  = total_chunks * outer_split_4;
+			int batch_k_tiles = batch_kb_end - batch_kb_start;
+			constexpr int kKMin = 8;
+			int max_by_depth = batch_k_tiles / kKMin;
+			if (max_by_depth < 1) max_by_depth = 1;
+			if (active_cells > 0 && active_cells < num_clusters) {
+				k_split_4 = (num_clusters + active_cells - 1) / active_cells;
+				if (k_split_4 > max_by_depth) k_split_4 = max_by_depth;
+				if (k_split_4 < 1) k_split_4 = 1;
+			}
 		}
+		cell_start  = flat_id / Traits4::ClusterM;
+		cell_stride = num_clusters;
+	} else {
+		// SM90 (Hopper) 1SM path. mlp4 holds the SHARED operand and walks
+		// the cooperation (split) axis (see mlp4.cuh):
+		//   kMSplit=true  (M-split): chunk = (e, n_tile), lane partitions num_m_tiles_4
+		//   kMSplit=false (N-split): chunk = (e, m_tile), lane partitions num_n_tiles_4
+		// Adaptive split: largest pow2 divisor of walk_extent so total_cells
+		// covers all Phase 2 CTAs.
+		int total_chunks_4    = Traits4::kMSplit
+			? (live_experts_4 * dims.num_n_tiles_4)
+			: (live_experts_4 * dims.num_m_tiles_4);
+		int walk_extent_4 = Traits4::kMSplit ? dims.num_m_tiles_4 : dims.num_n_tiles_4;
+		outer_split_4 = 1;
+		{
+			int target_cells = 2 * total_phase2_ctas;
+			while (outer_split_4 * 2 <= walk_extent_4
+			       && total_chunks_4 * outer_split_4 < target_cells) {
+				outer_split_4 *= 2;
+			}
+			while (walk_extent_4 % outer_split_4 != 0) outer_split_4 /= 2;
+			if (outer_split_4 < 1) outer_split_4 = 1;
+		}
+		// K-split (KS): split each cell's K-loop across k_split_4 CTAs when
+		// the live cells don't fill the grid. TMA_REDUCE_ADD sums partials.
+		k_split_4 = 1;
+		{
+			int active_cells  = total_chunks_4 * outer_split_4;
+			int batch_k_tiles = batch_kb_end - batch_kb_start;
+			constexpr int kKMin = 8;
+			int max_by_depth = batch_k_tiles / kKMin;
+			if (max_by_depth < 1) max_by_depth = 1;
+			if (active_cells > 0 && active_cells < total_phase2_ctas) {
+				k_split_4 = (total_phase2_ctas + active_cells - 1) / active_cells;
+				if (k_split_4 > max_by_depth) k_split_4 = max_by_depth;
+				if (k_split_4 < 1) k_split_4 = 1;
+			}
+		}
+		cell_start  = flat_id;
+		cell_stride = total_phase2_ctas;
 	}
-	int cell_start  = phase2_div * NSplit2 + phase2_mod;
-	int cell_stride = total_phase2_ctas;
 
 	if (warp_id == 0)
-		mlp4_producer<Traits4>(
+		mlp4_producer<Traits4, Compute>(
 			p4_pipe, s,
 			smem_mlp4, tma_load_xt4, tma_load_dut4, tma_load_dvt4,
 			k_starts, k_ends, experts_per_pe,
@@ -607,12 +725,24 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 	p4_count = s.count();
 }
 
+// ── mlp3 Phase-2 runner ──
+//
+// Unified over Compute: Compute == 90 (Hopper) drives the adaptive kMSplit
+// ternary walk over plain per-CTA cells; Compute == 100 (Blackwell) always
+// drives the SM100 ClusterM=2 paired-CTA path (fixed M-split — the paired
+// UMMA atom only supports the shared-N/split-M cooperative layout — and
+// cell = CTA-PAIR, not CTA), and uses the distinct Mlp3FusedSmem2Sm smem
+// layout (paired-CTA accumulator pipeline; see MlpFusedBwdSmem). Calls the
+// unified mlp3_producer<Traits3, Compute> / mlp3_consumer<Traits3, Compute>
+// (mlp3.cuh), which do their own internal Compute == 100 dispatch to the
+// paired-CTA multicast TMA path.
 template <typename Traits1, typename Traits3, int NSplit2, int Compute = 90,
           typename TmaLoadDYT3, typename TmaLoadZT3, typename TmaReduceDA>
 __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 		Mlp3MainloopPipelineFor<Traits3, Compute>& p3_pipe,
 		uint32_t& p3_count,
-		Mlp3FusedSmem<Traits3>& smem_mlp3,
+		cute::conditional_t<Compute == 100,
+			Mlp3FusedSmem2Sm<Traits3>, Mlp3FusedSmem<Traits3>>& smem_mlp3,
 		const int* k_starts,
 		const int* k_ends,
 		TmaLoadDYT3 const& tma_load_dyt3,
@@ -623,6 +753,10 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 		const MlpBwdDims& dims,
 		uint32_t tmem_base,
 		int ring_kb = 0) {
+	static_assert(Compute == 90 || Compute == 100,
+		"mlp_bwd_run_phase_2_mlp3: Compute must be 90 (Hopper 1SM) or "
+		"100 (Blackwell ClusterM=2 paired-CTA) — only Compute == 100 "
+		"executes the paired-CTA (ClusterM/NumPairs) code below.");
 	constexpr int kMlpBwdBarrierThreads = kMlpBwdBarrierThreadsFor<Compute>;
 	auto s = mlp_bwd_resume_state<Mlp3MainloopPipelineFor<Traits3, Compute>>(
 		p3_count, warp_id == 0);
@@ -634,12 +768,11 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 	int batch_kb_end   = batch_kb_start
 		+ (bk_tiles * Traits1::TileM) / Traits3::TileK;
 
-	// Flat cell index over all Phase 2 CTAs. mlp3 holds the SHARED operand
-	// and walks the cooperation (split) axis:
-	//   kMSplit=true  : chunk = (e, n_tile), lane partitions num_m_tiles
-	//   kMSplit=false : chunk = (e, m_tile), lane partitions num_n_tiles
-	// Adaptive split: pick largest pow2 divisor of walk_extent so
-	// total_cells covers all Phase 2 CTAs.
+	// Flat cell index over all Phase 2 CTAs. cell_start = phase2_div·NSplit2
+	// + phase2_mod = flat_id ∈ [0,num_blocks) (the div/mod from the caller
+	// recombine to the flat id), so coverage is complete and disjoint for
+	// ANY num_blocks — no NSplit2 divisibility.
+	int flat_id = phase2_div * NSplit2 + phase2_mod;
 	// All launched CTAs (gridDim.x·gridDim.y = num_blocks) — see mlp4 helper.
 	int total_phase2_ctas = (int)gridDim.x * (int)gridDim.y;
 	// Size outer_split from the experts LIVE in this batch's K-window (see the
@@ -648,44 +781,83 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 	for (int e = 0; e < experts_per_pe; ++e)
 		if (k_starts[e] < batch_kb_end && k_ends[e] > batch_kb_start) live_experts_3++;
 	if (live_experts_3 < 1) live_experts_3 = 1;
-	int total_chunks_3    = Traits3::kMSplit
-		? (live_experts_3 * dims.num_n_tiles_3)
-		: (live_experts_3 * dims.num_m_tiles_3);
-	int walk_extent_3 = Traits3::kMSplit ? dims.num_m_tiles_3 : dims.num_n_tiles_3;
-	int outer_split_3 = 1;
-	{
-		int target_cells = 2 * total_phase2_ctas;
-		while (outer_split_3 * 2 <= walk_extent_3
-		       && total_chunks_3 * outer_split_3 < target_cells) {
-			outer_split_3 *= 2;
+
+	int cell_start, cell_stride, outer_split_3, k_split_3;
+	if constexpr (Compute == 100) {
+		// SM100 ClusterM=2 paired-CTA path: fixed M-split, cell = CTA-PAIR.
+		int total_phase2_pairs = total_phase2_ctas / Traits3::ClusterM;
+		int total_chunks = live_experts_3 * dims.num_n_tiles_3;
+		outer_split_3 = 1;
+		{
+			int target_cells = 2 * total_phase2_pairs;
+			while (outer_split_3 * 2 * Traits3::NumPairs <= dims.num_m_tiles_3
+			       && total_chunks * outer_split_3 < target_cells)
+				outer_split_3 *= 2;
+			while (dims.num_m_tiles_3 % (outer_split_3 * Traits3::NumPairs) != 0)
+				outer_split_3 /= 2;
+			outer_split_3 = max(outer_split_3, 1);
 		}
-		while (walk_extent_3 % outer_split_3 != 0) outer_split_3 /= 2;
-		if (outer_split_3 < 1) outer_split_3 = 1;
-	}
-	// K-split (KS): when the live cells (total_chunks_3 × outer_split_3) don't
-	// fill the grid, split each cell's K-loop across k_split_3 CTAs and let the
-	// TMA_REDUCE_ADD epilogue sum the partials. Bounded so each slice keeps
-	// >= kKMin K-tiles (else the Stages-deep pipeline can't amortize its fill).
-	int k_split_3 = 1;
-	{
-		int active_cells  = total_chunks_3 * outer_split_3;
-		int batch_k_tiles = batch_kb_end - batch_kb_start;
-		constexpr int kKMin = 8;
-		int max_by_depth = batch_k_tiles / kKMin;
-		if (max_by_depth < 1) max_by_depth = 1;
-		// Split whenever the live cells don't fill the grid. (Heuristic: the
-		// active_cells count is straggler-confounded — refine later.)
-		if (active_cells > 0 && active_cells < total_phase2_ctas) {
-			k_split_3 = (total_phase2_ctas + active_cells - 1) / active_cells;
-			if (k_split_3 > max_by_depth) k_split_3 = max_by_depth;
-			if (k_split_3 < 1) k_split_3 = 1;
+		// K-split (KS): split each cell's K-loop across k_split_3 CTA-pairs
+		// when the live cells don't fill the grid. TMA_REDUCE_ADD sums
+		// partials.
+		k_split_3 = 1;
+		{
+			int active_cells = total_chunks * outer_split_3;
+			int batch_k_tiles = batch_kb_end - batch_kb_start;
+			constexpr int kKMin = 8;
+			int max_by_depth = max(batch_k_tiles / kKMin, 1);
+			if (active_cells > 0 && active_cells < total_phase2_pairs) {
+				k_split_3 = (total_phase2_pairs + active_cells - 1) / active_cells;
+				k_split_3 = min(k_split_3, max_by_depth);
+			}
 		}
+		cell_start  = flat_id / Traits3::ClusterM;
+		cell_stride = total_phase2_pairs;
+	} else {
+		// SM90 (Hopper) 1SM path. mlp3 holds the SHARED operand and walks
+		// the cooperation (split) axis:
+		//   kMSplit=true  : chunk = (e, n_tile), lane partitions num_m_tiles
+		//   kMSplit=false : chunk = (e, m_tile), lane partitions num_n_tiles
+		// Adaptive split: pick largest pow2 divisor of walk_extent so
+		// total_cells covers all Phase 2 CTAs.
+		int total_chunks_3    = Traits3::kMSplit
+			? (live_experts_3 * dims.num_n_tiles_3)
+			: (live_experts_3 * dims.num_m_tiles_3);
+		int walk_extent_3 = Traits3::kMSplit ? dims.num_m_tiles_3 : dims.num_n_tiles_3;
+		outer_split_3 = 1;
+		{
+			int target_cells = 2 * total_phase2_ctas;
+			while (outer_split_3 * 2 <= walk_extent_3
+			       && total_chunks_3 * outer_split_3 < target_cells) {
+				outer_split_3 *= 2;
+			}
+			while (walk_extent_3 % outer_split_3 != 0) outer_split_3 /= 2;
+			if (outer_split_3 < 1) outer_split_3 = 1;
+		}
+		// K-split (KS): when the live cells (total_chunks_3 × outer_split_3)
+		// don't fill the grid, split each cell's K-loop across k_split_3
+		// CTAs and let the TMA_REDUCE_ADD epilogue sum the partials.
+		// Bounded so each slice keeps >= kKMin K-tiles (else the Stages-deep
+		// pipeline can't amortize its fill).
+		k_split_3 = 1;
+		{
+			int active_cells  = total_chunks_3 * outer_split_3;
+			int batch_k_tiles = batch_kb_end - batch_kb_start;
+			constexpr int kKMin = 8;
+			int max_by_depth = batch_k_tiles / kKMin;
+			if (max_by_depth < 1) max_by_depth = 1;
+			if (active_cells > 0 && active_cells < total_phase2_ctas) {
+				k_split_3 = (total_phase2_ctas + active_cells - 1) / active_cells;
+				if (k_split_3 > max_by_depth) k_split_3 = max_by_depth;
+				if (k_split_3 < 1) k_split_3 = 1;
+			}
+		}
+		cell_start  = flat_id;
+		cell_stride = total_phase2_ctas;
 	}
-	int cell_start  = phase2_div * NSplit2 + phase2_mod;
-	int cell_stride = total_phase2_ctas;
 
 	if (warp_id == 0)
-		mlp3_producer<Traits3>(
+		mlp3_producer<Traits3, Compute>(
 			p3_pipe, s,
 			smem_mlp3, tma_load_dyt3, tma_load_zt3,
 			k_starts, k_ends, experts_per_pe,
@@ -791,6 +963,15 @@ __device__ __forceinline__ void mlp_fused_bwd_run_batches(
 	// semantics under #102's cooperative cell-walk mlp3/mlp4.
 	static_assert(Traits3::TileK == Traits4::TileK,
 		"Phase 2 shared k_starts/ends require Traits3::TileK == Traits4::TileK");
+	// The Compute == 100 ClusterM=2 paired-CTA Phase-2 path issues tcgen05
+	// 2x1SM UMMA and cross-CTA cluster-scope mbarriers that only exist on
+	// SM100. Compute is the SOLE selector (see mlp_bwd_run_phase_2_mlp3 /
+	// mlp_bwd_run_phase_2_mlp4 above) — catch a bogus Compute value here at
+	// compile time rather than as a cryptic pipeline/SharedStorage type
+	// mismatch further down.
+	static_assert(Compute == 90 || Compute == 100,
+		"mlp_fused_bwd_run_batches: Compute must be 90 (SM90/Hopper, 1SM "
+		"Phase-2) or 100 (SM100/Blackwell, ClusterM=2 paired-CTA Phase-2).");
 
 	for (int batch = 0; batch < dims.num_batches; ++batch) {
 
@@ -896,26 +1077,32 @@ __device__ __forceinline__ void mlp_fused_bwd_run_batches(
 		if (bk_tiles > 0)
 			global_barrier.wait();
 
-		if (bk_tiles > 0)
-			mlp_bwd_run_phase_2_mlp4<Traits1, Traits4, NSplit2, Compute>(
+		if (bk_tiles > 0) {
+			mlp_bwd_run_phase_2_mlp4<
+				Traits1, Traits4, NSplit2, Compute>(
 				p4_pipe, p4_count, smem.mlp4,
 				bufs.expert_k_starts, bufs.expert_k_ends,
 				tma_load_xt4, tma_load_dut4, tma_load_dvt4,
 				tma_reduce_db, tma_reduce_dc,
-				warp_id, bk_start, bk_tiles, phase2_div, phase2_mod,
+				warp_id, bk_start, bk_tiles,
+				phase2_div, phase2_mod,
 				dims, smem.tmem_base);
+		}
 
 		global_barrier.wait();
 		if (has_tile)
 			iter.release_src(threadIdx.x);
 
-		if (bk_tiles > 0)
-			mlp_bwd_run_phase_2_mlp3<Traits1, Traits3, NSplit2, Compute>(
+		if (bk_tiles > 0) {
+			mlp_bwd_run_phase_2_mlp3<
+				Traits1, Traits3, NSplit2, Compute>(
 				p3_pipe, p3_count, smem.mlp3,
 				bufs.expert_k_starts, bufs.expert_k_ends,
 				tma_load_dyt3, tma_load_zt3, tma_reduce_da,
-				warp_id, bk_start, bk_tiles, phase2_div, phase2_mod,
+				warp_id, bk_start, bk_tiles,
+				phase2_div, phase2_mod,
 				dims, smem.tmem_base);
+		}
 
 		global_barrier.wait();
 		if (has_tile)
@@ -994,6 +1181,12 @@ __device__ __forceinline__ void mlp_fused_bwd(
 	using Element = typename Traits1::Element;
 	int warp_id = threadIdx.x / Traits1::WarpSize;
 	constexpr int kMlpBwdBarrierThreads = kMlpBwdBarrierThreadsFor<Compute>;
+	// See mlp_fused_bwd_run_batches — Compute is the SOLE selector of the
+	// Compute == 100 ClusterM=2 paired-CTA Phase-2 path; the paired-CTA
+	// UMMA + cluster mbarrier rendezvous below is SM100-only.
+	static_assert(Compute == 90 || Compute == 100,
+		"mlp_fused_bwd: Compute must be 90 (SM90/Hopper, 1SM Phase-2) or "
+		"100 (SM100/Blackwell, ClusterM=2 paired-CTA Phase-2).");
 
 	// ── Prefetch TMA descriptors ──
 	cute::prefetch_tma_descriptor(tma_load_x.get_tma_descriptor());
@@ -1046,17 +1239,23 @@ __device__ __forceinline__ void mlp_fused_bwd(
 
 	// Single fused pipe for mlp3 carrying dYT + Z per acquire. On SM100,
 	// warp 3 issues UMMA and epilogue WGs 4-11 drain the same output tile.
+	// Compute == 100 always drives the SM100 ClusterM=2 paired-CTA pipe
+	// (mlp3_make_pipe_umma_2sm); Compute == 90 drives the existing Hopper
+	// pipe (mlp3_make_pipe).
 	auto p3_pipe = [&]() {
 		if constexpr (Compute == 100)
-			return mlp3_make_pipe_umma<Traits3>(smem.p3_pipe);
+			return mlp3_make_pipe_umma_2sm<Traits3>(smem.p3_pipe);
 		else
 			return mlp3_make_pipe<Traits3>(smem.p3_pipe);
 	}();
 	// Single fused pipe for mlp4 carrying X + dU^T + dV^T per acquire. On
-	// SM100, warp 3 issues the two UMMAs and epilogue WGs 4-11 reduce-add dB/dC.
+	// SM100, warp 3 issues the two UMMAs and epilogue WGs 4-11 reduce-add
+	// dB/dC. Compute == 100 always drives the SM100 ClusterM=2 paired-CTA
+	// pipe (mlp4_make_pipe_umma_2sm); Compute == 90 drives the existing
+	// Hopper pipe (mlp4_make_pipe).
 	auto p4_pipe = [&]() {
 		if constexpr (Compute == 100)
-			return mlp4_make_pipe_umma<Traits4>(smem.p4_pipe);
+			return mlp4_make_pipe_umma_2sm<Traits4>(smem.p4_pipe);
 		else
 			return mlp4_make_pipe<Traits4>(smem.p4_pipe);
 	}();
@@ -1070,12 +1269,20 @@ __device__ __forceinline__ void mlp_fused_bwd(
 	if (warp_id == 1 || warp_id == 2) return;
 
 	cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
-	cute::TMEM::Allocator1Sm tmem_alloc{};
+	cute::conditional_t<
+		Compute == 100,
+		cute::TMEM::Allocator2Sm,
+		cute::TMEM::Allocator1Sm> tmem_alloc{};
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns =
 			MlpBwdTmemColumns<Traits1, Traits2T, Traits3, Traits4, Traits5>::value;
 		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tmem_base);
+			if constexpr (Compute == 100) {
+				if (cute::elect_one_sync())
+					smem.tmem_pair_barrier.init(
+						Traits1::WarpSize);
+			}
 			__syncwarp();
 		}
 		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
@@ -1129,6 +1336,14 @@ __device__ __forceinline__ void mlp_fused_bwd(
 		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
+			if constexpr (Compute == 100) {
+				uint32_t rank = cute::block_rank_in_cluster();
+				uint32_t peer = rank ^ 1;
+				bool leader = (rank % 2) == 0;
+				smem.tmem_pair_barrier.arrive(peer, !leader);
+				smem.tmem_pair_barrier.wait(0);
+				smem.tmem_pair_barrier.arrive(peer, leader);
+			}
 			tmem_alloc.free(smem.tmem_base, kTmemColumns);
 		}
 	}
@@ -1217,6 +1432,12 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 
 	static_assert(SubBatch >= 1 && SubBatch <= kBwdSubBatchMax,
 		"SubBatch (MoeBwdConfig::kSubBatch) must be in [1, kBwdSubBatchMax]");
+	// See mlp_fused_bwd_run_batches — Compute is the SOLE selector of the
+	// Compute == 100 ClusterM=2 paired-CTA Phase-2 path; the paired-CTA
+	// UMMA + cluster mbarrier rendezvous below is SM100-only.
+	static_assert(Compute == 90 || Compute == 100,
+		"mlp_fused_bwd_dual: Compute must be 90 (SM90/Hopper, 1SM Phase-2) "
+		"or 100 (SM100/Blackwell, ClusterM=2 paired-CTA Phase-2).");
 
 	int warp_id = threadIdx.x / Traits1::WarpSize;
 	constexpr int kMlpBwdBarrierThreads = kMlpBwdBarrierThreadsFor<Compute>;
@@ -1267,15 +1488,23 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 			return mlp5_make_pipe<Traits5>(smem.pd_pipe);
 	}();
 
+	// Single fused pipe for mlp3 carrying dYT + Z per acquire. Compute ==
+	// 100 always drives the SM100 ClusterM=2 paired-CTA pipe
+	// (mlp3_make_pipe_umma_2sm); Compute == 90 drives the existing Hopper
+	// pipe (mlp3_make_pipe).
 	auto p3_pipe = [&]() {
 		if constexpr (Compute == 100)
-			return mlp3_make_pipe_umma<Traits3>(smem.p3_pipe);
+			return mlp3_make_pipe_umma_2sm<Traits3>(smem.p3_pipe);
 		else
 			return mlp3_make_pipe<Traits3>(smem.p3_pipe);
 	}();
+	// Single fused pipe for mlp4 carrying X + dU^T + dV^T per acquire.
+	// Compute == 100 always drives the SM100 ClusterM=2 paired-CTA pipe
+	// (mlp4_make_pipe_umma_2sm); Compute == 90 drives the existing Hopper
+	// pipe (mlp4_make_pipe).
 	auto p4_pipe = [&]() {
 		if constexpr (Compute == 100)
-			return mlp4_make_pipe_umma<Traits4>(smem.p4_pipe);
+			return mlp4_make_pipe_umma_2sm<Traits4>(smem.p4_pipe);
 		else
 			return mlp4_make_pipe<Traits4>(smem.p4_pipe);
 	}();
@@ -1286,12 +1515,20 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 	if (warp_id == 1 || warp_id == 2) return;
 
 	cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
-	cute::TMEM::Allocator1Sm tmem_alloc{};
+	cute::conditional_t<
+		Compute == 100,
+		cute::TMEM::Allocator2Sm,
+		cute::TMEM::Allocator1Sm> tmem_alloc{};
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns =
 			MlpBwdTmemColumns<Traits1, Traits2T, Traits3, Traits4, Traits5>::value;
 		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tmem_base);
+			if constexpr (Compute == 100) {
+				if (cute::elect_one_sync())
+					smem.tmem_pair_barrier.init(
+						Traits1::WarpSize);
+			}
 			__syncwarp();
 		}
 		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
@@ -1325,6 +1562,17 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 			cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 			if (warp_id == 3) {
 				tmem_alloc.release_allocation_lock();
+				if constexpr (Compute == 100) {
+					uint32_t rank =
+						cute::block_rank_in_cluster();
+					uint32_t peer = rank ^ 1;
+					bool leader = (rank % 2) == 0;
+					smem.tmem_pair_barrier.arrive(
+						peer, !leader);
+					smem.tmem_pair_barrier.wait(0);
+					smem.tmem_pair_barrier.arrive(
+						peer, leader);
+				}
 				tmem_alloc.free(smem.tmem_base, kTmemColumns);
 			}
 		}
@@ -1505,14 +1753,17 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 			global_barrier.wait();
 		}
 
-		if (bk_tiles > 0)
-			mlp_bwd_run_phase_2_mlp4<Traits1, Traits4, NSplit2, Compute>(
+		if (bk_tiles > 0) {
+			mlp_bwd_run_phase_2_mlp4<
+				Traits1, Traits4, NSplit2, Compute>(
 				p4_pipe, p4_count, smem.mlp4,
 				remote_bufs.expert_k_starts, remote_bufs.expert_k_ends,
 				tma_load_xt4_remote, tma_load_dut4, tma_load_dvt4,
 				tma_reduce_db, tma_reduce_dc,
-				warp_id, bk_start, bk_tiles, phase2_div, phase2_mod,
+				warp_id, bk_start, bk_tiles,
+				phase2_div, phase2_mod,
 				gemm_dims, smem.tmem_base, ring_kb);
+		}
 
 		global_barrier.wait();
 		// mlp4 done reading X^T — free every X slot the group held.
@@ -1522,13 +1773,16 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 				if (saved_live[s]) iter.release_src_slot(saved_slot[s], threadIdx.x);
 		}
 
-		if (bk_tiles > 0)
-			mlp_bwd_run_phase_2_mlp3<Traits1, Traits3, NSplit2, Compute>(
+		if (bk_tiles > 0) {
+			mlp_bwd_run_phase_2_mlp3<
+				Traits1, Traits3, NSplit2, Compute>(
 				p3_pipe, p3_count, smem.mlp3,
 				remote_bufs.expert_k_starts, remote_bufs.expert_k_ends,
 				tma_load_dyt3_remote, tma_load_zt3, tma_reduce_da,
-				warp_id, bk_start, bk_tiles, phase2_div, phase2_mod,
+				warp_id, bk_start, bk_tiles,
+				phase2_div, phase2_mod,
 				gemm_dims, smem.tmem_base, ring_kb);
+		}
 
 		global_barrier.wait();
 		// mlp3 done reading dY^T — free every dY slot the group held.
@@ -1545,6 +1799,14 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
+			if constexpr (Compute == 100) {
+				uint32_t rank = cute::block_rank_in_cluster();
+				uint32_t peer = rank ^ 1;
+				bool leader = (rank % 2) == 0;
+				smem.tmem_pair_barrier.arrive(peer, !leader);
+				smem.tmem_pair_barrier.wait(0);
+				smem.tmem_pair_barrier.arrive(peer, leader);
+			}
 			tmem_alloc.free(smem.tmem_base, kTmemColumns);
 		}
 	}
