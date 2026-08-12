@@ -1,6 +1,6 @@
 """Parity checks for the optional FlyDSL fused-linear cross-entropy backend.
 
-Scaffolding mirrors ``test_cutedsl_cross_entropy.py``; uses ``test.utils`` helpers.
+Scaffolding follows the cutedsl backend tests; uses ``test.utils`` helpers.
 """
 
 import os
@@ -18,10 +18,13 @@ from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
+# FLCE runs a matmul (input @ weight.T) before the CE, so its accumulation error
+# dominates the mantissa gap between fp16 and bf16 -- both 16-bit types share the
+# looser budget, and all are looser than the CE-only tolerances.
 _TOL = {
     torch.float32: (1e-5, 5e-4),
-    torch.bfloat16: (5e-3, 5e-2),
     torch.float16: (5e-3, 5e-2),
+    torch.bfloat16: (5e-3, 5e-2),
 }
 _DTYPES = [
     pytest.param(

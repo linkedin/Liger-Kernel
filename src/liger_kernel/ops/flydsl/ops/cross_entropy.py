@@ -38,6 +38,8 @@ from flydsl.expr import math as fmath
 from flydsl.expr import range_constexpr
 
 from liger_kernel.ops.flydsl.ops.utils import dtype_to_flydsl_str
+from liger_kernel.ops.flydsl.ops.utils import elem_bits as _elem_bits
+from liger_kernel.ops.flydsl.ops.utils import flydsl_elem_type as _elem_type
 from liger_kernel.ops.flydsl.ops.utils import warp_size as _host_warp_size
 
 LOG2_E = 1.4426950408889634
@@ -56,26 +58,12 @@ REG_BUDGET = 64
 _compile_cache: dict[tuple, object] = {}
 
 
-def _elem_bits(dtype_str: str) -> int:
-    return 32 if dtype_str == "f32" else 16
-
-
 def _pick_block(n_vec: int, vec_width: int) -> int:
     """Block size that keeps the per-thread row slice inside REG_BUDGET when possible."""
     max_tiles = max(1, REG_BUDGET // vec_width)
     target = max(1, -(-n_vec // max_tiles))
     blk = 1 << (target - 1).bit_length()  # next power of two
     return min(MAX_BLOCK_THREADS, max(BLOCK_THREADS, blk))
-
-
-def _elem_type(dtype_str: str):
-    if dtype_str == "f32":
-        return fx.Float32
-    if dtype_str == "f16":
-        return fx.Float16
-    if dtype_str == "bf16":
-        return fx.BFloat16
-    raise ValueError(dtype_str)
 
 
 def _build_ce_launcher(
@@ -359,9 +347,8 @@ def _build_ce_launcher(
         if const_expr(HAS_ZLOSS):
             zl = lse_sq_scale * lse * lse * inv_n_z
             loss = loss + zl
-        if is_ignored:
-            loss = c_zero
-            zl = c_zero
+        loss = is_ignored.select(c_zero, loss)
+        zl = is_ignored.select(c_zero, zl)
 
         # Store per-row loss (and optional z_loss) from thread 0, always fp32.
         if tid == 0:
@@ -392,14 +379,12 @@ def _build_ce_launcher(
             coef = inv_n_loss
             if const_expr(HAS_ZLOSS):
                 coef = coef + (fx.Float32(2.0) * lse_sq_scale * lse) * inv_n_z
-            if is_ignored:
-                coef = c_zero
+            coef = is_ignored.select(c_zero, coef)
             recip = coef / d
             eps_g = c_zero
             if const_expr(HAS_SMOOTHING):
                 eps_g = eps * inv_n_loss
-                if is_ignored:
-                    eps_g = c_zero
+                eps_g = is_ignored.select(c_zero, eps_g)
             neg_m2 = m * fx.Float32(-LOG2_E)
 
             def _grad_of(x, t_ssa):
@@ -616,13 +601,11 @@ def _build_ce_grad_launcher(
         coef = inv_n_loss * go
         if const_expr(HAS_ZLOSS):
             coef = coef + (fx.Float32(2.0) * lse_sq_scale * lse) * inv_n_z * go
-        if is_ignored:
-            coef = c_zero
+        coef = is_ignored.select(c_zero, coef)
         eps_g = c_zero
         if const_expr(HAS_SMOOTHING):
             eps_g = eps * inv_n_loss * go
-            if is_ignored:
-                eps_g = c_zero
+            eps_g = is_ignored.select(c_zero, eps_g)
         neg_lse2 = lse * fx.Float32(-LOG2_E)
 
         for i in range_constexpr(n_iters):

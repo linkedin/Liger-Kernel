@@ -1,6 +1,6 @@
 """Parity checks for the optional FlyDSL cross-entropy backend.
 
-Scaffolding mirrors ``test_cutedsl_cross_entropy.py``; uses ``test.utils`` helpers.
+Scaffolding follows the cutedsl backend tests; uses ``test.utils`` helpers.
 """
 
 import os
@@ -18,10 +18,12 @@ from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
+# atol ordered by mantissa precision: fp32 (23) tightest, fp16 (10) middle,
+# bf16 (7) loosest. rtol carries the relative error for both 16-bit types.
 _TOL = {
     torch.float32: (1e-5, 1e-5),
-    torch.bfloat16: (5e-5, 5e-2),
-    torch.float16: (5e-3, 5e-2),
+    torch.float16: (1e-3, 5e-2),
+    torch.bfloat16: (5e-3, 5e-2),
 }
 _DTYPES = [
     pytest.param(
@@ -199,6 +201,23 @@ def test_ce_core_matches_triton(BT, V, reduction, dtype):
     set_seed()
     base, target = _basic_inputs(BT, V)
     _assert_ce_parity(base, target, dtype, reduction=reduction)
+
+
+@cuda_required
+@hip_preferred
+@pytest.mark.parametrize("dtype", _DTYPES, ids=_DTYPE_IDS)
+@pytest.mark.parametrize("V", [32000, 50257, 128256], ids=["v32000", "v50257_nonmult", "v128256"])
+def test_ce_specialized_vocab_paths(V, dtype):
+    """Large and non-vector-aligned vocabs cover paths the small clean vocabs miss.
+
+    Large V (32000, 128256) forces a multi-wave block-reduce (RED_SLOTS > 1) and
+    a row too big to register-buffer (the HBM re-read gradient path). V = 50257
+    (GPT-2, not a multiple of the 128-bit vector width) forces the masked scalar
+    tail (VECTORIZED = False).
+    """
+    set_seed()
+    base, target = _basic_inputs(BT=16, V=V)
+    _assert_ce_parity(base, target, dtype, reduction="mean")
 
 
 @cuda_required

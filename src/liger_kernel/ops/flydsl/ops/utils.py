@@ -38,11 +38,32 @@ def warp_size(device: torch.device | None = None) -> int:
     return 32 if is_rdna_arch(arch) else 64
 
 
+_TORCH_TO_FLYDSL_STR = {
+    torch.float32: "f32",
+    torch.float16: "f16",
+    torch.bfloat16: "bf16",
+}
+
+
 def dtype_to_flydsl_str(dtype: torch.dtype) -> str:
-    if dtype == torch.float32:
-        return "f32"
-    if dtype == torch.float16:
-        return "f16"
-    if dtype == torch.bfloat16:
-        return "bf16"
-    raise TypeError(f"FlyDSL backend does not support dtype {dtype}")
+    """FlyDSL type-name string ('f32' / 'f16' / 'bf16') for a torch dtype."""
+    try:
+        return _TORCH_TO_FLYDSL_STR[dtype]
+    except KeyError:
+        supported = ", ".join(_TORCH_TO_FLYDSL_STR.values())
+        raise TypeError(
+            f"FlyDSL backend supports {{{supported}}} logits, got {dtype}. "
+            f"Select a different backend via LIGER_KERNEL_IMPL, or cast the input."
+        ) from None
+
+
+def flydsl_elem_type(dtype_str: str):
+    """FlyDSL numeric type (e.g. ``fx.Float32``) for a type-name string."""
+    import flydsl.expr as fx
+
+    return {"f32": fx.Float32, "f16": fx.Float16, "bf16": fx.BFloat16}[dtype_str]
+
+
+def elem_bits(dtype_str: str) -> int:
+    """Element bit width for a type-name string, read from the fx numeric type."""
+    return flydsl_elem_type(dtype_str).width
