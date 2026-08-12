@@ -29,13 +29,13 @@ import flydsl.compiler as flyc
 import flydsl.expr as fx
 import torch
 
+from flydsl.expr import ReductionOp
 from flydsl.expr import arith
 from flydsl.expr import const_expr
+from flydsl.expr import full as vec_full
 from flydsl.expr import gpu
 from flydsl.expr import math as fmath
 from flydsl.expr import range_constexpr
-from flydsl.expr.vector import ReductionOp
-from flydsl.expr.vector import full as vec_full
 
 from liger_kernel.ops.flydsl.ops.utils import dtype_to_flydsl_str
 from liger_kernel.ops.flydsl.ops.utils import warp_size as _host_warp_size
