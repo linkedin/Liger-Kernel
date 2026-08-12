@@ -1514,7 +1514,9 @@ void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m) {
 	// lookup picks rows recorded at comparable per-PE load.
 	const int n_pes = nvshmem_team_n_pes(a.team);
 	const int E_local = (n_pes > 0) ? std::max(1, num_experts / n_pes) : num_experts;
-	const int TKE = TK / E_local;
+	// The lookup operates in log space, so clamp the per-expert average to
+	// the smallest representable workload for tiny but valid token batches.
+	const int TKE = std::max(1, TK / E_local);
 	const int compute = moe_detect_compute_dispatch_key(a.device, "moe_fused_fwd_bf16_auto");
 
 	// ── Override path: LIGER_MOE_FORCE_CONFIG=TN1,TK1,S1,EC1,TN2,TK2,S2,EC2,ZB,CS,TM[,GemmTM]
