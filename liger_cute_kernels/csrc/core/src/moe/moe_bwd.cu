@@ -1828,7 +1828,8 @@ void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
 	const int TK = T * top_k;
 	const int n_pes = nvshmem_team_n_pes(a.team);
 	const int E_local = (n_pes > 0) ? std::max(1, num_experts / n_pes) : num_experts;
-	const int TKE = TK / E_local;
+	// Keep backward lookup consistent with forward for tiny token batches.
+	const int TKE = std::max(1, TK / E_local);
 	const int compute = moe_detect_compute_dispatch_key(a.device, "moe_fused_bwd_bf16_auto");
 
 	if (const char* s = std::getenv("LIGER_MOE_BWD_FORCE_CONFIG")) {
