@@ -25,6 +25,7 @@ from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.transformers.model.deepseek_v3 import lce_forward as deepseek_v3_lce_forward
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
@@ -210,6 +211,15 @@ def is_paligemma_available():
         return False
 
 
+def is_deepseek_v3_available():
+    try:
+        import transformers.models.deepseek_v3  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_deepseek_v4_available():
     try:
         import transformers.models.deepseek_v4  # noqa: F401
@@ -285,6 +295,7 @@ def is_nemotron_available():
 def test_import_from_root():
     try:
         from liger_kernel.transformers import AutoLigerKernelForCausalLM  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v3  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma3  # noqa: F401
@@ -1608,6 +1619,163 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_deepseek_v3_available(), reason="deepseek_v3 module not available")
+def test_apply_liger_kernel_to_deepseek_v3_does_not_patch_rope():
+    from transformers.models.deepseek_v3 import modeling_deepseek_v3
+
+    original_rope_source = inspect.getsource(modeling_deepseek_v3.apply_rotary_pos_emb)
+    original_interleaved_rope_source = inspect.getsource(modeling_deepseek_v3.apply_rotary_pos_emb_interleave)
+
+    monkey_patch.apply_liger_kernel_to_deepseek_v3(
+        rope=True,
+        cross_entropy=False,
+        fused_linear_cross_entropy=False,
+        rms_norm=False,
+        swiglu=False,
+    )
+
+    assert inspect.getsource(modeling_deepseek_v3.apply_rotary_pos_emb) == original_rope_source
+    assert inspect.getsource(modeling_deepseek_v3.apply_rotary_pos_emb_interleave) == original_interleaved_rope_source
+
+
+@pytest.mark.skipif(not is_deepseek_v3_available(), reason="deepseek_v3 module not available")
+@pytest.mark.parametrize("q_lora_rank", [8, None])
+def test_apply_liger_kernel_to_instance_for_deepseek_v3(q_lora_rank):
+    with patch("transformers.models.deepseek_v3.modeling_deepseek_v3"):
+        config = transformers.models.deepseek_v3.configuration_deepseek_v3.DeepseekV3Config(
+            vocab_size=1024,
+            hidden_size=32,
+            intermediate_size=64,
+            moe_intermediate_size=16,
+            num_hidden_layers=4,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            q_lora_rank=q_lora_rank,
+            kv_lora_rank=8,
+            qk_rope_head_dim=8,
+            qk_nope_head_dim=8,
+            v_head_dim=16,
+            num_experts_per_tok=2,
+            n_routed_experts=4,
+            n_shared_experts=1,
+            n_group=2,
+            topk_group=1,
+            first_k_dense_replace=1,
+            max_position_embeddings=128,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        routed_expert_sources = {}
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(deepseek_v3_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer_index, layer in enumerate(dummy_model_instance.model.layers):
+            if hasattr(layer.mlp, "shared_experts"):
+                assert inspect.getsource(layer.mlp.shared_experts.forward) != inspect.getsource(
+                    LigerQwen3MoeSwiGLUMLP.forward
+                )
+                routed_expert_sources[layer_index] = inspect.getsource(layer.mlp.experts.forward)
+            else:
+                assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            q_a_layernorm = getattr(layer.self_attn, "q_a_layernorm", None)
+            if q_lora_rank is not None:
+                assert inspect.getsource(q_a_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            else:
+                assert q_a_layernorm is None
+            assert inspect.getsource(layer.self_attn.kv_a_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(deepseek_v3_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer_index, layer in enumerate(dummy_model_instance.model.layers):
+            if hasattr(layer.mlp, "shared_experts"):
+                assert inspect.getsource(layer.mlp.shared_experts.forward) == inspect.getsource(
+                    LigerQwen3MoeSwiGLUMLP.forward
+                )
+                assert inspect.getsource(layer.mlp.experts.forward) == routed_expert_sources[layer_index]
+            else:
+                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            q_a_layernorm = getattr(layer.self_attn, "q_a_layernorm", None)
+            if q_lora_rank is not None:
+                assert inspect.getsource(q_a_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            else:
+                assert q_a_layernorm is None
+            assert inspect.getsource(layer.self_attn.kv_a_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_deepseek_v3_available(), reason="deepseek_v3 module not available")
+def test_apply_liger_kernel_to_deepseek_v3_preserves_forward_api():
+    config = transformers.models.deepseek_v3.configuration_deepseek_v3.DeepseekV3Config(
+        vocab_size=64,
+        hidden_size=32,
+        intermediate_size=64,
+        moe_intermediate_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        q_lora_rank=8,
+        kv_lora_rank=8,
+        qk_rope_head_dim=8,
+        qk_nope_head_dim=8,
+        v_head_dim=16,
+        num_experts_per_tok=2,
+        n_routed_experts=4,
+        n_shared_experts=1,
+        n_group=2,
+        topk_group=1,
+        first_k_dense_replace=1,
+        max_position_embeddings=16,
+    )
+    dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+    monkey_patch.apply_liger_kernel_to_deepseek_v3(
+        rope=False,
+        cross_entropy=False,
+        fused_linear_cross_entropy=True,
+        rms_norm=False,
+        swiglu=False,
+        model=dummy_model_instance,
+    )
+
+    with torch.no_grad():
+        outputs = dummy_model_instance(input_ids=torch.tensor([[1, 2]]), return_dict=False)
+
+    assert isinstance(outputs, tuple)
+    assert outputs[0].shape == (1, 2, config.vocab_size)
+
+    with torch.no_grad():
+        outputs = dummy_model_instance(input_ids=torch.tensor([[1, 2]]), logits_to_keep=1)
+
+    assert outputs.logits.shape == (1, 1, config.vocab_size)
+
+    shift_labels = torch.tensor([[2, 3]])
+    expected_loss = torch.tensor(1.0)
+    with patch(
+        "liger_kernel.transformers.model.deepseek_v3.lce_maybe_trainable_lm_head",
+        return_value=expected_loss,
+    ) as fused_loss:
+        outputs = dummy_model_instance(
+            input_ids=torch.tensor([[1, 2]]),
+            shift_labels=shift_labels,
+            skip_logits=True,
+        )
+
+    assert outputs.loss is expected_loss
+    assert outputs.logits is None
+    fused_loss.assert_called_once()
+    assert fused_loss.call_args.kwargs["labels"] is None
+    assert fused_loss.call_args.kwargs["shift_labels"] is shift_labels
 
 
 @pytest.mark.skipif(not is_deepseek_v4_available(), reason="deepseek_v4 module not available")
