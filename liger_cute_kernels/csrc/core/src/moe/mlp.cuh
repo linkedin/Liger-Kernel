@@ -61,8 +61,9 @@ using MlpFwdCtaBarrierT = CtaCounterBarrier<(Compute == 100 ? 10 : 9) * 32, kMlp
 struct MlpDims {
 	int hidden_dim;
 	int intermediate_dim;
-	int total_n_rows_1;     // experts_per_pe * intermediate_dim
+	int total_n_rows_1;     // physical rows spanned by the strided B/C views
 	int total_n_rows_2;     // experts_per_pe * hidden_dim
+	int expert_n_stride_1;  // B/C expert stride in TileN1 units
 	int num_n_tiles_1;      // intermediate_dim / TileN1
 	int num_n_tiles_2;      // ceildiv(hidden_dim/TileN2, NSub) — per-WG outer steps
 	int num_k_tiles_1;      // hidden_dim / TileK1
@@ -243,7 +244,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 				mlp1_fused_producer<Traits1>(
 					p1_pipe, p1_state,
 					smem.mlp1, tma_load_x, tma_load_b, tma_load_c,
-					x_mt, expert * dims.num_n_tiles_1,
+					x_mt, expert * dims.expert_n_stride_1,
 					num_tokens, dims.hidden_dim, dims.total_n_rows_1,
 					dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
 			}

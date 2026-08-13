@@ -833,7 +833,20 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	// empty inner loops but still drive their TMA-load/store mbarriers so the
 	// pipeline stays balanced across the column.
 
-	int total_n_rows_1 = experts_per_pe * intermediate_dim;
+	LIGER_CHECK(a.weight_expert_stride >=
+			static_cast<int64_t>(intermediate_dim) * hidden_dim,
+		"weight expert stride (", a.weight_expert_stride,
+		") must cover at least one [I,D] expert matrix");
+	LIGER_CHECK(a.weight_expert_stride % hidden_dim == 0,
+		"weight expert stride (", a.weight_expert_stride,
+		") must contain complete hidden-dimension rows (D=", hidden_dim, ")");
+	int weight_expert_stride_rows =
+		static_cast<int>(a.weight_expert_stride / hidden_dim);
+	LIGER_CHECK(weight_expert_stride_rows % Traits1::TileN == 0,
+		"weight expert stride in rows (", weight_expert_stride_rows,
+		") must be divisible by MLP1 TileN (", Traits1::TileN, ")");
+	int total_n_rows_1 =
+		(experts_per_pe - 1) * weight_expert_stride_rows + intermediate_dim;
 	int total_n_rows_2 = experts_per_pe * hidden_dim;
 
 	int num_pes = nvshmem_team_n_pes(team);
@@ -934,6 +947,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	mlp_dims.intermediate_dim = intermediate_dim;
 	mlp_dims.total_n_rows_1   = total_n_rows_1;
 	mlp_dims.total_n_rows_2   = total_n_rows_2;
+	mlp_dims.expert_n_stride_1 = weight_expert_stride_rows / Traits1::TileN;
 	mlp_dims.num_n_tiles_1    = num_n_tiles_1;
 	mlp_dims.num_n_tiles_2    = num_n_tiles_2;
 	mlp_dims.num_k_tiles_1    = hidden_dim / Traits1::TileK;

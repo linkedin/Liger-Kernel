@@ -98,6 +98,50 @@ def test_fwd_rejects_wrong_dtype(tvm_ffi_module):
         )
 
 
+@pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA tensors")
+def test_fwd_rejects_mismatched_gate_hidden_dim(tvm_ffi_module):
+    tvm_ffi_module.moe_configure_symmetric(**_CFG)
+    T, D, E, K = 16, _CFG["hidden_dim"], _CFG["max_num_experts"], _CFG["max_top_k"]
+    experts_per_pe = E // _CFG["num_pes"]
+    intermediate_dim = 16
+    X = torch.zeros(T, D, dtype=torch.bfloat16, device="cuda")
+    expert_indices = torch.zeros(T, K, dtype=torch.int32, device="cuda")
+    expert_weights = torch.zeros(T, K, dtype=torch.bfloat16, device="cuda")
+    bad_B = torch.zeros(
+        experts_per_pe,
+        intermediate_dim,
+        D // 2,
+        dtype=torch.bfloat16,
+        device="cuda",
+    )
+    C = torch.zeros(
+        experts_per_pe,
+        intermediate_dim,
+        D,
+        dtype=torch.bfloat16,
+        device="cuda",
+    )
+    A = torch.zeros(
+        experts_per_pe,
+        D,
+        intermediate_dim,
+        dtype=torch.bfloat16,
+        device="cuda",
+    )
+    with pytest.raises(RuntimeError, match="all_B hidden dimension must match X"):
+        tvm_ffi_module.moe_fused_fwd_bf16(
+            X,
+            expert_indices,
+            expert_weights,
+            bad_B,
+            C,
+            A,
+            num_experts=E,
+            top_k=K,
+            team_handle=0,
+        )
+
+
 @pytest.mark.skip(
     reason="full fwd/bwd allocates symmetric memory; needs an initialized NVSHMEM "
     "runtime — bootstrap bindings not ported yet."
