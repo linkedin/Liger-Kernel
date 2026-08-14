@@ -159,16 +159,23 @@ ffi::Function module_func(const char* name) {
 struct TensorArg {
 	DLTensor dl{};
 	std::vector<int64_t> shape;
+	std::vector<int64_t> strides;
 
 	TensorArg() = default;
 	TensorArg(void* data, std::vector<int64_t> dims, DLDataType dtype, DLDevice device)
 	    : shape(std::move(dims)) {
+		strides.resize(shape.size());
+		int64_t stride = 1;
+		for (size_t i = shape.size(); i-- > 0;) {
+			strides[i] = stride;
+			stride *= shape[i];
+		}
 		dl.data = data;
 		dl.device = device;
 		dl.ndim = static_cast<int32_t>(shape.size());
 		dl.dtype = dtype;
 		dl.shape = shape.data();
-		dl.strides = nullptr;
+		dl.strides = strides.data();
 		dl.byte_offset = 0;
 	}
 

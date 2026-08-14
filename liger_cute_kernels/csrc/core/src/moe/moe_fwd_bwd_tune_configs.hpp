@@ -17,19 +17,18 @@
 //   test_moe_single.cu  — LIGER_MOE_TUNE_CONFIGS for its config menu.
 //
 // ── Why FOUR groups ─────────────────────────────────────────────────
-// TileM is the one knob the fwd and bwd kernels MUST agree on (the bwd
-// inherits the fwd's sort layout: tile_expert_ids granularity, x_sorted
-// slot stride, expert_offsets alignment). So the menu is split per
-// direction AND per TileM bucket:
+// The menu is split per direction and per GEMM TileM bucket:
 //   LIGER_MOE_FWD_TUNE_CONFIGS_TM64   /  _TM128
 //   LIGER_MOE_BWD_TUNE_CONFIGS_TM64   /  _TM128
+// SM90-only forward candidates live in
+//   LIGER_MOE_FWD_TUNE_CONFIGS_SM90_ONLY
+// so they do not instantiate unsupported Blackwell layouts.
 //
-// tune_moe_fwd_bwd tunes fwd and bwd INDEPENDENTLY within each TileM
-// bucket (fwd timing is invariant to the bwd config and vice-versa once
-// TileM is fixed, since they are separate sequential kernel launches),
-// then sums the per-bucket bests and keeps the winning TileM. The .cu
-// files don't care about the bucket split — the convenience unions below
-// feed them the whole menu per direction:
+// tune_moe_fwd_bwd tunes fwd and bwd independently and may select different
+// GEMM TileM values. Their communication tile and sort-buffer granularity are
+// fixed at 128, so GEMM TileM does not couple the directions. The .cu files
+// don't care about the bucket split; the convenience unions below feed them
+// the whole menu per direction:
 //   LIGER_MOE_TUNE_CONFIGS(X)      = FWD_TM64(X)  FWD_TM128(X)
 //   LIGER_MOE_BWD_TUNE_CONFIGS(X)  = BWD_TM64(X)  BWD_TM128(X)
 //
@@ -42,8 +41,10 @@
 //   - TileM ∈ {64, 128}; shared by MLP1 and MLP2.
 //       TileM=128: M-split (Layout<_2,_1,_1>), each WG owns 64 rows × TileN.
 //       TileM=64 : N-split (Layout<_1,_2,_1>), each WG owns 64 rows × TileN/2.
-//   - MLP1 TileN1 ∈ {64,128,256}; num_n_tiles_1 = I / TileN1.
-//   - MLP2 TileN2 ∈ {64,128,256}; num_n_tiles_2 = D / TileN2.
+//   - MLP1 TileN1 ∈ {64,128,256}.
+//   - MLP2 TileN2 ∈ {64,128,256}; SM90 additionally tunes TileN2=192.
+//   - Hopper uses ceil-div tile counts and rank-3 expert descriptors; TMA
+//     zero-fills load tails and drops store tails without crossing experts.
 //   - EpiChunkN must divide WgTileN (= TileN at TM128, TileN/2 at TM64).
 //   - TM64 requires TileN even (TileN/2 must be an integer N-half).
 //   - NC derived from TileM (NOT a knob): TM128→NC=4, TM64→NC=2.
@@ -63,7 +64,8 @@
 //   mlp4 swaps mlp3 (TileM=TileN3, TileN=TileM3).
 //   Constraints (mirrored in tuned_config_valid_bwd in moe_bwd.cu):
 //     D%TileK1==0, D%TileM3==0, D%256==0, I%256==0, I%TileN3==0,
-//     I%TileK3==0, num_n_tiles_1=I/TileN1 ≥ NSplit, smem union ≤ 228 KiB.
+//     SM100 retains exact divisibility; Hopper permits TMA-padded tails;
+//     smem union ≤ 228 KiB.
 //
 // ── Per-kernel smem (Element = 2 bytes; H100 cap 228 KiB, budget 224) ─
 //   FWD: MLP1 = 2·(TileM·TK1·S1 + 2·TN1·TK1·S1 + 2·64·EC1)
@@ -98,10 +100,7 @@
 
 // ── FWD · TileM=64 (N-split consumer, NC=2) ─────────────────────────
 #define LIGER_MOE_FWD_TUNE_CONFIGS_TM64(X) \
-	X(128, 64, 4, 64, 256, 64, 4, 64, 4, 2, 64) \
-	X(128, 64, 4, 64, 128, 64, 4, 64, 4, 2, 64) \
-	X(128, 64, 4, 64, 128, 64, 4, 64, 4, 4, 64) \
-	X(128, 64, 4, 64, 256, 64, 4, 64, 4, 4, 64)
+	X(128, 64, 4, 64, 128, 64, 4, 64, 4, 4, 64)
 
 // ── FWD · TileM=128 (M-split consumer, NC=4 — divisibility relaxed) ──
 #define LIGER_MOE_FWD_TUNE_CONFIGS_TM128(X) \
@@ -114,94 +113,38 @@
 	X(128, 64, 4, 64, 128, 64, 4, 64, 4, 8, 128) \
 	X(128, 64, 4, 64, 256, 64, 4, 64, 4, 8, 128)
 
+// Mixtral-8x22B T=4096 winner. Keep one CS variant: all four measured within
+// 0.2%, and CS2 won at both E_local=1 and E_local=2.
+#define LIGER_MOE_FWD_TUNE_CONFIGS_SM90_ONLY(X) \
+	X(128, 64, 4, 64, 192, 64, 4, 64, 4, 2, 128)
+
 // ── BWD · TileM=64 (Phase-1 N-split, NC=2) ──────────────────────────
 #define LIGER_MOE_BWD_TUNE_CONFIGS_TM64(X) \
-	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
-	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(4, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
-	X(4, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(6, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
 	X(6, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(8, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
-	X(8, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
+	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
 	X(16, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
-	X(16, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 64) \
-	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 64) \
-	X(4, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 64) \
-	X(4, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 64) \
-	X(6, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 64) \
-	X(6, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 64) \
-	X(8, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 64) \
-	X(8, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 64) \
-	X(16, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 64) \
-	X(16, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 64)
+	X(8, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
+	X(4, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
+	X(8, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
+	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
+	X(16, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64)
 
 // ── BWD · TileM=128 (Phase-1 M-split, NC=4 — divisibility relaxed) ──
 #define LIGER_MOE_BWD_TUNE_CONFIGS_TM128(X) \
-	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 8, 128) \
 	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 128) \
 	X(4, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
-	X(6, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128) \
-	X(6, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
 	X(8, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
 	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
 	X(6, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
 	X(16, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 128) \
 	X(16, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
-	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
-	X(16, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
 	X(8, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 128) \
 	X(4, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 128) \
 	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128) \
 	X(4, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128) \
-	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 8, 128) \
-	X(8, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(4, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(8, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
-	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
 	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 128) \
 	X(6, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 128) \
 	X(16, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 128) \
-	X(8, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128) \
-	X(16, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64)
-
-
-// Llama Scout experiment compile menu: keep BWD pruned for fast FWD-only
-// diagnostic rebuilds. The FWD menus above stay enabled so named-model FWD
-// campaigns can dispatch all 35 tuned rows.
-#undef LIGER_MOE_BWD_TUNE_CONFIGS_TM64
-#undef LIGER_MOE_BWD_TUNE_CONFIGS_TM128
-
-#define LIGER_MOE_BWD_TUNE_CONFIGS_TM64(X)
-
-#define LIGER_MOE_BWD_TUNE_CONFIGS_TM128(X) \
-	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 8, 128) \
-	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 128) \
-	X(4, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
-	X(6, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128) \
-	X(6, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(8, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
-	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
-	X(6, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
-	X(16, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 128) \
-	X(16, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
-	X(2, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
-	X(16, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
-	X(8, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 128) \
-	X(4, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 128) \
-	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128) \
-	X(4, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128) \
-	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 8, 128) \
-	X(8, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(4, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(8, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 2, 64) \
-	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
-	X(2, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 128) \
-	X(6, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 128) \
-	X(16, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 128) \
-	X(8, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128) \
-	X(16, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 2, 64) \
 	X(16, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128)
 
 

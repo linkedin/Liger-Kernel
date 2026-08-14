@@ -69,7 +69,7 @@ struct Mlp1FusedActSmem {
 // Single fused X + W1 + W2 TMA pipe per k-step.
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits, typename Pipeline,
+template <typename Traits, bool Expert3D = false, typename Pipeline,
           typename TmaLoadX, typename TmaLoadW>
 __device__ __forceinline__ void mlp1_fused_act_producer(
 		Pipeline& pipe,
@@ -79,9 +79,11 @@ __device__ __forceinline__ void mlp1_fused_act_producer(
 		TmaLoadW const& tma_load_b,
 		TmaLoadW const& tma_load_c,
 		int m,
-		int expert_n_offset,
+		int expert_or_n_offset,
 		int num_tokens,
 		int hidden_dim,
+		int intermediate_dim,
+		int num_experts,
 		int total_n_rows,
 		int num_n_tiles,
 		int num_k_tiles,
@@ -96,12 +98,30 @@ __device__ __forceinline__ void mlp1_fused_act_producer(
 	auto mX = tma_load_x.get_tma_tensor(make_shape(
 		static_cast<int64_t>(num_tokens),
 		static_cast<int64_t>(hidden_dim)));
-	auto mB = tma_load_b.get_tma_tensor(make_shape(
-		static_cast<int64_t>(total_n_rows),
-		static_cast<int64_t>(hidden_dim)));
-	auto mC = tma_load_c.get_tma_tensor(make_shape(
-		static_cast<int64_t>(total_n_rows),
-		static_cast<int64_t>(hidden_dim)));
+	auto mB = [&]() {
+		if constexpr (Expert3D) {
+			return tma_load_b.get_tma_tensor(make_shape(
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_load_b.get_tma_tensor(make_shape(
+				static_cast<int64_t>(total_n_rows),
+				static_cast<int64_t>(hidden_dim)));
+		}
+	}();
+	auto mC = [&]() {
+		if constexpr (Expert3D) {
+			return tma_load_c.get_tma_tensor(make_shape(
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_load_c.get_tma_tensor(make_shape(
+				static_cast<int64_t>(total_n_rows),
+				static_cast<int64_t>(hidden_dim)));
+		}
+	}();
 
 	auto cta_tma_x = tma_load_x.get_slice(Int<0>{});
 	auto cta_tma_b = tma_load_b.get_slice(Int<0>{});
@@ -117,12 +137,28 @@ __device__ __forceinline__ void mlp1_fused_act_producer(
 	auto tXgX = cta_tma_x.partition_S(gX);
 
 	for (int n = split_idx; n < num_n_tiles; n += num_splits) {
-		auto gB = local_tile(mB,
-			make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
-			make_coord(expert_n_offset + n, _));
-		auto gC = local_tile(mC,
-			make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
-			make_coord(expert_n_offset + n, _));
+		auto gB = [&]() {
+			if constexpr (Expert3D) {
+				return local_tile(mB,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(n, _, expert_or_n_offset));
+			} else {
+				return local_tile(mB,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(expert_or_n_offset + n, _));
+			}
+		}();
+		auto gC = [&]() {
+			if constexpr (Expert3D) {
+				return local_tile(mC,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(n, _, expert_or_n_offset));
+			} else {
+				return local_tile(mC,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(expert_or_n_offset + n, _));
+			}
+		}();
 		auto tBgB = cta_tma_b.partition_S(gB);
 		auto tCgC = cta_tma_c.partition_S(gC);
 

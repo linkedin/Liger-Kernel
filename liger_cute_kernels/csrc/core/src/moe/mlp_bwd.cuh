@@ -412,10 +412,11 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1a(
 	auto s = mlp_bwd_resume_state<Mlp1MainloopPipelineFor<Traits1, Compute>>(
 		pa_count, warp_id == 0);
 	if (warp_id == 0)
-		mlp1_fused_act_producer<Traits1>(pa_pipe, s,
+		mlp1_fused_act_producer<Traits1, Compute == 90>(pa_pipe, s,
 			smem_mlp1, tma_load_x, tma_load_b_fwd, tma_load_c_fwd,
-			m, expert * dims.num_n_tiles_1,
-			dims.num_tokens, dims.hidden_dim, dims.total_n_rows_1,
+			m, (Compute == 90) ? expert : expert * dims.num_n_tiles_1,
+			dims.num_tokens, dims.hidden_dim, dims.intermediate_dim,
+			dims.experts_per_pe, dims.total_n_rows_1,
 			dims.num_n_tiles_1, dims.num_k_tiles_1,
 			ns, nc);
 	if constexpr (Compute == 100) smem_mlp1.tmem_base = tmem_base;
@@ -447,11 +448,11 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1b(
 	auto s = mlp_bwd_resume_state<Mlp2TMainloopPipelineFor<Traits2T, Compute>>(
 		pb_count, warp_id == 0);
 	if (warp_id == 0)
-		mlp2_t_fused_producer<Traits2T>(pb_pipe, s,
+		mlp2_t_fused_producer<Traits2T, Compute == 90>(pb_pipe, s,
 			smem_mlp2t, tma_load_dy, tma_load_a_col,
-			m, expert * dims.num_k_tiles_2t,
+			m, (Compute == 90) ? expert : expert * dims.num_k_tiles_2t,
 			dims.num_tokens, dims.hidden_dim, dims.intermediate_dim,
-			dims.total_k_cols_2t,
+			dims.experts_per_pe, dims.total_k_cols_2t,
 			dims.num_n_tiles_2t, dims.num_k_tiles_2t,
 			ns, nc);
 	if constexpr (Compute == 100) smem_mlp2t.tmem_base = tmem_base;
@@ -485,12 +486,12 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1d(
 	auto s = mlp_bwd_resume_state<Mlp5MainloopPipelineFor<Traits5, Compute>>(
 		pd_count, warp_id == 0);
 	if (warp_id == 0)
-		mlp5_fused_producer<Traits5>(pd_pipe, s,
+		mlp5_fused_producer<Traits5, Compute == 90>(pd_pipe, s,
 			smem_mlp5,
 			tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col,
-			m, expert * dims.num_k_tiles_5,
+			m, (Compute == 90) ? expert : expert * dims.num_k_tiles_5,
 			dims.num_tokens, dims.hidden_dim, dims.intermediate_dim,
-			dims.total_k_cols_5,
+			dims.experts_per_pe, dims.total_k_cols_5,
 			dims.num_n_tiles_5, dims.num_k_tiles_5,
 			ns, nc);
 	if constexpr (Compute == 100) smem_mlp5.tmem_base = tmem_base;
@@ -712,11 +713,11 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 	if constexpr (Compute == 100) smem_mlp4.tmem_base = tmem_base;
 	constexpr int kFirstMlp4ConsumerWarp = (Compute == 100) ? 3 : 4;
 	if (warp_id >= kFirstMlp4ConsumerWarp)
-		mlp4_consumer<Traits4, Compute>(
+		mlp4_consumer<Traits4, Compute, Compute == 90>(
 			p4_pipe, s,
 			smem_mlp4, tma_reduce_db, tma_reduce_dc,
 			k_starts, k_ends, experts_per_pe,
-			dims.hidden_dim, dims.total_m_rows_4,
+			dims.intermediate_dim, dims.hidden_dim, dims.total_m_rows_4,
 			dims.num_m_tiles_4, dims.num_n_tiles_4, outer_split_4,
 			cell_start, cell_stride,
 			batch_kb_start, batch_kb_end, k_split_4);
@@ -868,11 +869,11 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 	if constexpr (Compute == 100) smem_mlp3.tmem_base = tmem_base;
 	constexpr int kFirstMlp3ConsumerWarp = (Compute == 100) ? 3 : 4;
 	if (warp_id >= kFirstMlp3ConsumerWarp)
-		mlp3_consumer<Traits3, Compute>(
+		mlp3_consumer<Traits3, Compute, Compute == 90>(
 			p3_pipe, s,
 			smem_mlp3, tma_reduce_da,
 			k_starts, k_ends, experts_per_pe,
-			dims.intermediate_dim, dims.total_n_rows_3,
+			dims.hidden_dim, dims.intermediate_dim, dims.total_n_rows_3,
 			dims.num_m_tiles_3, dims.num_n_tiles_3, outer_split_3,
 			cell_start, cell_stride,
 			batch_kb_start, batch_kb_end, k_split_3);
