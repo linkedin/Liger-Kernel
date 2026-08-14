@@ -22,6 +22,7 @@
 #include <string>
 
 #include "liger_cute/check.h"
+#include "liger_cute/detail/status.h"
 
 namespace liger_cute {
 namespace detail {
@@ -47,13 +48,26 @@ class BufferPool {
     // Otherwise a prior kernel's in-flight remote puts/gets can land in the
     // newly-allocated region (or fault when the old region is unmapped).
     if (it != device_bufs_.end()) {
-      cudaDeviceSynchronize();
-      cudaFree(it->second.ptr);
+      if (cudaError_t e = cudaDeviceSynchronize(); e != cudaSuccess) {
+        LIGER_FAIL_CUDA("BufferPool: sync before growing '", name,
+                        "' failed: ", cudaGetErrorString(e));
+      }
+      if (cudaError_t e = cudaFree(it->second.ptr); e != cudaSuccess) {
+        LIGER_FAIL_CUDA("BufferPool: cudaFree before growing '", name,
+                        "' failed: ", cudaGetErrorString(e));
+      }
       device_bufs_.erase(it);
     }
     void* ptr = nullptr;
-    cudaMalloc(&ptr, bytes);
-    cudaMemset(ptr, 0, bytes);
+    if (cudaError_t e = cudaMalloc(&ptr, bytes); e != cudaSuccess) {
+      LIGER_FAIL_CUDA("BufferPool: cudaMalloc failed for '", name, "' (",
+                      bytes, " bytes): ", cudaGetErrorString(e));
+    }
+    if (cudaError_t e = cudaMemset(ptr, 0, bytes); e != cudaSuccess) {
+      cudaFree(ptr);
+      LIGER_FAIL_CUDA("BufferPool: cudaMemset failed for '", name, "' (",
+                      bytes, " bytes): ", cudaGetErrorString(e));
+    }
     device_bufs_[name] = {ptr, bytes};
     return ptr;
   }

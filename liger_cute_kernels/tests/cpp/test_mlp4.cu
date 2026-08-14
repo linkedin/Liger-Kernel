@@ -44,6 +44,7 @@
 #include <cstdlib>
 #include <random>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -118,7 +119,7 @@ mlp4_test_kernel(
 	extern __shared__ char raw_smem[];
 	auto& smem = *reinterpret_cast<Mlp4Smem<Traits>*>(raw_smem);
 
-	liger::mlp4_fwd<Traits, Compute>(
+	liger::mlp4_fwd<Traits, Compute, Compute == 90>(
 		smem, tma_load_x, tma_load_dut, tma_load_dvt,
 		tma_reduce_db, tma_reduce_dc,
 		expert_k_starts, expert_k_ends, num_experts,
@@ -298,12 +299,6 @@ static auto make_tmas(const Mlp4Shape& s, Inputs& in) {
 		make_shape(I, T), make_stride(Int<1>{}, I));
 	auto tDV = make_tensor(make_gmem_ptr((const Element*)in.dDV.ptr),
 		make_shape(I, T), make_stride(Int<1>{}, I));
-	// dB/dC: [E·I, H] row-major (H contiguous) — REDUCE_ADD output.
-	auto tDB = make_tensor(make_gmem_ptr((Element*)in.ddB.ptr),
-		make_shape(in.total_m_rows, H), make_stride(H, Int<1>{}));
-	auto tDC = make_tensor(make_gmem_ptr((Element*)in.ddC.ptr),
-		make_shape(in.total_m_rows, H), make_stride(H, Int<1>{}));
-
 	auto x_tma = [&] {
 		if constexpr (Compute == 100) {
 			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tX,
@@ -334,8 +329,34 @@ static auto make_tmas(const Mlp4Shape& s, Inputs& in) {
 			return make_tma_copy(SM90_TMA_LOAD{}, tDV, typename Traits::SmemLayoutA_1{});
 		}
 	}();
-	auto db_tma = make_tma_copy(SM90_TMA_REDUCE_ADD{}, tDB, typename Traits::SmemLayoutStore{});
-	auto dc_tma = make_tma_copy(SM90_TMA_REDUCE_ADD{}, tDC, typename Traits::SmemLayoutStore{});
+	auto db_tma = [&] {
+		if constexpr (Compute == 90) {
+			auto tDB = make_tensor(make_gmem_ptr((Element*)in.ddB.ptr),
+				make_shape(I, H, s.num_experts),
+				make_stride(H, Int<1>{}, I * H));
+			return make_tma_copy(
+				SM90_TMA_REDUCE_ADD{}, tDB, typename Traits::SmemLayoutStore{});
+		} else {
+			auto tDB = make_tensor(make_gmem_ptr((Element*)in.ddB.ptr),
+				make_shape(in.total_m_rows, H), make_stride(H, Int<1>{}));
+			return make_tma_copy(
+				SM90_TMA_REDUCE_ADD{}, tDB, typename Traits::SmemLayoutStore{});
+		}
+	}();
+	auto dc_tma = [&] {
+		if constexpr (Compute == 90) {
+			auto tDC = make_tensor(make_gmem_ptr((Element*)in.ddC.ptr),
+				make_shape(I, H, s.num_experts),
+				make_stride(H, Int<1>{}, I * H));
+			return make_tma_copy(
+				SM90_TMA_REDUCE_ADD{}, tDC, typename Traits::SmemLayoutStore{});
+		} else {
+			auto tDC = make_tensor(make_gmem_ptr((Element*)in.ddC.ptr),
+				make_shape(in.total_m_rows, H), make_stride(H, Int<1>{}));
+			return make_tma_copy(
+				SM90_TMA_REDUCE_ADD{}, tDC, typename Traits::SmemLayoutStore{});
+		}
+	}();
 
 	struct Result {
 		decltype(x_tma) x; decltype(dut_tma) dut; decltype(dvt_tma) dvt;
