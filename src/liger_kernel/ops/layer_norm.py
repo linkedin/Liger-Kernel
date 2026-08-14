@@ -72,7 +72,7 @@ def _layer_norm_forward_kernel(
     # Apply mask to variance calculation to exclude contributions from masked elements
     X_centered_masked = tl.where(mask, X_centered, 0.0)
     var = tl.sum(X_centered_masked * X_centered_masked, axis=0) / n_cols
-    rstd = rsqrt(var + eps)
+    rstd = rsqrt(var + eps.to(tl.float32))
 
     # Store statistics (convert back to original dtype only once)
     tl.store(row_Mean_ptr, mean.to(X_row.dtype))

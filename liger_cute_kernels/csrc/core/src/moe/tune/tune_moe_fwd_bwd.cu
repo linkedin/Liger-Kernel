@@ -373,6 +373,7 @@ static bool run_pair_once(
 		fa.expert_indices = expert_indices.data_ptr<int>();
 		fa.expert_weights = expert_weights.data_ptr();
 		fa.all_B = all_B.data_ptr(); fa.all_C = all_C.data_ptr(); fa.all_A = all_A.data_ptr();
+		fa.weight_expert_stride = static_cast<int64_t>(Imid) * D;
 		fa.num_tokens = T; fa.hidden_dim = D; fa.intermediate_dim = Imid; fa.experts_per_pe = epp;
 		fa.num_experts = E; fa.top_k = K; fa.team = team; fa.stream = stream; fa.device = device;
 		fa.Y = Y.data_ptr();
