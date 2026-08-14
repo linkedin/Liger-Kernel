@@ -92,6 +92,7 @@ def _swiglu_kernel_forward(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
+    gate_multiplier: tl.constexpr,
 ):
     pid = tl.program_id(0)
     b = tl.program_id(1)
@@ -114,7 +115,12 @@ def _swiglu_kernel_forward(
         acc_up = tl.dot(input_block, tl.trans(up_block), acc=acc_up)
 
     # Compute A_block
-    A_block = acc_gate * tl.sigmoid(acc_gate) * acc_up  # [BLOCK_M, BLOCK_N]
+    # Compile-time branch elimination, no runtime overhead.
+    if gate_multiplier == 1.0:
+        A_block = acc_gate * tl.sigmoid(acc_gate) * acc_up  # [BLOCK_M, BLOCK_N]
+    else:
+        acc_gate = acc_gate * gate_multiplier
+        A_block = acc_gate * tl.sigmoid(acc_gate) * acc_up  # [BLOCK_M, BLOCK_N]
 
     # Write back
     dtype = desc_input.dtype
@@ -178,6 +184,7 @@ def _swiglu_kernel_forward_inference(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
+    gate_multiplier: tl.constexpr,
 ):
     pid = tl.program_id(0)
     b = tl.program_id(1)
@@ -200,7 +207,12 @@ def _swiglu_kernel_forward_inference(
         acc_up = tl.dot(input_block, tl.trans(up_block), acc=acc_up)
 
     # Compute A_block
-    A_block = acc_gate * tl.sigmoid(acc_gate) * acc_up  # [BLOCK_M, BLOCK_N]
+    # Compile-time branch elimination, no runtime overhead.
+    if gate_multiplier == 1.0:
+        A_block = acc_gate * tl.sigmoid(acc_gate) * acc_up  # [BLOCK_M, BLOCK_N]
+    else:
+        acc_gate = acc_gate * gate_multiplier
+        A_block = acc_gate * tl.sigmoid(acc_gate) * acc_up  # [BLOCK_M, BLOCK_N]
 
     # Write back
     dtype = desc_input.dtype
@@ -238,6 +250,8 @@ def _swiglu_kernel_backward_dGU(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
+    gate_multiplier: tl.constexpr,
+    down_multiplier: tl.constexpr,
 ):
     pid = tl.program_id(0)
     b = tl.program_id(1)
@@ -262,17 +276,26 @@ def _swiglu_kernel_backward_dGU(
     U_block = tl.reshape(U_block, [BLOCK_M, BLOCK_N])  # [BLOCK_M, BLOCK_N]
 
     # Compute and save dU, dG
+    # NOTE: on Falcon H1 path, the forward kernel already stores G pre-multiplied
+    # by gate_multiplier, so do NOT multiply it again here.
     G_block = G_block.to(tl.float32)
     U_block = U_block.to(tl.float32)
+
     sigmoid_G = tl.sigmoid(G_block)
     silu_G = G_block * sigmoid_G
     dtype = desc_G.dtype
 
-    dU = acc_A * silu_G  # [BLOCK_M, BLOCK_N]
+    if gate_multiplier == 1.0 and down_multiplier == 1.0:
+        dU = acc_A * silu_G  # [BLOCK_M, BLOCK_N]
+        dG = acc_A * U_block * (sigmoid_G + silu_G - sigmoid_G * silu_G)  # [BLOCK_M, BLOCK_N]
+    else:
+        dU = acc_A * down_multiplier * silu_G  # [BLOCK_M, BLOCK_N]
+        dG = (
+            acc_A * down_multiplier * U_block * (sigmoid_G + silu_G - sigmoid_G * silu_G) * gate_multiplier
+        )  # [BLOCK_M, BLOCK_N]
+
     dU = tl.reshape(dU, [1, BLOCK_M, BLOCK_N])
     desc_dU.store([b, M_start, N_start], dU.to(dtype))
-
-    dG = acc_A * U_block * (sigmoid_G + silu_G - sigmoid_G * silu_G)  # [BLOCK_M, BLOCK_N]
     dG = tl.reshape(dG, [1, BLOCK_M, BLOCK_N])
     desc_dG.store([b, M_start, N_start], dG.to(dtype))
 
@@ -432,6 +455,7 @@ def gemm_swiglu(
     input: torch.Tensor,
     gate_weight: torch.Tensor,
     up_weight: torch.Tensor,
+    gate_multiplier: float,
     store_preact: bool = True,
 ):
     """
@@ -482,6 +506,7 @@ def gemm_swiglu(
             dim,
             hidden_dim,
             bucket_M,
+            gate_multiplier=gate_multiplier,
         )
         return AGU, _swiglu_kernel_forward.best_config
     else:
@@ -494,6 +519,7 @@ def gemm_swiglu(
             dim,
             hidden_dim,
             bucket_M,
+            gate_multiplier=gate_multiplier,
         )
         return A, None
 
@@ -503,6 +529,8 @@ def swiglu_backward_dGU(
     down_weight: torch.Tensor,
     AGU: torch.Tensor,
     fwd_best_config,
+    gate_multiplier: float,
+    down_multiplier: float,
 ) -> torch.Tensor:
     B, S, dim = dO.shape
     hidden_dim = down_weight.shape[1]
@@ -545,6 +573,8 @@ def swiglu_backward_dGU(
         BLOCK_N=BLOCK_N,
         BLOCK_K=BLOCK_K,
         GROUP_SIZE_M=GROUP_SIZE_M,
+        gate_multiplier=gate_multiplier,
+        down_multiplier=down_multiplier,
         num_warps=fwd_best_config.num_warps,
         num_stages=fwd_best_config.num_stages,
     )
@@ -592,36 +622,56 @@ def swiglu_backward_dI(
 
 class LigerMLPFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, gate_weight, up_weight, down_weight):
+    def forward(
+        ctx,
+        input,
+        gate_weight,
+        up_weight,
+        down_weight,
+        gate_multiplier=1.0,
+        down_multiplier=1.0,
+    ):
         assert input.is_cuda and gate_weight.is_cuda and up_weight.is_cuda and down_weight.is_cuda
         input, gate_weight, up_weight, down_weight = _check_inputs(input, gate_weight, up_weight, down_weight)
         # Note:
         # PyTorch automatically disables global gradient computation during
         # the forward pass, so torch.is_grad_enabled() cannot be used.
         store_preact = any(ctx.needs_input_grad)
-        out, fwd_best_config = gemm_swiglu(input, gate_weight, up_weight, store_preact)
+        out, fwd_best_config = gemm_swiglu(input, gate_weight, up_weight, gate_multiplier, store_preact)
         if store_preact:
             ctx.save_for_backward(input, gate_weight, up_weight, down_weight, out)
             ctx.fwd_best_config = fwd_best_config
+            ctx.gate_multiplier = gate_multiplier
+            ctx.down_multiplier = down_multiplier
             hidden_dim = gate_weight.shape[0]
-            return F.linear(out[..., :hidden_dim], down_weight)
+            if down_multiplier == 1.0:
+                return F.linear(out[..., :hidden_dim], down_weight)
+            else:
+                return F.linear(out[..., :hidden_dim], down_weight) * down_multiplier
         else:
             # Inference mode: no GU saving.
-            return F.linear(out, down_weight)
+            if down_multiplier == 1.0:
+                return F.linear(out, down_weight)
+            else:
+                return F.linear(out, down_weight) * down_multiplier
 
     @staticmethod
     def backward(ctx, dO):
         dO = _ensure_tma_compatible(dO)
         input, gate_weight, up_weight, down_weight, AGU = ctx.saved_tensors
+        gate_multiplier, down_multiplier = ctx.gate_multiplier, ctx.down_multiplier
         hidden_dim, dim = gate_weight.shape
 
         # Compute dWd.
         A = AGU[..., :hidden_dim]
-        dWd = dO.reshape(-1, dim).T @ A.reshape(-1, hidden_dim)  # [dim, hidden_dim]
+        if down_multiplier == 1.0:
+            dWd = dO.reshape(-1, dim).T @ A.reshape(-1, hidden_dim)  # [dim, hidden_dim]
+        else:
+            dWd = dO.reshape(-1, dim).T @ A.reshape(-1, hidden_dim) * down_multiplier
 
         # Compute dU and dG by triton kernel.
         # The original G and U will be overwritten by dG and dU.
-        swiglu_backward_dGU(dO, down_weight, AGU, ctx.fwd_best_config)
+        swiglu_backward_dGU(dO, down_weight, AGU, ctx.fwd_best_config, gate_multiplier, down_multiplier)
 
         # Compute dWug by a single large GEMM.
         dGU = AGU[..., hidden_dim:]
@@ -631,4 +681,4 @@ class LigerMLPFunction(torch.autograd.Function):
         # Compute dI by triton kernel.
         dI = swiglu_backward_dI(gate_weight, up_weight, AGU)
 
-        return dI, dWg, dWu, dWd
+        return dI, dWg, dWu, dWd, None, None

@@ -37,7 +37,12 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
-from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
+
+USE_FLASH_SWIGLU = True
+if USE_FLASH_SWIGLU:
+    from liger_kernel.transformers.mlp import LigerMLP as LigerSwiGLUMLP
+else:
+    from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
 try:
     import peft
@@ -464,6 +469,11 @@ def apply_liger_kernel_to_llama4(
     from transformers.models.llama4.modeling_llama4 import Llama4VisionModel
 
     from liger_kernel.transformers.model.llama4 import lce_forward as llama4_lce_forward
+
+    # NOTE: Llama4's text MLP receives a 2D [T, hidden] input, which the fused LigerMLP
+    # kernels do not support, so we use the original LigerSwiGLUMLP implementation
+    # here instead of LigerMLP.
+    from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
     if rope:
         from liger_kernel.transformers.llama4_rope import apply_liger_llama4_rope_full
@@ -2911,7 +2921,10 @@ def apply_liger_kernel_to_falcon_h1(
     from transformers.models.falcon_h1 import modeling_falcon_h1
     from transformers.models.falcon_h1.modeling_falcon_h1 import FalconH1Model
 
-    from liger_kernel.transformers.swiglu import LigerFalconH1SwiGLUMLP
+    if USE_FLASH_SWIGLU:
+        from liger_kernel.transformers.mlp import LigerFalconH1MLP as LigerFalconH1SwiGLUMLP
+    else:
+        from liger_kernel.transformers.swiglu import LigerFalconH1SwiGLUMLP
 
     if rope:
         logger.info("Apply liger rotary pos emb.")
