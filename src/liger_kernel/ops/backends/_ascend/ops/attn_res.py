@@ -13,10 +13,11 @@ with softmax attention over depth for dynamic weighting:
 Solves PreNorm dilution: deep layer contributions being diluted.
 Paper: https://arxiv.org/abs/2603.15031
 
-Triton optimizations:
-1. Single kernel fuses RMSNorm + dot + softmax + weighted sum
-2. Each program handles one (batch, token) position
-3. N is small (≤16 blocks), scores fit in registers
+Ascend/NPU optimizations:
+1. Fused Triton kernel: RMSNorm + dot + softmax + weighted sum
+2. Grid-stride launch sized to NPU core count
+3. UB-aware tiling along D for large hidden dimensions
+4. Feature dim padded to _FEAT_ALIGN for aligned vector loads
 """
 
 import torch
@@ -28,7 +29,7 @@ from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 
 # Pad the last dim to a multiple of _FEAT_ALIGN for aligned vector UB loads.
-# kernels use logical D for math/masks and d_stride for storage row pitch.
+# Kernels use logical D for math/masks and d_stride for storage row pitch.
 _FEAT_ALIGN = 16
 
 
@@ -36,6 +37,36 @@ def _pad_features_aligned(V: torch.Tensor) -> torch.Tensor:
     d = V.shape[-1]
     pad = (-d) % _FEAT_ALIGN
     return torch.nn.functional.pad(V, (0, pad)) if pad else V
+
+
+def _get_max_blocks(n_blocks: int) -> int:
+    """Round block count up to a constexpr-friendly upper bound."""
+    for mb in (4, 8, 16, 32):
+        if n_blocks <= mb:
+            return mb
+    return 32
+
+
+def _get_optimal_block_d(D: int, is_forward: bool) -> int:
+    """Pick tile size along D to stay within UB limits."""
+    if D <= 1024:
+        return triton.next_power_of_2(D)
+
+    memory_multiplier = 12.0 if is_forward else 16.0
+    tile_shapes = compute_default_tiling_strategy(
+        safety_margin=0.85,
+        dtype_size=4,
+        memory_multiplier=memory_multiplier,
+        shapes=((D,),),
+        tiling_dims=(0,),
+    )
+    if tile_shapes:
+        return max(512, tile_shapes[0][0])
+    return 512
+
+
+def _launch_grid(n_tokens: int) -> int:
+    return min(get_npu_core_count(), n_tokens)
 
 
 @triton.jit
@@ -53,6 +84,7 @@ def _attn_res_fwd_kernel(
     n_blocks: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
+    """Forward (small D): one row per program via grid-stride over tokens."""
     pid = tl.program_id(0)
     num_programs = tl.num_programs(0)
 
@@ -86,8 +118,7 @@ def _attn_res_fwd_kernel(
 
         # Softmax
         exp_scores = tl.exp(scores - score_max)
-        sum_exp = tl.sum(exp_scores, axis=0)
-        alpha = exp_scores / sum_exp  # [n_blocks]
+        alpha = exp_scores / tl.sum(exp_scores, axis=0)
         h = tl.zeros((BLOCK_D,), dtype=tl.float32)
 
         # Store alpha
@@ -118,10 +149,11 @@ def _attn_res_fwd_kernel_tiled(
     n_blocks: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
+    """Forward (large D): tile along feature dim to fit in UB."""
     pid = tl.program_id(0)
-    num_progs = tl.num_programs(0)
+    num_programs = tl.num_programs(0)
 
-    for tok in tl.range(pid, n_tokens, num_progs):
+    for tok in tl.range(pid, n_tokens, num_programs):
         # Compute scores + rstd
         scores = tl.zeros((n_blocks,), dtype=tl.float32)
         score_max = -float("inf")
@@ -154,17 +186,14 @@ def _attn_res_fwd_kernel_tiled(
 
                 wq = tl.load(W_query_ptr + cols, mask=mask, other=0.0).to(tl.float32)
                 wn = tl.load(W_norm_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-
-                k = v * rstd * wn
-                sc += tl.sum(wq * k, axis=0)
+                sc += tl.sum(wq * v * rstd * wn, axis=0)
 
             scores = tl.where(tl.arange(0, n_blocks) == i, sc, scores)
             score_max = tl.maximum(score_max, sc)
 
         # Softmax
         exp_scores = tl.exp(scores - score_max)
-        sum_exp = tl.sum(exp_scores, axis=0)
-        alpha = exp_scores / sum_exp
+        alpha = exp_scores / tl.sum(exp_scores, axis=0)
 
         # store alpha
         for i in tl.static_range(0, n_blocks):
@@ -201,75 +230,55 @@ def _attn_res_bwd_kernel(
     dV_ptr,  # [N, B*T, D]
     dW_query_ptr,  # [D]
     dW_norm_ptr,  # [D]
+    n_blocks,
     n_tokens,
     D,
     d_stride,
-    n_blocks: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    MAX_BLOCKS: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    num_programs = tl.num_programs(0)
+    """Backward (small D): one program per token."""
+    tok = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_D)
+    d_mask = cols < D
 
-    for row_idx in range(pid, n_tokens, num_programs):
-        cols = tl.arange(0, BLOCK_D)
-        d_mask = cols < D
+    dh = tl.load(dOut_ptr + tok * d_stride + cols, mask=d_mask, other=0.0).to(tl.float32)
+    w_query = tl.load(W_query_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
+    w_norm = tl.load(W_norm_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
 
-        # Load shared vectors
-        dh = tl.load(dOut_ptr + row_idx * d_stride + cols, mask=d_mask, other=0.0).to(tl.float32)
-        w_query = tl.load(W_query_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
-        w_norm = tl.load(W_norm_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
-
-        # Load alpha and compute d_alpha
-        alpha = tl.zeros((n_blocks,), dtype=tl.float32)
-        d_alpha = tl.zeros((n_blocks,), dtype=tl.float32)
-
-        for i in tl.static_range(0, n_blocks):
-            v_off = i * n_tokens * d_stride + row_idx * d_stride
+    # Softmax backward: d_score_i = alpha_i * (d_alpha_i - sum_j alpha_j * d_alpha_j)
+    sum_a_da = 0.0
+    for i in tl.static_range(0, MAX_BLOCKS):
+        if i < n_blocks:
+            v_off = i * n_tokens * d_stride + tok * d_stride
             v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
+            a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
+            sum_a_da += a_i * tl.sum(dh * v, axis=0)
 
-            a_i = tl.load(Alpha_ptr + row_idx * n_blocks + i)
+    dw_query_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    dw_norm_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
+
+    for i in tl.static_range(0, MAX_BLOCKS):
+        if i < n_blocks:
+            v_off = i * n_tokens * d_stride + tok * d_stride
+            v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
+            a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
             da_i = tl.sum(dh * v, axis=0)
+            ds_i = a_i * (da_i - sum_a_da)
+            rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
 
-            alpha = tl.where(tl.arange(0, n_blocks) == i, a_i, alpha)
-            d_alpha = tl.where(tl.arange(0, n_blocks) == i, da_i, d_alpha)
-
-        # Softmax backward
-        sum_a_da = tl.sum(alpha * d_alpha, axis=0)
-        d_scores = alpha * (d_alpha - sum_a_da)
-
-        # Accumulators
-        dw_query_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
-        dw_norm_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
-
-        # Main loop
-        for i in tl.static_range(0, n_blocks):
-            v_off = i * n_tokens * d_stride + row_idx * d_stride
-            v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
-
-            a_i = tl.sum(tl.where(tl.arange(0, n_blocks) == i, alpha, 0.0))
-            ds_i = tl.sum(tl.where(tl.arange(0, n_blocks) == i, d_scores, 0.0))
-            rstd = tl.load(RSTD_ptr + row_idx * n_blocks + i)
-
-            # dV
             dv_from_sum = a_i * dh
-
-            v_norm = v * rstd
             dk = ds_i * w_query * w_norm
-
             sum_dk_v = tl.sum(dk * v, axis=0)
             dv_from_score = rstd * dk - rstd * rstd * rstd * (sum_dk_v / D) * v
+            tl.store(dV_ptr + v_off + cols, dv_from_sum + dv_from_score, mask=d_mask)
 
-            dv_total = dv_from_sum + dv_from_score
-            tl.store(dV_ptr + v_off + cols, dv_total, mask=d_mask)
-
-            # parameter grads
-            k_i = v_norm * w_norm
-            dw_query_acc += ds_i * k_i
+            v_norm = v * rstd
+            dw_query_acc += ds_i * v_norm * w_norm
             dw_norm_acc += ds_i * w_query * v_norm
 
-        # Atomics
-        tl.atomic_add(dW_query_ptr + cols, dw_query_acc, mask=d_mask)
-        tl.atomic_add(dW_norm_ptr + cols, dw_norm_acc, mask=d_mask)
+    tl.atomic_add(dW_query_ptr + cols, dw_query_acc, mask=d_mask)
+    tl.atomic_add(dW_norm_ptr + cols, dw_norm_acc, mask=d_mask)
 
 
 @triton.jit
@@ -283,65 +292,57 @@ def _attn_res_bwd_kernel_tiled(
     dV_ptr,
     dW_query_ptr,
     dW_norm_ptr,
+    n_blocks,
     n_tokens,
     D,
     d_stride,
-    n_blocks: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    MAX_BLOCKS: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    num_programs = tl.num_programs(0)
+    """Backward (large D): tile along feature dim to fit in UB."""
+    tok = tl.program_id(0)
 
-    for tok in tl.range(pid, n_tokens, num_programs):
-        # Compute alpha and d_alpha
-        alpha = tl.zeros((n_blocks,), dtype=tl.float32)
-        d_alpha = tl.zeros((n_blocks,), dtype=tl.float32)
-
-        for i in tl.static_range(0, n_blocks):
+    sum_a_da = 0.0
+    for i in tl.static_range(0, MAX_BLOCKS):
+        if i < n_blocks:
             a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
-            alpha = tl.where(tl.arange(0, n_blocks) == i, a_i, alpha)
-
             da_i = 0.0
-
             for d in range(0, D, BLOCK_D):
                 cols = d + tl.arange(0, BLOCK_D)
                 mask = cols < D
-
                 dh = tl.load(dOut_ptr + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
                 v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(
                     tl.float32
                 )
-
                 da_i += tl.sum(dh * v, axis=0)
+            sum_a_da += a_i * da_i
 
-            d_alpha = tl.where(tl.arange(0, n_blocks) == i, da_i, d_alpha)
-
-        # Softmax backward
-        sum_a_da = tl.sum(alpha * d_alpha, axis=0)
-        d_scores = alpha * (d_alpha - sum_a_da)
-
-        # Compute grads (tiled over D)
-        for i in tl.static_range(0, n_blocks):
-            a_i = tl.sum(tl.where(tl.arange(0, n_blocks) == i, alpha, 0.0))
-            ds_i = tl.sum(tl.where(tl.arange(0, n_blocks) == i, d_scores, 0.0))
-            rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
-
-            # Compute sum_dk_v (reduction over D)
-            sum_dk_v = 0.0
-
+    for i in tl.static_range(0, MAX_BLOCKS):
+        if i < n_blocks:
+            a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
+            da_i = 0.0
             for d in range(0, D, BLOCK_D):
                 cols = d + tl.arange(0, BLOCK_D)
                 mask = cols < D
-
+                dh = tl.load(dOut_ptr + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
                 v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(
                     tl.float32
                 )
+                da_i += tl.sum(dh * v, axis=0)
 
+            ds_i = a_i * (da_i - sum_a_da)
+            rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
+
+            sum_dk_v = 0.0
+            for d in range(0, D, BLOCK_D):
+                cols = d + tl.arange(0, BLOCK_D)
+                mask = cols < D
+                v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(
+                    tl.float32
+                )
                 wq = tl.load(W_query_ptr + cols, mask=mask, other=0.0).to(tl.float32)
                 wn = tl.load(W_norm_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-
-                dk = ds_i * wq * wn
-                sum_dk_v += tl.sum(dk * v, axis=0)
+                sum_dk_v += tl.sum(ds_i * wq * wn * v, axis=0)
 
             # Compute per-D outputs
             for d in range(0, D, BLOCK_D):
@@ -356,53 +357,43 @@ def _attn_res_bwd_kernel_tiled(
                 wq = tl.load(W_query_ptr + cols, mask=mask, other=0.0).to(tl.float32)
                 wn = tl.load(W_norm_ptr + cols, mask=mask, other=0.0).to(tl.float32)
 
-                # Compute dV
-                dv_from_sum = a_i * dh
-
                 dk = ds_i * wq * wn
                 dv_from_score = rstd * dk - (rstd * rstd * rstd) * (sum_dk_v / D) * v
+                tl.store(
+                    dV_ptr + i * n_tokens * d_stride + tok * d_stride + cols,
+                    a_i * dh + dv_from_score,
+                    mask=mask,
+                )
 
-                dv_total = dv_from_sum + dv_from_score
-
-                tl.store(dV_ptr + i * n_tokens * d_stride + tok * d_stride + cols, dv_total, mask=mask)
-
-                # Accumulate dW
                 v_norm = v * rstd
-                k_i = v_norm * wn
-
-                tl.atomic_add(dW_query_ptr + cols, ds_i * k_i, mask=mask)
+                tl.atomic_add(dW_query_ptr + cols, ds_i * v_norm * wn, mask=mask)
                 tl.atomic_add(dW_norm_ptr + cols, ds_i * wq * v_norm, mask=mask)
 
 
-def get_optimal_block_d(D, is_forward: bool):
-    """
-    Decide tile size along D dimension to avoid UB overflow.
-    """
+def _stack_blocks(blocks):
+    if isinstance(blocks, (list, tuple)):
+        return torch.stack(blocks)
+    return blocks
 
-    # Fast path: small D → no tiling
-    if D <= 1024:
-        return triton.next_power_of_2(D)
 
-    if is_forward:
-        memory_multiplier = 12.0
+def _launch_fwd_kernel(V_3d, w_query, w_norm, Out, Alpha, RSTD, n_tokens, D, d_stride, eps, n_blocks, block_d):
+    grid = (_launch_grid(n_tokens),)
+    args = (V_3d, w_query, w_norm, Out, Alpha, RSTD, n_tokens, D, d_stride, eps)
+    constexpr = dict(BLOCK_D=block_d, n_blocks=n_blocks)
+    if block_d >= D:
+        _attn_res_fwd_kernel[grid](*args, **constexpr)
     else:
-        memory_multiplier = 16.0
+        _attn_res_fwd_kernel_tiled[grid](*args, **constexpr)
 
-    tile_shapes = compute_default_tiling_strategy(
-        safety_margin=0.85,
-        dtype_size=4,
-        memory_multiplier=memory_multiplier,
-        shapes=((D,),),
-        tiling_dims=(0,),
-    )
 
-    if tile_shapes and len(tile_shapes) > 0:
-        block_d = tile_shapes[0][0]
-
-        # avoid too small tiles (kills performance)
-        return max(512, block_d)
-
-    return 512
+def _launch_bwd_kernel(dh_2d, V_3d, w_query, w_norm, Alpha, RSTD, dV, dW_query, dW_norm, n_blocks, D, block_d):
+    _, n_tokens, d_stride = V_3d.shape
+    args = (dh_2d, V_3d, w_query, w_norm, Alpha, RSTD, dV, dW_query, dW_norm, n_blocks, n_tokens, D, d_stride)
+    constexpr = dict(BLOCK_D=block_d, MAX_BLOCKS=_get_max_blocks(n_blocks))
+    if block_d >= D:
+        _attn_res_bwd_kernel[(n_tokens,)](*args, **constexpr)
+    else:
+        _attn_res_bwd_kernel_tiled[(n_tokens,)](*args, **constexpr)
 
 
 def attn_res_forward(blocks, w_query, w_norm, eps=1e-6):
@@ -411,81 +402,50 @@ def attn_res_forward(blocks, w_query, w_norm, eps=1e-6):
         blocks: list of N tensors [B, T, D] or stacked [N, B, T, D]
         w_query: [D] learned pseudo-query
         w_norm: [D] RMSNorm weight for keys
+        eps: RMSNorm epsilon
     Returns:
-        h: [B, T, D] weighted output
-        V: [N, B*T, D] stacked (saved for bwd)
+        h: weighted output with same spatial shape as each block
+        V_3d: [N, B*T, D] stacked values (saved for backward)
         alpha: [B*T, N] attention weights
-        rstd: [B*T, N] per-token rstd
+        rstd: [B*T, N] per-token RMSNorm rstd
     """
-    if isinstance(blocks, (list, tuple)):
-        V = torch.stack(blocks)  # [N, B, T, D]
-    else:
-        V = blocks
-    orig_shape = V.shape  # [N, B, T, D] or [N, B*T, D]
-    N = V.shape[0]
-    D = V.shape[-1]
+    V = _stack_blocks(blocks)
+    orig_shape = V.shape
+    n_blocks, D = V.shape[0], V.shape[-1]
+
     V = _pad_features_aligned(V)
-    V_3d = V.reshape(N, -1, V.shape[-1]).contiguous()
+    V_3d = V.reshape(n_blocks, -1, V.shape[-1]).contiguous()
     d_stride = V_3d.shape[-1]
     n_tokens = V_3d.shape[1]
 
     w_query = w_query.contiguous()
     w_norm = w_norm.contiguous()
 
-    Out = torch.empty(n_tokens, V_3d.shape[-1], device=V.device, dtype=V.dtype)
-    # Layout [B*T, N] for coalesced access per token
-    Alpha = torch.empty(n_tokens, N, device=V.device, dtype=torch.float32)
-    RSTD = torch.empty(n_tokens, N, device=V.device, dtype=torch.float32)
+    Out = torch.empty(n_tokens, d_stride, device=V.device, dtype=V.dtype)
+    Alpha = torch.empty(n_tokens, n_blocks, device=V.device, dtype=torch.float32)
+    RSTD = torch.empty(n_tokens, n_blocks, device=V.device, dtype=torch.float32)
 
-    BLOCK_D = get_optimal_block_d(D, is_forward=True)
-    num_cores = get_npu_core_count()
-    grid_size = min(num_cores, n_tokens)
-
-    if BLOCK_D >= D:
-        _attn_res_fwd_kernel[(grid_size,)](
-            V_3d,
-            w_query,
-            w_norm,
-            Out,
-            Alpha,
-            RSTD,
-            n_tokens,
-            D,
-            d_stride,
-            eps,
-            BLOCK_D=BLOCK_D,
-            n_blocks=N,
-        )
-    else:
-        _attn_res_fwd_kernel_tiled[(grid_size,)](
-            V_3d,
-            w_query,
-            w_norm,
-            Out,
-            Alpha,
-            RSTD,
-            n_tokens,
-            D,
-            d_stride,
-            eps,
-            BLOCK_D=BLOCK_D,
-            n_blocks=N,
-        )
+    block_d = _get_optimal_block_d(D, is_forward=True)
+    _launch_fwd_kernel(V_3d, w_query, w_norm, Out, Alpha, RSTD, n_tokens, D, d_stride, eps, n_blocks, block_d)
 
     if d_stride != D:
         Out = Out[:, :D].contiguous()
 
-    # Reshape output to match input spatial dims
-    out_shape = list(orig_shape[1:])  # [B, T, D] or [B*T, D]
-    return Out.view(out_shape), V_3d, Alpha, RSTD
+    return Out.view(*orig_shape[1:]), V_3d, Alpha, RSTD
 
 
-def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
+def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD):
     """
-    Returns: dV [N, B*T, D], dW_query [D], dW_norm [D]
+    Args:
+        dh: upstream gradient matching forward output shape
+        V_3d: [N, B*T, D] from forward
+        w_query, w_norm: forward weights
+        Alpha, RSTD: saved forward intermediates
+    Returns:
+        dV [N, B*T, D], dW_query [D], dW_norm [D]
     """
     dh = dh.contiguous()
-    N, n_tokens, d_stride = V_3d.shape
+    _, n_tokens, d_stride = V_3d.shape
     D = dh.shape[-1]
     dh_2d = dh.reshape(n_tokens, D)
     if d_stride != D:
@@ -495,44 +455,8 @@ def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
     dW_query = torch.zeros(D, dtype=torch.float32, device=dh.device)
     dW_norm = torch.zeros(D, dtype=torch.float32, device=dh.device)
 
-    BLOCK_D = get_optimal_block_d(D, is_forward=False)
-    num_cores = get_npu_core_count()
-    grid_size = min(num_cores, n_tokens)
-
-    if BLOCK_D >= D:
-        _attn_res_bwd_kernel[(grid_size,)](
-            dh_2d,
-            V_3d,
-            w_query,
-            w_norm,
-            Alpha,
-            RSTD,
-            dV,
-            dW_query,
-            dW_norm,
-            n_tokens,
-            D,
-            d_stride,
-            BLOCK_D=BLOCK_D,
-            n_blocks=N,
-        )
-    else:
-        _attn_res_bwd_kernel_tiled[(grid_size,)](
-            dh_2d,
-            V_3d,
-            w_query,
-            w_norm,
-            Alpha,
-            RSTD,
-            dV,
-            dW_query,
-            dW_norm,
-            n_tokens,
-            D,
-            d_stride,
-            BLOCK_D=BLOCK_D,
-            n_blocks=N,
-        )
+    block_d = _get_optimal_block_d(D, is_forward=False)
+    _launch_bwd_kernel(dh_2d, V_3d, w_query, w_norm, Alpha, RSTD, dV, dW_query, dW_norm, V_3d.shape[0], D, block_d)
 
     if d_stride != D:
         dV = dV[:, :, :D].contiguous()
@@ -547,14 +471,11 @@ class LigerAttnResFunction(torch.autograd.Function):
         ctx.orig_shape = V_stacked.shape  # [N, B, T, D] or [N, B*T, D]
         h, V_3d, Alpha, RSTD = attn_res_forward(V_stacked, w_query, w_norm, eps)
         ctx.save_for_backward(V_3d, w_query, w_norm, Alpha, RSTD)
-        ctx.eps = eps
         return h
 
     @staticmethod
     @ensure_contiguous
     def backward(ctx, dh):
         V_3d, w_query, w_norm, Alpha, RSTD = ctx.saved_tensors
-        dV, dW_query, dW_norm = attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, ctx.eps)
-        # Reshape dV back to original input shape
-        dV = dV.view(ctx.orig_shape)
-        return dV, dW_query, dW_norm, None
+        dV, dW_query, dW_norm = attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD)
+        return dV.view(ctx.orig_shape), dW_query, dW_norm, None

@@ -32,6 +32,7 @@ from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
+from liger_kernel.transformers.vocab_parallel_cross_entropy import LigerVocabParallelCrossEntropy  # noqa: F401
 
 # Static-only imports for IDEs and type checkers
 if TYPE_CHECKING:
