@@ -34,7 +34,11 @@ pytestmark = pytest.mark.skipif(
 
 if cutedsl_available:
     from liger_kernel.ops.cutedsl.ops.swiglu import LigerSiLUMulCuteDSLFunction
+    from liger_kernel.ops.cutedsl.ops.swiglu import fused_swiglu
+    from liger_kernel.ops.cutedsl.ops.swiglu import pack_swiglu_weights
     from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_forward as cutedsl_forward
+
+sm100_available = cutedsl_available and torch.cuda.get_device_capability() == (10, 0)
 
 
 def _tol(dtype):
@@ -216,3 +220,105 @@ def test_cutedsl_shape_flexibility(shape):
 
     torch.testing.assert_close(a_cut.grad, a_ref.grad, atol=atol, rtol=rtol)
     torch.testing.assert_close(b_cut.grad, b_ref.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("direction", ["forward", "backward"])
+def test_cutedsl_elementwise_uses_current_stream(direction):
+    shape = (64, 512)
+    a = torch.zeros(shape, device=device, dtype=torch.float32, requires_grad=True)
+    b = torch.zeros(shape, device=device, dtype=torch.float32, requires_grad=True)
+    stream = torch.cuda.Stream()
+
+    with torch.cuda.stream(stream):
+        torch.cuda._sleep(5_000_000)
+        with torch.no_grad():
+            a.fill_(1)
+            b.fill_(2)
+        actual = LigerSiLUMulCuteDSLFunction.apply(a, b)
+        if direction == "forward":
+            expected = torch.nn.functional.silu(torch.ones_like(a)) * 2
+        else:
+            actual.backward(torch.full_like(actual, 3))
+    stream.synchronize()
+
+    if direction == "forward":
+        torch.testing.assert_close(actual, expected)
+    else:
+        ref_a = torch.ones_like(a, requires_grad=True)
+        ref_b = torch.full_like(b, 2, requires_grad=True)
+        (torch.nn.functional.silu(ref_a) * ref_b).backward(torch.full_like(ref_a, 3))
+        torch.testing.assert_close(a.grad, ref_a.grad)
+        torch.testing.assert_close(b.grad, ref_b.grad)
+
+
+@pytest.mark.skipif(not sm100_available, reason="fused linear SwiGLU requires SM100")
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (33, 128, 96),  # non-tile-aligned tokens
+        (128, 256, 130),  # padded output tail
+        (256, 128, 130),
+        (1024, 128, 96),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float16,
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_fused_linear_cutedsl_matches_pytorch(shape, dtype):
+    m, k, n = shape
+    torch.manual_seed(0)
+    scale = k**-0.5
+    x = torch.randn(m, k, device=device, dtype=dtype)
+    gate_weight = torch.randn(n, k, device=device, dtype=dtype) * scale
+    up_weight = torch.randn(n, k, device=device, dtype=dtype) * scale
+    packed_weight, output_features = pack_swiglu_weights(gate_weight, up_weight)
+
+    actual = fused_swiglu(x, packed_weight, output_features)
+    gate = torch.nn.functional.linear(x, gate_weight)
+    up = torch.nn.functional.linear(x, up_weight)
+    expected = torch.nn.functional.silu(gate) * up
+
+    assert actual.shape == (m, n)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
+
+
+def test_fused_linear_cutedsl_fp32_matches_pytorch():
+    m, k, n = 4, 64, 35
+    x = torch.randn(m, k, device=device, dtype=torch.float32)
+    gate_weight = torch.randn(n, k, device=device, dtype=torch.float32)
+    up_weight = torch.randn(n, k, device=device, dtype=torch.float32)
+    packed_weight, output_features = pack_swiglu_weights(gate_weight, up_weight)
+
+    actual = fused_swiglu(x, packed_weight, output_features)
+    expected = torch.nn.functional.silu(torch.nn.functional.linear(x, gate_weight))
+    expected *= torch.nn.functional.linear(x, up_weight)
+
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.skipif(not sm100_available, reason="fused linear SwiGLU requires SM100")
+def test_fused_linear_cutedsl_uses_current_stream():
+    m, k, n = 64, 64, 32
+    x = torch.zeros(m, k, device=device, dtype=torch.bfloat16)
+    gate_weight = torch.ones(n, k, device=device, dtype=torch.bfloat16) / k
+    up_weight = torch.ones_like(gate_weight) / k
+    packed_weight, output_features = pack_swiglu_weights(gate_weight, up_weight)
+    torch.cuda.synchronize()
+
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
+        torch.cuda._sleep(5_000_000)
+        x.fill_(1)
+        actual = fused_swiglu(x, packed_weight, output_features)
+    stream.synchronize()
+
+    expected = torch.nn.functional.silu(torch.nn.functional.linear(x, gate_weight))
+    expected *= torch.nn.functional.linear(x, up_weight)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
