@@ -44,6 +44,25 @@ def test_sm100_gemm_rejects_non_cute_epilogue():
         run_epilogue_gemm(x, weight, out, lambda accumulator, output: None)
 
 
+@pytest.mark.parametrize(
+    ("shape", "expected"),
+    [
+        ((128256, 256), (4, 2)),
+        ((128256, 512), (6, 2)),
+        ((128256, 1024), (6, 2)),
+        ((128256, 2048), (4, 2)),
+        ((512, 4096), (6, 1)),
+        ((1024, 128256), (6, 1)),
+        ((128128, 512), (6, 1)),
+    ],
+)
+def test_sm100_gemm_selects_measured_config(shape, expected):
+    import liger_kernel.ops.cutedsl.ops._sm100_gemm as gemm
+
+    tensor = torch.empty(shape, device="meta")
+    assert gemm._select_epilogue_config(tensor) == expected
+
+
 def test_sm100_gemm_custom_epilogue_guards_noncurrent_device(monkeypatch):
     import liger_kernel.ops.cutedsl.ops._sm100_gemm as gemm
 

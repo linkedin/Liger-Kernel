@@ -878,12 +878,22 @@ def _validate_epilogue_inputs(a, b, out):
     )
 
 
+def _select_epilogue_config(a):
+    """Select measured SM100 scheduling knobs while retaining the two-CTA kernel."""
+    m_tiles = (a.shape[0] + _CTA_M - 1) // _CTA_M
+    if a.shape[0] >= 4096 and m_tiles % 2 == 0:
+        if a.shape[1] in (256, 2048):
+            return 4, 2
+        if a.shape[1] in (512, 1024):
+            return 6, 2
+    return _NUM_AB_STAGES, 1
+
+
 def _run_epilogue_gemm(a, b, out, epilogue):
     _validate_epilogue_inputs(a, b, out)
     epilogue_key = _validate_epilogue_callback(epilogue)
     current_stream = _current_stream(a.device)
-    num_ab_stages = _NUM_AB_STAGES
-    swizzle_size = 1
+    num_ab_stages, swizzle_size = _select_epilogue_config(a)
     use_tma_output = out.stride(0) * out.element_size() % 16 == 0
     max_active_clusters = _max_active_clusters(a.device.index)
 
