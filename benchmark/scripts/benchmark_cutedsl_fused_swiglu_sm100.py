@@ -1,4 +1,4 @@
-"""Compare the current and fused-linear CuTe DSL SwiGLU forward paths."""
+"""Benchmark the SM100 fused-linear CuTe DSL SwiGLU forward path."""
 
 import argparse
 import gc
