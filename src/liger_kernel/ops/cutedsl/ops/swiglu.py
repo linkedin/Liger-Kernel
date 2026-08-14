@@ -43,10 +43,15 @@ Design notes (tuned on B200 / sm_100):
   * Backward writes the gradients in place into the saved ``a`` / ``b`` buffers,
     exactly like the Triton kernel, so peak memory matches.
 
-The public API mirrors ``liger_kernel.ops.swiglu``:
+The element-wise public API mirrors ``liger_kernel.ops.swiglu``:
 ``swiglu_forward`` / ``swiglu_backward`` / ``LigerSiLUMulCuteDSLFunction``.
+``fused_swiglu`` additionally fuses the gate/up projections on exact SM100
+Blackwell GPUs and delegates to the element-wise implementation elsewhere.
 """
 
+import functools
+
+import cuda.bindings.driver as cuda
 import torch
 
 try:
@@ -61,10 +66,21 @@ import cutlass.cute.math as cute_math
 
 from cutlass.cute.runtime import from_dlpack
 
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import EPILOGUE_TILE_SIZE
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import K_ALIGNMENT
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import run_grouped_epilogue_gemm
 from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.utils import infer_device_arch
+
+__all__ = [
+    "LigerSiLUMulCuteDSLFunction",
+    "fused_swiglu",
+    "pack_swiglu_weights",
+    "swiglu_backward",
+    "swiglu_forward",
+]
 
 # log2(e); sigmoid(x) = 1 / (1 + exp(-x)) = 1 / (1 + exp2(-x * LOG2E))
 _LOG2E = 1.4426950408889634
@@ -431,7 +447,7 @@ def _swiglu_bwd_vec_kernel(
 # ---------------------------------------------------------------------------
 def _make_fwd_vec(vec: int):
     @cute.jit
-    def fwd(mA, mB, mC, gate_mult: cutlass.Float32):
+    def fwd(mA, mB, mC, gate_mult: cutlass.Float32, stream: cuda.CUstream):
         copy_atom = cute.make_copy_atom(
             cute.nvgpu.CopyUniversalOp(), mA.element_type, num_bits_per_copy=vec * mA.element_type.width
         )
@@ -447,6 +463,7 @@ def _make_fwd_vec(vec: int):
         _swiglu_fwd_vec_kernel(gA, gB, gC, tiled_copy, gate_mult).launch(
             grid=[cute.size(gC, mode=[1]), 1, 1],
             block=[_NUM_THREADS, 1, 1],
+            stream=stream,
         )
 
     return fwd
@@ -454,7 +471,7 @@ def _make_fwd_vec(vec: int):
 
 def _make_bwd_vec(vec: int):
     @cute.jit
-    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32):
+    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32, stream: cuda.CUstream):
         copy_atom = cute.make_copy_atom(
             cute.nvgpu.CopyUniversalOp(), mA.element_type, num_bits_per_copy=vec * mA.element_type.width
         )
@@ -470,6 +487,7 @@ def _make_bwd_vec(vec: int):
         _swiglu_bwd_vec_kernel(gDC, gA, gB, tiled_copy, gate_mult).launch(
             grid=[cute.size(gA, mode=[1]), 1, 1],
             block=[_NUM_THREADS, 1, 1],
+            stream=stream,
         )
 
     return bwd
@@ -480,7 +498,7 @@ def _make_bwd_vec(vec: int):
 # ---------------------------------------------------------------------------
 def _make_fwd(vec: int, predicated: bool, packed_math: bool):
     @cute.jit
-    def fwd(mA, mB, mC, gate_mult: cutlass.Float32):
+    def fwd(mA, mB, mC, gate_mult: cutlass.Float32, stream: cuda.CUstream):
         thr_layout = cute.make_layout(_NUM_THREADS, stride=vec)
         val_layout = cute.make_layout(vec, stride=1)
         tiler, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
@@ -494,6 +512,7 @@ def _make_fwd(vec: int, predicated: bool, packed_math: bool):
         _swiglu_fwd_kernel(gA, gB, gC, cC, mC.shape, thr_layout, val_layout, gate_mult, predicated, packed_math).launch(
             grid=[cute.size(gC, mode=[1]), 1, 1],
             block=[cute.size(tv_layout, mode=[0]), 1, 1],
+            stream=stream,
         )
 
     return fwd
@@ -501,7 +520,7 @@ def _make_fwd(vec: int, predicated: bool, packed_math: bool):
 
 def _make_bwd(vec: int, predicated: bool, packed_math: bool):
     @cute.jit
-    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32):
+    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32, stream: cuda.CUstream):
         thr_layout = cute.make_layout(_NUM_THREADS, stride=vec)
         val_layout = cute.make_layout(vec, stride=1)
         tiler, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
@@ -517,6 +536,7 @@ def _make_bwd(vec: int, predicated: bool, packed_math: bool):
         ).launch(
             grid=[cute.size(gA, mode=[1]), 1, 1],
             block=[cute.size(tv_layout, mode=[0]), 1, 1],
+            stream=stream,
         )
 
     return bwd
@@ -526,6 +546,7 @@ def _make_bwd(vec: int, predicated: bool, packed_math: bool):
 _COMPILE_CACHE: dict = {}
 # (dtype, "fwd"|"bwd") -> compiled fast-path callable
 _VEC_COMPILE_CACHE: dict = {}
+_STREAM_CACHE: dict = {}
 _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
@@ -577,17 +598,28 @@ def _dyn(t: torch.Tensor):
     return from_dlpack(t.detach()).mark_layout_dynamic()
 
 
+def _current_stream(device):
+    raw_stream = torch.cuda.current_stream(device).cuda_stream
+    if _TVM_FFI_PRESENT:
+        return raw_stream
+    stream = _STREAM_CACHE.get(raw_stream)
+    if stream is None:
+        stream = cuda.CUstream(raw_stream)
+        _STREAM_CACHE[raw_stream] = stream
+    return stream
+
+
 class _DynCaller:
     """Wraps a non-TVM-FFI compiled function so callers always pass raw tensors."""
 
     def __init__(self, compiled):
         self._compiled = compiled
 
-    def __call__(self, a, b, c, gm):
-        return self._compiled(_dyn(a), _dyn(b), _dyn(c), gm)
+    def __call__(self, a, b, c, gm, stream):
+        return self._compiled(_dyn(a), _dyn(b), _dyn(c), gm, stream)
 
 
-def _get_compiled(kind: str, ref: torch.Tensor, vec: int, predicated: bool, packed_math: bool):
+def _get_compiled(kind: str, ref: torch.Tensor, vec: int, predicated: bool, packed_math: bool, stream):
     key = (ref.dtype, vec, predicated, packed_math, kind, ref.device.index)
     fn = _COMPILE_CACHE.get(key)
     if fn is not None:
@@ -600,9 +632,17 @@ def _get_compiled(kind: str, ref: torch.Tensor, vec: int, predicated: bool, pack
         # alignment guarantee beyond element size.
         cute_dtype = torch2cute_dtype_map[ref.dtype]
         fake = make_fake_tensor(cute_dtype, (cute.sym_int(),), 1)
-        fn = cute.compile(maker, fake, fake, fake, gm, options="--enable-tvm-ffi")
+        fn = cute.compile(
+            maker,
+            fake,
+            fake,
+            fake,
+            gm,
+            cute.runtime.make_fake_stream(),
+            options="--enable-tvm-ffi",
+        )
     else:
-        compiled = cute.compile(maker, _dyn(ref), _dyn(ref), _dyn(ref), gm)
+        compiled = cute.compile(maker, _dyn(ref), _dyn(ref), _dyn(ref), gm, stream)
         fn = _DynCaller(compiled)
     _COMPILE_CACHE[key] = fn
     return fn
@@ -628,12 +668,133 @@ def _get_compiled_vec(kind: str, dtype: torch.dtype, vec: int, device_index: int
         # dynamic rows, static inner width; ``vec`` divisibility => 128-bit align
         return make_fake_tensor(cute_dtype, (cute.sym_int(), inner), vec)
 
+    stream = cute.runtime.make_fake_stream()
     if kind == "fwd":
-        fn = cute.compile(_make_fwd_vec(vec), fake(), fake(), fake(), gm, options="--enable-tvm-ffi")
+        fn = cute.compile(_make_fwd_vec(vec), fake(), fake(), fake(), gm, stream, options="--enable-tvm-ffi")
     else:
-        fn = cute.compile(_make_bwd_vec(vec), fake(), fake(), fake(), gm, options="--enable-tvm-ffi")
+        fn = cute.compile(_make_bwd_vec(vec), fake(), fake(), fake(), gm, stream, options="--enable-tvm-ffi")
     _VEC_COMPILE_CACHE[key] = fn
     return fn
+
+
+# ---------------------------------------------------------------------------
+# Fused linear SwiGLU
+# ---------------------------------------------------------------------------
+@cute.jit
+def _fused_swiglu_epilogue(gate, up, out):
+    _silu_mul_fwd_packed(gate, up, out, cutlass.Float32(1.0))
+
+
+def pack_swiglu_weights(gate_weight, up_weight):
+    """Pack ``[N, K]`` gate/up weights into alternating 32-row tiles."""
+    if gate_weight.ndim != 2 or up_weight.ndim != 2:
+        raise ValueError("gate_weight and up_weight must both be 2D tensors.")
+    if gate_weight.shape != up_weight.shape:
+        raise ValueError(
+            f"gate_weight and up_weight must have identical shapes, got {gate_weight.shape} and {up_weight.shape}."
+        )
+    if gate_weight.dtype != up_weight.dtype:
+        raise TypeError(
+            f"gate_weight and up_weight must have the same dtype, got {gate_weight.dtype} and {up_weight.dtype}."
+        )
+    if gate_weight.device != up_weight.device:
+        raise ValueError(
+            f"gate_weight and up_weight must be on the same device, got {gate_weight.device} and {up_weight.device}."
+        )
+
+    output_features, input_features = gate_weight.shape
+    padded_features = ((output_features + EPILOGUE_TILE_SIZE - 1) // EPILOGUE_TILE_SIZE) * EPILOGUE_TILE_SIZE
+    if padded_features != output_features:
+        padded_gate = gate_weight.new_zeros(padded_features, input_features)
+        padded_up = up_weight.new_zeros(padded_features, input_features)
+        padded_gate[:output_features].copy_(gate_weight)
+        padded_up[:output_features].copy_(up_weight)
+    else:
+        padded_gate = gate_weight
+        padded_up = up_weight
+
+    gate_tiles = padded_gate.reshape(-1, EPILOGUE_TILE_SIZE, input_features)
+    up_tiles = padded_up.reshape(-1, EPILOGUE_TILE_SIZE, input_features)
+    packed = torch.stack((gate_tiles, up_tiles), dim=1)
+    return packed.reshape(-1, input_features).contiguous(), output_features
+
+
+@functools.lru_cache(maxsize=32)
+def _validate_fused_swiglu_signature(a_shape, packed_shape, output_features):
+    if len(a_shape) != 2 or len(packed_shape) != 2:
+        raise ValueError("a and packed_gate_up_weight must both be 2D tensors.")
+    if a_shape[1] != packed_shape[1]:
+        raise ValueError(f"Input and packed weight K dimensions must match, got {a_shape[1]} and {packed_shape[1]}.")
+    if packed_shape[0] % (2 * EPILOGUE_TILE_SIZE) != 0:
+        raise ValueError(f"Packed weight rows must be divisible by {2 * EPILOGUE_TILE_SIZE}, got {packed_shape[0]}.")
+
+    padded_features = packed_shape[0] // 2
+    if output_features is None:
+        output_features = padded_features
+    if not 0 < output_features <= padded_features:
+        raise ValueError(f"output_features must be in [1, {padded_features}], got {output_features}.")
+    return output_features
+
+
+def _native_fused_swiglu_supported(a):
+    if a.device.type != "cuda" or a.dtype not in (torch.float16, torch.bfloat16) or a.shape[1] % K_ALIGNMENT != 0:
+        return False
+    device_id = a.device.index if a.device.index is not None else torch.cuda.current_device()
+    return infer_device_arch(device_id) == "blackwell" and torch.cuda.get_device_capability(a.device) == (10, 0)
+
+
+def _unpack_swiglu_weights(packed_gate_up_weight):
+    input_features = packed_gate_up_weight.shape[1]
+    tiles = packed_gate_up_weight.view(-1, 2, EPILOGUE_TILE_SIZE, input_features)
+    gate_weight = tiles[:, 0].reshape(-1, input_features)
+    up_weight = tiles[:, 1].reshape(-1, input_features)
+    return gate_weight, up_weight
+
+
+def _fused_swiglu_sm100(a, packed_gate_up_weight, output_features):
+    padded_features = packed_gate_up_weight.shape[0] // 2
+    out = torch.empty(
+        a.shape[0],
+        padded_features,
+        device=a.device,
+        dtype=a.dtype,
+    )
+    run_grouped_epilogue_gemm(
+        a.contiguous(),
+        packed_gate_up_weight.contiguous(),
+        out,
+        _fused_swiglu_epilogue,
+    )
+    return out[:, :output_features]
+
+
+def fused_swiglu(a, packed_gate_up_weight, output_features=None):
+    """Compute fused gate/up projections and SwiGLU with an SM100 fast path."""
+    if a.device.type != "cuda" or packed_gate_up_weight.device.type != "cuda":
+        raise ValueError("a and packed_gate_up_weight must be CUDA tensors.")
+    if a.device != packed_gate_up_weight.device:
+        raise ValueError(
+            f"a and packed_gate_up_weight must be on the same device, got "
+            f"{a.device} and {packed_gate_up_weight.device}."
+        )
+    if a.dtype != packed_gate_up_weight.dtype:
+        raise TypeError(
+            f"a and packed_gate_up_weight must have the same dtype, got {a.dtype} and {packed_gate_up_weight.dtype}."
+        )
+    _validate_supported_dtype(a.dtype)
+    output_features = _validate_fused_swiglu_signature(
+        tuple(a.shape),
+        tuple(packed_gate_up_weight.shape),
+        output_features,
+    )
+
+    if _native_fused_swiglu_supported(a):
+        return _fused_swiglu_sm100(a, packed_gate_up_weight, output_features)
+
+    gate_weight, up_weight = _unpack_swiglu_weights(packed_gate_up_weight)
+    gate = torch.nn.functional.linear(a, gate_weight)
+    up = torch.nn.functional.linear(a, up_weight)
+    return swiglu_forward(gate, up)[2][:, :output_features]
 
 
 # ---------------------------------------------------------------------------
@@ -656,18 +817,21 @@ def swiglu_forward(a, b, gate_multiplier: float = 1.0):
     aligned = _is_16b_aligned(a, b, c)
     use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, a.device, aligned)
 
-    if use_fast:
-        fn = _get_compiled_vec("fwd", a.dtype, vec, a.device.index)
-        rows = numel // tile
-        fn(
-            a.view(rows, tile),
-            b.view(rows, tile),
-            c.view(rows, tile),
-            cutlass.Float32(float(gate_multiplier)),
-        )
-    else:
-        fn = _get_compiled("fwd", a, vec, predicated, packed_math)
-        fn(a, b, c, cutlass.Float32(float(gate_multiplier)))
+    with torch.cuda.device(a.device):
+        stream = _current_stream(a.device)
+        if use_fast:
+            fn = _get_compiled_vec("fwd", a.dtype, vec, a.device.index)
+            rows = numel // tile
+            fn(
+                a.view(rows, tile),
+                b.view(rows, tile),
+                c.view(rows, tile),
+                cutlass.Float32(float(gate_multiplier)),
+                stream,
+            )
+        else:
+            fn = _get_compiled("fwd", a, vec, predicated, packed_math, stream)
+            fn(a, b, c, cutlass.Float32(float(gate_multiplier)), stream)
 
     return a.view(-1, n_cols), b.view(-1, n_cols), c.view(*ori_shape)
 
@@ -689,18 +853,21 @@ def swiglu_backward(a, b, dc, gate_multiplier: float = 1.0):
     aligned = _is_16b_aligned(dc, a, b)
     use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, dc.device, aligned)
 
-    if use_fast:
-        fn = _get_compiled_vec("bwd", dc.dtype, vec, dc.device.index)
-        rows = numel // tile
-        fn(
-            dc.view(rows, tile),
-            a.view(rows, tile),
-            b.view(rows, tile),
-            cutlass.Float32(float(gate_multiplier)),
-        )
-    else:
-        fn = _get_compiled("bwd", dc, vec, predicated, packed_math)
-        fn(dc, a, b, cutlass.Float32(float(gate_multiplier)))
+    with torch.cuda.device(dc.device):
+        stream = _current_stream(dc.device)
+        if use_fast:
+            fn = _get_compiled_vec("bwd", dc.dtype, vec, dc.device.index)
+            rows = numel // tile
+            fn(
+                dc.view(rows, tile),
+                a.view(rows, tile),
+                b.view(rows, tile),
+                cutlass.Float32(float(gate_multiplier)),
+                stream,
+            )
+        else:
+            fn = _get_compiled("bwd", dc, vec, predicated, packed_math, stream)
+            fn(dc, a, b, cutlass.Float32(float(gate_multiplier)), stream)
 
     return a.view(*ori_shape), b.view(*ori_shape)
 
