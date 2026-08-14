@@ -43,6 +43,9 @@ from liger_kernel.ops.experimental.embedding import LigerEmbeddingFunction  # no
 from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction  # noqa: F401
 from liger_kernel.ops.fused_add_rms_norm import fused_add_rms_norm_backward  # noqa: F401
 from liger_kernel.ops.fused_add_rms_norm import fused_add_rms_norm_forward  # noqa: F401
+from liger_kernel.ops.fused_ce_tvd import LigerFusedCETVDFunction  # noqa: F401
+from liger_kernel.ops.fused_ce_tvd import fused_ce_tvd_backward  # noqa: F401
+from liger_kernel.ops.fused_ce_tvd import fused_ce_tvd_forward  # noqa: F401
 from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction  # noqa: F401
 from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_backward  # noqa: F401
 from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward  # noqa: F401
