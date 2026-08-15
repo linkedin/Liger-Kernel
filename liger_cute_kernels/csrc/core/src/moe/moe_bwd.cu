@@ -136,7 +136,8 @@ template <
 	int Compute_        = 90>
 struct MoeBwdConfig {
 	using Element  = Element_;
-	using Traits1  = Mlp1Traits <Element, TileM1_, TileN1_, TileK1_, Stages1_, EpiChunkN1_>;   // Phase 1a
+	using Traits1  = Mlp1Traits <
+		Element, TileM1_, TileN1_, TileK1_, Stages1_, EpiChunkN1_>;                            // Phase 1a
 	using Traits2T = Mlp2TTraits<Element, TileM2T_, TileN2_, TileK2_, Stages2_, EpiChunkN25_>;  // Phase 1b'
 	// Blackwell always uses the paired-CTA MLP3/MLP4 path. Hopper keeps the
 	// existing single-CTA traits and never instantiates SM100-only machinery.
@@ -278,10 +279,11 @@ struct MoeBwdBuffers {
 	int*     cta_counter;
 	int*     phase_counter;              // mlp_bwd uses this
 	int*     barrier_counter;            // mlp_global_barrier
-	Element* z_buf;                      // [total_slots, I]
-	Element* du_buf;                     // [total_slots, I] -> dU after silu_bwd
-	Element* dv_buf;                     // [total_slots, I]
-	Element* dz_buf;                     // [total_slots, I]
+	Element* z_buf;                      // [scratch_rows, I]
+	Element* du_buf;                     // [scratch_rows, I] -> dU after silu_bwd
+	Element* dv_buf;                     // [scratch_rows, I]
+	Element* dz_buf;                     // [scratch_rows, I]
+	int      scratch_rows;               // max(local padded rows, remote ring rows)
 	int*     expert_for_k_block;         // num_k_blocks; populated post-sort
 
 	// Phase 2 per-expert K-range scratch. Filled in bwd preamble (once
@@ -365,8 +367,20 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	cudaMemsetAsync(b.phase_counter,   0, grid_x * sizeof(int),       stream);
 	cudaMemsetAsync(b.barrier_counter, 0, sizeof(int),                stream);
 
+	// Local Phase 1 indexes scratch by padded token row, while the remote pass
+	// indexes the same buffers by staging-ring slot. A deep comm ring can exceed
+	// the local padded extent (for example, 33 MC columns * CS8 * TileM128 =
+	// 33792 rows versus 17408 local rows for Mixtral-8x7B T=8K). Size for both
+	// coordinate spaces or a valid remote slot writes past z/du/dv/dz.
+	const int remote_m_tiles =
+		(num_blocks / Config::kNC) * Config::kCommNumStages;
+	const size_t remote_rows =
+		static_cast<size_t>(remote_m_tiles) * kTileM;
+	const size_t scratch_rows =
+		std::max(static_cast<size_t>(total_slots), remote_rows);
+	b.scratch_rows = static_cast<int>(scratch_rows);
 	size_t intermediate_bytes =
-		static_cast<size_t>(total_slots) * intermediate_dim * sizeof(Element);
+		scratch_rows * intermediate_dim * sizeof(Element);
 	b.z_buf  = static_cast<Element*>(pool.get_device("moe_bwd_z_buf",  intermediate_bytes));
 	b.du_buf = static_cast<Element*>(pool.get_device("moe_bwd_du_buf", intermediate_bytes));
 	b.dv_buf = static_cast<Element*>(pool.get_device("moe_bwd_dv_buf", intermediate_bytes));
@@ -1012,19 +1026,39 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	mlp_dims.hidden_dim       = hidden_dim;
 	mlp_dims.intermediate_dim = intermediate_dim;
 	mlp_dims.total_n_rows_1   = total_n_rows_1;
-	mlp_dims.num_n_tiles_1    = intermediate_dim / Traits1::TileN;
-	mlp_dims.num_k_tiles_1    = hidden_dim / Traits1::TileK;
+	mlp_dims.num_n_tiles_1    = (Config::kCompute == 90)
+		? (intermediate_dim + Traits1::TileN - 1) / Traits1::TileN
+		: intermediate_dim / Traits1::TileN;
+	mlp_dims.num_k_tiles_1    = (Config::kCompute == 90)
+		? (hidden_dim + Traits1::TileK - 1) / Traits1::TileK
+		: hidden_dim / Traits1::TileK;
 	mlp_dims.total_k_cols_2t  = total_k_cols_2;
-	mlp_dims.num_n_tiles_2t   = intermediate_dim / Traits2T::TileN;
-	mlp_dims.num_k_tiles_2t   = hidden_dim / Traits2T::TileK;
+	mlp_dims.num_n_tiles_2t   = (Config::kCompute == 90)
+		? (intermediate_dim + Traits2T::TileN - 1) / Traits2T::TileN
+		: intermediate_dim / Traits2T::TileN;
+	mlp_dims.num_k_tiles_2t   = (Config::kCompute == 90)
+		? (hidden_dim + Traits2T::TileK - 1) / Traits2T::TileK
+		: hidden_dim / Traits2T::TileK;
 	mlp_dims.total_k_cols_5   = total_n_rows_1;
-	mlp_dims.num_n_tiles_5    = hidden_dim / Traits5::TileN;
-	mlp_dims.num_k_tiles_5    = intermediate_dim / Traits5::TileK;
-	mlp_dims.num_m_tiles_3    = hidden_dim / Traits3::TileM;
-	mlp_dims.num_n_tiles_3    = intermediate_dim / Traits3::TileN;
+	mlp_dims.num_n_tiles_5    = (Config::kCompute == 90)
+		? (hidden_dim + Traits5::TileN - 1) / Traits5::TileN
+		: hidden_dim / Traits5::TileN;
+	mlp_dims.num_k_tiles_5    = (Config::kCompute == 90)
+		? (intermediate_dim + Traits5::TileK - 1) / Traits5::TileK
+		: intermediate_dim / Traits5::TileK;
+	mlp_dims.num_m_tiles_3    = (Config::kCompute == 90)
+		? (hidden_dim + Traits3::TileM - 1) / Traits3::TileM
+		: hidden_dim / Traits3::TileM;
+	mlp_dims.num_n_tiles_3    = (Config::kCompute == 90)
+		? (intermediate_dim + Traits3::TileN - 1) / Traits3::TileN
+		: intermediate_dim / Traits3::TileN;
 	mlp_dims.total_n_rows_3   = total_k_cols_2;
-	mlp_dims.num_m_tiles_4    = intermediate_dim / Traits4::TileM;
-	mlp_dims.num_n_tiles_4    = hidden_dim / Traits4::TileN;
+	mlp_dims.num_m_tiles_4    = (Config::kCompute == 90)
+		? (intermediate_dim + Traits4::TileM - 1) / Traits4::TileM
+		: intermediate_dim / Traits4::TileM;
+	mlp_dims.num_n_tiles_4    = (Config::kCompute == 90)
+		? (hidden_dim + Traits4::TileN - 1) / Traits4::TileN
+		: hidden_dim / Traits4::TileN;
 	mlp_dims.total_m_rows_4   = total_n_rows_1;
 	mlp_dims.phase_counter    = buf.phase_counter;
 	// Flat-grid geometry: Phase 1 columns = grid_x, GEMM-active count = n_gemm.
@@ -1093,6 +1127,9 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	auto* pA  = reinterpret_cast<Element const*>(a.all_A);
 	auto* pDX = reinterpret_cast<Element*>(buf.dx_sorted);
 
+	// All Hopper expert weights and weight-gradient targets use rank-3 tensor
+	// maps. TMA handles partial edge boxes as zero-filled loads / dropped
+	// stores, while the explicit expert coordinate prevents cross-expert tails.
 	// (See mlp_bwd.cu for the full pattern; here we mirror it but the
 	// "X" tensor is the symmetric x_sorted and "dY" is the symmetric
 	// dy_sorted, both of shape [max_total_slots, hidden_dim].)
@@ -1101,25 +1138,57 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits1::SmemLayoutX_1{});
 
-	auto tma_load_b_fwd = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pB), make_shape(total_n_rows_1, hidden_dim),
-			make_stride(hidden_dim, Int<1>{})),
-		typename Traits1::SmemLayoutW_1{});
-	auto tma_load_c_fwd = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pC), make_shape(total_n_rows_1, hidden_dim),
-			make_stride(hidden_dim, Int<1>{})),
-		typename Traits1::SmemLayoutW_1{});
+	auto tma_load_b_fwd = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pB),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits1::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pB),
+					make_shape(total_n_rows_1, hidden_dim),
+					make_stride(hidden_dim, Int<1>{})),
+				typename Traits1::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_load_c_fwd = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pC),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits1::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pC),
+					make_shape(total_n_rows_1, hidden_dim),
+					make_stride(hidden_dim, Int<1>{})),
+				typename Traits1::SmemLayoutW_1{});
+		}
+	}();
 
 	auto tma_store_z = make_tma_copy(TmaStoreAtom{},
-		make_tensor(make_gmem_ptr(buf.z_buf), make_shape(max_total_slots, intermediate_dim),
+		make_tensor(make_gmem_ptr(buf.z_buf), make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits1::SmemLayoutStoreSlot{});
 	auto tma_store_u = make_tma_copy(TmaStoreAtom{},
-		make_tensor(make_gmem_ptr(buf.du_buf), make_shape(max_total_slots, intermediate_dim),
+		make_tensor(make_gmem_ptr(buf.du_buf), make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits1::SmemLayoutStoreSlot{});
 	auto tma_store_v = make_tma_copy(TmaStoreAtom{},
-		make_tensor(make_gmem_ptr(buf.dv_buf), make_shape(max_total_slots, intermediate_dim),
+		make_tensor(make_gmem_ptr(buf.dv_buf), make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits1::SmemLayoutStoreSlot{});
 
@@ -1127,38 +1196,83 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		make_tensor(make_gmem_ptr(pDY), make_shape(max_total_slots, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits2T::SmemLayoutZ_1{});
-	auto tma_load_a_col = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pA),
-			make_shape(intermediate_dim, total_k_cols_2),
-			make_stride(Int<1>{}, intermediate_dim)),
-		typename Traits2T::SmemLayoutW_1{});
+	auto tma_load_a_col = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pA),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						Int<1>{},
+						static_cast<int64_t>(intermediate_dim),
+						static_cast<int64_t>(hidden_dim) * intermediate_dim)),
+				typename Traits2T::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pA),
+					make_shape(intermediate_dim, total_k_cols_2),
+					make_stride(Int<1>{}, intermediate_dim)),
+				typename Traits2T::SmemLayoutW_1{});
+		}
+	}();
 	// One TMA box per sub-tile; consumer issues NSub stores per outer N-tile.
 	auto tma_store_dz = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(buf.dz_buf),
-			make_shape(max_total_slots, intermediate_dim),
+			make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits2T::SmemLayoutStore_1{});
 
 	auto tma_load_du = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.du_buf)),
-			make_shape(max_total_slots, intermediate_dim),
+			make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits5::SmemLayoutZ_1{});
 	auto tma_load_dv = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dv_buf)),
-			make_shape(max_total_slots, intermediate_dim),
+			make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits5::SmemLayoutZ_1{});
-	auto tma_load_b_col = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pB),
-			make_shape(hidden_dim, total_n_rows_1),
-			make_stride(Int<1>{}, hidden_dim)),
-		typename Traits5::SmemLayoutW_1{});
-	auto tma_load_c_col = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pC),
-			make_shape(hidden_dim, total_n_rows_1),
-			make_stride(Int<1>{}, hidden_dim)),
-		typename Traits5::SmemLayoutW_1{});
+	auto tma_load_b_col = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pB),
+					make_shape(static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						Int<1>{},
+						static_cast<int64_t>(hidden_dim),
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits5::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pB),
+					make_shape(hidden_dim, total_n_rows_1),
+					make_stride(Int<1>{}, hidden_dim)),
+				typename Traits5::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_load_c_col = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pC),
+					make_shape(static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						Int<1>{},
+						static_cast<int64_t>(hidden_dim),
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits5::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pC),
+					make_shape(hidden_dim, total_n_rows_1),
+					make_stride(Int<1>{}, hidden_dim)),
+				typename Traits5::SmemLayoutW_1{});
+		}
+	}();
 	// dX TMA: split-N store (TileN_half boxes per Mlp5::SmemLayoutStore_1).
 	auto tma_store_dx = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(pDX),
@@ -1188,7 +1302,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	}();
 	auto tma_load_zt3 = [&] {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.z_buf)),
-			make_shape(intermediate_dim, max_total_slots),
+			make_shape(intermediate_dim, buf.scratch_rows),
 			make_stride(Int<1>{}, intermediate_dim));
 		if constexpr (Config::kUsesTwoSm) {
 			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tensor,
@@ -1200,11 +1314,26 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 				typename Traits3::SmemLayoutZ_1{});
 		}
 	}();
-	auto tma_reduce_da = make_tma_copy(TmaReduceAddAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dA)),
-			make_shape(total_k_cols_2, intermediate_dim),
-			make_stride(intermediate_dim, Int<1>{})),
-		typename Traits3::SmemLayoutStore{});
+	auto tma_reduce_da = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dA)),
+					make_shape(static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(intermediate_dim),
+						Int<1>{},
+						static_cast<int64_t>(hidden_dim) * intermediate_dim)),
+				typename Traits3::SmemLayoutStore{});
+		} else {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dA)),
+					make_shape(total_k_cols_2, intermediate_dim),
+					make_stride(intermediate_dim, Int<1>{})),
+				typename Traits3::SmemLayoutStore{});
+		}
+	}();
 
 	auto tma_load_xt4 = [&] {
 		auto tensor = make_tensor(make_gmem_ptr(pX),
@@ -1222,7 +1351,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	}();
 	auto tma_load_dut4 = [&] {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.du_buf)),
-			make_shape(intermediate_dim, max_total_slots),
+			make_shape(intermediate_dim, buf.scratch_rows),
 			make_stride(Int<1>{}, intermediate_dim));
 		if constexpr (Config::kUsesTwoSm) {
 			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
@@ -1236,7 +1365,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	}();
 	auto tma_load_dvt4 = [&] {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dv_buf)),
-			make_shape(intermediate_dim, max_total_slots),
+			make_shape(intermediate_dim, buf.scratch_rows),
 			make_stride(Int<1>{}, intermediate_dim));
 		if constexpr (Config::kUsesTwoSm) {
 			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
@@ -1248,16 +1377,46 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 				typename Traits4::SmemLayoutA_1{});
 		}
 	}();
-	auto tma_reduce_db = make_tma_copy(TmaReduceAddAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dB)),
-			make_shape(total_n_rows_1, hidden_dim),
-			make_stride(hidden_dim, Int<1>{})),
-		typename Traits4::SmemLayoutStore{});
-	auto tma_reduce_dc = make_tma_copy(TmaReduceAddAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dC)),
-			make_shape(total_n_rows_1, hidden_dim),
-			make_stride(hidden_dim, Int<1>{})),
-		typename Traits4::SmemLayoutStore{});
+	auto tma_reduce_db = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dB)),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits4::SmemLayoutStore{});
+		} else {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dB)),
+					make_shape(total_n_rows_1, hidden_dim),
+					make_stride(hidden_dim, Int<1>{})),
+				typename Traits4::SmemLayoutStore{});
+		}
+	}();
+	auto tma_reduce_dc = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dC)),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits4::SmemLayoutStore{});
+		} else {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dC)),
+					make_shape(total_n_rows_1, hidden_dim),
+					make_stride(hidden_dim, Int<1>{})),
+				typename Traits4::SmemLayoutStore{});
+		}
+	}();
 
 	// Remote (staging) TMAs — buffers cover L = MC · CommNumStages slots,
 	// each TileM rows tall. MC = (grid.x · NSplit) / NC.
@@ -1714,11 +1873,13 @@ static bool tuned_config_valid_bwd(int D, int I, const TunedConfigBwd& c) {
 	// 128-row comm tile. Keep mirrored SM90 TileM=64 tuning rows out of SM100
 	// auto-dispatch until that TMEM epilogue layout is implemented.
 	if (c.Compute == 100 && c.TileM != 128) return false;
-	if (D % c.TileK1 != 0)        return false;  // mlp1/mlp2_t/mlp5 K
-	if (D % (2 * c.TileN1) != 0)  return false;  // mlp5 N (= TileN2)
-	if (I % (2 * c.TileN1) != 0)  return false;  // mlp2_t N
-	if (I % c.TileK1 != 0)        return false;  // mlp5 K
-	if (I % c.TileK3 != 0)        return false;  // mlp3/mlp4 K
+	if (c.Compute == 100) {
+		if (D % c.TileK1 != 0)        return false;  // mlp1/mlp2_t/mlp5 K
+		if (D % (2 * c.TileN1) != 0)  return false;  // mlp5 N (= TileN2)
+		if (I % (2 * c.TileN1) != 0)  return false;  // mlp2_t N
+		if (I % c.TileK1 != 0)        return false;  // mlp5 K
+		if (I % c.TileK3 != 0)        return false;  // mlp3/mlp4 K
+	}
 	if (D % 8 != 0 || I % 8 != 0) return false;  // vectorization
 	if (c.Compute == 100) {
 		if (D % 256 != 0 || I % 256 != 0) return false;

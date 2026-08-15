@@ -130,7 +130,7 @@ __device__ __forceinline__ auto mlp2_t_make_pipe_umma(
 // with N along intermediate_dim and K along E·hidden_dim.
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits, typename Pipeline,
+template <typename Traits, bool Expert3D = false, typename Pipeline,
           typename TmaLoadZ, typename TmaLoadW>
 __device__ __forceinline__ void mlp2_t_fused_producer(
 		Pipeline& pipe,
@@ -139,10 +139,11 @@ __device__ __forceinline__ void mlp2_t_fused_producer(
 		TmaLoadZ const& tma_load_z,
 		TmaLoadW const& tma_load_a,
 		int m,
-		int expert_k_offset,
+		int expert_or_k_offset,
 		int num_tokens,
 		int hidden_dim,
 		int intermediate_dim,
+		int num_experts,
 		int total_k_cols,        // num_experts · hidden_dim
 		int num_n_tiles,
 		int num_k_tiles,
@@ -159,9 +160,18 @@ __device__ __forceinline__ void mlp2_t_fused_producer(
 	auto mZ = tma_load_z.get_tma_tensor(make_shape(
 		static_cast<int64_t>(num_tokens),
 		static_cast<int64_t>(hidden_dim)));
-	auto mA = tma_load_a.get_tma_tensor(make_shape(
-		static_cast<int64_t>(intermediate_dim),
-		static_cast<int64_t>(total_k_cols)));
+	auto mA = [&]() {
+		if constexpr (Expert3D) {
+			return tma_load_a.get_tma_tensor(make_shape(
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_load_a.get_tma_tensor(make_shape(
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(total_k_cols)));
+		}
+	}();
 
 	auto cta_tma_z = tma_load_z.get_slice(Int<0>{});
 	auto cta_tma_a = tma_load_a.get_slice(Int<0>{});
@@ -178,9 +188,17 @@ __device__ __forceinline__ void mlp2_t_fused_producer(
 	int n_stride = (num_splits >= 0) ? num_splits : (int)gridDim.y;
 
 	for (int n = n_start; n < num_n_tiles; n += n_stride) {
-		auto gA = local_tile(mA,
-			make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
-			make_coord(n, _));
+		auto gA = [&]() {
+			if constexpr (Expert3D) {
+				return local_tile(mA,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(n, _, expert_or_k_offset));
+			} else {
+				return local_tile(mA,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(n, _));
+			}
+		}();
 		auto tAgA = cta_tma_a.partition_S(gA);
 
 		for (int k = 0; k < num_k_tiles; ++k) {
@@ -189,9 +207,14 @@ __device__ __forceinline__ void mlp2_t_fused_producer(
 				auto* bar = pipe.producer_get_barrier(state);
 				copy(tma_load_z.with(*bar, 0),
 					tZgZ(_, _, _, k), tZsZ(_, _, _, state.index()));
-				copy(tma_load_a.with(*bar, 0),
-					tAgA(_, _, _, expert_k_offset + k),
-					tWsW(_, _, _, state.index()));
+				if constexpr (Expert3D) {
+					copy(tma_load_a.with(*bar, 0),
+						tAgA(_, _, _, k), tWsW(_, _, _, state.index()));
+				} else {
+					copy(tma_load_a.with(*bar, 0),
+						tAgA(_, _, _, expert_or_k_offset + k),
+						tWsW(_, _, _, state.index()));
+				}
 			}
 			++state;
 		}

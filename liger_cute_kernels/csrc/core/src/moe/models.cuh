@@ -31,6 +31,7 @@ template <> struct GmmaSelector<bfloat16_t, 16> { using Atom = SM90_64x16x16_F32
 template <> struct GmmaSelector<bfloat16_t, 32> { using Atom = SM90_64x32x16_F32BF16BF16_SS<GmmaK, GmmaK>; };
 template <> struct GmmaSelector<bfloat16_t, 64>  { using Atom = SM90_64x64x16_F32BF16BF16_SS<GmmaK, GmmaK>; };
 template <> struct GmmaSelector<bfloat16_t, 128> { using Atom = SM90_64x128x16_F32BF16BF16_SS<GmmaK, GmmaK>; };
+template <> struct GmmaSelector<bfloat16_t, 192> { using Atom = SM90_64x192x16_F32BF16BF16_SS<GmmaK, GmmaK>; };
 template <> struct GmmaSelector<bfloat16_t, 256> { using Atom = SM90_64x256x16_F32BF16BF16_SS<GmmaK, GmmaK>; };
 
 template <> struct GmmaSelector<half_t, 8>  { using Atom = SM90_64x8x16_F32F16F16_SS<GmmaK, GmmaK>; };

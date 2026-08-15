@@ -540,6 +540,7 @@ struct Mlp4ConsumerImpl;
 template <>
 struct Mlp4ConsumerImpl<90> {
 template <typename Traits,
+          bool Expert3D = false,
           int Compute = 90,
           typename Pipeline, typename SmemType,
           typename TmaReduceAddDB, typename TmaReduceAddDC>
@@ -552,6 +553,7 @@ static __device__ __forceinline__ void run(
 		const int* expert_k_starts,
 		const int* expert_k_ends,
 		int num_experts,
+		int intermediate_dim,
 		int hidden_dim,
 		int total_m_rows,
 		int num_m_tiles,
@@ -593,12 +595,30 @@ static __device__ __forceinline__ void run(
 
 	const bool is_my_wg_leader = (tid_in_wg == 0);
 
-	auto mdB = tma_reduce_db.get_tma_tensor(make_shape(
-		static_cast<int64_t>(total_m_rows),
-		static_cast<int64_t>(hidden_dim)));
-	auto mdC = tma_reduce_dc.get_tma_tensor(make_shape(
-		static_cast<int64_t>(total_m_rows),
-		static_cast<int64_t>(hidden_dim)));
+	auto mdB = [&]() {
+		if constexpr (Expert3D) {
+			return tma_reduce_db.get_tma_tensor(make_shape(
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_reduce_db.get_tma_tensor(make_shape(
+				static_cast<int64_t>(total_m_rows),
+				static_cast<int64_t>(hidden_dim)));
+		}
+	}();
+	auto mdC = [&]() {
+		if constexpr (Expert3D) {
+			return tma_reduce_dc.get_tma_tensor(make_shape(
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_reduce_dc.get_tma_tensor(make_shape(
+				static_cast<int64_t>(total_m_rows),
+				static_cast<int64_t>(hidden_dim)));
+		}
+	}();
 	auto cta_tma_db = tma_reduce_db.get_slice(Int<0>{});
 	auto cta_tma_dc = tma_reduce_dc.get_slice(Int<0>{});
 
@@ -739,7 +759,7 @@ static __device__ __forceinline__ void run(
 
 					if (is_my_wg_leader) {
 						cute::tma_store_fence();
-						int out_m = e * num_m_tiles + m_tile;
+						int out_m = Expert3D ? m_tile : e * num_m_tiles + m_tile;
 						// Store box = ONE atom-row (AtomTileM); kAtomsPerWg stores
 						// per WG. M-split: the 2 atoms interleave in gmem
 						// (4*out_m + my_wg + 2a). N-split: WG owns the full TileM
@@ -761,15 +781,31 @@ static __device__ __forceinline__ void run(
 								make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
 								make_coord(a, 0));
 							if (phase == 0) {
-								auto gdB = local_tile(mdB,
-									make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
-									make_coord(m_atom_row, n_tile_idx));
+								auto gdB = [&]() {
+									if constexpr (Expert3D) {
+										return local_tile(mdB,
+											make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
+											make_coord(m_atom_row, n_tile_idx, e));
+									} else {
+										return local_tile(mdB,
+											make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
+											make_coord(m_atom_row, n_tile_idx));
+									}
+								}();
 								copy(tma_reduce_db, cta_tma_db.partition_S(sStore_a),
 									cta_tma_db.partition_D(gdB));
 							} else {
-								auto gdC = local_tile(mdC,
-									make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
-									make_coord(m_atom_row, n_tile_idx));
+								auto gdC = [&]() {
+									if constexpr (Expert3D) {
+										return local_tile(mdC,
+											make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
+											make_coord(m_atom_row, n_tile_idx, e));
+									} else {
+										return local_tile(mdC,
+											make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
+											make_coord(m_atom_row, n_tile_idx));
+									}
+								}();
 								copy(tma_reduce_dc, cta_tma_dc.partition_S(sStore_a),
 									cta_tma_dc.partition_D(gdC));
 							}
@@ -791,7 +827,7 @@ static __device__ __forceinline__ void run(
 // are unchanged (Compute defaults to 90); pass mlp4_consumer<Traits, 100>(...)
 // to select the Blackwell path.
 // ───────────────────────────────────────────────────────────────────
-template <typename Traits, int Compute = 90,
+template <typename Traits, int Compute = 90, bool Expert3D = false,
           typename Pipeline, typename SmemType,
           typename TmaReduceAddDB, typename TmaReduceAddDC>
 __device__ __forceinline__ void mlp4_consumer(
@@ -803,6 +839,7 @@ __device__ __forceinline__ void mlp4_consumer(
 		const int* expert_k_starts,
 		const int* expert_k_ends,
 		int num_experts,
+		int intermediate_dim,
 		int hidden_dim,
 		int total_m_rows,
 		int num_m_tiles,
@@ -813,10 +850,11 @@ __device__ __forceinline__ void mlp4_consumer(
 		int batch_kb_start,
 		int batch_kb_end,
 		int k_split) {
-	Mlp4ConsumerImpl<Compute>::template run<Traits>(
+	Mlp4ConsumerImpl<Compute>::template run<Traits, Expert3D>(
 		pipe, state, smem, tma_reduce_db, tma_reduce_dc,
 		expert_k_starts, expert_k_ends, num_experts,
-		hidden_dim, total_m_rows, num_m_tiles, num_n_tiles, outer_split,
+		intermediate_dim, hidden_dim, total_m_rows,
+		num_m_tiles, num_n_tiles, outer_split,
 		cell_start, cell_stride, batch_kb_start, batch_kb_end, k_split);
 }
 
@@ -1199,6 +1237,7 @@ template <>
 struct Mlp4ConsumerImpl<100> {
 template <
 	typename Traits,
+	bool Expert3D = false,
 	typename Pipeline,
 	typename TmaReduceAddDB,
 	typename TmaReduceAddDC,
@@ -1212,6 +1251,7 @@ static __device__ __forceinline__ void run(
 		const int* expert_k_starts,
 		const int* expert_k_ends,
 		int num_experts,
+		int intermediate_dim,
 		int hidden_dim,
 		int total_m_rows,
 		int num_m_tiles,
@@ -1223,6 +1263,7 @@ static __device__ __forceinline__ void run(
 		int batch_kb_end,
 		int k_split) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+	(void)intermediate_dim;
 	using Element = typename Traits::Element;
 	constexpr int TileM = Traits::TileM;
 	constexpr int TileN = Traits::TileN;
@@ -1540,6 +1581,7 @@ static __device__ __forceinline__ void run(
 template <
 	typename Traits,
 	int Compute = 90,
+	bool Expert3D = false,
 	typename TmaLoadX,
 	typename TmaLoadA,
 	typename TmaReduceAddDB,
@@ -1657,7 +1699,7 @@ __device__ __forceinline__ void mlp4_fwd(
 			ring_kb);
 	} else if (is_consumer) {
 		if constexpr (Compute == 100) {
-			mlp4_consumer<Traits, Compute>(
+			mlp4_consumer<Traits, Compute, Expert3D>(
 				pipe,
 				consumer_state,
 				smem,
@@ -1666,6 +1708,7 @@ __device__ __forceinline__ void mlp4_fwd(
 				expert_k_starts,
 				expert_k_ends,
 				num_experts,
+				intermediate_dim,
 				hidden_dim,
 				total_m_rows,
 				num_m_tiles,
@@ -1678,7 +1721,7 @@ __device__ __forceinline__ void mlp4_fwd(
 				k_split);
 		} else {
 #if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 1000)
-			mlp4_consumer<Traits, Compute>(
+			mlp4_consumer<Traits, Compute, Expert3D>(
 				pipe,
 				consumer_state,
 				smem,
@@ -1687,6 +1730,7 @@ __device__ __forceinline__ void mlp4_fwd(
 				expert_k_starts,
 				expert_k_ends,
 				num_experts,
+				intermediate_dim,
 				hidden_dim,
 				total_m_rows,
 				num_m_tiles,
