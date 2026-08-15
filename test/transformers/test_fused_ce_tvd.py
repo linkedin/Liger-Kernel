@@ -137,15 +137,49 @@ def test_teacher_receives_no_gradient():
 
 
 def test_identical_distributions_give_zero_tvd():
+    """Self-distillation: every slot ties, so both the distance and its gradient vanish."""
     torch.manual_seed(0)
     BT, V = 4, 1024
 
-    logits = torch.randn(BT, V, device=device, dtype=torch.float32)
+    logits = torch.randn(BT, V, device=device, dtype=torch.float32, requires_grad=True)
     target = torch.randint(0, V, (BT,), device=device, dtype=torch.long)
 
-    _, tvd = LigerFusedCETVDFunction.apply(logits, logits.clone(), target)
+    _, tvd = LigerFusedCETVDFunction.apply(logits, logits.detach().clone(), target)
 
     assert torch.allclose(tvd, torch.zeros_like(tvd), atol=1e-6, rtol=0)
+
+    tvd.sum().backward()
+    assert torch.equal(logits.grad, torch.zeros_like(logits.grad))
+
+
+def test_gradient_at_probability_ties():
+    """Exact ``p == q`` ties need the three-way sign, not a ``p > q`` two-way split.
+
+    A two-way split folds ties into the ``p < q`` branch, which shifts every
+    tied slot's contribution to ``sigma`` and corrupts the whole row. Ties are
+    reachable in practice: self-distillation ties everything, and a teacher that
+    permutes the student's logits leaves the log-sum-exp untouched so every
+    unpermuted slot ties exactly while still carrying probability mass.
+    """
+    torch.manual_seed(0)
+    BT, V = 4, 256
+
+    student = torch.randn(BT, V, device=device, dtype=torch.float32)
+    teacher = student.clone()
+    teacher[:, [0, 1]] = teacher[:, [1, 0]]
+    target = torch.randint(0, V, (BT,), device=device, dtype=torch.long)
+
+    assert int((torch.softmax(student, -1) == torch.softmax(teacher, -1)).sum()) > 0, "no ties constructed"
+
+    student_ref = student.clone().requires_grad_(True)
+    _, tvd_ref = torch_ce_tvd(student_ref, teacher, target)
+    tvd_ref.sum().backward()
+
+    student_liger = student.clone().requires_grad_(True)
+    _, tvd = LigerFusedCETVDFunction.apply(student_liger, teacher, target)
+    tvd.sum().backward()
+
+    torch.testing.assert_close(student_liger.grad, student_ref.grad, atol=1e-6, rtol=1e-5)
 
 
 def test_shape_validation():
