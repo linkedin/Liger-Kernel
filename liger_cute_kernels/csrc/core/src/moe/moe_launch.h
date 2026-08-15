@@ -15,6 +15,8 @@
 
 #include <cuda_runtime.h>
 
+#include <cstdint>
+
 namespace liger {
 
 // Forward launcher inputs. bf16 payloads are carried as void* and reinterpret_cast
@@ -26,6 +28,7 @@ struct MoeFwdArgs {
 	const void* all_B;             // [epp, I, D] bf16
 	const void* all_C;             // [epp, I, D] bf16
 	const void* all_A;             // [epp, D, I] bf16
+	int64_t weight_expert_stride;  // all_B/all_C expert stride in bf16 elements
 	int num_tokens, hidden_dim, intermediate_dim, experts_per_pe;
 	int num_experts, top_k;
 	int team;                      // NVSHMEM team id (nvshmem_team_t == int)

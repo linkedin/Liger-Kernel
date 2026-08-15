@@ -75,7 +75,7 @@ def _group_norm_forward_kernel(
     variance = (squared_sum / hidden_size) - (m * m)
 
     # 1/std
-    rstd = rsqrt(variance + eps)
+    rstd = rsqrt(variance + eps.to(tl.float32))
 
     # Normalize — flat loop over full hidden_size (not per-channel)
     # This avoids the nested channel × per_channel_hidden loop where

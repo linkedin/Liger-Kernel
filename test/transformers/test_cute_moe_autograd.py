@@ -206,14 +206,25 @@ def _autograd_worker(rank, world_size, init_file):
         all_A_g = _gather_experts(all_A_data, dist.group.WORLD)
         Y_ref = _torch_reference_moe(X_data, ei, ew, all_B_g, all_C_g, all_A_g, _K)
 
+        experts_per_pe = all_B_data.size(0)
+        packed_w13_data = torch.stack((all_B_data, all_C_data), dim=1).reshape(
+            experts_per_pe,
+            2 * _I,
+            _D,
+        )
+        strided_B_data = packed_w13_data[:, :_I, :]
+        strided_C_data = packed_w13_data[:, _I:, :]
+        assert not strided_B_data.is_contiguous()
+        assert not strided_C_data.is_contiguous()
+
         # ── No-grad fast path: must pop the symmetric stack immediately. ──
         with torch.no_grad():
             Y_ng = moe_fused(
                 X_data,
                 ei,
                 ew,
-                all_B_data,
-                all_C_data,
+                strided_B_data,
+                strided_C_data,
                 all_A_data,
                 num_experts=_E,
                 top_k=_K,
@@ -225,6 +236,24 @@ def _autograd_worker(rank, world_size, init_file):
 
         # The Function class is reachable via the ops module (sanity on the export).
         assert LigerExpertParallelFusedMoEFunction is not None
+
+        # Backward does not yet support expert-strided weights. Reject them
+        # before forward allocates symmetric intermediates.
+        packed_w13 = packed_w13_data.clone().detach().requires_grad_(True)
+        strided_B = packed_w13[:, :_I, :]
+        strided_C = packed_w13[:, _I:, :]
+        with pytest.raises(ValueError, match="gradients are disabled"):
+            moe_fused(
+                X_data.clone().detach().requires_grad_(True),
+                ei,
+                ew,
+                strided_B,
+                strided_C,
+                all_A_data.clone().detach().requires_grad_(True),
+                num_experts=_E,
+                top_k=_K,
+                pg=dist.group.WORLD,
+            )
 
         # ── Grad path: with-intermediates fwd, backward consumes + pops. ──
         X = X_data.clone().detach().requires_grad_(True)

@@ -1,26 +1,19 @@
 // Combined autotuner for the fused MoE forward + backward kernels.
 //
-// For each shape (T, D, I, E, K), tunes fwd and bwd INDEPENDENTLY within
-// each TileM bucket (64, 128). The bwd template inherits the fwd's sort
-// layout (tile_expert_ids granularity / x_sorted slot stride /
-// expert_offsets alignment), so the two kernels MUST agree on TileM —
-// but once TileM is fixed they are separate sequential kernel launches
-// whose timings don't depend on the other direction's config. So instead
-// of the O(F·B) fwd×bwd cross product, we run O(F+B) per bucket:
-//   - FWD sweep: vary the fwd config, hold bwd at a fixed default; keep
-//     the fwd config with the lowest fwd_ms.
-//   - BWD sweep: vary the bwd config, hold fwd at a fixed default; keep
-//     the bwd config with the lowest bwd_ms.
-// Each measurement runs a full fwd→bwd sequence (the bwd needs the fwd's
-// sort outputs) but reads only the half being tuned.
+// For each shape (T, D, I, E, K), tunes fwd and bwd independently in the
+// TileM=64 and TileM=128 buckets. Communication always uses TileM=128, so the
+// two directions may select different GEMM TileM values. Instead of the
+// O(F·B) fwd×bwd cross product, each direction is swept independently:
+//   - FWD candidates run forward-only, avoiding thermal bias from a trailing
+//     backward kernel.
+//   - BWD candidates run a full pair because they consume forward-produced
+//     sort buffers, but only bwd_ms participates in their selection.
 //
-// The bucket's combined = best_fwd_ms + best_bwd_ms. The winning TileM is
-// the bucket with the lowest combined; we dump its (fwd template, bwd
-// template, shared TileM) into moe_fwd_bwd_tuning_configs.cuh so the
-// runtime "auto" dispatcher can pick both templates together by shape.
+// The independently selected templates and per-direction TileM values are
+// written to moe_fwd_bwd_tuning_configs.cuh for runtime auto-dispatch.
 //
 // Run with: srun --mpi=pmi2 --ntasks=N ./tune_moe_fwd_bwd
-// Output:   ../src/liger_comm_kernels/moe/moe_fwd_bwd_tuning_configs.cuh
+// Output:   moe_fwd_bwd_tuning_configs_{single,multi}_sm{90,100}.cuh
 //           (override with LIGER_MOE_FWDBWD_TUNED_OUTPUT=/path/to/*_sm90.cuh
 //            or /path/to/*_sm100.cuh matching the detected GPU)
 
@@ -30,6 +23,7 @@
 #include <cuda_runtime.h>
 
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -70,10 +64,81 @@ extern "C" {
 int   nvshmem_team_my_pe(nvshmem_team_t team);
 int   nvshmem_team_n_pes(nvshmem_team_t team);
 int   nvshmem_team_sync(nvshmem_team_t team);
+void* nvshmem_malloc(size_t bytes);
+void  nvshmem_free(void* ptr);
+int   nvshmem_int_min_reduce(
+	nvshmem_team_t team, int* dest, const int* source, size_t nreduce);
 }
+
+static int* g_tuner_status_src = nullptr;
+static int* g_tuner_status_dst = nullptr;
 
 static inline void tuner_team_sync(nvshmem_team_t team, int n_pes) {
 	if (n_pes > 1) nvshmem_team_sync(team);
+}
+
+static int tuner_cooldown_ms() {
+	static const int value = [] {
+		const char* s = getenv("MOE_FWDBWD_TUNE_COOLDOWN_MS");
+		return s ? std::max(0, atoi(s)) : 0;
+	}();
+	return value;
+}
+
+static void tuner_iteration_cooldown() {
+	if (const int ms = tuner_cooldown_ms(); ms > 0)
+		std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+static void tuner_candidate_cooldown() {
+	std::this_thread::sleep_for(
+		std::chrono::milliseconds(std::max(10, tuner_cooldown_ms())));
+}
+
+static uint64_t tuner_input_seed() {
+	static const uint64_t value = [] {
+		const char* s = getenv("MOE_FWDBWD_TUNE_INPUT_SEED");
+		if (!s) return UINT64_C(0x4c494745524d4f45);
+		char* end = nullptr;
+		errno = 0;
+		const unsigned long long parsed = std::strtoull(s, &end, 0);
+		if (errno != 0 || end == s || *end != '\0') {
+			fprintf(stderr,
+				"Invalid MOE_FWDBWD_TUNE_INPUT_SEED='%s'; expected an integer\n", s);
+			std::abort();
+		}
+		return static_cast<uint64_t>(parsed);
+	}();
+	return value;
+}
+
+static uint64_t mix_input_seed(uint64_t seed, uint64_t value) {
+	return seed ^ (value + UINT64_C(0x9e3779b97f4a7c15) +
+	               (seed << 6) + (seed >> 2));
+}
+
+// Returns the minimum status across all ranks: 1=success, 0=error, -1=OOM.
+// Source/destination must be symmetric for the NVSHMEM host reduction.
+static int tuner_consensus_status(nvshmem_team_t team, int local_status) {
+	cudaError_t e = cudaMemcpy(
+		g_tuner_status_src, &local_status, sizeof(int), cudaMemcpyHostToDevice);
+	if (e != cudaSuccess) {
+		fprintf(stderr, "tuner consensus H2D failed: %s\n", cudaGetErrorString(e));
+		std::abort();
+	}
+	if (nvshmem_int_min_reduce(
+			team, g_tuner_status_dst, g_tuner_status_src, 1) != 0) {
+		fprintf(stderr, "tuner nvshmem_int_min_reduce failed\n");
+		std::abort();
+	}
+	int global_status = 0;
+	e = cudaMemcpy(
+		&global_status, g_tuner_status_dst, sizeof(int), cudaMemcpyDeviceToHost);
+	if (e != cudaSuccess) {
+		fprintf(stderr, "tuner consensus D2H failed: %s\n", cudaGetErrorString(e));
+		std::abort();
+	}
+	return global_status;
 }
 
 // ── Forward declarations of the internal launchers (defined in moe.cu /
@@ -145,6 +210,7 @@ struct TunerEntryFwd {
 static const TunerEntryFwd kRegistryFwd[] = {
 #if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
 	LIGER_MOE_TUNE_CONFIGS(LIGER_MOE_FWD_REGISTRY_ENTRY_SM90)
+	LIGER_MOE_FWD_TUNE_CONFIGS_SM90_ONLY(LIGER_MOE_FWD_REGISTRY_ENTRY_SM90)
 #endif
 #if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
 	LIGER_MOE_FWD_TUNE_CONFIGS_TM128(LIGER_MOE_FWD_REGISTRY_ENTRY_SM100)
@@ -214,10 +280,12 @@ static constexpr int kNumBwdConfigs =
 // Fwd validity (mirrors tune_moe.cu / tuned_config_valid in moe.cu).
 static bool fwd_shape_valid(int D, int I, const TunerEntryFwd& e) {
 	if (e.TileM != 64 && e.TileM != 128) return false;
-	if (D % e.TileK1 != 0) return false;
-	if (I % e.TileN1 != 0) return false;
-	if (I % e.TileK2 != 0) return false;
-	if (D % e.TileN2 != 0) return false;
+	if (e.Compute == 100) {
+		if (D % e.TileK1 != 0) return false;
+		if (I % e.TileN1 != 0) return false;
+		if (I % e.TileK2 != 0) return false;
+		if (D % e.TileN2 != 0) return false;
+	}
 	if (D % 8 != 0 || I % 8 != 0) return false;
 	const int wg_tile_n1 = (e.TileM == 128) ? e.TileN1 : e.TileN1 / 2;
 	const int wg_tile_n2 = (e.TileM == 128) ? e.TileN2 : e.TileN2 / 2;
@@ -241,11 +309,13 @@ static bool fwd_shape_valid(int D, int I, const TunerEntryFwd& e) {
 // Bwd validity (mirrors tune_moe_bwd.cu / tuned_config_valid_bwd in moe_bwd.cu
 // — keep both in sync).
 static bool bwd_shape_valid(int D, int I, const TunerEntryBwd& e) {
-	if (D % e.TileK1 != 0)        return false;
-	if (D % (2 * e.TileN1) != 0)  return false;
-	if (I % (2 * e.TileN1) != 0)  return false;
-	if (I % e.TileK1 != 0)        return false;
-	if (I % e.TileK3 != 0)        return false;
+	if (e.Compute == 100) {
+		if (D % e.TileK1 != 0)        return false;
+		if (D % (2 * e.TileN1) != 0)  return false;
+		if (I % (2 * e.TileN1) != 0)  return false;
+		if (I % e.TileK1 != 0)        return false;
+		if (I % e.TileK3 != 0)        return false;
+	}
 	if (D % 8 != 0 || I % 8 != 0) return false;
 
 	const bool is_2sm = e.Compute == 100;
@@ -314,23 +384,28 @@ struct PairResult {
 };
 
 static bool check_after(const char* fwd_name, const char* bwd_name,
-                        const char* step, int pe) {
-	cudaDeviceSynchronize();
-	auto err = cudaGetLastError();
-	if (err != cudaSuccess) {
+                        const char* step, int pe, nvshmem_team_t team) {
+	cudaError_t err = cudaDeviceSynchronize();
+	if (err == cudaSuccess) err = cudaGetLastError();
+	else (void)cudaGetLastError();
+	const int global_status =
+		tuner_consensus_status(team, err == cudaSuccess ? 1 : 0);
+	if (global_status != 1) {
 		if (pe == 0)
-			fprintf(stderr, "  [FWD=%s × BWD=%s @ %s] CUDA error: %s\n",
-				fwd_name, bwd_name, step, cudaGetErrorString(err));
+			fprintf(stderr, "  [FWD=%s × BWD=%s @ %s] CUDA error on at least one rank%s%s\n",
+				fwd_name, bwd_name, step,
+				err != cudaSuccess ? ": " : "",
+				err != cudaSuccess ? cudaGetErrorString(err) : "");
 		return true;
 	}
 	return false;
 }
 
 // Run one fwd→bwd sequence, recording cudaEvents around each kernel.
-// fwd_start_ev / fwd_stop_ev / bwd_stop_ev are caller-owned, optional.
-// When all three are non-null they bracket: [fwd_start_ev .. fwd_stop_ev]
-// is the fwd; [fwd_stop_ev .. bwd_stop_ev] is the bwd. Always pops the
-// symm-stack entries the fwd pushed so the next iteration starts clean.
+// The event pointers are caller-owned and optional. Forward and backward use
+// separate brackets so the host-side handoff consensus between them is not
+// charged to either kernel. Always pops the symm-stack entries the fwd pushed
+// so the next iteration starts clean.
 static bool run_pair_once(
 		const TunerEntryFwd& fwd_e, const TunerEntryBwd& bwd_e,
 		const torch::Tensor& X, const torch::Tensor& dY,
@@ -341,8 +416,10 @@ static bool run_pair_once(
 		int E, int K, nvshmem_team_t team, int pe, int n_pes,
 		bool* saw_oom,
 		const char* step,
+		bool run_backward = true,
 		cudaEvent_t* fwd_start_ev = nullptr,
 		cudaEvent_t* fwd_stop_ev  = nullptr,
+		cudaEvent_t* bwd_start_ev = nullptr,
 		cudaEvent_t* bwd_stop_ev  = nullptr) {
 
 	// Dims (the templated launchers take raw pointers + dims via the arg structs).
@@ -360,19 +437,48 @@ static bool run_pair_once(
 	void* x_sorted = nullptr;
 	void* y_buf    = nullptr;
 	void* all_off  = nullptr;
-	// Caller-owned sort outputs the bwd consumes (kept alive across both calls).
-	torch::Tensor tok_slots, tile_ids;
-
-	if (fwd_start_ev) cudaEventRecord(*fwd_start_ev);
+	// Allocate every caller-owned fwd/bwd tensor before ranks can diverge onto
+	// different template paths. An asymmetric allocation failure must be
+	// resolved collectively before any kernel enters an NVSHMEM barrier.
+	torch::Tensor Y, tok_slots, tile_ids;
+	torch::Tensor dX, dB, dC, dA, dW;
+	int alloc_status = 1;
 	try {
-		torch::Tensor Y = torch::empty({T, D}, bf16);
+		Y         = torch::empty({T, D}, bf16);
 		tok_slots = torch::empty({max_total_slots}, i32);
 		tile_ids  = torch::empty({max_total_slots / 128}, i32);
+		dX        = torch::empty({T, D}, bf16);
+		dB        = torch::empty({epp, Imid, D}, bf16);
+		dC        = torch::empty({epp, Imid, D}, bf16);
+		dA        = torch::empty({epp, D, Imid}, bf16);
+		dW        = torch::empty({T, K}, bf16);
+	} catch (const std::exception& ex) {
+		const char* msg = ex.what();
+		const bool oom = msg && (std::strstr(msg, "out of memory") ||
+		                        std::strstr(msg, "CUDA out of memory") ||
+		                        std::strstr(msg, "OutOfMemoryError"));
+		alloc_status = oom ? -1 : 0;
+		fprintf(stderr,
+			"  [PE=%d FWD=%s × BWD=%s @ %s allocation] exception: %s\n",
+			pe, fwd_e.name, bwd_e.name, step, msg ? msg : "(no message)");
+		fflush(stderr);
+		(void)cudaGetLastError();
+	}
+	const int global_alloc_status = tuner_consensus_status(team, alloc_status);
+	if (global_alloc_status != 1) {
+		*saw_oom = global_alloc_status < 0;
+		return true;
+	}
+
+	if (fwd_start_ev) cudaEventRecord(*fwd_start_ev);
+	int fwd_status = 1;
+	try {
 		liger::MoeFwdArgs fa{};
 		fa.X = X.data_ptr();
 		fa.expert_indices = expert_indices.data_ptr<int>();
 		fa.expert_weights = expert_weights.data_ptr();
 		fa.all_B = all_B.data_ptr(); fa.all_C = all_C.data_ptr(); fa.all_A = all_A.data_ptr();
+		fa.weight_expert_stride = static_cast<int64_t>(Imid) * D;
 		fa.num_tokens = T; fa.hidden_dim = D; fa.intermediate_dim = Imid; fa.experts_per_pe = epp;
 		fa.num_experts = E; fa.top_k = K; fa.team = team; fa.stream = stream; fa.device = device;
 		fa.Y = Y.data_ptr();
@@ -382,38 +488,51 @@ static bool run_pair_once(
 		fwd_e.fn(fa, /*static_nsplit=*/8);
 	} catch (const std::exception& ex) {
 		const char* msg = ex.what();
-		if (msg && (std::strstr(msg, "out of memory") ||
-		            std::strstr(msg, "CUDA out of memory") ||
-		            std::strstr(msg, "OutOfMemoryError"))) {
-			*saw_oom = true;
-		}
-		if (pe == 0) {
-			fprintf(stderr, "  [FWD=%s × BWD=%s @ %s FWD] exception: %s\n",
-				fwd_e.name, bwd_e.name, step, msg ? msg : "(no message)");
-			fflush(stderr);
-		}
+		const bool oom = msg && (std::strstr(msg, "out of memory") ||
+		                        std::strstr(msg, "CUDA out of memory") ||
+		                        std::strstr(msg, "OutOfMemoryError"));
+		fwd_status = oom ? -1 : 0;
+		fprintf(stderr, "  [PE=%d FWD=%s × BWD=%s @ %s FWD] exception: %s\n",
+			pe, fwd_e.name, bwd_e.name, step, msg ? msg : "(no message)");
+		fflush(stderr);
 		(void)cudaGetLastError();
-		return true;
 	}
+	if (fwd_status == 1 && fwd_stop_ev) cudaEventRecord(*fwd_stop_ev);
 	// Cross-PE fwd→bwd handoff barrier. The BWD's remote gets read x_sorted /
 	// expert_offsets that the FWD wrote into PEER-PE symmetric memory; the
 	// FWD's tail NVSHMEM traffic + its end-of-kernel team sync must be globally
 	// visible before the BWD launches, or the BWD's comm reads stale data and
-	// deadlocks. A device sync drains the FWD (incl. its device-side team_sync)
-	// on every PE; team_sync makes the cross-PE completion collective. Recording
-	// fwd_stop AFTER the drain keeps timing attribution correct: fwd cost
-	// includes its comm tail, and bwd = bwd_stop - fwd_stop measures BWD alone.
-	cudaDeviceSynchronize();
+	// deadlocks. A device sync drains the FWD (including its device-side
+	// team_sync) on every PE; team_sync makes completion collective. The stop
+	// event is already queued behind the FWD, so it includes the comm tail but
+	// excludes the host-side consensus and handoff below.
+	if (cudaError_t e = cudaDeviceSynchronize(); e != cudaSuccess) {
+		fprintf(stderr, "  [PE=%d FWD=%s @ %s FWD sync] CUDA error: %s\n",
+			pe, fwd_e.name, step, cudaGetErrorString(e));
+		fwd_status = 0;
+		(void)cudaGetLastError();
+	}
+	const int global_fwd_status = tuner_consensus_status(team, fwd_status);
+	if (global_fwd_status != 1) {
+		// The forward owns symmetric-stack entries, and a throwing rank may
+		// have pushed only a prefix. Continuing could desynchronize the
+		// collective allocator, so fail the whole tuning job loudly.
+		fprintf(stderr,
+			"  [PE=%d FWD=%s @ %s] collective forward failure; aborting tuner\n",
+			pe, fwd_e.name, step);
+		fflush(stderr);
+		std::abort();
+	}
 	tuner_team_sync(team, n_pes);
-	if (fwd_stop_ev) cudaEventRecord(*fwd_stop_ev);
+	if (!run_backward) {
+		liger::moe_pop_fwd();
+		*saw_oom = false;
+		return false;
+	}
 
-	bool bwd_failed = false;
+	int bwd_status = 1;
+	if (bwd_start_ev) cudaEventRecord(*bwd_start_ev);
 	try {
-		torch::Tensor dX = torch::empty({T, D}, bf16);
-		torch::Tensor dB = torch::empty({epp, Imid, D}, bf16);
-		torch::Tensor dC = torch::empty({epp, Imid, D}, bf16);
-		torch::Tensor dA = torch::empty({epp, D, Imid}, bf16);
-		torch::Tensor dW = torch::empty({T, K}, bf16);
 		liger::MoeBwdArgs ba{};
 		ba.dY = dY.data_ptr();
 		ba.Y_fwd = y_buf;            // fwd's expert-sorted output buffer
@@ -431,26 +550,30 @@ static bool run_pair_once(
 		bwd_e.fn(ba, /*static_nsplit=*/8);
 	} catch (const std::exception& ex) {
 		const char* msg = ex.what();
-		if (msg && (std::strstr(msg, "out of memory") ||
-		            std::strstr(msg, "CUDA out of memory") ||
-		            std::strstr(msg, "OutOfMemoryError"))) {
-			*saw_oom = true;
-		}
-		if (pe == 0) {
-			fprintf(stderr, "  [FWD=%s × BWD=%s @ %s BWD] exception: %s\n",
-				fwd_e.name, bwd_e.name, step, msg ? msg : "(no message)");
-			fflush(stderr);
-		}
+		const bool oom = msg && (std::strstr(msg, "out of memory") ||
+		                        std::strstr(msg, "CUDA out of memory") ||
+		                        std::strstr(msg, "OutOfMemoryError"));
+		bwd_status = oom ? -1 : 0;
+		fprintf(stderr, "  [PE=%d FWD=%s × BWD=%s @ %s BWD] exception: %s\n",
+			pe, fwd_e.name, bwd_e.name, step, msg ? msg : "(no message)");
+		fflush(stderr);
 		(void)cudaGetLastError();
-		bwd_failed = true;
 	}
-	if (bwd_stop_ev) cudaEventRecord(*bwd_stop_ev);
+	if (bwd_status == 1 && bwd_stop_ev) cudaEventRecord(*bwd_stop_ev);
+	if (cudaError_t e = cudaDeviceSynchronize(); e != cudaSuccess) {
+		fprintf(stderr, "  [PE=%d BWD=%s @ %s BWD sync] CUDA error: %s\n",
+			pe, bwd_e.name, step, cudaGetErrorString(e));
+		bwd_status = 0;
+		(void)cudaGetLastError();
+	}
+	const int global_bwd_status = tuner_consensus_status(team, bwd_status);
 
 	// Drain fwd's symm-stack entries so the next sequence starts clean. MUST
 	// come after bwd has finished reading them (x_sorted / y_buf / all_off are
 	// stack-owned symmetric memory).
 	liger::moe_pop_fwd();
-	return bwd_failed;
+	*saw_oom = global_bwd_status < 0;
+	return global_bwd_status != 1;
 }
 
 static PairResult run_pair(
@@ -460,7 +583,8 @@ static PairResult run_pair(
 		const torch::Tensor& expert_weights,
 		const torch::Tensor& all_B, const torch::Tensor& all_C,
 		const torch::Tensor& all_A,
-		int E, int K, nvshmem_team_t team, int pe, int n_pes) {
+		int E, int K, nvshmem_team_t team, int pe, int n_pes,
+		bool run_backward = true) {
 
 	if (pe == 0 && getenv("MOE_FWDBWD_TUNE_VERBOSE")) {
 		fprintf(stderr, "  trying FWD=%s × BWD=%s\n", fwd_e.name, bwd_e.name);
@@ -477,9 +601,10 @@ static PairResult run_pair(
 	// Sanity launch — surfaces template-specific runtime errors before
 	// we commit to the timing loop.
 	if (run_pair_once(fwd_e, bwd_e, X, dY, expert_indices, expert_weights,
-	                  all_B, all_C, all_A, E, K, team, pe, n_pes, &saw_oom, "sanity"))
+	                  all_B, all_C, all_A, E, K, team, pe, n_pes, &saw_oom,
+	                  "sanity", run_backward))
 		return {-1.0f, -1.0f, -1.0f, saw_oom};
-	if (check_after(fwd_e.name, bwd_e.name, "sanity", pe))
+	if (check_after(fwd_e.name, bwd_e.name, "sanity", pe, team))
 		return {-1.0f, -1.0f, -1.0f, false};
 	tuner_team_sync(team, n_pes);
 
@@ -487,52 +612,63 @@ static PairResult run_pair(
 	constexpr int kIters  = 5;
 	for (int i = 0; i < kWarmup; ++i) {
 		if (run_pair_once(fwd_e, bwd_e, X, dY, expert_indices, expert_weights,
-		                  all_B, all_C, all_A, E, K, team, pe, n_pes, &saw_oom, "warmup"))
+		                  all_B, all_C, all_A, E, K, team, pe, n_pes, &saw_oom,
+		                  "warmup", run_backward))
 			return {-1.0f, -1.0f, -1.0f, saw_oom};
-		if (check_after(fwd_e.name, bwd_e.name, "warmup", pe))
+		if (check_after(fwd_e.name, bwd_e.name, "warmup", pe, team))
 			return {-1.0f, -1.0f, -1.0f, false};
 		// Per-iter sync (same reason as tune_moe_bwd.cu — back-to-back
 		// async launches race torch's allocator activity against the
 		// kernel's in-flight NVSHMEM puts).
 		cudaDeviceSynchronize();
 		tuner_team_sync(team, n_pes);
+		tuner_iteration_cooldown();
 	}
 
-	cudaEvent_t fwd_start, fwd_stop, bwd_stop;
+	cudaEvent_t fwd_start, fwd_stop, bwd_start, bwd_stop;
 	cudaEventCreate(&fwd_start);
 	cudaEventCreate(&fwd_stop);
+	cudaEventCreate(&bwd_start);
 	cudaEventCreate(&bwd_stop);
-	float total_fwd_ms = 0, total_bwd_ms = 0;
+	float fwd_samples[kIters] = {};
+	float bwd_samples[kIters] = {};
 	for (int i = 0; i < kIters; ++i) {
 		cudaDeviceSynchronize();
 		tuner_team_sync(team, n_pes);
 		if (run_pair_once(fwd_e, bwd_e, X, dY, expert_indices, expert_weights,
 		                  all_B, all_C, all_A, E, K, team, pe, n_pes, &saw_oom, "timing",
-		                  &fwd_start, &fwd_stop, &bwd_stop)) {
+		                  run_backward, &fwd_start, &fwd_stop, &bwd_start, &bwd_stop)) {
 			cudaEventDestroy(fwd_start);
 			cudaEventDestroy(fwd_stop);
+			cudaEventDestroy(bwd_start);
 			cudaEventDestroy(bwd_stop);
 			return {-1.0f, -1.0f, -1.0f, saw_oom};
 		}
-		cudaEventSynchronize(bwd_stop);
-		if (check_after(fwd_e.name, bwd_e.name, "timing", pe)) {
+		cudaEventSynchronize(run_backward ? bwd_stop : fwd_stop);
+		if (check_after(fwd_e.name, bwd_e.name, "timing", pe, team)) {
 			cudaEventDestroy(fwd_start);
 			cudaEventDestroy(fwd_stop);
+			cudaEventDestroy(bwd_start);
 			cudaEventDestroy(bwd_stop);
 			return {-1.0f, -1.0f, -1.0f, false};
 		}
 		float iter_fwd_ms = 0, iter_bwd_ms = 0;
 		cudaEventElapsedTime(&iter_fwd_ms, fwd_start, fwd_stop);
-		cudaEventElapsedTime(&iter_bwd_ms, fwd_stop, bwd_stop);
-		total_fwd_ms += iter_fwd_ms;
-		total_bwd_ms += iter_bwd_ms;
+		if (run_backward)
+			cudaEventElapsedTime(&iter_bwd_ms, bwd_start, bwd_stop);
+		fwd_samples[i] = iter_fwd_ms;
+		bwd_samples[i] = iter_bwd_ms;
+		tuner_iteration_cooldown();
 	}
 	cudaEventDestroy(fwd_start);
 	cudaEventDestroy(fwd_stop);
+	cudaEventDestroy(bwd_start);
 	cudaEventDestroy(bwd_stop);
 
-	float fwd_ms = total_fwd_ms / kIters;
-	float bwd_ms = total_bwd_ms / kIters;
+	std::sort(fwd_samples, fwd_samples + kIters);
+	std::sort(bwd_samples, bwd_samples + kIters);
+	float fwd_ms = fwd_samples[kIters / 2];
+	float bwd_ms = bwd_samples[kIters / 2];
 	return {fwd_ms, bwd_ms, fwd_ms + bwd_ms, false};
 }
 
@@ -561,6 +697,17 @@ static const char* tuned_output_compute_suffix() {
 	return (g_tuner_compute == 100) ? "_sm100.cuh" : "_sm90.cuh";
 }
 
+static const char* tuned_default_output_path() {
+	const bool single = g_tuner_n_pes <= 1;
+	if (single)
+		return g_tuner_compute == 100
+			? "moe_fwd_bwd_tuning_configs_single_sm100.cuh"
+			: "moe_fwd_bwd_tuning_configs_single_sm90.cuh";
+	return g_tuner_compute == 100
+		? "moe_fwd_bwd_tuning_configs_multi_sm100.cuh"
+		: "moe_fwd_bwd_tuning_configs_multi_sm90.cuh";
+}
+
 static bool ends_with(const char* s, const char* suffix) {
 	if (!s || !suffix) return false;
 	const size_t n = std::strlen(s);
@@ -572,15 +719,8 @@ static void dump_tuned_configs() {
 	const bool single = (g_tuner_n_pes <= 1);
 	const char* cls = single ? "Single" : "Multi";  // array/count name suffix
 	const char* compute_suffix = (g_tuner_compute == 100) ? "Sm100" : "Sm90";
-	const char* default_path = single
-		? ((g_tuner_compute == 100)
-			? "moe_fwd_bwd_tuning_configs_single_sm100.cuh"
-			: "moe_fwd_bwd_tuning_configs_single_sm90.cuh")
-		: ((g_tuner_compute == 100)
-			? "moe_fwd_bwd_tuning_configs_multi_sm100.cuh"
-			: "moe_fwd_bwd_tuning_configs_multi_sm90.cuh");
 	const char* env = getenv("LIGER_MOE_FWDBWD_TUNED_OUTPUT");
-	const char* out_path = env ? env : default_path;
+	const char* out_path = env ? env : tuned_default_output_path();
 	const char* required_suffix = tuned_output_compute_suffix();
 	if (!ends_with(out_path, required_suffix)) {
 		fprintf(stderr,
@@ -671,6 +811,10 @@ static void tune_shape(
 		int T, int D, int I, int E, int K,
 		int pe, int n_pes, nvshmem_team_t team) {
 
+	if (const char* skew_env = getenv("MOE_FWDBWD_TUNE_TOKEN_SKEW")) {
+		const int skew = std::max(0, atoi(skew_env));
+		T = std::max(128, T - pe * skew);
+	}
 	int epp = E / n_pes;
 
 	// Pre-filter: every fwd / bwd config that passes its own shape-validity
@@ -709,6 +853,12 @@ static void tune_shape(
 	for (int bi : bwd_candidates)
 		for (int b = 0; b < 2; ++b)
 			if (kRegistryBwd[bi].TileM == kTileMBuckets[b]) bwd_by_tm[b].push_back(bi);
+	if (getenv("MOE_FWDBWD_TUNE_REVERSE_CANDIDATES")) {
+		for (int b = 0; b < 2; ++b) {
+			std::reverse(fwd_by_tm[b].begin(), fwd_by_tm[b].end());
+			std::reverse(bwd_by_tm[b].begin(), bwd_by_tm[b].end());
+		}
+	}
 
 	bool any_bucket = false;
 	for (int b = 0; b < 2; ++b)
@@ -726,12 +876,18 @@ static void tune_shape(
 	// reservations — query cudaMemGetInfo for the live free count).
 	c10::cuda::CUDACachingAllocator::emptyCache();
 	size_t free_bytes = 0, total_bytes = 0;
-	cudaMemGetInfo(&free_bytes, &total_bytes);
+	int memory_status =
+		cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess ? 1 : 0;
 	size_t need_bytes = estimate_memory_bytes(T, D, I, E, K, epp);
-	if (need_bytes > free_bytes) {
+	if (memory_status == 1 && need_bytes > free_bytes) memory_status = -1;
+	const int global_memory_status =
+		tuner_consensus_status(team, memory_status);
+	if (global_memory_status != 1) {
 		if (pe == 0) {
-			printf("%-7d %-6d %-6d  SKIP (insufficient memory: need %.1f GiB, free %.1f GiB)\n",
+			printf("%-7d %-6d %-6d  SKIP (%s on at least one rank; "
+			       "PE0 need %.1f GiB, free %.1f GiB)\n",
 				T, D, I,
+				global_memory_status < 0 ? "insufficient memory" : "memory query failed",
 				need_bytes / 1024.0 / 1024.0 / 1024.0,
 				free_bytes / 1024.0 / 1024.0 / 1024.0);
 			fflush(stdout);
@@ -763,7 +919,12 @@ static void tune_shape(
 
 	torch::Tensor X, dY, gate_weight, all_B, all_C, all_A;
 	torch::Tensor expert_indices, expert_weights;
+	int input_status = 1;
 	try {
+		uint64_t local_seed = tuner_input_seed();
+		for (int value : {T, D, I, E, K, pe})
+			local_seed = mix_input_seed(local_seed, static_cast<uint64_t>(value));
+		torch::cuda::manual_seed(local_seed);
 		X     = torch::rand({T, D}, opts_bf16) - 0.5f;
 		dY    = torch::rand({T, D}, opts_bf16) - 0.5f;
 		all_B = torch::rand({epp, I, D}, opts_bf16) - 0.5f;
@@ -774,24 +935,44 @@ static void tune_shape(
 		// for this package — only the routing OUTPUTS feed the fused kernels, and
 		// the tuner cares about kernel timing, not the routing values). int32
 		// indices + bf16 softmax weights match what the kernels expect.
+		uint64_t router_seed = tuner_input_seed();
+		router_seed = mix_input_seed(router_seed, static_cast<uint64_t>(D));
+		router_seed = mix_input_seed(router_seed, static_cast<uint64_t>(E));
+		torch::cuda::manual_seed(router_seed);
 		gate_weight = torch::rand({E, D}, opts_bf16) - 0.5f;
 		auto logits = torch::matmul(X.to(torch::kFloat32), gate_weight.to(torch::kFloat32).t());
 		auto topk = torch::topk(logits, K, /*dim=*/1);
 		expert_indices = std::get<1>(topk).to(torch::kInt32).contiguous();
 		expert_weights = torch::softmax(std::get<0>(topk), /*dim=*/1).to(torch::kBFloat16).contiguous();
-		cudaDeviceSynchronize();
-
-		tuner_team_sync(team, n_pes);
 	} catch (const std::exception& ex) {
-		if (pe == 0) {
-			printf("%-7d %-6d %-6d  SKIP (input alloc failed: %s)\n",
-				T, D, I, ex.what());
-			fflush(stdout);
-		}
+		const char* msg = ex.what();
+		const bool oom = msg && (std::strstr(msg, "out of memory") ||
+		                        std::strstr(msg, "CUDA out of memory") ||
+		                        std::strstr(msg, "OutOfMemoryError"));
+		input_status = oom ? -1 : 0;
+		fprintf(stderr, "  [PE=%d T=%d,D=%d,I=%d input] exception: %s\n",
+			pe, T, D, I, msg ? msg : "(no message)");
+		fflush(stderr);
 		(void)cudaGetLastError();
+	}
+	if (input_status == 1) {
+		if (cudaError_t e = cudaDeviceSynchronize(); e != cudaSuccess) {
+			fprintf(stderr, "  [PE=%d T=%d,D=%d,I=%d input sync] CUDA error: %s\n",
+				pe, T, D, I, cudaGetErrorString(e));
+			input_status = 0;
+			(void)cudaGetLastError();
+		}
+	}
+	const int global_input_status =
+		tuner_consensus_status(team, input_status);
+	if (global_input_status != 1) {
+		if (pe == 0)
+			printf("%-7d %-6d %-6d  SKIP (input setup failed on at least one rank)\n",
+				T, D, I);
 		c10::cuda::CUDACachingAllocator::emptyCache();
 		return;
 	}
+	tuner_team_sync(team, n_pes);
 
 	// Router load-balance stats — bin expert_indices [T, K] into a per-
 	// expert histogram and report min/max/mean tokens per expert. This is
@@ -826,17 +1007,21 @@ static void tune_shape(
 		}
 		lb_mean = (double)sum / E;
 		lb_imbalance = (lb_mean > 0) ? (double)lb_max / lb_mean : 1.0;
+		if (getenv("MOE_FWDBWD_TUNE_VERBOSE")) {
+			printf("    [ROUTER-LB] seed=%llu min=%lld max=%lld mean=%.1f imbalance=%.3fx\n",
+				static_cast<unsigned long long>(tuner_input_seed()),
+				static_cast<long long>(lb_min), static_cast<long long>(lb_max),
+				lb_mean, lb_imbalance);
+		}
 	}
 
 	// ── Decoupled per-TileM sweep ────────────────────────────────────
-	// Within each TileM bucket, tune fwd and bwd INDEPENDENTLY. Every
-	// measurement still runs a full fwd→bwd sequence via run_pair (the bwd
-	// needs fwd-produced sort inputs), but we read only the direction being
-	// tuned and hold the OTHER direction at a fixed default from the same
-	// bucket. fwd/bwd timings are invariant to the other direction's config
-	// once TileM is fixed (separate sequential launches), so the bucket's
-	// combined-best is best_fwd_ms + best_bwd_ms — found in O(F+B) runs
-	// instead of the O(F·B) cross product.
+	// Within each TileM bucket, tune fwd and bwd INDEPENDENTLY. FWD
+	// candidates run without a trailing BWD so long backward kernels do
+	// not thermally bias forward selection. BWD candidates run a full pair
+	// because they consume the forward-produced sort buffers. The bucket's
+	// combined best is best_fwd_ms + best_bwd_ms, found in O(F+B) runs instead
+	// of the O(F·B) cross product.
 	struct BucketBest {
 		int   fwd_ci = -1, bwd_ci = -1;
 		float fwd_ms = 1e30f, bwd_ms = 1e30f;
@@ -853,25 +1038,42 @@ static void tune_shape(
 			int fi = fwd_by_tm[b][i];
 			auto r = run_pair(kRegistryFwd[fi], kRegistryBwd[default_bwd],
 				X, dY, expert_indices, expert_weights,
-				all_B, all_C, all_A, E, K, team, pe, n_pes);
+				all_B, all_C, all_A, E, K, team, pe, n_pes,
+				/*run_backward=*/false);
 			cudaDeviceSynchronize();
 			tuner_team_sync(team, n_pes);
+			if (pe == 0 && getenv("MOE_FWDBWD_TUNE_VERBOSE")) {
+				printf("    [FWD-CANDIDATE] %-80s %9.4f ms\n",
+					kRegistryFwd[fi].name, r.fwd_ms);
+			}
 			if (r.oom) { shape_oom = true; break; }
 			if (r.fwd_ms > 0 && r.fwd_ms < bucket[b].fwd_ms) {
 				bucket[b].fwd_ms = r.fwd_ms;
 				bucket[b].fwd_ci = fi;
 			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			tuner_candidate_cooldown();
 		}
+		if (getenv("MOE_FWDBWD_TUNE_FWD_ONLY")) continue;
 
-		// Seed the BWD sweep with the best fwd that ACTUALLY ran (it produced
-		// fwd_ms > 0, so its sort outputs are valid), not just the first
-		// candidate — a statically-valid fwd can still fault at runtime, and
-		// a broken seed would sink every bwd measurement in the bucket. If no
-		// fwd ran, the bucket can't form a combined time, so skip its bwd
-		// sweep entirely.
+		// Rank-local GEMM templates and token counts are valid—the comm tile/grid
+		// and ticketed rings are decoupled from them. Use each rank's measured
+		// winner by default; diagnostics can force deterministic or deliberately
+		// heterogeneous seeds. BWD timing is independent of the fwd template.
 		if (bucket[b].fwd_ci < 0) continue;
-		const int seed_fwd = bucket[b].fwd_ci;
+		const bool deterministic_seed =
+			getenv("MOE_FWDBWD_TUNE_DETERMINISTIC_SEED") != nullptr;
+		const bool heterogeneous_seed =
+			getenv("MOE_FWDBWD_TUNE_HETEROGENEOUS_SEED") != nullptr;
+		const int seed_fwd = heterogeneous_seed
+			? fwd_by_tm[b][pe % fwd_by_tm[b].size()]
+			: deterministic_seed
+			? fwd_by_tm[b].front()
+			: bucket[b].fwd_ci;
+		if (getenv("MOE_FWDBWD_TUNE_VERBOSE")) {
+			fprintf(stderr, "  [PE=%d T=%d bucket=%d] BWD seed FWD=%s\n",
+				pe, T, kTileMBuckets[b], kRegistryFwd[seed_fwd].name);
+			fflush(stderr);
+		}
 
 		// BWD sweep: vary bwd, hold fwd at seed_fwd, keep bwd_ms.
 		for (size_t i = 0; i < bwd_by_tm[b].size() && !shape_oom; ++i) {
@@ -881,12 +1083,16 @@ static void tune_shape(
 				all_B, all_C, all_A, E, K, team, pe, n_pes);
 			cudaDeviceSynchronize();
 			tuner_team_sync(team, n_pes);
+			if (pe == 0 && getenv("MOE_FWDBWD_TUNE_VERBOSE")) {
+				printf("    [BWD-CANDIDATE] %-80s %9.4f ms\n",
+					kRegistryBwd[bi].name, r.bwd_ms);
+			}
 			if (r.oom) { shape_oom = true; break; }
 			if (r.bwd_ms > 0 && r.bwd_ms < bucket[b].bwd_ms) {
 				bucket[b].bwd_ms = r.bwd_ms;
 				bucket[b].bwd_ci = bi;
 			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			tuner_candidate_cooldown();
 		}
 	}
 
@@ -978,13 +1184,24 @@ static void tune_shape(
 		// future caller passes a malformed shape. fwd and bwd are taken from
 		// their INDEPENDENT winning buckets (may differ in GEMM tile).
 		const int E_local = epp > 0 ? epp : 1;
-		g_tuned_rows.push_back({
-			kRegistryFwd[bucket[best_fwd_b].fwd_ci].Compute,
-			T * K, (T * K) / E_local, D, I,
-			bucket[best_fwd_b].fwd_ci, bucket[best_bwd_b].bwd_ci,
-			bucket[best_fwd_b].fwd_ms, bucket[best_bwd_b].bwd_ms,
-			bucket[best_fwd_b].fwd_ms + bucket[best_bwd_b].bwd_ms,
-		});
+		const int TK = T * K;
+		const int TKE = TK / E_local;
+		const auto duplicate = std::find_if(
+			g_tuned_rows.begin(), g_tuned_rows.end(),
+			[&](const TunedRow& r) {
+				return r.Compute == g_tuner_compute &&
+				       r.TK == TK && r.TKE == TKE &&
+				       r.D == D && r.I == I;
+			});
+		if (duplicate == g_tuned_rows.end()) {
+			g_tuned_rows.push_back({
+				kRegistryFwd[bucket[best_fwd_b].fwd_ci].Compute,
+				TK, TKE, D, I,
+				bucket[best_fwd_b].fwd_ci, bucket[best_bwd_b].bwd_ci,
+				bucket[best_fwd_b].fwd_ms, bucket[best_bwd_b].bwd_ms,
+				bucket[best_fwd_b].fwd_ms + bucket[best_bwd_b].bwd_ms,
+			});
+		}
 		dump_tuned_configs();
 	}
 
@@ -1039,7 +1256,6 @@ int main(int argc, char** argv) {
 		(void)liger_cute_nvshmem_finalize();
 		return 1;
 	}
-
 	// Sweep matches tune_moe_bwd.cu (the more restrictive of the two
 	// existing tuners — T=16384 trips an unspecified launch failure on
 	// the bwd path; capped at 8192 until investigated).
@@ -1056,16 +1272,26 @@ int main(int argc, char** argv) {
 	// 16 PEs), rather than implying impractical global counts.
 	//
 	// MOE_FWDBWD_TUNE_E=N overrides to a single E_local value (also in
-	// local terms — set N=2 to pin every synthetic shape at E_local=2).
-	// Generic-sweep top_k (fixed at 2 for the synthetic shapes). Per-model
-	// top_k for named shapes is pinned in the NamedShape table below.
-	const int K = 2;
+	// local terms — set N=2 to pin every synthetic shape at E_local=2),
+	// including the synthetic sweeps attached to named shapes.
+	// Generic-sweep top_k defaults to 2. Per-model top_k for named shapes is
+	// pinned in the NamedShape table below.
+	const char* k_env = getenv("MOE_FWDBWD_TUNE_K");
+	const int K = k_env ? atoi(k_env) : 2;
+	if (K <= 0 || K > 8) {
+		if (pe == 0)
+			printf("Error: MOE_FWDBWD_TUNE_K must be in [1, 8]\n");
+		(void)liger_cute_nvshmem_finalize();
+		return 1;
+	}
 	std::vector<int> expert_sweep_local = {1, 2, 4, 8};
 	const char* e_env = getenv("MOE_FWDBWD_TUNE_E");
 	if (e_env) expert_sweep_local = {atoi(e_env)};
 	expert_sweep_local.erase(
 		std::remove_if(expert_sweep_local.begin(), expert_sweep_local.end(),
-			[K](int e) { return e <= 0 || e < K; }),
+			[K, n_pes](int e) {
+				return e <= 0 || K > e * n_pes;
+			}),
 		expert_sweep_local.end());
 	if (expert_sweep_local.empty()) {
 		if (pe == 0)
@@ -1197,6 +1423,7 @@ int main(int argc, char** argv) {
 		// SCOUT / MIXTRAL (and any unlisted family) default to {1, 2, 4, 8}.
 	};
 	auto sweep_local_Es_for_family = [&](const char* fam) -> std::vector<int> {
+		if (e_env) return {std::atoi(e_env)};
 		if (fam) {
 			for (const auto& fs : family_sweeps)
 				if (std::strcmp(fs.family, fam) == 0) return fs.E_local_values;
@@ -1211,7 +1438,21 @@ int main(int argc, char** argv) {
 	const char* i_env = getenv("MOE_FWDBWD_TUNE_I");
 	const bool skip_named   = getenv("MOE_FWDBWD_TUNE_SKIP_NAMED")   != nullptr;
 	const bool skip_generic = getenv("MOE_FWDBWD_TUNE_SKIP_GENERIC") != nullptr;
-	if (pe == 0 && skip_generic && !getenv("LIGER_MOE_FWDBWD_TUNED_OUTPUT")) {
+	const bool exact_shape  = getenv("MOE_FWDBWD_TUNE_EXACT")        != nullptr;
+	if (exact_shape && (!t_env || !d_env || !i_env || !e_env)) {
+		if (pe == 0)
+			fprintf(stderr,
+				"MOE_FWDBWD_TUNE_EXACT requires T, D, I, and E overrides\n");
+		(void)liger_cute_nvshmem_finalize();
+		return 1;
+	}
+	auto shape_in_axis_filter = [&](const NamedShape& s) {
+		return (!t_env || s.T == std::atoi(t_env)) &&
+		       (!d_env || s.D == std::atoi(d_env)) &&
+		       (!i_env || s.I == std::atoi(i_env));
+	};
+	if (pe == 0 && !exact_shape && skip_generic &&
+	    !getenv("LIGER_MOE_FWDBWD_TUNED_OUTPUT")) {
 		fprintf(stderr,
 			"WARNING: MOE_FWDBWD_TUNE_SKIP_GENERIC=1 will overwrite the default\n"
 			"  output .cuh with named-shape rows only — generic-sweep rows from\n"
@@ -1243,20 +1484,24 @@ int main(int argc, char** argv) {
 	// shape that will actually run (after family filter + override),
 	// including the per-family E_local sweep contribution. Sweep values
 	// are E_local; multiply by n_pes to get the E_global the pool sees.
-	int max_E = skip_generic
+	int max_E = exact_shape
+		? expert_sweep_local.front() * n_pes
+		: skip_generic
 		? 0  // No generic sweep — pool sized by named shapes alone.
 		: *std::max_element(expert_sweep_local.begin(), expert_sweep_local.end()) * n_pes;
-	int max_K = skip_generic ? 0 : K;
-	for (const auto& s : named_shapes) {
-		if (!family_in_filter(s)) continue;
-		const char* fam = family_of(s.name);
-		// Family E_local-sweep contribution (synthetic runs at K=2).
-		for (int E_local_s : sweep_local_Es_for_family(fam))
-			max_E = std::max(max_E, E_local_s * n_pes);
-		if (fam) max_K = std::max(max_K, 2);
-		// Real-model contribution (effective_E returns E_global).
-		max_E = std::max(max_E, effective_E(s));
-		max_K = std::max(max_K, effective_K(s));
+	int max_K = exact_shape ? K : skip_generic ? 0 : K;
+	if (!exact_shape) {
+		for (const auto& s : named_shapes) {
+			if (!family_in_filter(s) || !shape_in_axis_filter(s)) continue;
+			const char* fam = family_of(s.name);
+			// Family E_local-sweep contribution (synthetic runs at K=2).
+			for (int E_local_s : sweep_local_Es_for_family(fam))
+				max_E = std::max(max_E, E_local_s * n_pes);
+			if (fam) max_K = std::max(max_K, 2);
+			// Real-model contribution (effective_E returns E_global).
+			max_E = std::max(max_E, effective_E(s));
+			max_K = std::max(max_K, effective_K(s));
+		}
 	}
 	if (max_E == 0 || max_K == 0) {
 		if (pe == 0) printf("Error: no shapes to tune (filters skip everything)\n");
@@ -1270,6 +1515,16 @@ int main(int argc, char** argv) {
 	// Single-host tuner: N=1 hosts, M=n_pes GPUs.
 	liger::moe_configure_symmetric(max_tokens, max_hidden, max_E, max_K, n_pes,
 		/*num_hosts=*/1, /*gpus_per_host=*/n_pes);
+	g_tuner_status_src = static_cast<int*>(nvshmem_malloc(sizeof(int)));
+	g_tuner_status_dst = static_cast<int*>(nvshmem_malloc(sizeof(int)));
+	if (g_tuner_status_src == nullptr || g_tuner_status_dst == nullptr) {
+		if (pe == 0)
+			fprintf(stderr, "Failed to allocate tuner consensus buffers\n");
+		if (g_tuner_status_dst != nullptr) nvshmem_free(g_tuner_status_dst);
+		if (g_tuner_status_src != nullptr) nvshmem_free(g_tuner_status_src);
+		(void)liger_cute_nvshmem_finalize();
+		return 1;
+	}
 
 	if (pe == 0) {
 		printf("=== MoE Fused Forward+Backward Combined Autotuner ===\n");
@@ -1285,8 +1540,9 @@ int main(int argc, char** argv) {
 			kMinIntermediate);
 		printf("Class: %s (tuned at n_pes=%d)\n",
 			n_pes <= 1 ? "SINGLE-GPU" : "MULTI-GPU", n_pes);
-		printf("Output: ../src/liger_comm_kernels/moe/moe_fwd_bwd_tuning_configs_%s.cuh\n\n",
-			n_pes <= 1 ? "single" : "multi");
+		const char* output_env = getenv("LIGER_MOE_FWDBWD_TUNED_OUTPUT");
+		printf("Output: %s\n\n",
+			output_env ? output_env : tuned_default_output_path());
 		printf("%-7s %-6s %-6s  result\n", "T", "D", "I");
 		printf("─────────────────────────────────────────────────────────────────────────────────────────\n");
 	}
@@ -1298,7 +1554,18 @@ int main(int argc, char** argv) {
 	// incrementally, and partial crashes preserve complete-E slices of
 	// the table). Sweep values are LOCAL; multiply by n_pes for the
 	// E_global the kernel sees.
-	if (!skip_generic) {
+	if (exact_shape) {
+		const int E_local = expert_sweep_local.front();
+		if (pe == 0)
+			printf("\n========= EXACT E_local=%d (E_global=%d), K=%d =========\n",
+				E_local, E_local * n_pes, K);
+		tune_shape(
+			std::atoi(t_env), std::atoi(d_env), std::atoi(i_env),
+			E_local * n_pes, K, pe, n_pes, team);
+		cudaDeviceSynchronize();
+		tuner_team_sync(team, n_pes);
+	}
+	if (!exact_shape && !skip_generic) {
 		for (int E_local : expert_sweep_local) {
 			int E = E_local * n_pes;
 			if (pe == 0)
@@ -1329,12 +1596,15 @@ int main(int argc, char** argv) {
 	// Both contribute rows to the .cuh; the append-mode merge on output
 	// deduplicates by (TK, TKE, D, I) shape key, so the real (E, K) row
 	// always adds at least one unique entry.
-	if (!skip_named) {
+	if (!exact_shape && !skip_named) {
 		if (pe == 0) printf("\n=== Named model shapes%s ===\n",
 			fam_filter ? " [family filter active]" : "");
 		for (const auto& s : named_shapes) {
-			if (!family_in_filter(s)) continue;
+			if (!family_in_filter(s) || !shape_in_axis_filter(s)) continue;
 			const char* fam = family_of(s.name);
+			const int E_eff = effective_E(s);
+			const int K_eff = effective_K(s);
+			bool real_tuned_in_sweep = false;
 
 			// (a) Family E_local sweep at K=2. Values are LOCAL; convert
 			// to E_global = E_local * n_pes before tuning.
@@ -1346,11 +1616,10 @@ int main(int argc, char** argv) {
 				tune_shape(s.T, s.D, s.I, E_s, 2, pe, n_pes, team);
 				cudaDeviceSynchronize();
 				tuner_team_sync(team, n_pes);
+				real_tuned_in_sweep |= E_s == E_eff && K_eff == 2;
 			}
 
 			// (b) Real model config (after env override).
-			int E_eff = effective_E(s);
-			int K_eff = effective_K(s);
 			if (E_eff % n_pes != 0) {
 				if (pe == 0)
 					printf("%s [real]:  SKIP (E=%d not divisible by num_pes=%d)\n",
@@ -1366,6 +1635,7 @@ int main(int argc, char** argv) {
 						s.name, K_eff);
 				continue;
 			}
+			if (real_tuned_in_sweep) continue;
 			if (pe == 0) {
 				bool E_ovr = E_eff != s.E;
 				bool K_ovr = K_eff != s.K;
@@ -1384,6 +1654,11 @@ int main(int argc, char** argv) {
 		printf("─────────────────────────────────────────────────────────────────────────────────────────\n");
 
 	(void)liger_cute_pool_clear_all();
+	tuner_team_sync(team, n_pes);
+	nvshmem_free(g_tuner_status_dst);
+	nvshmem_free(g_tuner_status_src);
+	g_tuner_status_dst = nullptr;
+	g_tuner_status_src = nullptr;
 
 	if (pe == 0) {
 		dump_tuned_configs();

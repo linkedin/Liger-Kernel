@@ -75,6 +75,11 @@ class LigerExpertParallelFusedMoEFunction(torch.autograd.Function):
         top_k: int,
         pg: Optional["ProcessGroup"],
     ) -> torch.Tensor:
+        if not all_B.is_contiguous() or not all_C.is_contiguous():
+            raise ValueError(
+                "Strided MoE gate/up weights are supported only when gradients "
+                "are disabled; backward currently requires contiguous weights."
+            )
         team_handle = _resolve_team(pg)
 
         (
@@ -184,6 +189,11 @@ def moe_fused(
     used by fwd is popped immediately before returning; otherwise the
     intermediates stay alive on the autograd context until the matching
     ``backward`` consumes them and pops the stack there.
+
+    The no-grad path accepts gate/up views with contiguous inner dimensions and
+    a larger stride between experts, such as slices of packed ``w13`` storage.
+    The grad path currently requires contiguous gate/up tensors because the
+    backward kernel does not yet support an expert stride.
     """
     # Decide which path to take BEFORE entering the Function:
     # torch.is_grad_enabled() is forced to False inside

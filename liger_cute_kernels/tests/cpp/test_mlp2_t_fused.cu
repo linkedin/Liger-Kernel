@@ -139,11 +139,12 @@ mlp2_t_fused_test_kernel(
 		// weight offset is along k_tile.
 		int expert_k_offset = expert * num_k_tiles;
 		if (is_producer) {
-			liger::mlp2_t_fused_producer<Traits>(
+			liger::mlp2_t_fused_producer<Traits, Compute == 90>(
 				pipe, prod_state, smem.tile,
 				tma_load_z, tma_load_a,
-				m, expert_k_offset,
-				num_tokens, hidden_dim, intermediate_dim, total_k_cols,
+				m, (Compute == 90) ? expert : expert_k_offset,
+				num_tokens, hidden_dim, intermediate_dim,
+				total_k_cols / hidden_dim, total_k_cols,
 				num_n_tiles, num_k_tiles);
 		} else if (is_consumer) {
 			if constexpr (Compute == 100) {
@@ -311,12 +312,20 @@ static auto make_tma_z(const Inputs& in, const Mlp2Shape& s) {
 		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 	return make_tma_copy(SM90_TMA_LOAD{}, tZ, typename Traits::SmemLayoutZ_1{});
 }
-template <typename Traits>
+template <typename Traits, int Compute>
 static auto make_tma_a(const Inputs& in, const Mlp2Shape& s) {
-	auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
-		make_shape(s.intermediate_dim, in.total_k_cols),
-		make_stride(Int<1>{}, s.intermediate_dim));
-	return make_tma_copy(SM90_TMA_LOAD{}, tA, typename Traits::SmemLayoutW_1{});
+	if constexpr (Compute == 90) {
+		auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
+			make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+			make_stride(Int<1>{}, s.intermediate_dim,
+				s.hidden_dim * s.intermediate_dim));
+		return make_tma_copy(SM90_TMA_LOAD{}, tA, typename Traits::SmemLayoutW_1{});
+	} else {
+		auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
+			make_shape(s.intermediate_dim, in.total_k_cols),
+			make_stride(Int<1>{}, s.intermediate_dim));
+		return make_tma_copy(SM90_TMA_LOAD{}, tA, typename Traits::SmemLayoutW_1{});
+	}
 }
 template <typename Traits>
 static auto make_tma_y(Element* dY, int padded, const Mlp2Shape& s) {
@@ -340,7 +349,7 @@ static void run_t(const Mlp2Shape& s, bool verbose = true) {
 	cudaMemset(dY, 0, (size_t)padded * s.intermediate_dim * sizeof(Element));
 
 	auto tma_z = make_tma_z<Traits>(in, s);
-	auto tma_a = make_tma_a<Traits>(in, s);
+	auto tma_a = make_tma_a<Traits, Compute>(in, s);
 	auto tma_y = make_tma_y<Traits>(dY, padded, s);
 
 	size_t smem_size = sizeof(Mlp2TFusedKernelSmem<Traits, Compute>);
@@ -389,7 +398,7 @@ static void run_t_single_tile() {
 	cudaMemset(dY, 0, (size_t)padded * s.intermediate_dim * sizeof(Element));
 
 	auto tma_z = make_tma_z<Traits>(in, s);
-	auto tma_a = make_tma_a<Traits>(in, s);
+	auto tma_a = make_tma_a<Traits, Compute>(in, s);
 	auto tma_y = make_tma_y<Traits>(dY, padded, s);
 
 	size_t smem_size = sizeof(Mlp2TFusedKernelSmem<Traits, Compute>);
@@ -517,7 +526,7 @@ static void run_t_bench(const Mlp2Shape& s, const BenchCfg& cfg) {
 	cudaMemset(dY, 0, (size_t)padded * s.intermediate_dim * sizeof(Element));
 
 	auto tma_z = make_tma_z<Traits>(in, s);
-	auto tma_a = make_tma_a<Traits>(in, s);
+	auto tma_a = make_tma_a<Traits, Compute>(in, s);
 	auto tma_y = make_tma_y<Traits>(dY, padded, s);
 
 	size_t smem_size = sizeof(Mlp2TFusedKernelSmem<Traits, Compute>);

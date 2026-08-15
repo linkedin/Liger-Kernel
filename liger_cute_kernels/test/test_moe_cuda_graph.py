@@ -258,6 +258,66 @@ def _fwd_graph_worker(rank: int, world_size: int, init_file: str):
         _check_close(Y, Y_ref)
 
 
+# ── forward: packed w13 strided views ─────────────────────────────────────────
+
+
+def _strided_fwd_worker(rank: int, world_size: int, init_file: str):
+    _init(rank, world_size, init_file)
+    team = nvshmem.team_world()
+    try:
+        _configure(world_size)
+        X, gate_W, all_B, all_C, all_A, ei, ew = _make_inputs(rank, world_size)
+        experts_per_pe = all_B.size(0)
+
+        packed_w13 = torch.stack((all_B, all_C), dim=1).reshape(experts_per_pe, 2 * _I, _D)
+        strided_B = packed_w13[:, :_I, :]
+        strided_C = packed_w13[:, _I:, :]
+        assert not strided_B.is_contiguous()
+        assert not strided_C.is_contiguous()
+        assert strided_B.stride() == (2 * _I * _D, _D, 1)
+        assert strided_C.stride() == strided_B.stride()
+
+        all_B_g = _gather_experts(all_B, dist.group.WORLD)
+        all_C_g = _gather_experts(all_C, dist.group.WORLD)
+        all_A_g = _gather_experts(all_A, dist.group.WORLD)
+        Y_ref = _torch_reference_moe(X, ei, ew, all_B_g, all_C_g, all_A_g, _K).cpu()
+
+        Y_contiguous = tvm_ffi.moe_fused_fwd_bf16(
+            X, ei, ew, all_B, all_C, all_A, num_experts=_E, top_k=_K, team_handle=team
+        )[0]
+        tvm_ffi.moe_pop_fwd()
+        torch.cuda.synchronize()
+        Y_contiguous = Y_contiguous.cpu()
+
+        Y_strided = tvm_ffi.moe_fused_fwd_bf16(
+            X,
+            ei,
+            ew,
+            strided_B,
+            strided_C,
+            all_A,
+            num_experts=_E,
+            top_k=_K,
+            team_handle=team,
+        )[0]
+        tvm_ffi.moe_pop_fwd()
+        torch.cuda.synchronize()
+        Y_strided = Y_strided.cpu()
+
+        dist.barrier()
+        nvshmem.finalize()
+        dist.destroy_process_group()
+    except BaseException:
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        raise
+
+    _check_close(Y_strided, Y_contiguous, mean_rel_tol=0.01)
+    _check_close(Y_strided, Y_ref)
+
+
 # ── forward + backward: two graphs ────────────────────────────────────────────
 
 
@@ -676,6 +736,12 @@ def test_moe_fwd_cuda_graph():
     (the second replay would corrupt the first's NVSHMEM writes otherwise).
     """
     _run(_world_size(), _fwd_graph_worker)
+
+
+@pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
+def test_moe_fwd_packed_w13_strided_views():
+    """Packed gate/up views avoid copies while matching contiguous weights."""
+    _run(_world_size(), _strided_fwd_worker)
 
 
 @pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
