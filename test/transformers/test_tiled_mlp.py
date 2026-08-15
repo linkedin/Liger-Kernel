@@ -397,7 +397,11 @@ def test_tiled_mlp_zero3_accumulates_once_per_shard(num_shards):
 def test_tiled_mlp_supports_differing_in_out_features(out_features):
     """fn may change the feature dim, so the incoming gradient has to be flattened with its own last
     dim rather than the input's."""
+    # tiling reassociates the fp32 reduction, which lands within ~1e-5 of the reference; a mis-flattened
+    # gradient is off by order 1, so these tolerances still separate the two
+    atol = rtol = 1e-4
     num_shards = 4
+    set_seed()
     reference = _PlainMLP(out_features=out_features).to(device)
     tiled = copy.deepcopy(reference)
 
@@ -407,15 +411,17 @@ def test_tiled_mlp_supports_differing_in_out_features(out_features):
 
     y_reference = reference(x_reference)
     y_tiled = _tiled(tiled, x_tiled, num_shards)
-    torch.testing.assert_close(y_reference, y_tiled, msg="Forward outputs don't match")
+    torch.testing.assert_close(y_reference, y_tiled, atol=atol, rtol=rtol, msg="Forward outputs don't match")
 
     dy = torch.randn_like(y_reference)
     y_reference.backward(dy.clone())
     y_tiled.backward(dy.clone())
 
     for p_reference, p_tiled in zip(reference.parameters(), tiled.parameters()):
-        torch.testing.assert_close(p_reference.grad, p_tiled.grad, msg="Weight gradients don't match")
-    torch.testing.assert_close(x_reference.grad, x_tiled.grad, msg="Input gradients don't match")
+        torch.testing.assert_close(
+            p_reference.grad, p_tiled.grad, atol=atol, rtol=rtol, msg="Weight gradients don't match"
+        )
+    torch.testing.assert_close(x_reference.grad, x_tiled.grad, atol=atol, rtol=rtol, msg="Input gradients don't match")
 
 
 def _ddp_worker(rank, world_size, num_shards, init_file):
