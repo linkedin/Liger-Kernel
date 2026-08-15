@@ -114,7 +114,8 @@ template <
 struct MoeFusedConfig {
     using Element = Element_;
     // GEMM tile (mlp1/mlp2): GemmTileM_ ∈ {64,128}, independent of the comm tile.
-    using Traits1 = Mlp1Traits<Element, GemmTileM_, TileN1_, TileK1_, Stages1_, EpiChunkN1_>;
+    using Traits1 = Mlp1Traits<
+	    Element, GemmTileM_, TileN1_, TileK1_, Stages1_, EpiChunkN1_>;
     using Traits2 = Mlp2Traits<Element, GemmTileM_, TileN2_, TileK2_, Stages2_, EpiChunkN2_>;
 
     // No compile-time constraint between NC, NSplit and CommNumStages
@@ -810,14 +811,16 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	int max_total_slots  = num_tokens * top_k + num_experts * kTileM;
 	int num_m_tiles_in   = (num_tokens + kTileM - 1) / kTileM;  // sort input tiles
 
-	LIGER_CHECK(hidden_dim % Traits1::TileK == 0,
-		"hidden_dim (", hidden_dim, ") must be divisible by MLP1 TileK (", Traits1::TileK, ")");
-	LIGER_CHECK(intermediate_dim % Traits1::TileN == 0,
-		"intermediate_dim (", intermediate_dim, ") must be divisible by MLP1 TileN (", Traits1::TileN, ")");
-	LIGER_CHECK(intermediate_dim % Traits2::TileK == 0,
-		"intermediate_dim (", intermediate_dim, ") must be divisible by MLP2 TileK (", Traits2::TileK, ")");
-	LIGER_CHECK(hidden_dim % Traits2::TileN == 0,
-		"hidden_dim (", hidden_dim, ") must be divisible by MLP2 TileN (", Traits2::TileN, ")");
+	if constexpr (Compute == 100) {
+		LIGER_CHECK(hidden_dim % Traits1::TileK == 0,
+			"hidden_dim (", hidden_dim, ") must be divisible by MLP1 TileK (", Traits1::TileK, ")");
+		LIGER_CHECK(intermediate_dim % Traits1::TileN == 0,
+			"intermediate_dim (", intermediate_dim, ") must be divisible by MLP1 TileN (", Traits1::TileN, ")");
+		LIGER_CHECK(intermediate_dim % Traits2::TileK == 0,
+			"intermediate_dim (", intermediate_dim, ") must be divisible by MLP2 TileK (", Traits2::TileK, ")");
+		LIGER_CHECK(hidden_dim % Traits2::TileN == 0,
+			"hidden_dim (", hidden_dim, ") must be divisible by MLP2 TileN (", Traits2::TileN, ")");
+	}
 	LIGER_CHECK(hidden_dim % 8 == 0,
 		"hidden_dim (", hidden_dim, ") must be divisible by 8 (int4 vectorization in dispatch/combine)");
 	LIGER_CHECK(intermediate_dim % 8 == 0,
@@ -826,14 +829,31 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 		"top_k (", top_k, ") exceeds kCombineMaxTopK (", kCombineMaxTopK,
 		"). Bump the constant in combine.cuh.");
 
-	int num_n_tiles_1  = intermediate_dim / Traits1::TileN;
-	int num_n_tiles_2  = hidden_dim / Traits2::TileN;
+	int num_n_tiles_1 = (Compute == 90)
+		? (intermediate_dim + Traits1::TileN - 1) / Traits1::TileN
+		: intermediate_dim / Traits1::TileN;
+	int num_n_tiles_2 = (Compute == 90)
+		? (hidden_dim + Traits2::TileN - 1) / Traits2::TileN
+		: hidden_dim / Traits2::TileN;
 
 	// Relaxed: runtime NS > num_n_tiles is allowed; surplus split CTAs run
 	// empty inner loops but still drive their TMA-load/store mbarriers so the
 	// pipeline stays balanced across the column.
 
-	int total_n_rows_1 = experts_per_pe * intermediate_dim;
+	LIGER_CHECK(a.weight_expert_stride >=
+			static_cast<int64_t>(intermediate_dim) * hidden_dim,
+		"weight expert stride (", a.weight_expert_stride,
+		") must cover at least one [I,D] expert matrix");
+	LIGER_CHECK(a.weight_expert_stride % hidden_dim == 0,
+		"weight expert stride (", a.weight_expert_stride,
+		") must contain complete hidden-dimension rows (D=", hidden_dim, ")");
+	int weight_expert_stride_rows =
+		static_cast<int>(a.weight_expert_stride / hidden_dim);
+	LIGER_CHECK(weight_expert_stride_rows % Traits1::TileN == 0,
+		"weight expert stride in rows (", weight_expert_stride_rows,
+		") must be divisible by MLP1 TileN (", Traits1::TileN, ")");
+	int total_n_rows_1 =
+		(experts_per_pe - 1) * weight_expert_stride_rows + intermediate_dim;
 	int total_n_rows_2 = experts_per_pe * hidden_dim;
 
 	int num_pes = nvshmem_team_n_pes(team);
@@ -932,12 +952,18 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	MlpDims mlp_dims;
 	mlp_dims.hidden_dim       = hidden_dim;
 	mlp_dims.intermediate_dim = intermediate_dim;
+	mlp_dims.num_experts      = experts_per_pe;
 	mlp_dims.total_n_rows_1   = total_n_rows_1;
 	mlp_dims.total_n_rows_2   = total_n_rows_2;
+	mlp_dims.expert_n_stride_1 = weight_expert_stride_rows / Traits1::TileN;
 	mlp_dims.num_n_tiles_1    = num_n_tiles_1;
 	mlp_dims.num_n_tiles_2    = num_n_tiles_2;
-	mlp_dims.num_k_tiles_1    = hidden_dim / Traits1::TileK;
-	mlp_dims.num_k_tiles_2    = intermediate_dim / Traits2::TileK;
+	mlp_dims.num_k_tiles_1    = (Compute == 90)
+		? (hidden_dim + Traits1::TileK - 1) / Traits1::TileK
+		: hidden_dim / Traits1::TileK;
+	mlp_dims.num_k_tiles_2    = (Compute == 90)
+		? (intermediate_dim + Traits2::TileK - 1) / Traits2::TileK
+		: intermediate_dim / Traits2::TileK;
 	// Row-tile extent of the symmetric local_output (y_buf) for the
 	// direct-to-peer Y store (num_y_m_tiles when storing at the token-tile row).
 	mlp_dims.y_buf_m_tiles    = max_total_slots / kTileM;
@@ -958,18 +984,51 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 
 	auto* ptr_B = reinterpret_cast<Element const*>(a.all_B);
 	auto* ptr_C = reinterpret_cast<Element const*>(a.all_C);
-	auto tma_load_b = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(ptr_B),
-			make_shape(static_cast<int64_t>(total_n_rows_1),
-			           static_cast<int64_t>(hidden_dim)),
-			make_stride(static_cast<int64_t>(hidden_dim), Int<1>{})),
-		typename Traits1::SmemLayoutW_1{});
-	auto tma_load_c = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(ptr_C),
-			make_shape(static_cast<int64_t>(total_n_rows_1),
-			           static_cast<int64_t>(hidden_dim)),
-			make_stride(static_cast<int64_t>(hidden_dim), Int<1>{})),
-		typename Traits1::SmemLayoutW_1{});
+	// Hopper keeps the expert as an explicit tensor mode. A tail TMA box can
+	// therefore go OOB only within that expert (loads zero-fill) instead of
+	// spilling into the next expert's flat rows.
+	auto tma_load_b = [&]() {
+		if constexpr (Compute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(ptr_B),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						a.weight_expert_stride)),
+				typename Traits1::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(ptr_B),
+					make_shape(static_cast<int64_t>(total_n_rows_1),
+					           static_cast<int64_t>(hidden_dim)),
+					make_stride(static_cast<int64_t>(hidden_dim), Int<1>{})),
+				typename Traits1::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_load_c = [&]() {
+		if constexpr (Compute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(ptr_C),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						a.weight_expert_stride)),
+				typename Traits1::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(ptr_C),
+					make_shape(static_cast<int64_t>(total_n_rows_1),
+					           static_cast<int64_t>(hidden_dim)),
+					make_stride(static_cast<int64_t>(hidden_dim), Int<1>{})),
+				typename Traits1::SmemLayoutW_1{});
+		}
+	}();
 
 	// New design's TMA store box = per-WG epi slot (AtomTileM, EpiChunkN).
 	//
@@ -995,12 +1054,28 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 		typename Traits2::SmemLayoutZ_1{});
 
 	auto* ptr_A = reinterpret_cast<Element const*>(a.all_A);
-	auto tma_load_a = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(ptr_A),
-			make_shape(static_cast<int64_t>(total_n_rows_2),
-			           static_cast<int64_t>(intermediate_dim)),
-			make_stride(static_cast<int64_t>(intermediate_dim), Int<1>{})),
-		typename Traits2::SmemLayoutW_1{});
+	// Same expert isolation for the down projection, including K-tail loads.
+	auto tma_load_a = [&]() {
+		if constexpr (Compute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(ptr_A),
+					make_shape(static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(intermediate_dim),
+						Int<1>{},
+						static_cast<int64_t>(hidden_dim) * intermediate_dim)),
+				typename Traits2::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(ptr_A),
+					make_shape(static_cast<int64_t>(total_n_rows_2),
+					           static_cast<int64_t>(intermediate_dim)),
+					make_stride(static_cast<int64_t>(intermediate_dim), Int<1>{})),
+				typename Traits2::SmemLayoutW_1{});
+		}
+	}();
 
 	auto tma_store_y = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(y_buf_ptr),
@@ -1380,7 +1455,7 @@ static const DispatchEntry* find_dispatch_entry(const TunedConfig& c) {
 //     rows × TileN cols. EpiChunkN must divide TileN.
 //   - TileM=64  (N-split, Layout<_1,_2,_1>): each WG owns TileM=64 rows
 //     × TileN/2 cols. EpiChunkN must divide TileN/2; TileN must be even.
-//   - num_n_tiles_1 = I / TileN1, num_n_tiles_2 = D / TileN2 (no ceildiv)
+//   - Hopper uses ceil-div tile counts; SM100 retains exact divisibility.
 //   - store_buf is (AtomTileM=64, EpiChunkN) per WG in both modes.
 static bool tuned_config_valid(int D, int I, const TunedConfig& c) {
 	if (c.TileM != 64 && c.TileM != 128) return false;
@@ -1388,10 +1463,12 @@ static bool tuned_config_valid(int D, int I, const TunedConfig& c) {
 	// tile. Keep mirrored SM90 TileM=64 tuning rows out of SM100 auto-dispatch
 	// until that TMEM epilogue layout is implemented.
 	if (c.Compute == 100 && c.TileM != 128) return false;
-	if (D % c.TileK1 != 0) return false;
-	if (I % c.TileN1 != 0) return false;
-	if (I % c.TileK2 != 0) return false;
-	if (D % c.TileN2 != 0) return false;
+	if (c.Compute == 100) {
+		if (D % c.TileK1 != 0) return false;
+		if (I % c.TileN1 != 0) return false;
+		if (I % c.TileK2 != 0) return false;
+		if (D % c.TileN2 != 0) return false;
+	}
 	if (D % 8 != 0 || I % 8 != 0) return false;
 	// NC selection mirrors moe_fused_fwd_bf16: TileM=128 → NC=4,
 	// TileM=64 → NC=2. With the ticket-based GEMM iterator the only
@@ -1514,7 +1591,9 @@ void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m) {
 	// lookup picks rows recorded at comparable per-PE load.
 	const int n_pes = nvshmem_team_n_pes(a.team);
 	const int E_local = (n_pes > 0) ? std::max(1, num_experts / n_pes) : num_experts;
-	const int TKE = TK / E_local;
+	// The lookup operates in log space, so clamp the per-expert average to
+	// the smallest representable workload for tiny but valid token batches.
+	const int TKE = std::max(1, TK / E_local);
 	const int compute = moe_detect_compute_dispatch_key(a.device, "moe_fused_fwd_bf16_auto");
 
 	// ── Override path: LIGER_MOE_FORCE_CONFIG=TN1,TK1,S1,EC1,TN2,TK2,S2,EC2,ZB,CS,TM[,GemmTM]
@@ -1550,7 +1629,7 @@ void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m) {
 		" K=", top_k, " TK=", TK, " TKE=", TKE, " D=", D, " I=", I,
 		"). Either moe_fwd_bwd_tuning_configs.cuh is empty (run tune_moe_fwd_bwd), "
 		"or every tuned entry violates structural constraints for this (D, I) "
-		"(divisibility by TileN/TileK, num_n_tiles >= NSplit). "
+		"(tile/layout compatibility and shared-memory limits). "
 		"Add a compatible config to LIGER_MOE_TUNE_CONFIGS and re-tune.");
 
 	const DispatchEntry* de = find_dispatch_entry(tc);

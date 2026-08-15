@@ -258,6 +258,66 @@ def _fwd_graph_worker(rank: int, world_size: int, init_file: str):
         _check_close(Y, Y_ref)
 
 
+# ── forward: packed w13 strided views ─────────────────────────────────────────
+
+
+def _strided_fwd_worker(rank: int, world_size: int, init_file: str):
+    _init(rank, world_size, init_file)
+    team = nvshmem.team_world()
+    try:
+        _configure(world_size)
+        X, gate_W, all_B, all_C, all_A, ei, ew = _make_inputs(rank, world_size)
+        experts_per_pe = all_B.size(0)
+
+        packed_w13 = torch.stack((all_B, all_C), dim=1).reshape(experts_per_pe, 2 * _I, _D)
+        strided_B = packed_w13[:, :_I, :]
+        strided_C = packed_w13[:, _I:, :]
+        assert not strided_B.is_contiguous()
+        assert not strided_C.is_contiguous()
+        assert strided_B.stride() == (2 * _I * _D, _D, 1)
+        assert strided_C.stride() == strided_B.stride()
+
+        all_B_g = _gather_experts(all_B, dist.group.WORLD)
+        all_C_g = _gather_experts(all_C, dist.group.WORLD)
+        all_A_g = _gather_experts(all_A, dist.group.WORLD)
+        Y_ref = _torch_reference_moe(X, ei, ew, all_B_g, all_C_g, all_A_g, _K).cpu()
+
+        Y_contiguous = tvm_ffi.moe_fused_fwd_bf16(
+            X, ei, ew, all_B, all_C, all_A, num_experts=_E, top_k=_K, team_handle=team
+        )[0]
+        tvm_ffi.moe_pop_fwd()
+        torch.cuda.synchronize()
+        Y_contiguous = Y_contiguous.cpu()
+
+        Y_strided = tvm_ffi.moe_fused_fwd_bf16(
+            X,
+            ei,
+            ew,
+            strided_B,
+            strided_C,
+            all_A,
+            num_experts=_E,
+            top_k=_K,
+            team_handle=team,
+        )[0]
+        tvm_ffi.moe_pop_fwd()
+        torch.cuda.synchronize()
+        Y_strided = Y_strided.cpu()
+
+        dist.barrier()
+        nvshmem.finalize()
+        dist.destroy_process_group()
+    except BaseException:
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        raise
+
+    _check_close(Y_strided, Y_contiguous, mean_rel_tol=0.01)
+    _check_close(Y_strided, Y_ref)
+
+
 # ── forward + backward: two graphs ────────────────────────────────────────────
 
 
@@ -545,6 +605,125 @@ def _unaligned_fwd_bwd_worker(rank: int, world_size: int, init_file: str):
         _check_close(unaligned, padded)
 
 
+# ── forward + backward: single-token automatic dispatch ──────────────────────
+
+
+def _single_token_auto_dispatch_worker(
+    rank: int,
+    world_size: int,
+    init_file: str,
+):
+    _init(rank, world_size, init_file)
+    team = nvshmem.team_world()
+    tokens = 1 + rank * 7
+    hidden_dim = 512
+    intermediate_dim = 256
+    num_experts = 128
+    top_k = 8
+    experts_per_pe = num_experts // world_size
+    fwd_force = "128,64,4,64,128,64,4,64,4,3,128"
+    bwd_force = "2,128,64,4,128,256,64,2,32,64,64,2,128"
+
+    try:
+        tvm_ffi.moe_configure_symmetric(
+            max_tokens=64,
+            hidden_dim=hidden_dim,
+            max_num_experts=num_experts,
+            max_top_k=top_k,
+            num_pes=nvshmem.n_pes(),
+            num_hosts=1,
+            gpus_per_host=world_size,
+        )
+        torch.manual_seed(10_000 + rank)
+        X = torch.randn(tokens, hidden_dim, dtype=torch.bfloat16, device="cuda")
+        gate_W = torch.randn(num_experts, hidden_dim, dtype=torch.bfloat16, device="cuda")
+        all_B = torch.randn(
+            experts_per_pe,
+            intermediate_dim,
+            hidden_dim,
+            dtype=torch.bfloat16,
+            device="cuda",
+        )
+        all_C = torch.randn_like(all_B)
+        all_A = torch.randn(
+            experts_per_pe,
+            hidden_dim,
+            intermediate_dim,
+            dtype=torch.bfloat16,
+            device="cuda",
+        )
+        ei, ew = _route(X, gate_W, top_k)
+        dY = torch.randn_like(X)
+
+        def fwd():
+            return tvm_ffi.moe_fused_fwd_bf16(
+                X,
+                ei,
+                ew,
+                all_B,
+                all_C,
+                all_A,
+                num_experts=num_experts,
+                top_k=top_k,
+                team_handle=team,
+            )
+
+        def bwd(out):
+            return tvm_ffi.moe_fused_bwd_bf16(
+                dY,
+                out[2],
+                out[1],
+                out[4],
+                out[5],
+                out[3],
+                ei,
+                ew,
+                all_B,
+                all_C,
+                all_A,
+                num_experts=num_experts,
+                top_k=top_k,
+                team_handle=team,
+                fwd_tile_m=out[6],
+            )
+
+        os.environ["LIGER_MOE_FORCE_CONFIG"] = fwd_force
+        os.environ["LIGER_MOE_BWD_FORCE_CONFIG"] = bwd_force
+        forced_out = fwd()
+        forced_grads = bwd(forced_out)
+        torch.cuda.synchronize()
+        forced_cpu = [forced_out[0].detach().cpu().clone()]
+        forced_cpu.extend(tensor.detach().cpu().clone() for tensor in forced_grads)
+        tvm_ffi.moe_pop_fwd()
+
+        os.environ.pop("LIGER_MOE_FORCE_CONFIG")
+        os.environ.pop("LIGER_MOE_BWD_FORCE_CONFIG")
+        auto_out = fwd()
+        auto_grads = bwd(auto_out)
+        torch.cuda.synchronize()
+        auto_cpu = [auto_out[0].detach().cpu().clone()]
+        auto_cpu.extend(tensor.detach().cpu().clone() for tensor in auto_grads)
+        tvm_ffi.moe_pop_fwd()
+
+        dist.barrier()
+        nvshmem.finalize()
+        dist.destroy_process_group()
+    except BaseException:
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        raise
+
+    for name, auto, forced in zip(
+        ("Y", "dX", "dB", "dC", "dA", "dW"),
+        auto_cpu,
+        forced_cpu,
+    ):
+        assert torch.isfinite(auto).all(), f"{name} has non-finite values"
+        _check_close(auto, forced)
+
+
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 
@@ -557,6 +736,12 @@ def test_moe_fwd_cuda_graph():
     (the second replay would corrupt the first's NVSHMEM writes otherwise).
     """
     _run(_world_size(), _fwd_graph_worker)
+
+
+@pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
+def test_moe_fwd_packed_w13_strided_views():
+    """Packed gate/up views avoid copies while matching contiguous weights."""
+    _run(_world_size(), _strided_fwd_worker)
 
 
 @pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
@@ -581,3 +766,14 @@ def test_moe_fwd_bwd_unaligned_tokens_match_padded():
     """Unaligned forward/backward must match zero-padded execution."""
 
     _run(_world_size(), _unaligned_fwd_bwd_worker)
+
+
+@pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
+def test_moe_fwd_bwd_single_token_auto_dispatch():
+    """Automatic dispatch supports a rank with one token.
+
+    The smallest rank has TKE=floor(T * top_k / experts_per_pe)=0 before
+    clamping. Its automatic forward and backward results must match known
+    compiled configurations while every rank participates in NVSHMEM.
+    """
+    _run(_world_size(), _single_token_auto_dispatch_worker)

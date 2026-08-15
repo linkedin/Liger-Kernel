@@ -61,8 +61,10 @@ using MlpFwdCtaBarrierT = CtaCounterBarrier<(Compute == 100 ? 10 : 9) * 32, kMlp
 struct MlpDims {
 	int hidden_dim;
 	int intermediate_dim;
-	int total_n_rows_1;     // experts_per_pe * intermediate_dim
+	int num_experts;         // local experts represented by the weight tensors
+	int total_n_rows_1;     // physical rows spanned by the strided B/C views
 	int total_n_rows_2;     // experts_per_pe * hidden_dim
+	int expert_n_stride_1;  // B/C expert stride in TileN1 units
 	int num_n_tiles_1;      // intermediate_dim / TileN1
 	int num_n_tiles_2;      // ceildiv(hidden_dim/TileN2, NSub) — per-WG outer steps
 	int num_k_tiles_1;      // hidden_dim / TileK1
@@ -240,11 +242,12 @@ __device__ __forceinline__ void mlp_fused_fwd(
 			int z_m  = z_m_base + sub;
 			if constexpr (Compute == 100) smem.mlp1.tmem_base = smem.tmem_base;
 			if (warp_id == 0) {
-				mlp1_fused_producer<Traits1>(
+				mlp1_fused_producer<Traits1, Compute == 90>(
 					p1_pipe, p1_state,
 					smem.mlp1, tma_load_x, tma_load_b, tma_load_c,
-					x_mt, expert * dims.num_n_tiles_1,
-					num_tokens, dims.hidden_dim, dims.total_n_rows_1,
+					x_mt, (Compute == 90) ? expert : expert * dims.expert_n_stride_1,
+					num_tokens, dims.hidden_dim, dims.intermediate_dim,
+					dims.num_experts, dims.total_n_rows_1,
 					dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
 			}
 
@@ -306,12 +309,12 @@ __device__ __forceinline__ void mlp_fused_fwd(
 			int y_coord = y_base * SubTiles + sub;
 			if constexpr (Compute == 100) smem.mlp2.tmem_base = smem.tmem_base;
 			if (warp_id == 0) {
-				mlp2_fused_producer<Traits2>(
+				mlp2_fused_producer<Traits2, Compute == 90>(
 					p2_pipe, p2_state,
 					smem.mlp2, tma_load_z, tma_load_a,
-					z_m, expert * dims.num_n_tiles_2,
-					num_z_m_tiles * Traits1::TileM, dims.intermediate_dim,
-					dims.total_n_rows_2,
+					z_m, (Compute == 90) ? expert : expert * dims.num_n_tiles_2,
+					num_z_m_tiles * Traits1::TileM, dims.hidden_dim,
+					dims.intermediate_dim, dims.num_experts, dims.total_n_rows_2,
 					dims.num_n_tiles_2, dims.num_k_tiles_2, n_split, n_count);
 			}
 			

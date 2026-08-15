@@ -525,6 +525,7 @@ struct Mlp3ConsumerImpl;
 template <>
 struct Mlp3ConsumerImpl<90> {
 template <typename Traits,
+          bool Expert3D = false,
           int Compute = 90,
           typename Pipeline, typename SmemType,
           typename TmaReduceAddDA>
@@ -536,6 +537,7 @@ static __device__ __forceinline__ void run(
 		const int* expert_k_starts,
 		const int* expert_k_ends,
 		int num_experts,
+		int hidden_dim,
 		int intermediate_dim,
 		int total_n_rows,
 		int num_m_tiles,
@@ -577,9 +579,18 @@ static __device__ __forceinline__ void run(
 
 	const bool is_my_wg_leader = (tid_in_wg == 0);
 
-	auto mdA = tma_reduce_da.get_tma_tensor(make_shape(
-		static_cast<int64_t>(total_n_rows),
-		static_cast<int64_t>(intermediate_dim)));
+	auto mdA = [&]() {
+		if constexpr (Expert3D) {
+			return tma_reduce_da.get_tma_tensor(make_shape(
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_reduce_da.get_tma_tensor(make_shape(
+				static_cast<int64_t>(total_n_rows),
+				static_cast<int64_t>(intermediate_dim)));
+		}
+	}();
 	auto cta_tma_da = tma_reduce_da.get_slice(Int<0>{});
 
 	int total_chunks = num_experts * (Traits::kMSplit ? num_n_tiles : num_m_tiles);
@@ -732,7 +743,7 @@ static __device__ __forceinline__ void run(
 
 				if (is_my_wg_leader) {
 					cute::tma_store_fence();
-					int da_m = e * num_m_tiles + m_tile;
+					int da_m = Expert3D ? m_tile : e * num_m_tiles + m_tile;
 					// Store box = ONE atom-row (AtomTileM). Each WG issues
 					// kAtomsPerWg stores, one per atom it owns. The store_buf
 					// holds the WG's atoms in contiguous local rows
@@ -757,9 +768,17 @@ static __device__ __forceinline__ void run(
 						auto sStore_a = local_tile(sStore,
 							make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
 							make_coord(a, 0));
-						auto gdA = local_tile(mdA,
-							make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
-							make_coord(m_atom_row, n_tile_idx));
+						auto gdA = [&]() {
+							if constexpr (Expert3D) {
+								return local_tile(mdA,
+									make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
+									make_coord(m_atom_row, n_tile_idx, e));
+							} else {
+								return local_tile(mdA,
+									make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
+									make_coord(m_atom_row, n_tile_idx));
+							}
+						}();
 						copy(tma_reduce_da, cta_tma_da.partition_S(sStore_a),
 							cta_tma_da.partition_D(gdA));
 					}
@@ -779,7 +798,7 @@ static __device__ __forceinline__ void run(
 // (mlp3_consumer<Traits>(...)) are unchanged; pass mlp3_consumer<Traits, 100>
 // for the Blackwell path.
 // ───────────────────────────────────────────────────────────────────
-template <typename Traits, int Compute = 90,
+template <typename Traits, int Compute = 90, bool Expert3D = false,
           typename Pipeline, typename SmemType,
           typename TmaReduceAddDA>
 __device__ __forceinline__ void mlp3_consumer(
@@ -790,6 +809,7 @@ __device__ __forceinline__ void mlp3_consumer(
 		const int* expert_k_starts,
 		const int* expert_k_ends,
 		int num_experts,
+		int hidden_dim,
 		int intermediate_dim,
 		int total_n_rows,
 		int num_m_tiles,
@@ -800,10 +820,10 @@ __device__ __forceinline__ void mlp3_consumer(
 		int batch_kb_start,
 		int batch_kb_end,
 		int k_split) {
-	Mlp3ConsumerImpl<Compute>::template run<Traits>(
+	Mlp3ConsumerImpl<Compute>::template run<Traits, Expert3D>(
 		pipe, state, smem, tma_reduce_da,
 		expert_k_starts, expert_k_ends, num_experts,
-		intermediate_dim, total_n_rows,
+		hidden_dim, intermediate_dim, total_n_rows,
 		num_m_tiles, num_n_tiles, outer_split,
 		cell_start, cell_stride,
 		batch_kb_start, batch_kb_end, k_split);
@@ -1236,6 +1256,7 @@ template <>
 struct Mlp3ConsumerImpl<100> {
 template <
 	typename Traits,
+	bool Expert3D = false,
 	typename Pipeline,
 	typename SmemType,
 	typename TmaReduceAddDA>
@@ -1247,6 +1268,7 @@ static __device__ __forceinline__ void run(
 		const int* expert_k_starts,
 		const int* expert_k_ends,
 		int num_experts,
+		int hidden_dim,
 		int intermediate_dim,
 		int total_n_rows,
 		int num_m_tiles,
@@ -1258,6 +1280,7 @@ static __device__ __forceinline__ void run(
 		int batch_kb_end,
 		int k_split) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+	(void)hidden_dim;
 	using Element = typename Traits::Element;
 	constexpr int TileM = Traits::TileM;
 	constexpr int TileN = Traits::TileN;
@@ -1535,6 +1558,7 @@ static __device__ __forceinline__ void run(
 template <
 	typename Traits,
 	int Compute = 90,
+	bool Expert3D = false,
 	typename TmaLoadDYT,
 	typename TmaLoadZ,
 	typename TmaReduceAddDA>
@@ -1647,7 +1671,7 @@ __device__ __forceinline__ void mlp3_fwd(
 			ring_kb);
 	} else if (is_consumer) {
 		if constexpr (Compute == 100) {
-			mlp3_consumer<Traits, Compute>(
+			mlp3_consumer<Traits, Compute, Expert3D>(
 				pipe,
 				consumer_state,
 				smem,
@@ -1655,6 +1679,7 @@ __device__ __forceinline__ void mlp3_fwd(
 				expert_k_starts,
 				expert_k_ends,
 				num_experts,
+				hidden_dim,
 				intermediate_dim,
 				total_n_rows,
 				num_m_tiles,
@@ -1667,7 +1692,7 @@ __device__ __forceinline__ void mlp3_fwd(
 				k_split);
 		} else {
 #if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 1000)
-			mlp3_consumer<Traits, Compute>(
+			mlp3_consumer<Traits, Compute, Expert3D>(
 				pipe,
 				consumer_state,
 				smem,
@@ -1675,6 +1700,7 @@ __device__ __forceinline__ void mlp3_fwd(
 				expert_k_starts,
 				expert_k_ends,
 				num_experts,
+				hidden_dim,
 				intermediate_dim,
 				total_n_rows,
 				num_m_tiles,

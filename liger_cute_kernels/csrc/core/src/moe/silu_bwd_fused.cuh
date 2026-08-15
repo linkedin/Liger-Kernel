@@ -190,7 +190,7 @@ __device__ __forceinline__ void silu_bwd_pair_tile(
 	int dense_warp = (warp_id == 0) ? 0 : warp_id - 3;
 	int tid        = dense_warp * 32 + lane;
 
-	int num_n_tiles    = intermediate_dim / TileN;
+	int num_n_tiles    = (intermediate_dim + TileN - 1) / TileN;
 	int row_start      = m * TileM;
 	int vec_per_tile_n = TileN / kVecSize;                  // vecs per row of one n-tile
 	int vec_row_stride = intermediate_dim / kVecSize;       // vecs per row in full I-dim
@@ -204,10 +204,12 @@ __device__ __forceinline__ void silu_bwd_pair_tile(
 
 	for (int n = split_idx; n < num_n_tiles; n += num_splits) {
 		int col_vec_start = n * vec_per_tile_n;
+		int valid_col_vecs = min(vec_per_tile_n, vec_row_stride - col_vec_start);
 
 		for (int i = tid; i < vecs_per_tile; i += kSiluBwdPairThreads) {
 			int local_row     = i / vec_per_tile_n;
 			int local_col_vec = i % vec_per_tile_n;
+			if (local_col_vec >= valid_col_vecs) continue;
 
 			size_t off = (size_t)(row_start + local_row) * vec_row_stride
 			           + col_vec_start + local_col_vec;
