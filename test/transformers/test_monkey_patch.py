@@ -22,8 +22,7 @@ from liger_kernel.transformers import LigerGEGLUMLP
 from liger_kernel.transformers import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers import LigerQwen3MoeSwiGLUMLP
 from liger_kernel.transformers import LigerRMSNorm
-
-# from liger_kernel.transformers import LigerSwiGLUMLP
+from liger_kernel.transformers import LigerSwiGLUMLP
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
@@ -42,14 +41,8 @@ from liger_kernel.transformers.model.qwen3_5 import lce_forward_for_multimodal a
 from liger_kernel.transformers.model.qwen3_next import lce_forward as qwen3_next_lce_forward
 from liger_kernel.transformers.model.smollm3 import lce_forward as smolllm3_lce_forward
 from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
-from liger_kernel.transformers.monkey_patch import USE_FLASH_SWIGLU
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
-
-if USE_FLASH_SWIGLU:
-    from liger_kernel.transformers.mlp import LigerMLP as LigerSwiGLUMLP
-else:
-    from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
 # We only support transformers >= 4.52.0
 transformer_version = version.parse(transformers.__version__)
@@ -1347,10 +1340,6 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
     with patch("transformers.models.llama4.modeling_llama4"):
         from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
 
-        # Compare against the class actually bound by the patch: llama4 keeps the
-        # original swiglu implementation because its MLPs receive 2D input.
-        from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
-
         # Instantiate a dummy model
         config = transformers.models.llama4.configuration_llama4.Llama4TextConfig(
             dtype=torch.bfloat16,
@@ -1401,10 +1390,6 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.llama4.modeling_llama4"):
         from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
-
-        # Compare against the class actually bound by the patch: llama4 keeps the
-        # original swiglu implementation because its MLPs receive 2D input.
-        from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
         # Instantiate a dummy model
         config = transformers.models.llama4.configuration_llama4.Llama4Config(
@@ -3209,9 +3194,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_next():
                     for expert in layer.mlp.experts:
                         assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
                 if hasattr(layer.mlp, "shared_expert"):
-                    # Compare against the class actually bound by the patch
                     assert inspect.getsource(layer.mlp.shared_expert.forward) != inspect.getsource(
-                        LigerQwen3MoeSwiGLUMLP.forward
+                        LigerSwiGLUMLP.forward
                     )
             else:
                 assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
@@ -3233,9 +3217,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_next():
                     for expert in layer.mlp.experts:
                         assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
                 if hasattr(layer.mlp, "shared_expert"):
-                    # Compare against the class actually bound by the patch
                     assert inspect.getsource(layer.mlp.shared_expert.forward) == inspect.getsource(
-                        LigerQwen3MoeSwiGLUMLP.forward
+                        LigerSwiGLUMLP.forward
                     )
             else:
                 assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
@@ -3660,7 +3643,6 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_dense():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.hunyuan_v1_dense.modeling_hunyuan_v1_dense"):
         from liger_kernel.transformers.model.hunyuan_v1 import lce_forward as hunyuan_v1_dense_lce_forward
-        from liger_kernel.transformers.swiglu import LigerHunyuanV1SwiGLUMLP
 
         # Instantiate a dummy model
         config = transformers.models.hunyuan_v1_dense.configuration_hunyuan_v1_dense.HunYuanDenseV1Config(
@@ -3678,8 +3660,7 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_dense():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(hunyuan_v1_dense_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            # Compare against the class actually bound by the patch
-            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerHunyuanV1SwiGLUMLP.forward)
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -3690,8 +3671,7 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_dense():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(hunyuan_v1_dense_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            # Compare against the class actually bound by the patch
-            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerHunyuanV1SwiGLUMLP.forward)
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
