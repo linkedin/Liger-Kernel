@@ -1,3 +1,4 @@
+import importlib
 import inspect
 import logging
 
@@ -6,6 +7,8 @@ from types import MethodType
 from typing import Callable
 from typing import Optional
 
+import torch.nn as nn
+import torch.nn.functional as F
 import transformers
 
 from packaging import version
@@ -58,6 +61,16 @@ if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
     )
 
 IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
+
+_ORIGINAL_TORCH_CROSS_ENTROPY = F.cross_entropy
+
+
+def revert_liger_cross_entropy_patches(modeling_module=None) -> None:
+    """Restore torch cross-entropy state after Liger monkey patches."""
+    F.cross_entropy = _ORIGINAL_TORCH_CROSS_ENTROPY
+    importlib.reload(nn)
+    if modeling_module is not None and getattr(modeling_module, "CrossEntropyLoss", None) is LigerCrossEntropyLoss:
+        delattr(modeling_module, "CrossEntropyLoss")
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):

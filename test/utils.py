@@ -27,6 +27,7 @@ from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
 
+from liger_kernel.transformers.monkey_patch import revert_liger_cross_entropy_patches
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -340,6 +341,7 @@ def revert_liger_kernel_to_granite(model_config: MiniModelConfig):
     from transformers.models.granite import modeling_granite
 
     importlib.reload(modeling_granite)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_granite)
     model_config.model_class = modeling_granite.GraniteForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -352,6 +354,7 @@ def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
     from transformers.models.llama import modeling_llama
 
     importlib.reload(modeling_llama)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_llama)
     model_config.model_class = modeling_llama.LlamaForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -364,6 +367,7 @@ def revert_liger_kernel_to_smollm3(model_config: MiniModelConfig):
     from transformers.models.smollm3 import modeling_smollm3
 
     importlib.reload(modeling_smollm3)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_smollm3)
     model_config.model_class = modeling_smollm3.SmolLM3ForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -377,12 +381,10 @@ def revert_liger_kernel_to_mllama(model_config: MiniModelConfig, model_type: str
         "causal_lm",
         "conditional_generation",
     ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
-    import torch.nn as nn
-
     from transformers.models.mllama import modeling_mllama
 
-    importlib.reload(nn)
     importlib.reload(modeling_mllama)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_mllama)
     if model_type == "causal_lm":
         model_config.model_class = modeling_mllama.MllamaForCausalLM
     else:
@@ -400,12 +402,10 @@ def revert_liger_kernel_to_llama4(model_config: MiniModelConfig, model_type: str
         "causal_lm",
         "conditional_generation",
     ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
-    import torch.nn as nn
-
     from transformers.models.llama4 import modeling_llama4
 
-    importlib.reload(nn)
     importlib.reload(modeling_llama4)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_llama4)
     if model_type == "causal_lm":
         model_config.model_class = modeling_llama4.Llama4ForCausalLM
     else:
@@ -422,6 +422,7 @@ def revert_liger_kernel_to_ministral(model_config: MiniModelConfig):
     from transformers.models.ministral import modeling_ministral
 
     importlib.reload(modeling_ministral)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_ministral)
     model_config.model_class = modeling_ministral.MinistralForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -434,6 +435,7 @@ def revert_liger_kernel_to_mistral(model_config: MiniModelConfig):
     from transformers.models.mistral import modeling_mistral
 
     importlib.reload(modeling_mistral)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_mistral)
     model_config.model_class = modeling_mistral.MistralForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -446,6 +448,7 @@ def revert_liger_kernel_to_mixtral(model_config: MiniModelConfig):
     from transformers.models.mixtral import modeling_mixtral
 
     importlib.reload(modeling_mixtral)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_mixtral)
     model_config.model_class = modeling_mixtral.MixtralForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -458,6 +461,7 @@ def revert_liger_kernel_to_gemma(model_config: MiniModelConfig):
     from transformers.models.gemma import modeling_gemma
 
     importlib.reload(modeling_gemma)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_gemma)
     model_config.model_class = modeling_gemma.GemmaForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -470,6 +474,7 @@ def revert_liger_kernel_to_gemma2(model_config: MiniModelConfig):
     from transformers.models.gemma2 import modeling_gemma2
 
     importlib.reload(modeling_gemma2)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_gemma2)
     model_config.model_class = modeling_gemma2.Gemma2ForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -482,6 +487,7 @@ def revert_liger_kernel_to_gemma3_text(model_config: MiniModelConfig):
     from transformers.models.gemma3 import modeling_gemma3
 
     importlib.reload(modeling_gemma3)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_gemma3)
 
     model_config.model_class = modeling_gemma3.Gemma3ForCausalLM
 
@@ -499,6 +505,7 @@ def revert_liger_kernel_to_gemma4_text(model_config: MiniModelConfig):
     # / LigerGEGLUMLPForGemma4 live in liger_kernel.transformers.* and do not
     # require reloading themselves.
     importlib.reload(modeling_gemma4)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_gemma4)
 
     model_config.model_class = modeling_gemma4.Gemma4ForCausalLM
 
@@ -516,6 +523,7 @@ def revert_liger_kernel_to_gemma4(model_config: MiniModelConfig):
     # Gemma4ForConditionalGeneration.forward, which is the surface the
     # multimodal patch touches.
     importlib.reload(modeling_gemma4)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_gemma4)
     model_config.model_class = modeling_gemma4.Gemma4ForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -530,6 +538,7 @@ def revert_liger_kernel_to_gemma3(model_config: MiniModelConfig):
 
     importlib.reload(modeling_gemma3)
     importlib.reload(modeling_siglip)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_gemma3)
     model_config.model_class = modeling_gemma3.Gemma3ForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -548,6 +557,7 @@ def revert_liger_kernel_to_Paligemma(model_config: MiniModelConfig):
     importlib.reload(modeling_gemma2)
     importlib.reload(modeling_paligemma)
     importlib.reload(modeling_siglip)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_paligemma)
     model_config.model_class = modeling_paligemma.PaliGemmaForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -560,6 +570,7 @@ def revert_liger_kernel_to_qwen2(model_config: MiniModelConfig):
     from transformers.models.qwen2 import modeling_qwen2
 
     importlib.reload(modeling_qwen2)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen2)
     model_config.model_class = modeling_qwen2.Qwen2ForCausalLM
 
     print("Liger kernel patches have been reverted.")
@@ -572,6 +583,7 @@ def revert_liger_kernel_to_qwen3(model_config: MiniModelConfig):
     from transformers.models.qwen3 import modeling_qwen3
 
     importlib.reload(modeling_qwen3)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen3)
     model_config.model_class = modeling_qwen3.Qwen3ForCausalLM
 
     print("Liger kernel patches have been reverted.")
@@ -584,6 +596,7 @@ def revert_liger_kernel_to_qwen3_moe(model_config: MiniModelConfig):
     from transformers.models.qwen3_moe import modeling_qwen3_moe
 
     importlib.reload(modeling_qwen3_moe)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen3_moe)
     model_config.model_class = modeling_qwen3_moe.Qwen3MoeForCausalLM
 
     print("Liger kernel patches have been reverted.")
@@ -596,6 +609,7 @@ def revert_liger_kernel_to_gpt_oss(model_config: MiniModelConfig):
     from transformers.models.gpt_oss import modeling_gpt_oss
 
     importlib.reload(modeling_gpt_oss)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_gpt_oss)
     model_config.model_class = modeling_gpt_oss.GptOssForCausalLM
 
     print("Liger kernel patches have been reverted.")
@@ -608,6 +622,7 @@ def revert_liger_kernel_to_qwen2_vl(model_config: MiniModelConfig):
     from transformers.models.qwen2_vl import modeling_qwen2_vl
 
     importlib.reload(modeling_qwen2_vl)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen2_vl)
     model_config.model_class = modeling_qwen2_vl.Qwen2VLForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -619,6 +634,7 @@ def revert_liger_kernel_to_qwen2_5_vl(model_config: MiniModelConfig):
     from transformers.models.qwen2_5_vl import modeling_qwen2_5_vl
 
     importlib.reload(modeling_qwen2_5_vl)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen2_5_vl)
     model_config.model_class = modeling_qwen2_5_vl.Qwen2_5_VLForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -630,6 +646,7 @@ def revert_liger_kernel_to_qwen3_vl(model_config: MiniModelConfig):
     from transformers.models.qwen3_vl import modeling_qwen3_vl
 
     importlib.reload(modeling_qwen3_vl)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen3_vl)
     model_config.model_class = modeling_qwen3_vl.Qwen3VLForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -641,6 +658,7 @@ def revert_liger_kernel_to_qwen3_vl_moe(model_config: MiniModelConfig):
     from transformers.models.qwen3_vl_moe import modeling_qwen3_vl_moe
 
     importlib.reload(modeling_qwen3_vl_moe)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen3_vl_moe)
     model_config.model_class = modeling_qwen3_vl_moe.Qwen3VLMoeForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -653,6 +671,7 @@ def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     from transformers.models.phi3 import modeling_phi3
 
     importlib.reload(modeling_phi3)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_phi3)
     model_config.model_class = modeling_phi3.Phi3ForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -664,6 +683,7 @@ def revert_liger_kernel_to_pixtral(model_config: MiniModelConfig):
     from transformers.models.pixtral import modeling_pixtral
 
     importlib.reload(modeling_pixtral)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_pixtral)
     model_config.model_class = modeling_pixtral.PixtralVisionModel
     print("Liger kernel patches have been reverted.")
 
@@ -676,6 +696,7 @@ def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
     from transformers.models.olmo2 import modeling_olmo2
 
     importlib.reload(modeling_olmo2)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_olmo2)
     model_config.model_class = modeling_olmo2.Olmo2ForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -688,6 +709,7 @@ def revert_liger_kernel_to_olmo3(model_config: MiniModelConfig):
     from transformers.models.olmo3 import modeling_olmo3
 
     importlib.reload(modeling_olmo3)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_olmo3)
     model_config.model_class = modeling_olmo3.Olmo3ForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -700,6 +722,7 @@ def revert_liger_kernel_to_glm4(model_config: MiniModelConfig):
     from transformers.models.glm4 import modeling_glm4
 
     importlib.reload(modeling_glm4)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_glm4)
     model_config.model_class = modeling_glm4.Glm4ForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -712,6 +735,7 @@ def revert_liger_kernel_to_glm4v(model_config: MiniModelConfig):
     from transformers.models.glm4v import modeling_glm4v
 
     importlib.reload(modeling_glm4v)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_glm4v)
     model_config.model_class = modeling_glm4v.Glm4vForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -724,6 +748,7 @@ def revert_liger_kernel_to_glm4v_moe(model_config: MiniModelConfig):
     from transformers.models.glm4v_moe import modeling_glm4v_moe
 
     importlib.reload(modeling_glm4v_moe)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_glm4v_moe)
     model_config.model_class = modeling_glm4v_moe.Glm4vMoeForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -741,6 +766,7 @@ def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     # Liger kernel does not patch modeling_clip when model=None.
     importlib.reload(modeling_llava)
     importlib.reload(modeling_llama)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_llama)
 
     model_config.model_class = modeling_llava.LlavaForConditionalGeneration
     print("Liger kernel patches have been reverted.")
@@ -750,14 +776,12 @@ def revert_liger_kernel_to_internvl(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to InternVL.
     """
-    import torch.nn as nn
-
     from transformers.models.internvl import modeling_internvl
     from transformers.models.qwen2 import modeling_qwen2
 
-    importlib.reload(nn)
     importlib.reload(modeling_internvl)
     importlib.reload(modeling_qwen2)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen2)
 
     model_config.model_class = modeling_internvl.InternVLForConditionalGeneration
     print("Liger kernel patches have been reverted.")
@@ -767,14 +791,12 @@ def revert_liger_kernel_to_smolvlm2(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to SmolVLM2.
     """
-    import torch.nn as nn
-
     from transformers.models.llama import modeling_llama
     from transformers.models.smolvlm import modeling_smolvlm
 
-    importlib.reload(nn)
     importlib.reload(modeling_smolvlm)
     importlib.reload(modeling_llama)
+    revert_liger_cross_entropy_patches()
 
     model_config.model_class = modeling_smolvlm.SmolVLMForConditionalGeneration
     print("Liger kernel patches have been reverted.")
@@ -788,6 +810,7 @@ def revert_liger_kernel_to_falcon_h1(model_config: MiniModelConfig):
     from transformers.models.falcon_h1 import modeling_falcon_h1
 
     importlib.reload(modeling_falcon_h1)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_falcon_h1)
     model_config.model_class = modeling_falcon_h1.FalconH1ForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -800,6 +823,7 @@ def revert_liger_kernel_to_qwen3_next(model_config: MiniModelConfig):
     from transformers.models.qwen3_next import modeling_qwen3_next
 
     importlib.reload(modeling_qwen3_next)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen3_next)
     model_config.model_class = modeling_qwen3_next.Qwen3NextForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -814,12 +838,10 @@ def revert_liger_kernel_to_qwen3_5(model_config: MiniModelConfig, model_type: st
         "conditional_generation",
     ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
 
-    import torch.nn as nn
-
     from transformers.models.qwen3_5 import modeling_qwen3_5
 
-    importlib.reload(nn)
     importlib.reload(modeling_qwen3_5)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen3_5)
     if model_type == "causal_lm":
         model_config.model_class = modeling_qwen3_5.Qwen3_5ForCausalLM
     else:
@@ -841,6 +863,7 @@ def revert_liger_kernel_to_qwen3_5_moe(model_config: MiniModelConfig, model_type
     from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
 
     importlib.reload(modeling_qwen3_5_moe)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_qwen3_5_moe)
     if model_type == "causal_lm":
         model_config.model_class = modeling_qwen3_5_moe.Qwen3_5MoeForCausalLM
     else:
@@ -855,6 +878,7 @@ def revert_liger_kernel_to_hunyuan_v1(model_config: MiniModelConfig):
     from transformers.models.hunyuan_v1_dense import modeling_hunyuan_v1_dense
 
     importlib.reload(modeling_hunyuan_v1_dense)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_hunyuan_v1_dense)
     model_config.model_class = modeling_hunyuan_v1_dense.HunYuanDenseV1ForCausalLM
 
     print("Liger kernel patches have been reverted.")
@@ -867,6 +891,7 @@ def revert_liger_kernel_to_hunyuan_v1_moe(model_config: MiniModelConfig):
     from transformers.models.hunyuan_v1_moe import modeling_hunyuan_v1_moe
 
     importlib.reload(modeling_hunyuan_v1_moe)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_hunyuan_v1_moe)
     model_config.model_class = modeling_hunyuan_v1_moe.HunYuanMoEV1ForCausalLM
 
     print("Liger kernel patches have been reverted.")
@@ -879,6 +904,7 @@ def revert_liger_kernel_to_deepseek_v4(model_config: MiniModelConfig):
     from transformers.models.deepseek_v4 import modeling_deepseek_v4
 
     importlib.reload(modeling_deepseek_v4)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_deepseek_v4)
     model_config.model_class = modeling_deepseek_v4.DeepseekV4ForCausalLM
 
     print("Liger kernel patches have been reverted.")
@@ -891,6 +917,7 @@ def revert_liger_kernel_to_exaone4(model_config: MiniModelConfig):
     from transformers.models.exaone4 import modeling_exaone4
 
     importlib.reload(modeling_exaone4)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_exaone4)
     model_config.model_class = modeling_exaone4.Exaone4ForCausalLM
     print("Liger kernel patches have been reverted.")
 
@@ -902,6 +929,7 @@ def revert_liger_kernel_to_nemotron(model_config: MiniModelConfig):
     from transformers.models.nemotron import modeling_nemotron
 
     importlib.reload(modeling_nemotron)
+    revert_liger_cross_entropy_patches(modeling_module=modeling_nemotron)
     model_config.model_class = modeling_nemotron.NemotronForCausalLM
     print("Liger kernel patches have been reverted.")
 
