@@ -21,6 +21,26 @@ class LigerSwiGLUMLP(nn.Module):
         return self.down_proj(LigerSiLUMulFunction.apply(self.gate_proj(x), self.up_proj(x)))
 
 
+class LigerSwiGLUMLPForMuseGlimmer(LigerSwiGLUMLP):
+    """SwiGLU MLP wrapper for MuseGlimmerTextMLP.
+
+    MuseGlimmerTextConfig names its activation field ``hidden_activation`` (Gemma-style)
+    rather than ``hidden_act``, so the base class' validation would raise AttributeError.
+    """
+
+    def __init__(self, config):
+        nn.Module.__init__(self)
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        hidden_activation = getattr(config, "hidden_activation", None) or getattr(config, "hidden_act", None)
+        if hidden_activation not in ["silu", "swish"]:
+            raise ValueError(f"Activation function {hidden_activation} not supported.")
+
+
 class LigerBlockSparseTop2MLP(nn.Module):
     def __init__(self, config):
         super().__init__()

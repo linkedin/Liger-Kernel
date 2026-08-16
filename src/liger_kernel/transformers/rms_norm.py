@@ -110,6 +110,55 @@ class LigerRMSNormForGemma4(LigerRMSNorm):
         return super().forward(hidden_states)
 
 
+class LigerRMSNormForMuseGlimmer(LigerRMSNorm):
+    """MuseGlimmerRMSNorm semantics (see transformers.models.muse_glimmer.modeling_muse_glimmer):
+
+      - weight initialized to ones, applied directly (no ``(1 + w)`` offset)
+      - fp32 compute, cast back to input dtype (gemma-style casting)
+      - ``with_scale=False`` variant has NO weight parameter and is used for ``qk_norm``,
+        the embedding ``embed_norm`` and ``perception_emb_norm``.
+
+    When ``with_scale=False`` the Liger kernel has no weight to multiply by, so we fall back
+    to a plain torch implementation that matches HF exactly.
+    """
+
+    def __init__(
+        self,
+        dim=None,
+        eps=1e-6,
+        offset=0.0,
+        casting_mode="gemma",
+        init_fn="ones",
+        in_place=False,
+        with_scale=True,
+    ):
+        super().__init__(dim, eps, offset, casting_mode, init_fn, in_place, elementwise_affine=with_scale)
+        self.with_scale = with_scale
+
+    def forward(self, hidden_states):
+        if not self.with_scale:
+            # Mirrors HF's MuseGlimmerRMSNorm forward for the with_scale=False case:
+            # scale-free RMS normalization with fp32 compute, cast back to input dtype.
+            input_dtype = hidden_states.dtype
+            x = hidden_states.float()
+            mean_sq = x.pow(2).mean(-1, keepdim=True) + self.variance_epsilon
+            return (x * torch.pow(mean_sq, -0.5)).to(input_dtype)
+        return super().forward(hidden_states)
+
+
+class LigerRMSNormForMuseGlimmerTextCentered(LigerRMSNorm):
+    """MuseGlimmerTextCenteredRMSNorm scales by ``(1 + weight)`` with zero-initialized weights,
+    computing in fp32 and casting back — i.e. Gemma semantics. ``in_place=False`` because each
+    decoder layer chains ``pre_feedforward_layernorm`` and ``post_feedforward_layernorm`` around
+    a residual connection.
+    """
+
+    def __init__(
+        self, hidden_size, eps=1e-6, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False, row_mode=None
+    ):
+        super().__init__(hidden_size, eps, offset, casting_mode, init_fn, in_place, row_mode)
+
+
 class LigerRMSNormForOlmo2(LigerRMSNorm):
     def __init__(
         self, hidden_size, eps=1e-6, offset=0.0, casting_mode="llama", init_fn="ones", in_place=False, row_mode=None
