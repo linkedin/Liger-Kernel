@@ -39,6 +39,11 @@ def get_optional_dependencies():
     ]
     cutedsl_deps = [
         "nvidia-cutlass-dsl>=4.6.0",
+        # Lets compiled CuTe DSL kernels take PyTorch tensors directly instead of
+        # marshalling each one through DLPack per call. The kernels fall back to
+        # the marshalling launch when it is absent, but on short kernels that
+        # per-call cost dominates: RMSNorm forward measured 53us -> 15us on B200.
+        "apache-tvm-ffi>=0.1.0",
     ]
     dev_deps = [
         "transformers>=4.52.0",
