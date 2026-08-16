@@ -85,6 +85,7 @@ class LigerLMHeadJSD(torch.nn.Module):
     [
         (8, 128, 1024, 4096),
         (4, 423, 167, 1423),  # random shape
+        (1, 4, 64, 40960),  # V > BLOCK_SIZE: multi-block online softmax + partial trailing block
     ],
 )
 @pytest.mark.parametrize(
