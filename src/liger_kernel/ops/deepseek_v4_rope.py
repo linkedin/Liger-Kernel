@@ -29,6 +29,7 @@ def _deepseek_v4_rope_kernel(
     trig_batch_size,
     head_dim: tl.constexpr,
     rope_dim: tl.constexpr,
+    use_fp64_trig: tl.constexpr,
     sin_sign: tl.constexpr,
     ROWS_PER_PROGRAM: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -56,26 +57,37 @@ def _deepseek_v4_rope_kernel(
         cos_base = trig_batch_idx * cos_stride_b + seq_idx * cos_stride_s
         sin_base = trig_batch_idx * sin_stride_b + seq_idx * sin_stride_s
 
-        x = tl.load(x_ptr + x_base + dims * x_stride_d, mask=valid, other=0.0).to(tl.float32)
-        partner = tl.load(
+        x_native = tl.load(x_ptr + x_base + dims * x_stride_d, mask=valid, other=0.0)
+        partner_native = tl.load(
             x_ptr + x_base + partner_dims * x_stride_d,
             mask=valid & is_rope,
             other=0.0,
-        ).to(tl.float32)
+        )
         cos = tl.load(
             cos_ptr + cos_base + pair_indices * cos_stride_d,
             mask=valid & is_rope,
             other=1.0,
-        ).to(tl.float32)
+        )
         sin = tl.load(
             sin_ptr + sin_base + pair_indices * sin_stride_d,
             mask=valid & is_rope,
             other=0.0,
-        ).to(tl.float32)
+        )
+
+        x = x_native.to(tl.float32)
+        partner = partner_native.to(tl.float32)
+        if use_fp64_trig:
+            x = x.to(tl.float64)
+            partner = partner.to(tl.float64)
+            cos = cos.to(tl.float64)
+            sin = sin.to(tl.float64)
+        else:
+            cos = cos.to(tl.float32)
+            sin = sin.to(tl.float32)
         sin *= sin_sign
 
         rotated = tl.where(is_even, x * cos - partner * sin, x * cos + partner * sin)
-        output = tl.where(is_rope, rotated, x)
+        output = tl.where(is_rope, rotated, x_native)
         tl.store(output_ptr + output_base + dims * output_stride_d, output, mask=valid)
 
 
@@ -97,8 +109,9 @@ def _validate_inputs(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsq
         raise ValueError(f"cos and sin must have the same shape, got {tuple(cos.shape)} and {tuple(sin.shape)}")
     if x.device != cos.device or x.device != sin.device:
         raise ValueError(f"x, cos, and sin must be on the same device, got {x.device}, {cos.device}, and {sin.device}")
-    if not x.is_floating_point() or not cos.is_floating_point() or not sin.is_floating_point():
-        raise ValueError("x, cos, and sin must be floating-point tensors")
+    supported_dtypes = {torch.float16, torch.bfloat16, torch.float32, torch.float64}
+    if x.dtype not in supported_dtypes or cos.dtype not in supported_dtypes or sin.dtype not in supported_dtypes:
+        raise ValueError("x, cos, and sin must have float16, bfloat16, float32, or float64 dtype")
 
     batch_size = x.shape[0]
     seq_len = x.shape[3 - unsqueeze_dim]
@@ -162,6 +175,7 @@ def deepseek_v4_rope_forward(
         cos.shape[0],
         head_dim,
         rope_dim,
+        cos.dtype == torch.float64 or sin.dtype == torch.float64,
         sin_sign,
         rows_per_program,
         block_size,

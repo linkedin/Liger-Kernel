@@ -119,6 +119,38 @@ def test_deepseek_v4_rope_functional_apis():
 
 
 @pytest.mark.skipif(not IS_DEEPSEEK_V4_AVAILABLE, reason="DeepSeek-V4 is not available in transformers.")
+@pytest.mark.parametrize(
+    "x_dtype,cos_dtype,sin_dtype",
+    [
+        (torch.float64, torch.float32, torch.float32),
+        (torch.float64, torch.float64, torch.float64),
+        (torch.float32, torch.float64, torch.float64),
+        (torch.float32, torch.float64, torch.float32),
+    ],
+)
+def test_deepseek_v4_rope_fp64_semantics(x_dtype, cos_dtype, sin_dtype):
+    torch.manual_seed(42)
+    x = torch.randn(2, 5, 7, 65, device=device, dtype=x_dtype) * 1e8
+    angles = torch.randn(2, 7, 8, device=device, dtype=torch.float64)
+    cos = angles.cos().to(cos_dtype)
+    sin = angles.sin().to(sin_dtype)
+
+    x_ref = x.detach().clone().requires_grad_(True)
+    x_liger = x.detach().clone().requires_grad_(True)
+    output_ref = apply_rotary_pos_emb(x_ref, cos, sin)
+    output_liger = liger_deepseek_v4_rotary_pos_emb(x_liger, cos, sin)
+
+    nope_dim = x.shape[-1] - 2 * cos.shape[-1]
+    assert torch.equal(output_ref[..., :nope_dim], output_liger[..., :nope_dim])
+    assert_verbose_allclose(output_ref, output_liger, atol=16.0, rtol=2e-7)
+
+    grad_output = torch.randn_like(output_ref)
+    (grad_ref,) = torch.autograd.grad(output_ref, x_ref, grad_output)
+    (grad_liger,) = torch.autograd.grad(output_liger, x_liger, grad_output)
+    assert_verbose_allclose(grad_ref, grad_liger, atol=5e-7, rtol=2e-7)
+
+
+@pytest.mark.skipif(not IS_DEEPSEEK_V4_AVAILABLE, reason="DeepSeek-V4 is not available in transformers.")
 def test_deepseek_v4_rope_patch_and_revert():
     original_source = apply_rotary_pos_emb.__code__.co_code
     try:
