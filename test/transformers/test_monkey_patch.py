@@ -1613,6 +1613,9 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
 @pytest.mark.skipif(not is_deepseek_v4_available(), reason="deepseek_v4 module not available")
 def test_apply_liger_kernel_to_instance_for_deepseek_v4():
     with patch("transformers.models.deepseek_v4.modeling_deepseek_v4"):
+        from transformers.models.deepseek_v4 import modeling_deepseek_v4
+
+        from liger_kernel.transformers.deepseek_v4_rope import liger_deepseek_v4_rotary_pos_emb
         from liger_kernel.transformers.model.deepseek_v4 import lce_forward as deepseek_v4_lce_forward
 
         config = transformers.models.deepseek_v4.configuration_deepseek_v4.DeepseekV4Config(
@@ -1644,6 +1647,7 @@ def test_apply_liger_kernel_to_instance_for_deepseek_v4():
         )
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
+        assert modeling_deepseek_v4.apply_rotary_pos_emb is not liger_deepseek_v4_rotary_pos_emb
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(deepseek_v4_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
@@ -1652,6 +1656,7 @@ def test_apply_liger_kernel_to_instance_for_deepseek_v4():
 
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
+        assert modeling_deepseek_v4.apply_rotary_pos_emb is liger_deepseek_v4_rotary_pos_emb
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(deepseek_v4_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:

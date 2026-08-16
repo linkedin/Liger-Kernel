@@ -5,6 +5,7 @@ import torch
 
 from liger_kernel.ops import LigerAttnResFunction
 from liger_kernel.ops import LigerCrossEntropyFunction
+from liger_kernel.ops import LigerDeepseekV4RopeFunction
 from liger_kernel.ops import LigerDyTFunction
 from liger_kernel.ops import LigerFusedAddRMSNormFunction
 from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
@@ -76,6 +77,10 @@ def liger_cross_entropy(
     return CrossEntropyOutput(
         loss=loss, z_loss=z_loss, token_accuracy=token_accuracy, predicted_tokens=predicted_tokens
     )
+
+
+def liger_deepseek_v4_rope(x, cos, sin, unsqueeze_dim=1):
+    return LigerDeepseekV4RopeFunction.apply(x, cos, sin, unsqueeze_dim)
 
 
 def liger_fused_linear_cross_entropy(
