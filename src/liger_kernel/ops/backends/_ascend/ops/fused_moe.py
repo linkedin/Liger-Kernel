@@ -1,7 +1,7 @@
 """
 Fused MoE expert computation via Triton grouped GEMM (Ascend backend).
 
-Forward: routing metadata (3 kernels) → fused gather+GEMM+SwiGLU → down-proj → token aggregation
+Forward: routing metadata (3 kernels) → gather+GEMM → SwiGLU epilogue → down-proj → token aggregation
 Backward: memory-efficient — recomputes dA' = dO@W2^T to avoid caching Y (TK×H bytes)
 """
 
@@ -28,6 +28,7 @@ from .fused_moe_kernels import _moe_bwd_dX_expanded_kernel
 from .fused_moe_kernels import _moe_router_histogram_kernel
 from .fused_moe_kernels import _moe_router_prefix_sum_kernel
 from .fused_moe_kernels import _moe_router_scatter_kernel
+from .fused_moe_kernels import _swiglu_from_pre_act_kernel
 from .fused_moe_kernels import _token_gather_weighted_sum_kernel
 
 # Token-dimension tile size for M. Fixed (not autotuned) because tile_row_start,
@@ -193,7 +194,7 @@ def _token_scatter_sum(src, s_reverse_scatter_idx, T, K, H):
 class LigerFusedMoEFunction(torch.autograd.Function):
     """Fused grouped GEMM MoE forward + memory-efficient backward.
 
-    Forward: routing metadata → fused gather+GEMM+SwiGLU → down-proj → token aggregation
+    Forward: routing metadata → gather+GEMM → SwiGLU epilogue → down-proj → token aggregation
     Backward: avoids caching Y (TK×H) by recomputing dA' = dO@W2^T in backward
     """
 
@@ -240,7 +241,6 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 tile_row_start,
                 tile_expert,
                 pre_act,
-                post_act,
                 H_dim=H,
                 I_dim=intermediate_dim,
                 stride_x_T=x.stride(0),
@@ -250,11 +250,20 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 stride_w_K=gate_up_proj.stride(2),
                 stride_pre_TK=pre_act.stride(0),
                 stride_pre_N=pre_act.stride(1),
-                stride_post_TK=post_act.stride(0),
-                stride_post_N=post_act.stride(1),
                 BLOCK_M=BLOCK_M_TOKEN,
                 BLOCK_N=ASCEND_GEMM_BLOCK_N,
                 BLOCK_K=ASCEND_GEMM_BLOCK_K,
+            )
+            _swiglu_from_pre_act_kernel[(min(TK, ASCEND_MAX_GRID_PROGRAMS),)](
+                pre_act,
+                post_act,
+                TK,
+                I_dim=intermediate_dim,
+                stride_pre_TK=pre_act.stride(0),
+                stride_pre_N=pre_act.stride(1),
+                stride_post_TK=post_act.stride(0),
+                stride_post_N=post_act.stride(1),
+                BLOCK_N=ASCEND_GEMM_BLOCK_N,
             )
 
         Y = torch.empty(TK, H, dtype=x.dtype, device=x.device)
