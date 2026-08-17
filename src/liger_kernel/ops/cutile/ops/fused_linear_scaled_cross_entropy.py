@@ -6,6 +6,8 @@ import os
 import cuda.tile as ct
 import torch
 
+from packaging.version import Version
+
 from liger_kernel.ops.cutile.ops.utils import LOG2E
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.cutile.ops.utils import _select_cross_entropy_block_size
@@ -19,6 +21,8 @@ _BLACKWELL_LOGITS_WORKSPACE_BYTES = 512 * _MIB
 _BLACKWELL_MIN_TOKENS = 4096
 _BLACKWELL_MIN_VOCAB_SIZE = 131072
 _WORKSPACE_MB_ENV = "LIGER_CUTILE_SCALED_CE_WORKSPACE_MB"
+_TORCH_VERSION = Version(torch.__version__.split("+")[0])
+_ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
 def _validate_temperature(temperature):
@@ -26,6 +30,15 @@ def _validate_temperature(temperature):
         raise TypeError("temperature must be a real number")
     if not math.isfinite(temperature) or temperature <= 0:
         raise ValueError("temperature must be finite and > 0")
+
+
+def _validate_accum_dtype(accum_dtype):
+    if accum_dtype is None:
+        return
+    if not isinstance(accum_dtype, torch.dtype):
+        raise TypeError("accum_dtype must be a torch.dtype or None")
+    if not accum_dtype.is_floating_point:
+        raise ValueError("accum_dtype must be a floating-point dtype")
 
 
 def _validate_input_metadata(_input, weight, target):
@@ -299,15 +312,23 @@ def fused_scaled_cross_entropy_backward(
     *,
     entropy=None,
     grad_entropy=None,
+    accum_dtype=None,
 ):
     """Compute gradients for per-token NLL and optional entropy outputs.
 
     Returns gradients for ``_input`` and ``weight``. ``grad_nll`` may be
     ``None`` for entropy-only backward; ``entropy`` and ``grad_entropy`` are
     needed only when entropy contributes to the gradient.
+
+    ``grad_weight`` is summed across token chunks, so with a low-precision
+    ``weight`` dtype the running sum is rounded once per chunk and the error
+    compounds with the chunk count. ``accum_dtype`` (e.g. ``torch.float32``)
+    keeps that accumulator in higher precision and casts back to
+    ``weight.dtype`` at the end, at the cost of an extra ``V x H`` buffer.
     """
     _validate_input_metadata(_input, weight, target)
     _validate_temperature(temperature)
+    _validate_accum_dtype(accum_dtype)
     if grad_nll is None and grad_entropy is None:
         raise ValueError("at least one of grad_nll or grad_entropy must be provided")
     if grad_nll is not None and grad_nll.shape != target.shape:
@@ -331,7 +352,15 @@ def fused_scaled_cross_entropy_backward(
     block_size = _select_cross_entropy_block_size(V)
 
     grad_input = torch.empty_like(_input) if _input.requires_grad else None
-    grad_weight = torch.empty_like(weight) if weight.requires_grad else None
+    if not weight.requires_grad:
+        grad_weight = None
+    elif accum_dtype is not None:
+        # A higher-precision accumulator has to start at zero because every chunk
+        # is folded in with addmm; the same-dtype path seeds itself from the first
+        # chunk's mm and can stay uninitialized.
+        grad_weight = torch.zeros_like(weight, dtype=accum_dtype)
+    else:
+        grad_weight = torch.empty_like(weight)
     grad_logits_workspace = torch.empty(
         min(BT, chunk_size),
         V,
@@ -376,19 +405,40 @@ def fused_scaled_cross_entropy_backward(
         if grad_input is not None:
             torch.mm(grad_logits_chunk, weight, out=grad_input[start:end])
         if grad_weight is not None:
-            if start == 0:
-                torch.mm(grad_logits_chunk.t(), input_chunk, out=grad_weight)
+            grad_logits_t = grad_logits_chunk.t()
+            if accum_dtype is not None:
+                if (
+                    _ADDMM_SUPPORTS_OUT_DTYPE
+                    and grad_weight.dtype == torch.float32
+                    and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
+                    and grad_weight.device.type == "cuda"
+                    and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
+                ):
+                    torch.addmm(
+                        grad_weight,
+                        grad_logits_t,
+                        input_chunk,
+                        out_dtype=torch.float32,
+                        out=grad_weight,
+                    )
+                else:
+                    grad_weight += torch.mm(grad_logits_t, input_chunk).to(grad_weight.dtype)
+            elif start == 0:
+                torch.mm(grad_logits_t, input_chunk, out=grad_weight)
             else:
                 # Accumulate the GEMM directly into grad_weight instead of
                 # materializing a full V x H temporary for every token chunk.
-                torch.addmm(grad_weight, grad_logits_chunk.t(), input_chunk, out=grad_weight)
+                torch.addmm(grad_weight, grad_logits_t, input_chunk, out=grad_weight)
+
+    if grad_weight is not None and grad_weight.dtype != weight.dtype:
+        grad_weight = grad_weight.to(weight.dtype)
 
     return grad_input, grad_weight
 
 
 class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, _input, weight, target, temperature, ignore_index, return_entropy):
+    def forward(ctx, _input, weight, target, temperature, ignore_index, return_entropy, accum_dtype=None):
         ctx.set_materialize_grads(False)
         nll, entropy, lse = fused_scaled_cross_entropy_forward(
             _input,
@@ -404,6 +454,7 @@ class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function)
         ctx.temperature = temperature
         ctx.ignore_index = ignore_index
         ctx.return_entropy = return_entropy
+        ctx.accum_dtype = accum_dtype
         return (nll, entropy) if return_entropy else nll
 
     @staticmethod
@@ -419,8 +470,9 @@ class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function)
             ctx.ignore_index,
             entropy=entropy if ctx.return_entropy else None,
             grad_entropy=grad_entropy,
+            accum_dtype=ctx.accum_dtype,
         )
-        return grad_input, grad_weight, None, None, None, None
+        return grad_input, grad_weight, None, None, None, None, None
 
 
 class LigerFusedLinearScaledCrossEntropyFunction:
@@ -428,6 +480,11 @@ class LigerFusedLinearScaledCrossEntropyFunction:
 
     ``m_tiles_per_cluster`` is accepted for API compatibility but does not
     change the cuTile schedule.
+
+    ``accum_dtype`` (torch.dtype): the dtype of the intermediate buffer used to
+    accumulate the weight gradient across token chunks. Recommended to set to a
+    higher precision, e.g. ``torch.float32``, if training is unstable with the
+    original dtype. Default: ``None``, accumulating in the weight dtype.
     """
 
     @staticmethod
@@ -439,6 +496,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
         ignore_index=-100,
         m_tiles_per_cluster=1,
         return_entropy=False,
+        accum_dtype=None,
     ):
         if not isinstance(m_tiles_per_cluster, int) or isinstance(m_tiles_per_cluster, bool):
             raise TypeError("m_tiles_per_cluster must be an int")
@@ -446,6 +504,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
             raise ValueError("m_tiles_per_cluster must be >= 1")
         if not isinstance(return_entropy, bool):
             raise TypeError("return_entropy must be a bool")
+        _validate_accum_dtype(accum_dtype)
 
         return _LigerFusedLinearScaledCrossEntropyCuTileFunction.apply(
             _input,
@@ -454,4 +513,5 @@ class LigerFusedLinearScaledCrossEntropyFunction:
             temperature,
             ignore_index,
             return_entropy,
+            accum_dtype,
         )
