@@ -51,7 +51,7 @@ from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fast_path_vector_widt
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fwd_warp_count
 from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
-from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_ma
+from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
 from liger_kernel.ops.utils import device_context
 from liger_kernel.utils import infer_device_arch
 
