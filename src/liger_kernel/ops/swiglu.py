@@ -364,15 +364,16 @@ def swiglu_fused_gate_up_forward(y):
     c = torch.empty(n_rows, ffn_size, dtype=y.dtype, device=y.device)
 
     BLOCK_SIZE, num_warps = calculate_settings(ffn_size)
-    _swiglu_fused_gate_up_forward_kernel[(n_rows,)](
-        y,
-        c,
-        y.stride(-2),
-        c.stride(-2),
-        ffn_size=ffn_size,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(y.device):
+        _swiglu_fused_gate_up_forward_kernel[(n_rows,)](
+            y,
+            c,
+            y.stride(-2),
+            c.stride(-2),
+            ffn_size=ffn_size,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
     return y, c.view(*ori_shape[:-1], ffn_size)
 
 
@@ -394,16 +395,17 @@ def swiglu_fused_gate_up_backward(y, dc, in_place=False):
     dy = y if in_place else torch.empty_like(y)
 
     BLOCK_SIZE, num_warps = calculate_settings(ffn_size)
-    _swiglu_fused_gate_up_backward_kernel[(n_rows,)](
-        dc,
-        y,
-        dy,
-        y.stride(-2),
-        dc.stride(-2),
-        ffn_size=ffn_size,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(y.device):
+        _swiglu_fused_gate_up_backward_kernel[(n_rows,)](
+            dc,
+            y,
+            dy,
+            y.stride(-2),
+            dc.stride(-2),
+            ffn_size=ffn_size,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
     return dy
 
 

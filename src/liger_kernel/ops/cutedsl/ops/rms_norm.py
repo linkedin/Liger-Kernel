@@ -1269,7 +1269,7 @@ def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_aff
         fn(X, w_arg, Y, RSTD, Float32(float(eps)), Float32(float(offset)))
         return
 
-    stream = _cute_stream()
+    stream = _cute_stream(X.device)
     # Cache the marshaled handles for the INPUTS (X, W) -- their addresses are stable
     # across steps (weights always; activations under a reused-buffer harness), so they
     # hit the cache and marshal in ~0.4us. Y and RSTD are freshly allocated OUTPUTS:
@@ -1432,111 +1432,113 @@ def _launch_bwd_fused(
     num_warps,
 ):
     """Launch the aligned register-resident affine backward specialization."""
-    packed = _use_packed_math(X.device, X.shape[1], vec)
-    if _use_ffi():
-        n_cols_ = X.shape[1]
-        num_threads_ = 32 * num_warps
-        fn = _get_bwd_fused_ffi(
-            X.dtype,
-            dY.dtype,
-            W.dtype,
-            X.device.index,
-            casting_mode,
-            n_cols_,
-            vec,
-            num_vec_tiles,
-            num_threads_,
-            num_warps,
-            packed,
-        )
-        fn(dY, X, W, RSTD, dX, dW_partial, Float32(float(offset)))
-        return
-
-    stream = _cute_stream()
-    dy_ct = _to_cute_cached(dY, assumed_align=16)
-    x_ct = _to_cute_cached(X, assumed_align=16)
-    w_ct = _to_cute_cached(W, assumed_align=16)
-    rstd_ct = _to_cute_cached(RSTD, assumed_align=4)
-    dx_ct = _to_cute_cached(dX, assumed_align=16)
-    dw_ct = _to_cute_cached(dW_partial, assumed_align=16)  # fp32 (num_strips, n_cols)
-    n_cols = X.shape[1]
-    num_threads = 32 * num_warps
-    smem_bytes = (((num_warps + 1) * 4 + 15) // 16) * 16
-
-    # The width and thread geometry size the register layouts and reduction
-    # scratch, so every value is baked into the compiled specialization.
-    # Optionally bucket the n_cols compile key to reduce cold-compile churn.
-    bucket = _COMPILE_BUCKET
-    n_cols_key = n_cols
-    if bucket is not None and bucket > 0:
-        # round up to the next bucket, keep original n_cols for actual bake
-        n_cols_key = ((int(n_cols) + bucket - 1) // bucket) * bucket
-    # Support an optional reload policy tag (registers|smem|gmem|auto) baked
-    # into the compile-key so later device variants can be compiled per-policy.
-    reload_policy = _RELOAD_POLICY
-    key = (
-        "bwd_fused_vec",
-        n_cols_key,
-        vec,
-        num_vec_tiles,
-        num_threads,
-        num_warps,
-        smem_bytes,
-        reload_policy,
-        X.dtype,
-        dY.dtype,
-        W.dtype,
-        casting_mode,
-        packed,
-    )
-    if _DEBUG:
-        _rms_debug(f"_launch_bwd_fused reload_policy={reload_policy}")
-    cache_hit = key in _compile_cache
-    if _DEBUG:
-        _rms_debug(f"_launch_bwd_fused key={key} (n_cols={n_cols} n_cols_key={n_cols_key}) cache_hit={cache_hit}")
-    # Warn when a non-auto policy is requested but no device variant exists yet.
-    if reload_policy not in ("auto", "registers", "smem", "gmem"):
-        if _DEBUG:
-            _rms_debug(f"Unrecognized LIGER_RMS_RELOAD_POLICY={reload_policy}; falling back to 'auto' behavior")
-    elif reload_policy in ("smem", "gmem"):
-        # No specialized SMEM/GMEM variants implemented in this change; warn so
-        # experimenters know they're tagging the compile key but still using the
-        # current register-resident kernel implementation.
-        if _DEBUG:
-            _rms_debug(
-                f"LIGER_RMS_RELOAD_POLICY={reload_policy} requested, but device-side variant not implemented; using current kernel implementation"
+    with device_context(X.device):
+        packed = _use_packed_math(X.device, X.shape[1], vec)
+        if _use_ffi():
+            n_cols_ = X.shape[1]
+            num_threads_ = 32 * num_warps
+            fn = _get_bwd_fused_ffi(
+                X.dtype,
+                dY.dtype,
+                W.dtype,
+                X.device.index,
+                casting_mode,
+                n_cols_,
+                vec,
+                num_vec_tiles,
+                num_threads_,
+                num_warps,
+                packed,
             )
-    if not cache_hit:
-        _compile_cache[key] = cute.compile(
-            _rms_norm_bwd_fused_host,
-            dy_ct,
-            x_ct,
-            w_ct,
-            rstd_ct,
-            dx_ct,
-            dw_ct,
-            float(offset),
-            casting_mode,
-            n_cols,
+            fn(dY, X, W, RSTD, dX, dW_partial, Float32(float(offset)))
+            return
+
+        stream = _cute_stream(X.device)
+        dy_ct = _to_cute_cached(dY, assumed_align=16)
+        x_ct = _to_cute_cached(X, assumed_align=16)
+        w_ct = _to_cute_cached(W, assumed_align=16)
+        rstd_ct = _to_cute_cached(RSTD, assumed_align=4)
+        dx_ct = _to_cute_cached(dX, assumed_align=16)
+        dw_ct = _to_cute_cached(dW_partial, assumed_align=16)  # fp32 (num_strips, n_cols)
+        n_cols = X.shape[1]
+        num_threads = 32 * num_warps
+        smem_bytes = (((num_warps + 1) * 4 + 15) // 16) * 16
+
+        # The width and thread geometry size the register layouts and reduction
+        # scratch, so every value is baked into the compiled specialization.
+        # Optionally bucket the n_cols compile key to reduce cold-compile churn.
+        bucket = _COMPILE_BUCKET
+        n_cols_key = n_cols
+        if bucket is not None and bucket > 0:
+            # round up to the next bucket, keep original n_cols for actual bake
+            n_cols_key = ((int(n_cols) + bucket - 1) // bucket) * bucket
+        # Support an optional reload policy tag (registers|smem|gmem|auto) baked
+        # into the compile-key so later device variants can be compiled per-policy.
+        reload_policy = _RELOAD_POLICY
+        key = (
+            "bwd_fused_vec",
+            n_cols_key,
             vec,
             num_vec_tiles,
             num_threads,
             num_warps,
             smem_bytes,
+            reload_policy,
+            X.dtype,
+            dY.dtype,
+            W.dtype,
+            casting_mode,
             packed,
-            stream,
         )
         if _DEBUG:
-            _rms_debug(f"Compiled kernel for key: {key}")
-    else:
+            _rms_debug(f"_launch_bwd_fused reload_policy={reload_policy}")
+        cache_hit = key in _compile_cache
         if _DEBUG:
-            _rms_debug(f"Reusing compiled kernel for key: {key}")
-    _compile_cache[key](dy_ct, x_ct, w_ct, rstd_ct, dx_ct, dw_ct, float(offset), stream)
+            _rms_debug(f"_launch_bwd_fused key={key} (n_cols={n_cols} n_cols_key={n_cols_key}) cache_hit={cache_hit}")
+        # Warn when a non-auto policy is requested but no device variant exists yet.
+        if reload_policy not in ("auto", "registers", "smem", "gmem"):
+            if _DEBUG:
+                _rms_debug(f"Unrecognized LIGER_RMS_RELOAD_POLICY={reload_policy}; falling back to 'auto' behavior")
+        elif reload_policy in ("smem", "gmem"):
+            # No specialized SMEM/GMEM variants implemented in this change; warn so
+            # experimenters know they're tagging the compile key but still using the
+            # current register-resident kernel implementation.
+            if _DEBUG:
+                _rms_debug(
+                    f"LIGER_RMS_RELOAD_POLICY={reload_policy} requested, but device-side variant not implemented; using current kernel implementation"
+                )
+        if not cache_hit:
+            _compile_cache[key] = cute.compile(
+                _rms_norm_bwd_fused_host,
+                dy_ct,
+                x_ct,
+                w_ct,
+                rstd_ct,
+                dx_ct,
+                dw_ct,
+                float(offset),
+                casting_mode,
+                n_cols,
+                vec,
+                num_vec_tiles,
+                num_threads,
+                num_warps,
+                smem_bytes,
+                packed,
+                stream,
+            )
+            if _DEBUG:
+                _rms_debug(f"Compiled kernel for key: {key}")
+        else:
+            if _DEBUG:
+                _rms_debug(f"Reusing compiled kernel for key: {key}")
+        _compile_cache[key](dy_ct, x_ct, w_ct, rstd_ct, dx_ct, dw_ct, float(offset), stream)
+
+    # =============================================================================
+    # Public host API (matches liger_kernel.ops.rms_norm)
+    # =============================================================================
 
 
-# =============================================================================
-# Public host API (matches liger_kernel.ops.rms_norm)
-# =============================================================================
 def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     """CuTe DSL RMSNorm forward.
 

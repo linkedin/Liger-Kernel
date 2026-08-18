@@ -189,13 +189,14 @@ def _scale_in_place_host(mX: cute.Tensor, mScale: cute.Tensor, stream: cuda.CUst
 
 
 def _scale_in_place(x, scale):
-    x_ct = to_cute_tensor(x)
-    scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
-    stream = _cute_stream()
-    key = (x.dtype, scale.dtype)
-    if key not in _scale_compile_cache:
-        _scale_compile_cache[key] = cute.compile(_scale_in_place_host, x_ct, scale_ct, stream)
-    _scale_compile_cache[key](x_ct, scale_ct, stream)
+    with device_context(x.device):
+        x_ct = to_cute_tensor(x)
+        scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
+        stream = _cute_stream(x.device)
+        key = (x.dtype, scale.dtype)
+        if key not in _scale_compile_cache:
+            _scale_compile_cache[key] = cute.compile(_scale_in_place_host, x_ct, scale_ct, stream)
+        _scale_compile_cache[key](x_ct, scale_ct, stream)
 
 
 # =============================================================================
