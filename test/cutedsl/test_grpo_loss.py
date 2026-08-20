@@ -1,0 +1,136 @@
+import pytest
+import torch
+
+import liger_kernel.ops.cutedsl.ops.grpo_loss as grpo_ops
+import liger_kernel.ops.grpo_loss as default_grpo_ops
+
+from liger_kernel.ops.cutedsl.ops.grpo_loss import fused_linear_selective_logprob
+
+pytestmark = [
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CuTe DSL GRPO requires CUDA"),
+    pytest.mark.skipif(
+        not torch.cuda.is_available() or torch.cuda.get_device_capability() != (10, 0),
+        reason="CuTe DSL GRPO requires an SM100 GPU",
+    ),
+]
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("with_bias", [False, True])
+@pytest.mark.parametrize("hidden_size", [96, 128])
+def test_fused_linear_selective_logprob(dtype, with_bias, hidden_size):
+    torch.manual_seed(42)
+    token_count, vocab_size = 33, 513
+    x_master = 0.1 * torch.randn(token_count, hidden_size, device="cuda", dtype=torch.float32)
+    w_master = 0.1 * torch.randn(vocab_size, hidden_size, device="cuda", dtype=torch.float32)
+    b_master = 0.1 * torch.randn(vocab_size, device="cuda", dtype=torch.float32) if with_bias else None
+    target = torch.randint(0, vocab_size, (token_count,), device="cuda")
+    grad_output = torch.randn(token_count, device="cuda", dtype=torch.float32)
+
+    x = x_master.to(dtype).requires_grad_()
+    w = w_master.to(dtype).requires_grad_()
+    b = b_master.to(dtype).requires_grad_() if b_master is not None else None
+    actual = fused_linear_selective_logprob(x, w, target, b)
+    actual.backward(grad_output)
+
+    x_ref = x_master.requires_grad_()
+    w_ref = w_master.requires_grad_()
+    b_ref = b_master.requires_grad_() if b_master is not None else None
+    logits = x_ref @ w_ref.t()
+    if b_ref is not None:
+        logits = logits + b_ref
+    expected = torch.log_softmax(logits, dim=-1).gather(1, target[:, None]).squeeze(1)
+    expected.backward(grad_output)
+
+    atol = 5e-2 if dtype == torch.bfloat16 else 2e-2
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=2e-2)
+    torch.testing.assert_close(x.grad.float(), x_ref.grad, atol=atol, rtol=5e-2)
+    torch.testing.assert_close(w.grad.float(), w_ref.grad, atol=atol, rtol=5e-2)
+    if with_bias:
+        torch.testing.assert_close(b.grad.float(), b_ref.grad, atol=atol, rtol=5e-2)
+
+
+@pytest.mark.parametrize(
+    "needs_input, needs_weight, needs_bias",
+    [
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+)
+def test_fused_linear_selective_logprob_partial_gradients(needs_input, needs_weight, needs_bias):
+    torch.manual_seed(42)
+    token_count, hidden_size, vocab_size = 17, 128, 257
+    x_master = 0.1 * torch.randn(token_count, hidden_size, device="cuda", dtype=torch.float32)
+    w_master = 0.1 * torch.randn(vocab_size, hidden_size, device="cuda", dtype=torch.float32)
+    b_master = 0.1 * torch.randn(vocab_size, device="cuda", dtype=torch.float32)
+    target = torch.randint(0, vocab_size, (token_count,), device="cuda")
+    grad_output = torch.randn(token_count, device="cuda", dtype=torch.float32)
+
+    x = x_master.to(torch.bfloat16).requires_grad_(needs_input)
+    w = w_master.to(torch.bfloat16).requires_grad_(needs_weight)
+    b = b_master.to(torch.bfloat16).requires_grad_(needs_bias)
+    fused_linear_selective_logprob(x, w, target, b).backward(grad_output)
+
+    x_ref = x_master.requires_grad_(needs_input)
+    w_ref = w_master.requires_grad_(needs_weight)
+    b_ref = b_master.requires_grad_(needs_bias)
+    torch.log_softmax(x_ref @ w_ref.t() + b_ref, dim=-1).gather(1, target[:, None]).squeeze(1).backward(grad_output)
+
+    for actual, expected in ((x.grad, x_ref.grad), (w.grad, w_ref.grad), (b.grad, b_ref.grad)):
+        if expected is None:
+            assert actual is None
+        else:
+            torch.testing.assert_close(actual.float(), expected, atol=5e-2, rtol=5e-2)
+
+
+def test_fused_linear_selective_logprob_accumulates_multichunk_weight_grad_in_fp32(monkeypatch):
+    torch.manual_seed(42)
+    token_count, hidden_size, vocab_size = 1025, 128, 129
+    x = torch.randn(token_count, hidden_size, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    w = torch.randn(vocab_size, hidden_size, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    target = torch.randint(0, vocab_size, (token_count,), device="cuda")
+    grad_output = torch.randn(token_count, device="cuda", dtype=torch.float32)
+    accumulation_dtypes = []
+    original_accum = grpo_ops._accum_grad_weight
+
+    def checked_accum(grad_weight, dlogits_t, x_chunk):
+        accumulation_dtypes.append(grad_weight.dtype)
+        return original_accum(grad_weight, dlogits_t, x_chunk)
+
+    monkeypatch.setattr(grpo_ops, "_accum_grad_weight", checked_accum)
+    fused_linear_selective_logprob(x, w, target).backward(grad_output)
+
+    assert accumulation_dtypes == [torch.float32]
+
+
+def test_fused_linear_selective_logprob_mixed_dtype_bias_falls_back(monkeypatch):
+    x = torch.zeros(1, 128, device="cuda", dtype=torch.bfloat16)
+    w = torch.zeros(2, 128, device="cuda", dtype=torch.bfloat16)
+    target = torch.zeros(1, device="cuda", dtype=torch.long)
+    bias = torch.tensor([100.0, 100.1], device="cuda", dtype=torch.float32)
+    expected = torch.tensor([-0.42], device="cuda", dtype=torch.float32)
+
+    def fallback(_input, weight, selected_token_ids, fallback_bias, temperature):
+        assert _input is x
+        assert weight is w
+        assert selected_token_ids is target
+        assert fallback_bias is bias
+        assert temperature == 1.0
+        return expected
+
+    monkeypatch.setattr(default_grpo_ops, "fused_linear_selective_logprob", fallback)
+
+    actual = fused_linear_selective_logprob(x, w, target, bias)
+
+    assert actual is expected
+
+
+def test_native_fused_linear_selective_logprob_rejects_mixed_dtype_bias():
+    x = torch.zeros(1, 128, device="cuda", dtype=torch.bfloat16)
+    w = torch.zeros(2, 128, device="cuda", dtype=torch.bfloat16)
+    target = torch.zeros(1, device="cuda", dtype=torch.long)
+    bias = torch.zeros(2, device="cuda", dtype=torch.float32)
+
+    with pytest.raises(TypeError, match="bias must have dtype torch.bfloat16"):
+        grpo_ops.LigerFusedLinearSelectiveLogProbFunction.apply(x, w, target, bias)
