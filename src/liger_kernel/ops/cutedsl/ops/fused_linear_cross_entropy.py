@@ -437,7 +437,7 @@ class _NativeFusedLinearCrossEntropyFunction(torch.autograd.Function):
 class LigerFusedLinearCrossEntropyFunction:
     """Dispatch: use native CuTe DSL if supported, else fall back to Triton.
 
-    Not a torch.autograd.Function — must dispatch before autograd, since calling Triton inside would skip graph recording. 
+    Not a torch.autograd.Function — must dispatch before autograd, since calling Triton inside would skip graph recording.
     Keeps the .apply API; signature matches both backends.
     """
 
