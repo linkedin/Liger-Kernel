@@ -3719,3 +3719,53 @@ def test_apply_liger_kernel_to_instance_for_nemotron():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+def test_revert_liger_cross_entropy_patches():
+    import importlib
+
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    from torch.nn.modules.loss import CrossEntropyLoss as TorchCrossEntropyLoss
+    from transformers.models.gemma3 import modeling_gemma3
+    from transformers.models.llama import modeling_llama
+    from transformers.models.mistral import modeling_mistral
+
+    from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+    from liger_kernel.transformers.functional import liger_cross_entropy
+    from liger_kernel.transformers.monkey_patch import _ORIGINAL_TORCH_CROSS_ENTROPY
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral
+    from liger_kernel.transformers.monkey_patch import revert_liger_cross_entropy_patches
+
+    try:
+        apply_liger_kernel_to_llama(
+            cross_entropy=True,
+            fused_linear_cross_entropy=False,
+            rope=False,
+            rms_norm=False,
+            swiglu=False,
+        )
+        apply_liger_kernel_to_mistral(
+            cross_entropy=True,
+            fused_linear_cross_entropy=False,
+            rope=False,
+            rms_norm=False,
+            swiglu=False,
+        )
+        modeling_gemma3.nn.CrossEntropyLoss = LigerCrossEntropyLoss
+
+        assert F.cross_entropy is liger_cross_entropy
+        assert modeling_mistral.CrossEntropyLoss is LigerCrossEntropyLoss
+        assert nn.CrossEntropyLoss is LigerCrossEntropyLoss
+
+        importlib.reload(modeling_llama)
+        revert_liger_cross_entropy_patches(modeling_module=modeling_mistral)
+
+        assert F.cross_entropy is _ORIGINAL_TORCH_CROSS_ENTROPY
+        assert F.cross_entropy is not liger_cross_entropy
+        assert getattr(modeling_mistral, "CrossEntropyLoss", None) is not LigerCrossEntropyLoss
+        assert nn.CrossEntropyLoss is TorchCrossEntropyLoss
+    finally:
+        revert_liger_cross_entropy_patches(modeling_module=modeling_mistral)
