@@ -196,6 +196,9 @@ pip install -e ".[cutile-tileiras]"
 # Setup CuTe DSL (NVIDIA CUTLASS Python DSL) Dependencies
 pip install -e ".[cutedsl]"
 
+# Setup FlyDSL (ROCm / AMD) Dependencies
+pip install -e ".[flydsl]"
+
 ```
 
 ### Enable cuTile Backend
@@ -206,7 +209,7 @@ cuTile is an optional CUDA-only DSL implementation. After installing the `cutile
 LIGER_KERNEL_IMPL=cutile python your_script.py
 ```
 
-`LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile` and `cutedsl`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
+`LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile`, `cutedsl`, or `flydsl`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
 
 ### Enable CuTe DSL Backend
 
@@ -229,6 +232,20 @@ It currently provides genuine `cutlass.cute` implementations of:
 Ops without a CuTe DSL kernel transparently fall back to the default Triton kernel.
 
 The `cutedsl` extra also pulls in `apache-tvm-ffi`, which lets compiled kernels take PyTorch tensors directly rather than marshalling each one per call. It is optional — every kernel falls back to the marshalling launch without it — but short kernels are dominated by that per-call cost, so installing it is strongly recommended.
+
+### Optional: FlyDSL (ROCm / AMD)
+
+[FlyDSL](https://github.com/ROCm/FlyDSL) is an optional AMD-oriented Python DSL +
+MLIR compiler. Install the extra, then select it explicitly:
+
+```bash
+pip install -e ".[flydsl]"
+LIGER_KERNEL_IMPL=flydsl python your_script.py
+```
+
+Initial FlyDSL ops live under `src/liger_kernel/ops/flydsl/` (starting with
+fused cross-entropy and fused linear cross-entropy). Unimplemented ops fall
+back to the default Triton kernels.
 
 ### Fused Scaled Cross Entropy
 
