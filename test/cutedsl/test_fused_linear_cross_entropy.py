@@ -23,9 +23,9 @@ _DTYPES = [torch.bfloat16, torch.float16]
 _DTYPE_IDS = ["bf16", "fp16"]
 
 cuda_required = pytest.mark.skipif(not torch.cuda.is_available(), reason="cutedsl FLCE requires CUDA")
-sm100_required = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() != (10, 0),
-    reason="native cutedsl FLCE requires an SM100 GPU",
+native_blackwell_required = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3)),
+    reason="native cutedsl FLCE requires an SM100 or SM103 GPU",
 )
 
 
@@ -728,7 +728,7 @@ def test_flce_predicted_tokens_matches_triton(dtype, ignore_index):
     )
 
 
-@sm100_required
+@native_blackwell_required
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
 @pytest.mark.parametrize(
     ("return_token_accuracy", "return_predicted_tokens"),
@@ -869,9 +869,9 @@ def test_flce_all_features_matches_triton(dtype):
     )
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_all_native_features_use_one_path():
-    """Every feature supported on SM100 must stay on the single native path."""
+    """Every feature supported on native data-center Blackwell must stay on one path."""
     set_seed()
     BT, H, V = 256, 512, 4096
     masters = _Masters(BT, H, V, bias=True, ce_weight=True)
@@ -897,7 +897,7 @@ def test_flce_all_native_features_use_one_path():
     assert out["grad_bias"] is not None
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_odd_vocab_all_native_features_match_triton():
     """Logical vocabulary padding must preserve every native feature and gradient."""
     set_seed()
@@ -920,7 +920,7 @@ def test_flce_odd_vocab_all_native_features_match_triton():
     )
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_odd_vocab_padding_cannot_become_softmax_max():
     """Aligned zero padding must not replace a very negative logical row maximum."""
     BT, H, V = 33, 64, 513
@@ -931,7 +931,7 @@ def test_flce_odd_vocab_padding_cannot_become_softmax_max():
     _assert_flce_parity(masters, target, torch.bfloat16, reduction="mean")
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_first_backward_does_not_recompute(monkeypatch):
     """The normal backward must only hand off gradients produced during forward."""
     import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
@@ -963,7 +963,7 @@ def test_flce_first_backward_does_not_recompute(monkeypatch):
     loss.backward()
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_repeated_backward_recomputes_full_feature_gradients():
     """A retained graph may recompute once, and must preserve scalar scaling."""
     set_seed()
@@ -1101,20 +1101,52 @@ def test_flce_invalid_inputs_raise(mutation, error):
         _apply(_cutedsl_flce(), _input, weight, target)
 
 
-@cuda_required
-def test_flce_native_support_requires_exact_sm100(monkeypatch):
+@pytest.mark.parametrize(
+    ("architecture", "capability", "expected"),
+    [
+        ("blackwell", (10, 0), True),
+        ("blackwell_ultra", (10, 3), True),
+        ("blackwell", (12, 0), False),
+        ("hopper", (9, 0), False),
+        ("blackwell_ultra", (10, 0), False),
+    ],
+)
+def test_flce_native_support_requires_exact_data_center_blackwell(monkeypatch, architecture, capability, expected):
     import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
 
-    tensor = torch.empty(1, device="cuda")
-    seen = []
+    class FakeTensor:
+        device = torch.device("cuda", 7)
 
-    def capability(device):
-        seen.append(device)
-        return (10, 3)
+    seen_arch = []
+    seen_capability = []
 
-    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
-    assert not flce._native_sm100_supported(tensor)
-    assert seen == [tensor.device]
+    def infer(device_id):
+        seen_arch.append(device_id)
+        return architecture
+
+    def get_capability(device):
+        seen_capability.append(device)
+        return capability
+
+    monkeypatch.setattr(flce, "infer_device_arch", infer)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", get_capability)
+    assert flce._native_blackwell_supported(FakeTensor()) is expected
+    assert seen_arch == [7]
+    assert seen_capability == [torch.device("cuda", 7)]
+
+
+def test_flce_native_support_rejects_non_cuda_before_device_queries(monkeypatch):
+    import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
+
+    class FakeTensor:
+        device = torch.device("cpu")
+
+    def unexpected(*_):
+        pytest.fail("non-CUDA support check queried CUDA device metadata")
+
+    monkeypatch.setattr(flce, "infer_device_arch", unexpected)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", unexpected)
+    assert not flce._native_blackwell_supported(FakeTensor())
 
 
 @cuda_required
@@ -1125,12 +1157,12 @@ def test_flce_native_function_rejects_fp32_inputs():
 
 
 @cuda_required
-def test_flce_native_function_rejects_non_sm100(monkeypatch):
+def test_flce_native_function_rejects_non_blackwell(monkeypatch):
     import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
 
-    monkeypatch.setattr(flce, "_native_sm100_supported", lambda _: False)
+    monkeypatch.setattr(flce, "_native_blackwell_supported", lambda _: False)
     _input, weight, target = _basic_args()
-    with pytest.raises(RuntimeError, match="exact SM100"):
+    with pytest.raises(RuntimeError, match="exact SM100 or SM103"):
         _apply(_cutedsl_flce(), _input, weight, target)
 
 

@@ -219,11 +219,16 @@ def _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_
             raise AssertionError("Target out of bounds. Expected >= 0")
 
 
-def _native_sm100_supported(tensor):
+def _native_blackwell_supported(tensor):
     if tensor.device.type != "cuda":
         return False
     device_id = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
-    return infer_device_arch(device_id) == "blackwell" and torch.cuda.get_device_capability(tensor.device) == (10, 0)
+    architecture = infer_device_arch(device_id)
+    capability = torch.cuda.get_device_capability(tensor.device)
+    return (architecture, capability) in {
+        ("blackwell", (10, 0)),
+        ("blackwell_ultra", (10, 3)),
+    }
 
 
 class _FlceState:
@@ -248,18 +253,19 @@ def fused_linear_cross_entropy_forward(
     return_token_accuracy=False,
     return_predicted_tokens=False,
 ):
-    """Run the native SM100 CuTe DSL path."""
+    """Run the native data-center Blackwell CuTe DSL path."""
     ctx = _FlceState()
     _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index)
     needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
 
     if (
-        not _native_sm100_supported(_input)
+        not _native_blackwell_supported(_input)
         or _input.dtype not in (torch.bfloat16, torch.float16)
         or reduction not in ("mean", "sum")
     ):
         raise RuntimeError(
-            "Native CuTe DSL FLCE requires exact SM100 hardware, FP16/BF16 input and weight, and mean/sum reduction."
+            "Native CuTe DSL FLCE requires exact SM100 or SM103 hardware, FP16/BF16 input and weight, "
+            "and mean/sum reduction."
         )
 
     h_orig = None

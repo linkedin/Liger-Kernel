@@ -150,7 +150,7 @@ pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
 - `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
 - `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
-- `nvidia-cutlass-dsl >= 4.6.0`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
+- `nvidia-cutlass-dsl >= 4.6.0`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM103/SM110).
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -210,7 +210,7 @@ LIGER_KERNEL_IMPL=cutile python your_script.py
 
 ### Enable CuTe DSL Backend
 
-CuTe DSL is the optional, CUDA-only Python DSL shipped with NVIDIA CUTLASS (`import cutlass.cute`), targeting Hopper (SM90) and Blackwell (SM100/SM110). After installing the `cutedsl` extra, enable it explicitly:
+CuTe DSL is the optional, CUDA-only Python DSL shipped with NVIDIA CUTLASS (`import cutlass.cute`), targeting Hopper (SM90) and Blackwell (SM100/SM103/SM110). After installing the `cutedsl` extra, enable it explicitly:
 
 ```bash
 pip install "liger-kernel[cutedsl]"
