@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import statistics
 import sys
 
@@ -46,37 +47,93 @@ def _parse_args():
 def _force_provider(provider):
     original = geglu_ops.infer_device_arch
     forced_arch = "hopper" if provider == "legacy" else "blackwell_ultra"
-    geglu_ops.infer_device_arch = lambda: forced_arch
+    geglu_ops.infer_device_arch = lambda _device_id: forced_arch
     try:
         yield
     finally:
         geglu_ops.infer_device_arch = original
 
 
-def _bench(fn, warmup, rep):
-    median, p20, p80 = triton.testing.do_bench(
-        fn,
-        warmup=warmup,
-        rep=rep,
-        quantiles=QUANTILES,
-    )
+def _quantile(values, quantile):
+    values = sorted(values)
+    point = quantile * (len(values) - 1)
+    lower = math.floor(point)
+    upper = math.ceil(point)
+    weight = point - lower
+    return (1 - weight) * values[lower] + weight * values[upper]
+
+
+def _timed_launches(fn, repeats, setup, cache, device_interface):
+    start_events = [device_interface.Event(enable_timing=True) for _ in range(repeats)]
+    end_events = [device_interface.Event(enable_timing=True) for _ in range(repeats)]
+
+    for index in range(repeats):
+        # Backward mutates both saved activations. Restore them before the start
+        # event, then flush the cache so restoration is neither timed nor cached.
+        if setup is not None:
+            setup()
+        triton.runtime.driver.active.clear_cache(cache)
+        start_events[index].record()
+        fn()
+        end_events[index].record()
+
+    device_interface.synchronize()
+    return [start.elapsed_time(end) for start, end in zip(start_events, end_events)]
+
+
+def _bench(fn, warmup, rep, setup=None):
+    device_interface = triton.runtime.driver.active.get_device_interface()
+
+    if setup is not None:
+        setup()
+    fn()
+    device_interface.synchronize()
+
+    cache = triton.runtime.driver.active.get_empty_cache_for_benchmark()
+    estimate_ms = statistics.mean(_timed_launches(fn, 5, setup, cache, device_interface))
+    n_warmup = max(1, int(warmup / estimate_ms))
+    n_repeat = max(1, int(rep / estimate_ms))
+
+    for _ in range(n_warmup):
+        if setup is not None:
+            setup()
+        triton.runtime.driver.active.clear_cache(cache)
+        fn()
+    device_interface.synchronize()
+
+    times = _timed_launches(fn, n_repeat, setup, cache, device_interface)
+    median, p20, p80 = (_quantile(times, quantile) for quantile in QUANTILES)
     return {"p20_ms": p20, "median_ms": median, "p80_ms": p80}
 
 
 def _bench_provider(provider, a, b, dc, warmup, rep):
-    a_backward = a.clone()
-    b_backward = b.clone()
-    with _force_provider(provider):
-        geglu_ops.geglu_forward(a, b)
-        geglu_ops.geglu_backward(a_backward, b_backward, dc)
-        torch.cuda.synchronize()
+    a_backward = torch.empty_like(a)
+    b_backward = torch.empty_like(b)
+    a_full = torch.empty_like(a)
+    b_full = torch.empty_like(b)
 
+    def restore_backward():
         a_backward.copy_(a)
         b_backward.copy_(b)
-        forward = _bench(lambda: geglu_ops.geglu_forward(a, b), warmup, rep)
-        backward = _bench(lambda: geglu_ops.geglu_backward(a_backward, b_backward, dc), warmup, rep)
 
-    full = {key: forward[key] + backward[key] for key in forward}
+    def restore_full():
+        a_full.copy_(a)
+        b_full.copy_(b)
+
+    def full_fn():
+        saved_a, saved_b, _ = geglu_ops.geglu_forward(a_full, b_full)
+        geglu_ops.geglu_backward(saved_a, saved_b, dc)
+
+    with _force_provider(provider):
+        forward = _bench(lambda: geglu_ops.geglu_forward(a, b), warmup, rep)
+        backward = _bench(
+            lambda: geglu_ops.geglu_backward(a_backward, b_backward, dc),
+            warmup,
+            rep,
+            setup=restore_backward,
+        )
+        full = _bench(full_fn, warmup, rep, setup=restore_full)
+
     return {"forward": forward, "backward": backward, "full": full}
 
 

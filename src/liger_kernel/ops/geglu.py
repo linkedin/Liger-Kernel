@@ -28,8 +28,14 @@ _GEGLU_SM103_TILE_SIZE = 1024
 _GEGLU_SM103_TILE_MIN_BLOCK = 16384
 
 
-def _should_use_sm103_tiling(n_cols):
-    return infer_device_arch() == "blackwell_ultra" and triton.next_power_of_2(n_cols) >= _GEGLU_SM103_TILE_MIN_BLOCK
+def _should_use_sm103_tiling(n_cols, device):
+    if device.type != "cuda":
+        return False
+    device_id = device.index if device.index is not None else torch.cuda.current_device()
+    return (
+        infer_device_arch(device_id) == "blackwell_ultra"
+        and triton.next_power_of_2(n_cols) >= _GEGLU_SM103_TILE_MIN_BLOCK
+    )
 
 
 def _geglu_sm103_tile_settings(n_cols):
@@ -166,7 +172,7 @@ def geglu_forward(a, b):
     c = torch.empty_like(a)
     n_rows = a.shape[0]
 
-    if _should_use_sm103_tiling(n_cols):
+    if _should_use_sm103_tiling(n_cols, a.device):
         block_size, num_warps = _geglu_sm103_tile_settings(n_cols)
         grid = (n_rows, triton.cdiv(n_cols, block_size))
         with device_context(a.device):
@@ -202,7 +208,7 @@ def geglu_backward(a, b, dc):
     dc = dc.view(-1, n_cols)
     n_rows = dc.shape[0]
 
-    if _should_use_sm103_tiling(n_cols):
+    if _should_use_sm103_tiling(n_cols, a.device):
         block_size, num_warps = _geglu_sm103_tile_settings(n_cols)
         grid = (n_rows, triton.cdiv(n_cols, block_size))
         with device_context(a.device):

@@ -280,8 +280,15 @@ def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
     ],
 )
 def test_geglu_sm103_tiled_dispatch(monkeypatch, arch, n_cols, expected):
-    monkeypatch.setattr(geglu_ops, "infer_device_arch", lambda: arch)
-    assert geglu_ops._should_use_sm103_tiling(n_cols) is expected
+    requested_device_ids = []
+
+    def infer_arch(device_id):
+        requested_device_ids.append(device_id)
+        return arch
+
+    monkeypatch.setattr(geglu_ops, "infer_device_arch", infer_arch)
+    assert geglu_ops._should_use_sm103_tiling(n_cols, torch.device("cuda:7")) is expected
+    assert requested_device_ids == [7]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="SM103 tiled GeGLU path is CUDA-only")
@@ -318,12 +325,12 @@ def test_geglu_sm103_tiled_matches_original(monkeypatch, n_rows, n_cols, dtype):
         c.backward(dc)
         return c.detach(), a_.grad.detach(), b_.grad.detach()
 
-    monkeypatch.setattr(geglu_ops, "infer_device_arch", lambda: "hopper")
-    assert not geglu_ops._should_use_sm103_tiling(n_cols)
+    monkeypatch.setattr(geglu_ops, "infer_device_arch", lambda _device_id: "hopper")
+    assert not geglu_ops._should_use_sm103_tiling(n_cols, a.device)
     c_ref, da_ref, db_ref = run()
 
-    monkeypatch.setattr(geglu_ops, "infer_device_arch", lambda: "blackwell_ultra")
-    assert geglu_ops._should_use_sm103_tiling(n_cols)
+    monkeypatch.setattr(geglu_ops, "infer_device_arch", lambda _device_id: "blackwell_ultra")
+    assert geglu_ops._should_use_sm103_tiling(n_cols, a.device)
     c_tiled, da_tiled, db_tiled = run()
 
     torch.testing.assert_close(c_tiled, c_ref, rtol=0, atol=0)
