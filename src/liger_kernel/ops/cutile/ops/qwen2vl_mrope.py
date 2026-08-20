@@ -17,6 +17,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 ConstInt = ct.Constant[int]
 PAD_ZERO = ct.PaddingMode.ZERO
@@ -150,30 +151,31 @@ def _qwen2vl_mrope_forward(q, k, cos, sin, mrope_section):
     sin = sin.contiguous()
 
     grid = (batch_size, seq_len)
-    ct.launch(
-        torch.cuda.current_stream(),
-        grid,
-        _qwen2vl_mrope_kernel_ct,
-        (
-            q.view(-1),
-            k.view(-1),
-            cos.view(-1),
-            sin.view(-1),
-            int(seq_len),
-            int(bs_sl),
-            int(n_q_head),
-            int(n_kv_head),
-            int(mrope_section[0]),
-            int(mrope_section[1]),
-            False,
-            int(head_dim),
-            int(head_dim_half),
-            int(TILE_HD),
-            int(TILE_QH),
-            int(TILE_KH),
-            bool(TILE_HD == head_dim_half),
-        ),
-    )
+    with device_context(q.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            grid,
+            _qwen2vl_mrope_kernel_ct,
+            (
+                q.view(-1),
+                k.view(-1),
+                cos.view(-1),
+                sin.view(-1),
+                int(seq_len),
+                int(bs_sl),
+                int(n_q_head),
+                int(n_kv_head),
+                int(mrope_section[0]),
+                int(mrope_section[1]),
+                False,
+                int(head_dim),
+                int(head_dim_half),
+                int(TILE_HD),
+                int(TILE_QH),
+                int(TILE_KH),
+                bool(TILE_HD == head_dim_half),
+            ),
+        )
 
     return q.transpose(1, 2), k.transpose(1, 2), cos, sin
 
@@ -191,30 +193,31 @@ def _qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section):
     bs_sl = batch_size * seq_len
 
     grid = (batch_size, seq_len)
-    ct.launch(
-        torch.cuda.current_stream(),
-        grid,
-        _qwen2vl_mrope_kernel_ct,
-        (
-            dq.view(-1),
-            dk.view(-1),
-            cos.view(-1),
-            sin.view(-1),
-            int(seq_len),
-            int(bs_sl),
-            int(n_q_head),
-            int(n_kv_head),
-            int(mrope_section[0]),
-            int(mrope_section[1]),
-            True,
-            int(head_dim),
-            int(head_dim_half),
-            int(TILE_HD),
-            int(TILE_QH),
-            int(TILE_KH),
-            bool(TILE_HD == head_dim_half),
-        ),
-    )
+    with device_context(dq.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            grid,
+            _qwen2vl_mrope_kernel_ct,
+            (
+                dq.view(-1),
+                dk.view(-1),
+                cos.view(-1),
+                sin.view(-1),
+                int(seq_len),
+                int(bs_sl),
+                int(n_q_head),
+                int(n_kv_head),
+                int(mrope_section[0]),
+                int(mrope_section[1]),
+                True,
+                int(head_dim),
+                int(head_dim_half),
+                int(TILE_HD),
+                int(TILE_QH),
+                int(TILE_KH),
+                bool(TILE_HD == head_dim_half),
+            ),
+        )
 
     return dq.transpose(1, 2), dk.transpose(1, 2)
 

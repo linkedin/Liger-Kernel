@@ -393,3 +393,4 @@ If the agent encounters an unrecoverable error:
 4. **Always write notes before running experiments.** The hypothesis must be written before seeing results to avoid post-hoc rationalization.
 5. **Always read all prior notes before generating a new variant.** This is what makes the optimization loop learn from itself.
 6. **Prefer the simplest change that achieves the goal.** A 5-line autotuning change that yields 15% speedup is better than a 200-line rewrite that yields 20%.
+7. **Never drop the `device_context` guard around a launch.** When a variant rewrites or adds a launch site, it must stay inside `with device_context(<tensor>.device):`. Removing it silently breaks multi-GPU (`device_map="auto"`) correctness, which the benchmarks will not catch.

@@ -6,6 +6,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 
@@ -109,12 +110,13 @@ def _sparsemax_forward(x: torch.Tensor, dim: int):
 
     BLOCK_SIZE = _next_power_of_2(n_cols)  # whole row in one tile (required for the cumsum)
     out_flat = torch.empty_like(x_flat)
-    ct.launch(
-        torch.cuda.current_stream(),
-        (n_rows, 1, 1),
-        _sparsemax_fwd_kernel_ct,
-        (out_flat, x_flat, x_sorted, int(n_cols), int(BLOCK_SIZE)),
-    )
+    with device_context(x.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            (n_rows, 1, 1),
+            _sparsemax_fwd_kernel_ct,
+            (out_flat, x_flat, x_sorted, int(n_cols), int(BLOCK_SIZE)),
+        )
 
     return out_flat.view_as(x_sw).transpose(dim, -1).contiguous(), out_flat
 
@@ -127,12 +129,13 @@ def _sparsemax_backward(grad_out: torch.Tensor, out_flat: torch.Tensor, dim: int
 
     BLOCK_SIZE = min(_next_power_of_2(n_cols), 4096)
     dx_flat = torch.empty_like(go_flat)
-    ct.launch(
-        torch.cuda.current_stream(),
-        (n_rows, 1, 1),
-        _sparsemax_bwd_kernel_ct,
-        (dx_flat, out_flat, go_flat, int(n_cols), int(BLOCK_SIZE)),
-    )
+    with device_context(grad_out.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            (n_rows, 1, 1),
+            _sparsemax_bwd_kernel_ct,
+            (dx_flat, out_flat, go_flat, int(n_cols), int(BLOCK_SIZE)),
+        )
 
     return dx_flat.view_as(grad_sw).transpose(dim, -1)
 

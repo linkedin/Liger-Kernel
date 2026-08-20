@@ -11,6 +11,7 @@ from liger_kernel.ops.cutile.ops.jsd import JSD_BLOCK_SIZE
 from liger_kernel.ops.cutile.ops.jsd import jsd_kernel_ct
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.cutile.ops.utils import element_mul_kernel
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 MAX_FUSED_SIZE = 65536 // 2
@@ -68,24 +69,25 @@ def fused_linear_jsd_forward(
 
         label_chunk = shift_labels[start_idx:end_idx] if has_label else torch.empty(1, device=device, dtype=torch.int64)
 
-        ct.launch(
-            torch.cuda.current_stream(),
-            (chunk_n_rows, 1, 1),
-            jsd_kernel_ct,
-            (
-                log_prob_s_chunk,
-                log_prob_t_chunk,
-                loss_chunk,
-                log_prob_s_chunk,
-                label_chunk,
-                float(jsd_beta),
-                float(inv_n_non_ignore),
-                int(ignore_index),
-                int(V),
-                int(BLOCK_SIZE),
-                int(has_label),
-            ),
-        )
+        with device_context(device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                (chunk_n_rows, 1, 1),
+                jsd_kernel_ct,
+                (
+                    log_prob_s_chunk,
+                    log_prob_t_chunk,
+                    loss_chunk,
+                    log_prob_s_chunk,
+                    label_chunk,
+                    float(jsd_beta),
+                    float(inv_n_non_ignore),
+                    int(ignore_index),
+                    int(V),
+                    int(BLOCK_SIZE),
+                    int(has_label),
+                ),
+            )
 
         # log_prob_s_chunk now holds dx (gradient w.r.t. log_softmax output)
         student_logits_chunk = (
@@ -110,23 +112,25 @@ def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
         n_rows = BT
         BLOCK_SIZE = min(MAX_FUSED_SIZE, _next_power_of_2(H))
 
-        ct.launch(
-            torch.cuda.current_stream(),
-            (n_rows, 1, 1),
-            element_mul_kernel,
-            (grad_input, grad_output, int(H), int(BLOCK_SIZE), H % BLOCK_SIZE != 0),
-        )
+        with device_context(grad_input.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                (n_rows, 1, 1),
+                element_mul_kernel,
+                (grad_input, grad_output, int(H), int(BLOCK_SIZE), H % BLOCK_SIZE != 0),
+            )
 
         if grad_weight is not None:
             V, H = grad_weight.shape
             n_rows = V
 
-            ct.launch(
-                torch.cuda.current_stream(),
-                (n_rows, 1, 1),
-                element_mul_kernel,
-                (grad_weight, grad_output, int(H), int(BLOCK_SIZE), H % BLOCK_SIZE != 0),
-            )
+            with device_context(grad_input.device):
+                ct.launch(
+                    torch.cuda.current_stream(),
+                    (n_rows, 1, 1),
+                    element_mul_kernel,
+                    (grad_weight, grad_output, int(H), int(BLOCK_SIZE), H % BLOCK_SIZE != 0),
+                )
 
     return grad_input, grad_weight
 

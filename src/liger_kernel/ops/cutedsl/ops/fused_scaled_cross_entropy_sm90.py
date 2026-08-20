@@ -77,6 +77,7 @@ from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_s
 from liger_kernel.ops.cutedsl.ops.utils import ensure_cuda_context
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
+from liger_kernel.ops.utils import device_context
 
 # The forward and every backward phase tile the hidden dimension by 64, so one
 # padding of H covers the full operation.
@@ -191,20 +192,21 @@ def fused_scaled_cross_entropy_forward(
     x_padded, weight_padded, hidden_size = _pad_hidden(_input, weight)
     target = target.contiguous()
 
-    nll, entropy, lse = scaled_ce_forward_fragment(
-        x_padded,
-        weight_padded,
-        target,
-        temperature,
-        ignore_index,
-        return_entropy,
-        config=_select_forward_config(
-            x_padded.shape[0],
-            x_padded.shape[1],
-            weight_padded.shape[0],
+    with device_context(_input.device):
+        nll, entropy, lse = scaled_ce_forward_fragment(
+            x_padded,
+            weight_padded,
+            target,
+            temperature,
+            ignore_index,
             return_entropy,
-        ),
-    )
+            config=_select_forward_config(
+                x_padded.shape[0],
+                x_padded.shape[1],
+                weight_padded.shape[0],
+                return_entropy,
+            ),
+        )
     return nll, entropy, lse, x_padded, weight_padded, hidden_size
 
 
@@ -243,20 +245,21 @@ def fused_scaled_cross_entropy_backward(
         entropy_scale = (grad_entropy.detach().to(torch.float32) / temperature).contiguous()
     total_m_tiles = (tokens + BACKWARD_M_TILE - 1) // BACKWARD_M_TILE
     m_tiles_per_wave = min(BACKWARD_M_TILES_PER_WAVE, total_m_tiles)
-    return fused_backward_one_kernel(
-        scale,
-        x_padded,
-        weight_padded,
-        target,
-        lse,
-        entropy,
-        entropy_scale,
-        ignore_index,
-        hidden_size,
-        input_dtype,
-        temperature,
-        config=FusedBackwardConfig(m_tiles_per_wave=m_tiles_per_wave),
-    )
+    with device_context(x_padded.device):
+        return fused_backward_one_kernel(
+            scale,
+            x_padded,
+            weight_padded,
+            target,
+            lse,
+            entropy,
+            entropy_scale,
+            ignore_index,
+            hidden_size,
+            input_dtype,
+            temperature,
+            config=FusedBackwardConfig(m_tiles_per_wave=m_tiles_per_wave),
+        )
 
 
 class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):

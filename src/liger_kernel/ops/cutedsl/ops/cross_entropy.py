@@ -17,6 +17,7 @@ from cutlass.cutlass_dsl import T
 from cutlass.cutlass_dsl import dsl_user_op
 
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device_arch
 
@@ -80,8 +81,13 @@ _scale_compile_cache = {}
 _stream_cache = {}
 
 
-def _cute_stream():
-    raw = torch.cuda.current_stream().cuda_stream
+def _cute_stream(device=None):
+    """Return a CUstream for the current CUDA stream, optionally on ``device``."""
+    if device is None:
+        raw = torch.cuda.current_stream().cuda_stream
+    else:
+        with device_context(device):
+            raw = torch.cuda.current_stream().cuda_stream
     s = _stream_cache.get(raw)
     if s is None:
         s = cuda.CUstream(raw)
@@ -183,13 +189,14 @@ def _scale_in_place_host(mX: cute.Tensor, mScale: cute.Tensor, stream: cuda.CUst
 
 
 def _scale_in_place(x, scale):
-    x_ct = to_cute_tensor(x)
-    scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
-    stream = _cute_stream()
-    key = (x.dtype, scale.dtype)
-    if key not in _scale_compile_cache:
-        _scale_compile_cache[key] = cute.compile(_scale_in_place_host, x_ct, scale_ct, stream)
-    _scale_compile_cache[key](x_ct, scale_ct, stream)
+    with device_context(x.device):
+        x_ct = to_cute_tensor(x)
+        scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
+        stream = _cute_stream(x.device)
+        key = (x.dtype, scale.dtype)
+        if key not in _scale_compile_cache:
+            _scale_compile_cache[key] = cute.compile(_scale_in_place_host, x_ct, scale_ct, stream)
+        _scale_compile_cache[key](x_ct, scale_ct, stream)
 
 
 # =============================================================================
@@ -688,80 +695,110 @@ def _launch_ce_fwd(
     inv_n_z=None,
     logical_vocab_size=None,
 ):
-    assert x.stride(0) * x.element_size() % 16 == 0, (
-        "cutedsl CE needs each row to start on a 16-byte boundary for vectorized loads; "
-        f"got row stride {x.stride(0)} for {x.dtype}."
-    )
-    # inv_n_z defaults to inv_n_loss: on the core / no-class-weight path the main loss and the
-    # z_loss share one normalizer. Keeping inv_n_z a trailing keyword (not a 5th positional)
-    # leaves the 6-arg call other cutedsl ops use unchanged: (x, y, loss, inv_n, ignore_index,
-    # has_grad) — so this stays a drop-in for FLCE and any other caller.
-    if inv_n_z is None:
-        inv_n_z = inv_n_loss
-    # Compile ONCE per (dtype, has_grad, feature flags) and cache the compiled callable;
-    # invoke it each call. (Eager-calling the @cute.jit fn recompiled on every invocation
-    # -> ~30 ms fixed overhead.) Launch on torch's current CUDA stream so the in-place
-    # grad write is ordered w.r.t. the caller.
-    has_zloss = bool(lse_sq_scale != 0.0 or return_z_loss)
-    has_softcap = softcap is not None
-    has_weight = weight is not None
-    has_smoothing = bool(label_smoothing != 0.0)
-    logical_vocab_size = x.shape[-1] if logical_vocab_size is None else int(logical_vocab_size)
-    if not 0 < logical_vocab_size <= x.shape[-1]:
-        raise ValueError(f"logical_vocab_size must be in [1, {x.shape[-1]}], got {logical_vocab_size}.")
-    has_padding = logical_vocab_size != x.shape[-1]
-    softcap_val = float(softcap) if has_softcap else 0.0
-    x_ct = to_cute_tensor(x)
-    y_ct = to_cute_tensor(y, assumed_align=8)  # int64
-    loss_ct = to_cute_tensor(loss, assumed_align=2)  # bf16/fp16/fp32 scalar
-    stream = _cute_stream()
-    # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
-    #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
-    #   `loss.to(mLoss.element_type)`). Missing loss.dtype let two callers with the
-    #   same (x.dtype, has_grad) but different loss-buffer widths reuse each other's
-    #   kernel and write wrong-width values into the loss buffer — e.g. CE (loss =
-    #   input dtype) vs FLCE (loss = fp32) collided on bf16.
-    # When an optional output isn't requested, pass a same-shape dummy
-    # of any dtype (mZLoss reuses `loss`; mTokenAcc reuses `loss`; mPredTok reuses the
-    # int64 target `y`) — the kernel never touches it because its RETURN_* flag bakes
-    # False, and the compile key carries that flag so a real-output compile can't reuse it.
-    # Reuse the already-marshalled loss_ct/y_ct handles for the dummies (no extra from_dlpack
-    # on the common path — one fewer DLPack capsule per call).
-    z_ct = to_cute_tensor(z_loss_out, assumed_align=2) if return_z_loss else loss_ct
-    ta_ct = to_cute_tensor(token_acc_out, assumed_align=4) if return_token_accuracy else loss_ct
-    pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
-    # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.
-    w_ct = to_cute_tensor(weight, assumed_align=4) if has_weight else y_ct
-    # warps/CTA: mirror the Triton CE convention exactly (arch- and dtype-dependent):
-    #   Blackwell (B200, sm_100+) bf16/fp16 -> 8 (instruction-issue-bound); fp32 -> 32
-    #   Hopper (H100, sm_90) and earlier    -> 32 for all dtypes (bandwidth-bound)
-    #   AMD (ROCm)                          -> 16
-    # On Hopper the 8-warp bf16 kernel underfills the SMs and loses to the 32-warp Triton
-    # forward, so we gate the 8-warp choice on Blackwell only (matches ops/cross_entropy.py).
-    # Baked into the kernel, so it's part of the compile key.
-    if is_hip():
-        num_warps = 16
-    else:
-        is_blackwell = infer_device_arch().startswith("blackwell")
-        num_warps = 8 if (x.element_size() == 2 and is_blackwell) else 32
-    key = (
-        x.dtype,
-        y.dtype,
-        loss.dtype,
-        has_grad,
-        has_zloss,
-        bool(return_z_loss),
-        has_softcap,
-        bool(return_token_accuracy),
-        bool(return_predicted_tokens),
-        has_weight,
-        has_smoothing,
-        has_padding,
-        num_warps,
-    )
-    if key not in _compile_cache:
-        _compile_cache[key] = cute.compile(
-            _ce_fwd_host,
+    with device_context(x.device):
+        assert x.stride(0) * x.element_size() % 16 == 0, (
+            "cutedsl CE needs each row to start on a 16-byte boundary for vectorized loads; "
+            f"got row stride {x.stride(0)} for {x.dtype}."
+        )
+        # inv_n_z defaults to inv_n_loss: on the core / no-class-weight path the main loss and the
+        # z_loss share one normalizer. Keeping inv_n_z a trailing keyword (not a 5th positional)
+        # leaves the 6-arg call other cutedsl ops use unchanged: (x, y, loss, inv_n, ignore_index,
+        # has_grad) — so this stays a drop-in for FLCE and any other caller.
+        if inv_n_z is None:
+            inv_n_z = inv_n_loss
+        # Compile ONCE per (dtype, has_grad, feature flags) and cache the compiled callable;
+        # invoke it each call. (Eager-calling the @cute.jit fn recompiled on every invocation
+        # -> ~30 ms fixed overhead). Launch on torch's current CUDA stream so the in-place
+        # grad write is ordered w.r.t. the caller.
+        has_zloss = bool(lse_sq_scale != 0.0 or return_z_loss)
+        has_softcap = softcap is not None
+        has_weight = weight is not None
+        has_smoothing = bool(label_smoothing != 0.0)
+        logical_vocab_size = x.shape[-1] if logical_vocab_size is None else int(logical_vocab_size)
+        if not 0 < logical_vocab_size <= x.shape[-1]:
+            raise ValueError(f"logical_vocab_size must be in [1, {x.shape[-1]}], got {logical_vocab_size}.")
+        has_padding = logical_vocab_size != x.shape[-1]
+        softcap_val = float(softcap) if has_softcap else 0.0
+        x_ct = to_cute_tensor(x)
+        y_ct = to_cute_tensor(y, assumed_align=8)  # int64
+        loss_ct = to_cute_tensor(loss, assumed_align=2)  # bf16/fp16/fp32 scalar
+        stream = _cute_stream(x.device)
+        # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
+        #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
+        #   `loss.to(mLoss.element_type)`). Missing loss.dtype let two callers with the
+        #   same (x.dtype, has_grad) but different loss-buffer widths reuse each other's
+        #   kernel and write wrong-width values into the loss buffer — e.g. CE (loss =
+        #   input dtype) vs FLCE (loss = fp32) collided on bf16.
+        # When an optional output isn't requested, pass a same-shape dummy
+        # of any dtype (mZLoss reuses `loss`; mTokenAcc reuses `loss`; mPredTok reuses the
+        # int64 target `y`) — the kernel never touches it because its RETURN_* flag bakes
+        # False, and the compile key carries that flag so a real-output compile can't reuse it.
+        # Reuse the already-marshalled loss_ct/y_ct handles for the dummies (no extra from_dlpack
+        # on the common path — one fewer DLPack capsule per call).
+        z_ct = to_cute_tensor(z_loss_out, assumed_align=2) if return_z_loss else loss_ct
+        ta_ct = to_cute_tensor(token_acc_out, assumed_align=4) if return_token_accuracy else loss_ct
+        pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
+        # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.
+        w_ct = to_cute_tensor(weight, assumed_align=4) if has_weight else y_ct
+        # warps/CTA: mirror the Triton CE convention exactly (arch- and dtype-dependent):
+        #   Blackwell (B200, sm_100+) bf16/fp16 -> 8 (instruction-issue-bound); fp32 -> 32
+        #   Hopper (H100, sm_90) and earlier    -> 32 for all dtypes (bandwidth-bound)
+        #   AMD (ROCm)                          -> 16
+        # On Hopper the 8-warp bf16 kernel underfills the SMs and loses to the 32-warp Triton
+        # forward, so we gate the 8-warp choice on Blackwell only (matches ops/cross_entropy.py).
+        # Baked into the kernel, so it's part of the compile key.
+        if is_hip():
+            num_warps = 16
+        else:
+            is_blackwell = infer_device_arch().startswith("blackwell")
+            num_warps = 8 if (x.element_size() == 2 and is_blackwell) else 32
+        key = (
+            x.dtype,
+            y.dtype,
+            loss.dtype,
+            has_grad,
+            has_zloss,
+            bool(return_z_loss),
+            has_softcap,
+            bool(return_token_accuracy),
+            bool(return_predicted_tokens),
+            has_weight,
+            has_smoothing,
+            has_padding,
+            num_warps,
+        )
+        if key not in _compile_cache:
+            _compile_cache[key] = cute.compile(
+                _ce_fwd_host,
+                x_ct,
+                y_ct,
+                loss_ct,
+                z_ct,
+                ta_ct,
+                pt_ct,
+                w_ct,
+                float(inv_n_loss),
+                float(inv_n_z),
+                float(lse_sq_scale),
+                float(softcap_val),
+                float(label_smoothing),
+                float(weight_sum),
+                logical_vocab_size,
+                int(ignore_index),
+                has_grad,
+                has_zloss,
+                bool(return_z_loss),
+                has_softcap,
+                bool(return_token_accuracy),
+                bool(return_predicted_tokens),
+                has_weight,
+                has_smoothing,
+                has_padding,
+                num_warps,
+                stream,
+            )
+        # The constexpr flags are baked at compile; pass runtime tensors/scalars/stream only.
+        _compile_cache[key](
             x_ct,
             y_ct,
             loss_ct,
@@ -777,37 +814,8 @@ def _launch_ce_fwd(
             float(weight_sum),
             logical_vocab_size,
             int(ignore_index),
-            has_grad,
-            has_zloss,
-            bool(return_z_loss),
-            has_softcap,
-            bool(return_token_accuracy),
-            bool(return_predicted_tokens),
-            has_weight,
-            has_smoothing,
-            has_padding,
-            num_warps,
             stream,
         )
-    # The constexpr flags are baked at compile; pass runtime tensors/scalars/stream only.
-    _compile_cache[key](
-        x_ct,
-        y_ct,
-        loss_ct,
-        z_ct,
-        ta_ct,
-        pt_ct,
-        w_ct,
-        float(inv_n_loss),
-        float(inv_n_z),
-        float(lse_sq_scale),
-        float(softcap_val),
-        float(label_smoothing),
-        float(weight_sum),
-        logical_vocab_size,
-        int(ignore_index),
-        stream,
-    )
 
 
 # =============================================================================

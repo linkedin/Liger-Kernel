@@ -2,6 +2,8 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
+
 
 @triton.jit
 def _triton_qwen2vl_mrope(
@@ -128,24 +130,25 @@ def qwen2vl_mrope_forward(q, k, cos, sin, mrope_section):
     cos = cos.contiguous()
     sin = sin.contiguous()
 
-    _triton_qwen2vl_mrope[(n_row,)](
-        q,
-        k,
-        cos,
-        sin,
-        seq_len,
-        batch_size,
-        n_q_head,
-        n_kv_head,
-        head_dim,
-        pad_n_q_head,
-        pad_n_kv_head,
-        pad_hd,
-        mrope_section[0],
-        mrope_section[1],
-        BLOCK_SIZE=BLOCK_SIZE,
-        BACKWARD_PASS=False,
-    )
+    with device_context(q.device):
+        _triton_qwen2vl_mrope[(n_row,)](
+            q,
+            k,
+            cos,
+            sin,
+            seq_len,
+            batch_size,
+            n_q_head,
+            n_kv_head,
+            head_dim,
+            pad_n_q_head,
+            pad_n_kv_head,
+            pad_hd,
+            mrope_section[0],
+            mrope_section[1],
+            BLOCK_SIZE=BLOCK_SIZE,
+            BACKWARD_PASS=False,
+        )
     return q.transpose(1, 2), k.transpose(1, 2), cos, sin
 
 
@@ -167,24 +170,25 @@ def qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section):
     dk = dk.contiguous()
 
     # backward is similar to forward except swapping few ops
-    _triton_qwen2vl_mrope[(n_row,)](
-        dq,
-        dk,
-        cos,
-        sin,
-        seq_len,
-        batch_size,
-        n_q_head,
-        n_kv_head,
-        head_dim,
-        pad_n_q_head,
-        pad_n_kv_head,
-        pad_hd,
-        mrope_section[0],
-        mrope_section[1],
-        BLOCK_SIZE=BLOCK_SIZE,
-        BACKWARD_PASS=True,
-    )
+    with device_context(dq.device):
+        _triton_qwen2vl_mrope[(n_row,)](
+            dq,
+            dk,
+            cos,
+            sin,
+            seq_len,
+            batch_size,
+            n_q_head,
+            n_kv_head,
+            head_dim,
+            pad_n_q_head,
+            pad_n_kv_head,
+            pad_hd,
+            mrope_section[0],
+            mrope_section[1],
+            BLOCK_SIZE=BLOCK_SIZE,
+            BACKWARD_PASS=True,
+        )
     return dq.transpose(1, 2), dk.transpose(1, 2)
 
 

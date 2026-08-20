@@ -12,6 +12,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 MAX_FUSED_SIZE = 4096
 
@@ -165,39 +166,41 @@ def _kldiv_forward(y_pred, y_true, log_target, reduction, eps):
 
     if reduction_int == _REDUCTION_MODE_NONE:
         output_tensor = torch.zeros(BT, V, device=y_pred.device, dtype=torch.float32)
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            _kldiv_fwd_none_kernel_ct,
-            (
-                y_pred,
-                y_true,
-                output_tensor,
-                int(V),
-                float(eps),
-                int(BLOCK_SIZE),
-                int(log_target),
-                int(n_full_chunks),
-            ),
-        )
+        with device_context(y_pred.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                _kldiv_fwd_none_kernel_ct,
+                (
+                    y_pred,
+                    y_true,
+                    output_tensor,
+                    int(V),
+                    float(eps),
+                    int(BLOCK_SIZE),
+                    int(log_target),
+                    int(n_full_chunks),
+                ),
+            )
         return output_tensor
     else:
         row_sums = torch.zeros(BT, device=y_pred.device, dtype=torch.float32)
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            _kldiv_fwd_reduce_kernel_ct,
-            (
-                y_pred,
-                y_true,
-                row_sums,
-                int(V),
-                float(eps),
-                int(BLOCK_SIZE),
-                int(log_target),
-                int(n_full_chunks),
-            ),
-        )
+        with device_context(y_pred.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                _kldiv_fwd_reduce_kernel_ct,
+                (
+                    y_pred,
+                    y_true,
+                    row_sums,
+                    int(V),
+                    float(eps),
+                    int(BLOCK_SIZE),
+                    int(log_target),
+                    int(n_full_chunks),
+                ),
+            )
         if reduction_int == _REDUCTION_MODE_BATCHMEAN:
             return row_sums.sum() / BT
         elif reduction_int == _REDUCTION_MODE_SUM:
@@ -213,20 +216,21 @@ def _kldiv_backward(y_true, scale, log_target):
 
     new_grads = torch.empty_like(y_true)
     grid = (BT, 1, 1)
-    ct.launch(
-        torch.cuda.current_stream(),
-        grid,
-        _kldiv_bwd_kernel_ct,
-        (
-            y_true,
-            new_grads,
-            int(V),
-            float(scale),
-            int(BLOCK_SIZE),
-            int(log_target),
-            int(n_full_chunks),
-        ),
-    )
+    with device_context(y_true.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            grid,
+            _kldiv_bwd_kernel_ct,
+            (
+                y_true,
+                new_grads,
+                int(V),
+                float(scale),
+                int(BLOCK_SIZE),
+                int(log_target),
+                int(n_full_chunks),
+            ),
+        )
 
     return new_grads
 

@@ -63,6 +63,7 @@ from cutlass.cute.runtime import from_dlpack
 
 from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.utils import infer_device_arch
 
@@ -640,69 +641,71 @@ def _get_compiled_vec(kind: str, dtype: torch.dtype, vec: int, device_index: int
 # Public functional API
 # ---------------------------------------------------------------------------
 def swiglu_forward(a, b, gate_multiplier: float = 1.0):
-    if a.dtype != b.dtype:
-        raise TypeError(f"a and b must have the same dtype, got {a.dtype} and {b.dtype}.")
-    _validate_supported_dtype(a.dtype)
+    with device_context(a.device):
+        if a.dtype != b.dtype:
+            raise TypeError(f"a and b must have the same dtype, got {a.dtype} and {b.dtype}.")
+        _validate_supported_dtype(a.dtype)
 
-    ori_shape = a.shape
-    n_cols = ori_shape[-1]
-    a = a.view(-1, n_cols).reshape(-1)
-    b = b.view(-1, n_cols).reshape(-1)
-    c = torch.empty_like(a)
+        ori_shape = a.shape
+        n_cols = ori_shape[-1]
+        a = a.view(-1, n_cols).reshape(-1)
+        b = b.view(-1, n_cols).reshape(-1)
+        c = torch.empty_like(a)
 
-    numel = a.numel()
-    vec = _vec_for_dtype(a.dtype)
-    tile = _NUM_THREADS * vec
-    aligned = _is_16b_aligned(a, b, c)
-    use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, a.device, aligned)
+        numel = a.numel()
+        vec = _vec_for_dtype(a.dtype)
+        tile = _NUM_THREADS * vec
+        aligned = _is_16b_aligned(a, b, c)
+        use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, a.device, aligned)
 
-    if use_fast:
-        fn = _get_compiled_vec("fwd", a.dtype, vec, a.device.index)
-        rows = numel // tile
-        fn(
-            a.view(rows, tile),
-            b.view(rows, tile),
-            c.view(rows, tile),
-            cutlass.Float32(float(gate_multiplier)),
-        )
-    else:
-        fn = _get_compiled("fwd", a, vec, predicated, packed_math)
-        fn(a, b, c, cutlass.Float32(float(gate_multiplier)))
+        if use_fast:
+            fn = _get_compiled_vec("fwd", a.dtype, vec, a.device.index)
+            rows = numel // tile
+            fn(
+                a.view(rows, tile),
+                b.view(rows, tile),
+                c.view(rows, tile),
+                cutlass.Float32(float(gate_multiplier)),
+            )
+        else:
+            fn = _get_compiled("fwd", a, vec, predicated, packed_math)
+            fn(a, b, c, cutlass.Float32(float(gate_multiplier)))
 
-    return a.view(-1, n_cols), b.view(-1, n_cols), c.view(*ori_shape)
+        return a.view(-1, n_cols), b.view(-1, n_cols), c.view(*ori_shape)
 
 
 def swiglu_backward(a, b, dc, gate_multiplier: float = 1.0):
-    if a.dtype != b.dtype or a.dtype != dc.dtype:
-        raise TypeError(f"a, b, and dc must have the same dtype, got {a.dtype}, {b.dtype}, and {dc.dtype}.")
-    _validate_supported_dtype(dc.dtype)
+    with device_context(a.device):
+        if a.dtype != b.dtype or a.dtype != dc.dtype:
+            raise TypeError(f"a, b, and dc must have the same dtype, got {a.dtype}, {b.dtype}, and {dc.dtype}.")
+        _validate_supported_dtype(dc.dtype)
 
-    ori_shape = dc.shape
-    n_cols = ori_shape[-1]
-    dc = dc.view(-1, n_cols).reshape(-1)
-    a = a.view(-1, n_cols).reshape(-1)
-    b = b.view(-1, n_cols).reshape(-1)
+        ori_shape = dc.shape
+        n_cols = ori_shape[-1]
+        dc = dc.view(-1, n_cols).reshape(-1)
+        a = a.view(-1, n_cols).reshape(-1)
+        b = b.view(-1, n_cols).reshape(-1)
 
-    numel = dc.numel()
-    vec = _vec_for_dtype(dc.dtype)
-    tile = _NUM_THREADS * vec
-    aligned = _is_16b_aligned(dc, a, b)
-    use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, dc.device, aligned)
+        numel = dc.numel()
+        vec = _vec_for_dtype(dc.dtype)
+        tile = _NUM_THREADS * vec
+        aligned = _is_16b_aligned(dc, a, b)
+        use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, dc.device, aligned)
 
-    if use_fast:
-        fn = _get_compiled_vec("bwd", dc.dtype, vec, dc.device.index)
-        rows = numel // tile
-        fn(
-            dc.view(rows, tile),
-            a.view(rows, tile),
-            b.view(rows, tile),
-            cutlass.Float32(float(gate_multiplier)),
-        )
-    else:
-        fn = _get_compiled("bwd", dc, vec, predicated, packed_math)
-        fn(dc, a, b, cutlass.Float32(float(gate_multiplier)))
+        if use_fast:
+            fn = _get_compiled_vec("bwd", dc.dtype, vec, dc.device.index)
+            rows = numel // tile
+            fn(
+                dc.view(rows, tile),
+                a.view(rows, tile),
+                b.view(rows, tile),
+                cutlass.Float32(float(gate_multiplier)),
+            )
+        else:
+            fn = _get_compiled("bwd", dc, vec, predicated, packed_math)
+            fn(dc, a, b, cutlass.Float32(float(gate_multiplier)))
 
-    return a.view(*ori_shape), b.view(*ori_shape)
+        return a.view(*ori_shape), b.view(*ori_shape)
 
 
 class LigerSiLUMulCuteDSLFunction(torch.autograd.Function):
