@@ -18,19 +18,20 @@ from typing import Optional
 
 import torch
 
+from liger_kernel.ops.tiled_mlp import _autograd_input_params
+
 
 class LigerTiledMLPFunction(torch.autograd.Function):
     """Tiled MLP computation (no GPU kernel, memory-efficient via re-computation)."""
 
     @staticmethod
-    def forward(ctx, fn, mlp_module, x, shards, compute_params=None):
-        # compute_params is part of the upstream API (intended for DeepSpeed ZeRO
-        # weight registration); we accept and forward it for parity but don't
-        # consume it here — the autograd machinery already tracks fn's weights.
-        del compute_params
+    def forward(ctx, fn, mlp_module, x, shards, compute_params=None, *params):
         ctx.fn = fn
         ctx.mlp_module = mlp_module
         ctx.shards = shards
+        # the weights in `params`, resolved to the originals `fn` closes over, so their gradients can
+        # be returned from backward instead of accumulated once per shard
+        ctx.grad_params = _autograd_input_params(compute_params)
         ctx.save_for_backward(x)
 
         x_shards = list(torch.chunk(x, chunks=shards, dim=-2))
@@ -44,6 +45,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         (x,) = ctx.saved_tensors
         mlp_module = ctx.mlp_module
         shards = ctx.shards
+        grad_params = ctx.grad_params
 
         x_requires_grad = x.requires_grad
 
@@ -62,15 +64,41 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         else:
             x_grad = None
 
+        # Summed over shards and returned as this Function's gradients, so autograd accumulates each
+        # weight exactly once. Empty under ZeRO-3, which keeps the per-shard accumulation below.
+        param_grads = [None] * len(grad_params)
+
         for i, (x_shard, grad_shard) in enumerate(zip(x_shards, grad_shards)):
             x_shard_leaf = x_shard.detach().requires_grad_(x_requires_grad)
-            if x_requires_grad:
-                x_shard_leaf.grad = x_grad_shards[i]
-            with torch.enable_grad():
-                output = fn(mlp_module, x_shard_leaf)
-            torch.autograd.backward(output, grad_shard)
 
-        return None, None, x_grad, None, None
+            if grad_params:
+                with torch.enable_grad():
+                    output = fn(mlp_module, x_shard_leaf)
+                inputs = ([x_shard_leaf] if x_requires_grad else []) + grad_params
+                # torch.autograd.grad returns the gradients instead of accumulating into .grad, so no
+                # AccumulateGrad node fires here and DDP's per-parameter hook stays untouched
+                shard_grads = torch.autograd.grad(
+                    outputs=output,
+                    inputs=inputs,
+                    grad_outputs=grad_shard,
+                    allow_unused=True,
+                )
+                if x_requires_grad:
+                    x_grad_shards[i].copy_(shard_grads[0])
+                    shard_grads = shard_grads[1:]
+                for j, shard_grad in enumerate(shard_grads):
+                    if shard_grad is None:
+                        continue
+                    # the first shard's gradient is freshly allocated, so accumulate into it in place
+                    param_grads[j] = shard_grad if param_grads[j] is None else param_grads[j].add_(shard_grad)
+            else:
+                if x_requires_grad:
+                    x_shard_leaf.grad = x_grad_shards[i]
+                with torch.enable_grad():
+                    output = fn(mlp_module, x_shard_leaf)
+                torch.autograd.backward(output, grad_shard)
+
+        return None, None, x_grad, None, None, *param_grads
 
 
 def apply_tiled_mlp(
@@ -85,4 +113,12 @@ def apply_tiled_mlp(
         seqlen = x.shape[-2]
         num_shards = math.ceil(seqlen / hidden_size)
     num_shards = max(1, num_shards)
-    return LigerTiledMLPFunction.apply(fn, mlp_module, x, num_shards, compute_params)
+    return LigerTiledMLPFunction.apply(
+        fn,
+        mlp_module,
+        x,
+        num_shards,
+        compute_params,
+        # passed as explicit Function inputs so autograd accumulates each weight once per backward
+        *_autograd_input_params(compute_params),
+    )
