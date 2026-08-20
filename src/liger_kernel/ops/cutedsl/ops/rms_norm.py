@@ -172,11 +172,7 @@ def _is_hopper(device=None) -> bool:
             device_id = torch.cuda.current_device()
         else:
             device_id = device
-        is_hopper = _hopper_cache.get(device_id)
-        if is_hopper is None:
-            is_hopper = torch.cuda.get_device_capability(device_id) == (9, 0)
-            _hopper_cache[device_id] = is_hopper
-        return is_hopper
+        return infer_device_arch(device_id) == "hopper"
     except Exception:  # pragma: no cover - no CUDA / bad device
         return False
 
@@ -218,7 +214,6 @@ def _use_ffi() -> bool:
 
 # Compiled TVM-FFI callables, keyed on everything the specialization bakes.
 _ffi_compile_cache: dict = {}
-_hopper_cache: dict[int, bool] = {}
 
 
 def _ffi_fake(dtype: torch.dtype, shape, divisibility: int):

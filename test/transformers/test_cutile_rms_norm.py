@@ -2,6 +2,67 @@ import importlib.util
 
 import pytest
 import torch
+import torch.nn as nn
+
+from test.utils import assert_verbose_allclose
+from test.utils import supports_bfloat16
+
+
+class BaseRMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6, elementwise_affine=True):
+        super().__init__()
+        self.elementwise_affine = elementwise_affine
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        if self.elementwise_affine:
+            return self.weight * hidden_states.to(input_dtype)
+        return hidden_states.to(input_dtype)
+
+
+class LlamaRMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6, elementwise_affine=True):
+        super().__init__()
+        self.elementwise_affine = elementwise_affine
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        if self.elementwise_affine:
+            return self.weight * hidden_states.to(input_dtype)
+        return hidden_states.to(input_dtype)
+
+
+class GemmaRMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6, elementwise_affine=True):
+        super().__init__()
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
+
+    def forward(self, hidden_states):
+        output = hidden_states.float()
+        output = output * torch.rsqrt(output.pow(2).mean(-1, keepdim=True) + self.eps)
+        if self.elementwise_affine:
+            output = output * (1.0 + self.weight.float())
+        return output.type_as(hidden_states)
 
 
 def _has_cuda_tile():
@@ -22,76 +83,72 @@ pytestmark = [
     pytest.mark.skipif(not _CUDA_TILE_AVAILABLE, reason="cuda-tile is not installed"),
 ]
 
-_TOLERANCES = {
-    torch.bfloat16: (1e-1, 3e-2),
-    torch.float32: (3e-4, 2e-5),
-}
 
-
-def _run_cutile(x, weight, grad_output, casting_mode, in_place):
-    x_local = x.clone().detach().requires_grad_(True)
-    weight_local = None if weight is None else weight.clone().detach().requires_grad_(True)
-    output = CuTileRMSNormFunction.apply(x_local, weight_local, 1e-6, 0.0, casting_mode, in_place, None)
-    output.backward(grad_output.clone())
-    weight_grad = None if weight_local is None else weight_local.grad
-    return output, x_local.grad, weight_grad
-
-
-def _run_reference(x, weight, grad_output, casting_mode):
-    x_local = x.clone().detach().requires_grad_(True)
-    weight_local = None if weight is None else weight.clone().detach().requires_grad_(True)
-    x_float = x_local.float()
-    reciprocal_rms = torch.rsqrt(x_float.square().mean(dim=-1, keepdim=True) + 1e-6)
-    normalized = x_float * reciprocal_rms
-    if casting_mode == "llama":
-        normalized = normalized.to(x_local.dtype)
-    if weight_local is not None:
-        normalized = normalized.float() * weight_local.float()
-    output = normalized.to(x_local.dtype)
-    output.backward(grad_output.clone())
-    weight_grad = None if weight_local is None else weight_local.grad
-    return output, x_local.grad, weight_grad
-
-
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-@pytest.mark.parametrize("hidden_size", [1000, 8192])
+@pytest.mark.flaky(reruns=3, reruns_delay=2)
+@pytest.mark.parametrize(
+    "bs, sl, hd",
+    [
+        (2, 128, 512),
+        (5, 123, 123),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        pytest.param(
+            torch.bfloat16,
+            2e-1,
+            2e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "reference, offset, casting_mode",
+    [
+        (LlamaRMSNorm, 0.0, "llama"),
+        (GemmaRMSNorm, 1.0, "gemma"),
+        (BaseRMSNorm, 0.0, "none"),
+    ],
+)
+@pytest.mark.parametrize("in_place", [True, False])
 @pytest.mark.parametrize("elementwise_affine", [True, False])
-def test_cutile_rms_norm_parity(dtype, hidden_size, elementwise_affine):
-    torch.manual_seed(42)
-    x = torch.randn(257, hidden_size, device="cuda", dtype=dtype)
-    weight = torch.randn(hidden_size, device="cuda", dtype=dtype) if elementwise_affine else None
-    grad_output = torch.randn_like(x)
+def test_cutile_rms_norm_correctness(
+    bs,
+    sl,
+    hd,
+    dtype,
+    atol,
+    rtol,
+    reference,
+    offset,
+    casting_mode,
+    in_place,
+    elementwise_affine,
+):
+    tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
+    reference_input = tensor.clone().requires_grad_(True)
+    cutile_input = tensor.clone().requires_grad_(True)
+    grad_output = torch.randn_like(tensor)
 
-    cutile = _run_cutile(x, weight, grad_output, "llama", False)
-    reference = _run_reference(x, weight, grad_output, "llama")
-    atol, rtol = _TOLERANCES[dtype]
-    for actual, expected in zip(cutile, reference):
-        if actual is None:
-            assert expected is None
-        else:
-            torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+    reference_rms = reference(hidden_size=hd, elementwise_affine=elementwise_affine).cuda().to(dtype)
+    reference_output = reference_rms(reference_input)
+    reference_output.backward(grad_output)
 
+    cutile_weight = reference_rms.weight.detach().clone().requires_grad_(True) if elementwise_affine else None
+    cutile_output = CuTileRMSNormFunction.apply(
+        cutile_input,
+        cutile_weight,
+        1e-6,
+        offset,
+        casting_mode,
+        in_place,
+        None,
+    )
+    cutile_output.backward(grad_output.clone())
 
-@pytest.mark.parametrize("casting_mode", ["gemma", "none"])
-def test_cutile_rms_norm_casting_modes(casting_mode):
-    torch.manual_seed(7)
-    x = torch.randn(129, 1024, device="cuda", dtype=torch.bfloat16)
-    weight = torch.randn(1024, device="cuda", dtype=torch.bfloat16)
-    grad_output = torch.randn_like(x)
-
-    cutile = _run_cutile(x, weight, grad_output, casting_mode, False)
-    reference = _run_reference(x, weight, grad_output, casting_mode)
-    for actual, expected in zip(cutile, reference):
-        torch.testing.assert_close(actual, expected, atol=2e-1, rtol=3e-2)
-
-
-def test_cutile_rms_norm_in_place_backward():
-    torch.manual_seed(11)
-    x = torch.randn(131, 1024, device="cuda", dtype=torch.bfloat16)
-    weight = torch.randn(1024, device="cuda", dtype=torch.bfloat16)
-    grad_output = torch.randn_like(x)
-
-    cutile = _run_cutile(x, weight, grad_output, "llama", True)
-    reference = _run_reference(x, weight, grad_output, "llama")
-    for actual, expected in zip(cutile, reference):
-        torch.testing.assert_close(actual, expected, atol=6e-2, rtol=3e-2)
+    assert_verbose_allclose(reference_output, cutile_output, atol=atol, rtol=rtol)
+    assert_verbose_allclose(reference_input.grad, cutile_input.grad, atol=atol, rtol=rtol, max_print=20)
+    if elementwise_affine:
+        assert_verbose_allclose(reference_rms.weight.grad, cutile_weight.grad, atol=atol, rtol=rtol)

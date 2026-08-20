@@ -1,7 +1,3 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-#
-# SPDX-License-Identifier: MIT
-
 """Register-resident RMSNorm forward and persistent fused backward for cuTile."""
 
 import math
