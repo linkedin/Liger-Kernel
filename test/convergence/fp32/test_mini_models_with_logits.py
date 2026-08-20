@@ -25,6 +25,7 @@ from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v4
+from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v32
 from liger_kernel.transformers import apply_liger_kernel_to_exaone4
 from liger_kernel.transformers import apply_liger_kernel_to_falcon_h1
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
@@ -66,6 +67,7 @@ from test.utils import get_logprobs
 from test.utils import get_topk
 from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_deepseek_v4
+from test.utils import revert_liger_kernel_to_deepseek_v32
 from test.utils import revert_liger_kernel_to_exaone4
 from test.utils import revert_liger_kernel_to_falcon_h1
 from test.utils import revert_liger_kernel_to_gemma
@@ -328,6 +330,14 @@ try:
     HUNYUAN_V1_AVAILABLE = True
 except ImportError:
     HUNYUAN_V1_AVAILABLE = False
+
+try:
+    from transformers.models.deepseek_v32.configuration_deepseek_v32 import DeepseekV32Config
+    from transformers.models.deepseek_v32.modeling_deepseek_v32 import DeepseekV32ForCausalLM
+
+    DEEPSEEK_V32_AVAILABLE = True
+except ImportError:
+    DEEPSEEK_V32_AVAILABLE = False
 
 try:
     from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
@@ -1504,6 +1514,38 @@ if HUNYUAN_V1_AVAILABLE:
         ),
     )
 
+if DEEPSEEK_V32_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_deepseek_v32"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_deepseek_v32,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_deepseek_v32,
+        model_class=DeepseekV32ForCausalLM,
+        mini_model_config=DeepseekV32Config(
+            vocab_size=32000,
+            hidden_size=32,
+            intermediate_size=64,
+            moe_intermediate_size=16,
+            num_hidden_layers=4,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            q_lora_rank=8,
+            kv_lora_rank=8,
+            qk_rope_head_dim=8,
+            qk_nope_head_dim=8,
+            v_head_dim=16,
+            num_experts_per_tok=2,
+            n_routed_experts=4,
+            num_experts=4,
+            n_group=2,
+            topk_group=1,
+            index_n_heads=2,
+            index_head_dim=8,
+            index_topk=4,
+            first_k_dense_replace=1,
+            max_position_embeddings=128,
+            attn_implementation="sdpa",
+        ),
+    )
+
 if DEEPSEEK_V4_AVAILABLE:
     MINI_MODEL_SETUPS["mini_deepseek_v4"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_deepseek_v4,
@@ -1628,6 +1670,7 @@ def run_mini_model(
             or "llama4" in model_name
             or "qwen3_next" in model_name
             or "qwen3_5" in model_name
+            or "deepseek_v32" in model_name
             or "deepseek_v4" in model_name
         ):
             kwargs["rope"] = False
@@ -2102,6 +2145,22 @@ def run_mini_model(
                     reason="Hunyuan_v1_moe not available in this version of transformers",
                 ),
             ],
+        ),
+        pytest.param(
+            "mini_deepseek_v32",
+            32,
+            1e-5,
+            torch.float32,
+            1e-4,
+            1e-4,
+            1e-3,
+            1e-4,
+            1e-4,
+            1e-4,
+            marks=pytest.mark.skipif(
+                not DEEPSEEK_V32_AVAILABLE,
+                reason="DeepSeek-V3.2 not available in this version of transformers",
+            ),
         ),
         pytest.param(
             "mini_deepseek_v4",

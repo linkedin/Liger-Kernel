@@ -3453,6 +3453,86 @@ def apply_liger_kernel_to_deepseek_v4(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_deepseek_v32(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace DeepSeek-V3.2 models.
+
+    NOTE: RoPE is not supported for DeepSeek-V3.2. The main MLA attention uses interleaved
+    partial RoPE, and the DSA indexer uses a separate non-interleaved RoPE path. Passing
+    ``rope=True`` emits a warning and skips the kernel swap.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+            Currently unsupported; emits a warning and is a no-op.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if already loaded.
+            Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.deepseek_v32 import modeling_deepseek_v32
+    from transformers.models.deepseek_v32.modeling_deepseek_v32 import DeepseekV32Model
+
+    from liger_kernel.transformers.model.deepseek_v32 import lce_forward as deepseek_v32_lce_forward
+    from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
+
+    if rope:
+        logger.warning_once(
+            "rope=True is not supported for DeepSeek-V3.2: interleaved partial RoPE and DSA indexer RoPE "
+            "are incompatible with liger_rotary_pos_emb. Skipping rope kernel swap."
+        )
+
+    if rms_norm:
+        modeling_deepseek_v32.DeepseekV32RMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(deepseek_v32_lce_forward, model)
+        else:
+            modeling_deepseek_v32.DeepseekV32ForCausalLM.forward = deepseek_v32_lce_forward
+
+    if swiglu:
+        modeling_deepseek_v32.DeepseekV32MLP = LigerQwen3MoeSwiGLUMLP
+
+    if model is not None:
+        base_model: DeepseekV32Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                shared_experts = getattr(decoder_layer.mlp, "shared_experts", None)
+                if shared_experts is not None:
+                    _patch_swiglu_module(shared_experts, LigerQwen3MoeSwiGLUMLP)
+                else:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerQwen3MoeSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.q_a_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.kv_a_layernorm)
+
+
 def apply_liger_kernel_to_exaone4(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -3532,6 +3612,7 @@ def apply_liger_kernel_to_exaone4(
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
+    "deepseek_v32": apply_liger_kernel_to_deepseek_v32,
     "deepseek_v4": apply_liger_kernel_to_deepseek_v4,
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
