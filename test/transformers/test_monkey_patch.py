@@ -38,6 +38,7 @@ from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen3_5 import lce_forward as qwen3_5_lce_forward
 from liger_kernel.transformers.model.qwen3_5 import lce_forward_for_multimodal as qwen3_5_lce_forward_for_multimodal
+from liger_kernel.transformers.model.qwen3_attention import qwen3_attention_forward
 from liger_kernel.transformers.model.qwen3_next import lce_forward as qwen3_next_lce_forward
 from liger_kernel.transformers.model.smollm3 import lce_forward as smolllm3_lce_forward
 from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
@@ -2190,6 +2191,20 @@ def test_apply_liger_kernel_to_instance_for_qwen3():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_available(), reason="qwen3 module not available")
+def test_qwen3_qk_norm_rope_hook_applied():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3.modeling_qwen3") as modeling_mod:
+        setattr(modeling_mod, "apply_rotary_pos_emb", object())
+        modeling_mod.Qwen3Attention = MagicMock()
+        modeling_mod.Qwen3Attention.forward = object()
+
+        _apply_liger_kernel("qwen3", qk_norm_rope=True)
+
+        assert modeling_mod.Qwen3Attention.forward is qwen3_attention_forward
+        assert modeling_mod.apply_rotary_pos_emb is not monkey_patch.liger_rotary_pos_emb
 
 
 @pytest.mark.skipif(not is_qwen3_available(), reason="qwen3 module not available")

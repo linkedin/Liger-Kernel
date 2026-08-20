@@ -1668,10 +1668,18 @@ def apply_liger_kernel_to_qwen3(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    qk_norm_rope: bool = False,
     model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen3 models.
+
+    Args:
+        qk_norm_rope (bool): Whether to fuse the per-head ``q_norm``/``k_norm``
+            RMSNorm with the rotary positional embedding into a single Triton
+            kernel by replacing ``Qwen3Attention.forward``. When enabled it
+            supersedes the standalone ``rope`` patch for Q/K (the fused kernel
+            applies RoPE internally). Default is False.
     """
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
@@ -1681,8 +1689,9 @@ def apply_liger_kernel_to_qwen3(
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Model
 
     from liger_kernel.transformers.model.qwen3 import lce_forward as qwen3_lce_forward
+    from liger_kernel.transformers.model.qwen3_attention import qwen3_attention_forward
 
-    if rope:
+    if rope and not qk_norm_rope:
         modeling_qwen3.apply_rotary_pos_emb = liger_rotary_pos_emb
 
     if rms_norm:
@@ -1702,6 +1711,9 @@ def apply_liger_kernel_to_qwen3(
     if swiglu:
         modeling_qwen3.Qwen3MLP = LigerSwiGLUMLP
 
+    if qk_norm_rope:
+        modeling_qwen3.Qwen3Attention.forward = qwen3_attention_forward
+
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
@@ -1717,6 +1729,8 @@ def apply_liger_kernel_to_qwen3(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+            if qk_norm_rope:
+                _bind_method_to_module(decoder_layer.self_attn, "forward", qwen3_attention_forward)
 
 
 def apply_liger_kernel_to_qwen3_moe(
