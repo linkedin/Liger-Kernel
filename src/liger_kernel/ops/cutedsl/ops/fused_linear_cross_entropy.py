@@ -1,3 +1,5 @@
+import functools
+import logging
 import operator
 
 import cutlass
@@ -11,6 +13,8 @@ from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.utils import infer_device_arch
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
 _FORWARD_GRAD_MIN_CHUNK = 512
@@ -226,6 +230,28 @@ def _native_sm100_supported(tensor):
     return infer_device_arch(device_id) == "blackwell" and torch.cuda.get_device_capability(tensor.device) == (10, 0)
 
 
+def _native_unsupported_reason(_input, reduction):
+    """Why the native SM100 path cannot serve this call, or None if it can."""
+    if not _native_sm100_supported(_input):
+        return "requires exact SM100 hardware"
+    if _input.dtype not in (torch.bfloat16, torch.float16):
+        return f"requires FP16/BF16 input and weight (got {_input.dtype})"
+    if reduction not in ("mean", "sum"):
+        return f"requires mean/sum reduction (got {reduction!r})"
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+def _warn_triton_fallback_once(reason):
+    """One warning per distinct reason, so a training loop logs it once, not per step."""
+    logger.warning(
+        "LIGER_KERNEL_IMPL=cutedsl was requested, but the native CuTe DSL fused linear "
+        "cross entropy %s. Falling back to the Triton kernel for this op; results are "
+        "unchanged but you are not on the CuTe DSL path.",
+        reason,
+    )
+
+
 class _FlceState:
     def save_for_backward(self, *tensors):
         self.saved_tensors = tensors
@@ -253,11 +279,8 @@ def fused_linear_cross_entropy_forward(
     _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index)
     needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
 
-    if (
-        not _native_sm100_supported(_input)
-        or _input.dtype not in (torch.bfloat16, torch.float16)
-        or reduction not in ("mean", "sum")
-    ):
+    # Direct calls error here; fallback is in LigerFusedLinearCrossEntropyFunction before autograd.
+    if _native_unsupported_reason(_input, reduction) is not None:
         raise RuntimeError(
             "Native CuTe DSL FLCE requires exact SM100 hardware, FP16/BF16 input and weight, and mean/sum reduction."
         )
@@ -360,7 +383,7 @@ def fused_linear_cross_entropy_backward(ctx, grad_output):
     return grads
 
 
-class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
+class _NativeFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
     @amp_custom_fwd
     def forward(
@@ -409,3 +432,62 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @amp_custom_bwd
     def backward(ctx, grad_output, grad_output2=None, grad_output3=None, grad_output4=None):
         return fused_linear_cross_entropy_backward(ctx, grad_output)
+
+
+class LigerFusedLinearCrossEntropyFunction:
+    """Dispatch: use native CuTe DSL if supported, else fall back to Triton.
+
+    Not a torch.autograd.Function — must dispatch before autograd, since calling Triton inside would skip graph recording. 
+    Keeps the .apply API; signature matches both backends.
+    """
+
+    @staticmethod
+    def apply(
+        _input,
+        weight,
+        target,
+        bias=None,
+        ce_weight=None,
+        ignore_index=-100,
+        lse_square_scale=0.0,
+        label_smoothing=0.0,
+        reduction="mean",
+        softcap=None,
+        return_z_loss=False,
+        accum_dtype=None,
+        use_token_scaling=False,
+        return_token_accuracy=False,
+        return_predicted_tokens=False,
+    ):
+        args = (
+            _input,
+            weight,
+            target,
+            bias,
+            ce_weight,
+            ignore_index,
+            lse_square_scale,
+            label_smoothing,
+            reduction,
+            softcap,
+            return_z_loss,
+            accum_dtype,
+            use_token_scaling,
+            return_token_accuracy,
+            return_predicted_tokens,
+        )
+
+        # Validate inputs before dispatch; consistent with native path.
+        _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index)
+
+        reason = _native_unsupported_reason(_input, reduction)
+        if reason is None:
+            return _NativeFusedLinearCrossEntropyFunction.apply(*args)
+
+        # Lazy import: only load fallback if needed.
+        from liger_kernel.ops.fused_linear_cross_entropy import (
+            LigerFusedLinearCrossEntropyFunction as _TritonFusedLinearCrossEntropyFunction,
+        )
+
+        _warn_triton_fallback_once(reason)
+        return _TritonFusedLinearCrossEntropyFunction.apply(*args)
