@@ -9,6 +9,8 @@ from test.utils import supports_bfloat16
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
 
+import liger_kernel.ops.geglu as geglu_ops
+
 from liger_kernel.ops import LigerGELUMulFunction
 from liger_kernel.transformers.functional import liger_geglu
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
@@ -265,6 +267,67 @@ def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
 
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
     assert torch.allclose(b1.grad, b2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "arch, n_cols, expected",
+    [
+        ("blackwell_ultra", 8192, False),
+        ("blackwell_ultra", 8193, True),
+        ("blackwell", 14336, False),
+        ("blackwell_consumer", 14336, False),
+        ("hopper", 14336, False),
+    ],
+)
+def test_geglu_sm103_tiled_dispatch(monkeypatch, arch, n_cols, expected):
+    monkeypatch.setattr(geglu_ops, "infer_device_arch", lambda: arch)
+    assert geglu_ops._should_use_sm103_tiling(n_cols) is expected
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="SM103 tiled GeGLU path is CUDA-only")
+@pytest.mark.parametrize(
+    "n_rows, n_cols",
+    [
+        (4, 11009),
+        (3, 14337),
+        (4, 16384),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float32,
+        torch.float16,
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_geglu_sm103_tiled_matches_original(monkeypatch, n_rows, n_cols, dtype):
+    torch.manual_seed(0)
+    a = torch.randn(n_rows, n_cols, device=device, dtype=dtype)
+    b = torch.randn(n_rows, n_cols, device=device, dtype=dtype)
+    dc = torch.randn(n_rows, n_cols, device=device, dtype=dtype)
+
+    def run():
+        a_ = a.clone().detach().requires_grad_(True)
+        b_ = b.clone().detach().requires_grad_(True)
+        c = LigerGELUMulFunction.apply(a_, b_)
+        c.backward(dc)
+        return c.detach(), a_.grad.detach(), b_.grad.detach()
+
+    monkeypatch.setattr(geglu_ops, "infer_device_arch", lambda: "hopper")
+    assert not geglu_ops._should_use_sm103_tiling(n_cols)
+    c_ref, da_ref, db_ref = run()
+
+    monkeypatch.setattr(geglu_ops, "infer_device_arch", lambda: "blackwell_ultra")
+    assert geglu_ops._should_use_sm103_tiling(n_cols)
+    c_tiled, da_tiled, db_tiled = run()
+
+    torch.testing.assert_close(c_tiled, c_ref, rtol=0, atol=0)
+    torch.testing.assert_close(da_tiled, da_ref, rtol=0, atol=0)
+    torch.testing.assert_close(db_tiled, db_ref, rtol=0, atol=0)
 
 
 # ---------------------------------------------------------------------------
