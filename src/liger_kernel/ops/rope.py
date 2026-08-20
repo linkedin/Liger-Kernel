@@ -201,6 +201,78 @@ def rope_backward(dq, dk, cos, sin):
     return dq.transpose(1, 2), dk.transpose(1, 2)
 
 
+def rope_forward_thd(q, k, cos, sin):
+    total_tokens, n_q_head, head_dim = q.shape
+    n_kv_head = k.shape[1]
+    pad_hd = triton.next_power_of_2(head_dim)
+    pad_n_q_head = triton.next_power_of_2(n_q_head)
+    pad_n_kv_head = triton.next_power_of_2(n_kv_head)
+    BLOCK_SIZE = max(pad_n_q_head, pad_n_kv_head)
+
+    q = q.contiguous()
+    k = k.contiguous()
+    cos = cos.contiguous()
+    sin = sin.contiguous()
+
+    _triton_rope[(total_tokens,)](
+        q,
+        q.stride(0),
+        k,
+        k.stride(0),
+        cos,
+        cos.stride(-2),
+        sin,
+        sin.stride(-2),
+        total_tokens,
+        1,
+        1,
+        n_q_head,
+        n_kv_head,
+        head_dim,
+        pad_n_q_head,
+        pad_n_kv_head,
+        pad_hd,
+        BLOCK_SIZE=BLOCK_SIZE,
+        BACKWARD_PASS=False,
+    )
+    return q, k, cos, sin
+
+
+def rope_backward_thd(dq, dk, cos, sin):
+    total_tokens, n_q_head, head_dim = dq.shape
+    n_kv_head = dk.shape[1]
+    pad_hd = triton.next_power_of_2(head_dim)
+    pad_n_q_head = triton.next_power_of_2(n_q_head)
+    pad_n_kv_head = triton.next_power_of_2(n_kv_head)
+    BLOCK_SIZE = max(pad_n_q_head, pad_n_kv_head)
+
+    dq = dq.contiguous()
+    dk = dk.contiguous()
+
+    _triton_rope[(total_tokens,)](
+        dq,
+        dq.stride(0),
+        dk,
+        dk.stride(0),
+        cos,
+        cos.stride(-2),
+        sin,
+        sin.stride(-2),
+        total_tokens,
+        1,
+        1,
+        n_q_head,
+        n_kv_head,
+        head_dim,
+        pad_n_q_head,
+        pad_n_kv_head,
+        pad_hd,
+        BLOCK_SIZE=BLOCK_SIZE,
+        BACKWARD_PASS=True,
+    )
+    return dq, dk
+
+
 class LigerRopeFunction(torch.autograd.Function):
     """
     Triton implementation of the Rotary Positional Embedding (RoPE) operation. Please note that
@@ -237,3 +309,35 @@ class LigerRopeFunction(torch.autograd.Function):
         cos, sin = ctx.saved_tensors
         dq, dk = rope_backward(dq, dk, cos, sin)
         return dq, dk, None, None, None, None
+
+
+class LigerRopeTHDFunction(torch.autograd.Function):
+    """
+    Triton implementation of RoPE for THD packed inputs.
+
+    The input tensors are expected to be laid out as (total_tokens, num_heads, head_dim).
+    Position information is assumed to have already been reflected in the per-token cos/sin rows.
+    """
+
+    @staticmethod
+    def forward(ctx, q, k, cos, sin):
+        """
+        q size: (total_tokens, n_q_head, head_dim)
+        k size: (total_tokens, n_kv_head, head_dim)
+        cos size: (total_tokens, head_dim)
+        sin size: (total_tokens, head_dim)
+        """
+        q, k, cos, sin = rope_forward_thd(q, k, cos, sin)
+        ctx.save_for_backward(cos, sin)
+        return q, k
+
+    def backward(ctx, dq, dk):
+        """
+        dq size: (total_tokens, n_q_head, head_dim)
+        dk size: (total_tokens, n_kv_head, head_dim)
+        cos size: (total_tokens, head_dim)
+        sin size: (total_tokens, head_dim)
+        """
+        cos, sin = ctx.saved_tensors
+        dq, dk = rope_backward_thd(dq, dk, cos, sin)
+        return dq, dk, None, None
