@@ -38,6 +38,26 @@ def test_sm100_gemm_identity_epilogue(output_features):
     torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
 
 
+def test_sm100_gemm_dlpack_abi_matches_torch(monkeypatch):
+    import liger_kernel.ops.cutedsl.ops._sm100_gemm as gemm
+
+    torch.manual_seed(1)
+    tokens, hidden, output_features = 33, 128, 97
+    x = torch.randn(tokens, hidden, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(output_features, hidden, device="cuda", dtype=torch.bfloat16) * hidden**-0.5
+    actual = torch.empty(tokens, output_features, device="cuda", dtype=torch.bfloat16)
+
+    gemm._COMPILE_CACHE.clear()
+    monkeypatch.setattr(gemm, "_TVM_FFI_AVAILABLE", False)
+    try:
+        run_epilogue_gemm(x, weight, actual, _identity_epilogue)
+    finally:
+        gemm._COMPILE_CACHE.clear()
+
+    expected = torch.nn.functional.linear(x, weight)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
+
+
 def test_sm100_gemm_rejects_non_cute_epilogue():
     x = torch.empty(1, 64, device="cuda", dtype=torch.bfloat16)
     weight = torch.empty(32, 64, device="cuda", dtype=torch.bfloat16)

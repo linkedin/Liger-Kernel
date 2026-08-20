@@ -1065,6 +1065,53 @@ def test_flce_independent_requires_grad_matches_torch(trainable):
     _assert_close(out[1], ref[1], 5e-3, 5e-2, f"independent grad_{trainable}")
 
 
+@native_blackwell_required
+@pytest.mark.parametrize("dtype", _DTYPES, ids=_DTYPE_IDS)
+def test_flce_noncontiguous_inputs_match_torch(dtype):
+    set_seed()
+    BT, H, V = 33, 127, 513
+    x = torch.randn(BT, H * 2, device="cuda", dtype=dtype)[:, ::2].requires_grad_(True)
+    weight = (torch.randn(V, H * 2, device="cuda", dtype=dtype) * H**-0.5)[:, ::2].requires_grad_(True)
+    bias = (torch.randn(V * 2, device="cuda", dtype=dtype) * 0.1)[::2].requires_grad_(True)
+    target = torch.randint(0, V, (BT,), device="cuda", dtype=torch.long)
+    target[::7] = -100
+    assert not x.is_contiguous()
+    assert not weight.is_contiguous()
+    assert not bias.is_contiguous()
+
+    loss = _apply(
+        _cutedsl_flce(),
+        x,
+        weight,
+        target,
+        bias=bias,
+        label_smoothing=0.1,
+    )[0]
+    grad_output = torch.tensor(1.7, device="cuda", dtype=torch.float32)
+    gradients = torch.autograd.grad(loss, (x, weight, bias), grad_outputs=grad_output)
+
+    x_ref = x.detach().float().requires_grad_(True)
+    weight_ref = weight.detach().float().requires_grad_(True)
+    bias_ref = bias.detach().float().requires_grad_(True)
+    loss_ref = F.cross_entropy(
+        F.linear(x_ref, weight_ref, bias_ref),
+        target,
+        ignore_index=-100,
+        reduction="mean",
+        label_smoothing=0.1,
+    )
+    gradients_ref = torch.autograd.grad(loss_ref, (x_ref, weight_ref, bias_ref), grad_outputs=grad_output)
+    atol, rtol = _TOL[("mean", dtype)]
+    _assert_close(loss.float(), loss_ref, atol, rtol, "noncontiguous loss")
+    for name, actual, expected in zip(
+        ("input", "weight", "bias"),
+        gradients,
+        gradients_ref,
+        strict=True,
+    ):
+        _assert_close(actual.float(), expected, atol, rtol, f"noncontiguous grad_{name}")
+
+
 @cuda_required
 def test_flce_all_ignored_targets_are_valid():
     _input, weight, target = _basic_args(BT=16, V=256, dtype=torch.bfloat16)
