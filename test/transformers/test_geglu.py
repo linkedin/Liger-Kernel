@@ -288,6 +288,7 @@ def test_geglu_sm103_tiled_dispatch(monkeypatch, arch, n_cols, expected):
 @pytest.mark.parametrize(
     "n_rows, n_cols",
     [
+        (4, 8193),
         (4, 11009),
         (3, 14337),
         (4, 16384),
