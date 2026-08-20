@@ -10,6 +10,7 @@ from liger_kernel.ops.cutedsl.ops.cross_entropy import _launch_ce_fwd
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.utils import infer_device_arch
 
 _SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
@@ -65,7 +66,7 @@ def _target_probability_from_logits(logits, target, ignore_index, softcap, vocab
     return torch.where(valid, torch.exp(target_logits - row_lse), torch.zeros_like(row_lse))
 
 
-def _native_forward(
+def _native_forward_on_device(
     X,
     W,
     target,
@@ -178,6 +179,45 @@ def _native_forward(
         grad_weight = grad_weight.to(W.dtype)
     grad_bias = grad_bias_acc.to(bias.dtype) if grad_bias_acc is not None else None
     return loss, z_loss, token_accuracy, predicted_tokens, grad_input, grad_weight, grad_bias
+
+
+def _native_forward(
+    X,
+    W,
+    target,
+    bias,
+    ce_weight,
+    ignore_index,
+    lse_square_scale,
+    label_smoothing,
+    reduction,
+    softcap,
+    return_z_loss,
+    accum_dtype,
+    use_token_scaling,
+    return_token_accuracy,
+    return_predicted_tokens,
+    needs_grad,
+):
+    with device_context(X.device):
+        return _native_forward_on_device(
+            X,
+            W,
+            target,
+            bias,
+            ce_weight,
+            ignore_index,
+            lse_square_scale,
+            label_smoothing,
+            reduction,
+            softcap,
+            return_z_loss,
+            accum_dtype,
+            use_token_scaling,
+            return_token_accuracy,
+            return_predicted_tokens,
+            needs_grad,
+        )
 
 
 def _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index):

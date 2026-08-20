@@ -1239,6 +1239,55 @@ def test_flce_native_gemm_guards_noncurrent_device(monkeypatch):
     assert entered == [device]
 
 
+@cuda_required
+def test_flce_native_forward_guards_ce_launch_device(monkeypatch):
+    import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
+
+    input_device = torch.device("cuda", torch.cuda.current_device())
+    ambient_device = torch.device("cuda", input_device.index + 1)
+    active_device = [ambient_device]
+    entered = []
+    ce_devices = []
+
+    class Guard:
+        def __init__(self, device):
+            self.device = torch.device(device)
+            self.previous = None
+
+        def __enter__(self):
+            self.previous = active_device[0]
+            active_device[0] = self.device
+            entered.append(self.device)
+
+        def __exit__(self, *_):
+            active_device[0] = self.previous
+            return False
+
+    def fake_gemm(_, __, output, ___):
+        output.zero_()
+
+    def fake_ce(x, _, loss, *args, **kwargs):
+        del args, kwargs
+        ce_devices.append(active_device[0])
+        assert active_device[0] == x.device
+        loss.zero_()
+
+    monkeypatch.setattr(flce, "device_context", Guard)
+    monkeypatch.setattr(flce, "_native_blackwell_supported", lambda _: True)
+    monkeypatch.setattr(flce, "run_epilogue_gemm", fake_gemm)
+    monkeypatch.setattr(flce, "_launch_ce_fwd", fake_ce)
+
+    _input = torch.randn(2, 128, device=input_device, dtype=torch.bfloat16)
+    weight = torch.randn(16, 128, device=input_device, dtype=torch.bfloat16)
+    target = torch.tensor([1, 7], device=input_device)
+    loss, _, _, _, _ = flce.fused_linear_cross_entropy_forward(_input, weight, target)
+
+    assert loss == 0
+    assert entered == [input_device]
+    assert ce_devices == [input_device]
+    assert active_device == [ambient_device]
+
+
 # =============================================================================
 # H. Dispatch / swap wiring — LIGER_KERNEL_IMPL=cutedsl. The Triton suite has no such
 #    test (Triton is the default impl); this mirrors the cutedsl CE suite. FLCE is now
