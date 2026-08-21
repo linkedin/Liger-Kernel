@@ -63,7 +63,7 @@ def test_frontend_uses_fallback_for_unsupported_nvidia_compute_capability(monkey
 
 def test_frontend_dispatches_sm90_and_forwards_arguments(monkeypatch):
     device = torch.device("cuda:3")
-    _input = SimpleNamespace(device=device)
+    _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
     weight = object()
     target = object()
     calls = []
