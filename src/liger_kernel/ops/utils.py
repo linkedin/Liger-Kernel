@@ -13,9 +13,12 @@ Modifications made by Yanning Chen, 2024.
 import functools
 import importlib
 import operator
+import threading
 
 from contextlib import contextmanager
 from typing import Callable
+from typing import List
+from typing import Optional
 
 import torch
 import triton
@@ -151,6 +154,57 @@ def get_npu_core_count(default: int = 20) -> int:
         return int(props.get("num_vectorcore", default))
     except Exception:
         return default
+
+
+class GradientAccumulator:
+    """
+    Hook-based gradient accumulator for TiledMLP (Axolotl pattern).
+
+    Reference:
+    https://github.com/axolotl-ai-cloud/axolotl/blob/main/src/axolotl/monkeypatch/tiled_mlp/base.py
+    """
+
+    def __init__(
+        self,
+        params: List[torch.nn.Parameter],
+        dtype: Optional[torch.dtype] = None,
+    ):
+        self.params = [p for p in params if p.requires_grad]
+        self.grad_accumulation_dtype = dtype or torch.float32
+        self.accumulated_grads = {}
+        self.hooks = []
+        self.lock = threading.Lock()
+
+        for param in self.params:
+            if param.grad is not None:
+                self.accumulated_grads[param] = param.grad.to(self.grad_accumulation_dtype)
+                param.grad = None
+            else:
+                self.accumulated_grads[param] = torch.zeros_like(
+                    param, dtype=self.grad_accumulation_dtype
+                )
+
+    def install_hooks(self):
+        def create_hook(param):
+            def hook(grad):
+                with self.lock:
+                    self.accumulated_grads[param] += grad.to(self.grad_accumulation_dtype)
+                    return None
+
+            return hook
+
+        for param in self.params:
+            self.hooks.append(param.register_hook(create_hook(param)))
+
+    def finalize_gradients(self):
+        for param in self.params:
+            param.grad = self.accumulated_grads[param].to(param.dtype)
+
+    def cleanup(self):
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks.clear()
+        del self.accumulated_grads
 
 
 def set_large_grf_mode(kernel_args: dict):
