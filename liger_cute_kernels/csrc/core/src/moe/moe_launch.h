@@ -43,6 +43,7 @@ struct MoeFwdArgs {
 	void** x_sorted_out;
 	void** y_buf_out;
 	void** all_expert_offsets_out;
+	void** all_expert_counts_out;
 };
 
 // Backward launcher inputs. dB/dC/dA/dW are gradient ACCUMULATION targets — the
@@ -54,6 +55,7 @@ struct MoeBwdArgs {
 	int*        token_expert_slots; // [T*top_k] int32
 	int*        tile_expert_ids;    // [max_m_tiles] int32
 	int*        expert_offsets;     // [num_pes, num_experts+1] int32 (fwd's all_*)
+	int*        expert_counts;      // [num_pes, num_experts] int32 (fwd's exact counts)
 	int*        expert_indices;     // [T, K] int32
 	const void* expert_weights;     // [T, K] bf16
 	const void* all_B;              // [epp, I, D] bf16
