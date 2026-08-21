@@ -21,6 +21,10 @@ from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy_sm90 import liger_f
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import LigerFusedScaledCrossEntropySM90Function
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_forward
+from liger_kernel.ops.cutedsl.ops.megatron_fused_linear_cross_entropy import (
+    LigerMegatronFusedLinearCrossEntropyFunction,
+)
+from liger_kernel.ops.cutedsl.ops.megatron_fused_linear_cross_entropy import liger_megatron_fused_linear_cross_entropy
 from liger_kernel.ops.cutedsl.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_backward
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_forward
@@ -47,6 +51,8 @@ __all__ = [
     "LigerFusedScaledCrossEntropySM90Function",
     "fused_scaled_cross_entropy_backward",
     "fused_scaled_cross_entropy_forward",
+    "LigerMegatronFusedLinearCrossEntropyFunction",
+    "liger_megatron_fused_linear_cross_entropy",
     "LigerRMSNormFunction",
     "rms_norm_backward",
     "rms_norm_forward",
