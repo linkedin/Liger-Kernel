@@ -1092,3 +1092,48 @@ def test_correctness_reduction_none_per_token_grad_output(B, T, H, V, bias, dtyp
     assert_verbose_allclose(lig_gw, ref_gw, atol=atol, rtol=rtol)
     if bias:
         assert_verbose_allclose(lig_gb, ref_gb, atol=atol, rtol=rtol)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(
+    "dtype_out" not in torch.ops.aten.addmm.overloads(),
+    reason="addmm out_dtype path requires PyTorch >= 2.8",
+)
+def test_torch_compile_fp32_accum_backward():
+    """FLCE backward must work under torch.compile with fp32 accumulation.
+
+    Regression test for https://github.com/linkedin/Liger-Kernel/issues/1327:
+    the grad_weight fast path calls torch.addmm(..., out_dtype=..., out=...),
+    which TorchInductor cannot lower (aten.addmm.dtype_out), so compiling a
+    backward with bf16 inputs and accum_dtype=torch.float32 raised
+    "tuned_addmm() takes 3 positional arguments but 4 were given". The compiled
+    path must fall back to a lowerable formulation and still match eager.
+    """
+    set_seed(42)
+    B, H, V = 8, 16, 32
+
+    _input = torch.randn(B, H, device=device, dtype=torch.bfloat16)
+    weight = torch.randn(V, H, device=device, dtype=torch.bfloat16)
+    target = torch.randint(0, V, (B,), device=device)
+
+    def eager():
+        x = _input.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        loss = liger_fused_linear_cross_entropy(x, w, target, accum_dtype=torch.float32)
+        loss.backward()
+        return loss, x.grad, w.grad
+
+    def compiled():
+        x = _input.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        fn = torch.compile(liger_fused_linear_cross_entropy)
+        loss = fn(x, w, target, accum_dtype=torch.float32)
+        loss.backward()
+        return loss, x.grad, w.grad
+
+    ref_loss, ref_gx, ref_gw = eager()
+    cmp_loss, cmp_gx, cmp_gw = compiled()
+
+    assert_verbose_allclose(cmp_loss, ref_loss, atol=1e-3, rtol=1e-3)
+    assert_verbose_allclose(cmp_gx, ref_gx, atol=1e-3, rtol=1e-2)
+    assert_verbose_allclose(cmp_gw, ref_gw, atol=1e-3, rtol=1e-2)
