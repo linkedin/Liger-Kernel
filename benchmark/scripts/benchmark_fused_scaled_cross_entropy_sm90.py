@@ -13,6 +13,7 @@ Sweep parameters (all optional; defaults reproduce the previous behaviour)::
     --hidden H                      hidden size
     --vocab V                       vocabulary size
     --providers NAME [NAME ...]     explicit provider list
+    --return-entropy                benchmark NLL and entropy together
 
 Providers: ``torch``, ``liger`` (Triton FLCE, ``reduction="none"``),
 ``scaled-default`` (the device-dispatching scaled-CE frontend),
@@ -23,7 +24,7 @@ Example::
 
     python benchmark_fused_scaled_cross_entropy_sm90.py \\
         --tokens 4096 --hidden 4096 --vocab 131072 \\
-        --providers scaled-fallback scaled-default cutile
+        --providers scaled-fallback scaled-default --return-entropy
 """
 
 import argparse
@@ -60,6 +61,7 @@ SCALED_FALLBACK_PREFIX = "scaled-fallback"
 # Seed of the fixed per-token upstream gradient, so every provider and every
 # repetition sees byte-identical ``d(NLL)/d(loss)`` values.
 GRAD_SEED = 1234
+ENTROPY_GRAD_SEED = 1235
 
 
 class TorchLMHeadCE(torch.nn.Module):
@@ -144,10 +146,18 @@ class CuTileLMHeadScaledCE(torch.nn.Module):
 class DefaultLMHeadScaledCE(torch.nn.Module):
     """Device-dispatching scaled CE frontend used by public callers."""
 
-    def __init__(self, hidden_size: int, vocab_size: int, dtype: torch.dtype, temperature: float = 1.0):
+    def __init__(
+        self,
+        hidden_size: int,
+        vocab_size: int,
+        dtype: torch.dtype,
+        temperature: float = 1.0,
+        return_entropy: bool = False,
+    ):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.empty(vocab_size, hidden_size, dtype=dtype))
         self.temperature = temperature
+        self.return_entropy = return_entropy
         torch.nn.init.normal_(self.weight, std=hidden_size**-0.5)
 
     def forward(self, x, target):
@@ -160,17 +170,25 @@ class DefaultLMHeadScaledCE(torch.nn.Module):
             self.temperature,
             -100,
             1,
-            False,
+            self.return_entropy,
         )
 
 
 class FallbackLMHeadScaledCE(torch.nn.Module):
     """Exact 512-token PyTorch fallback behind the scaled CE frontend."""
 
-    def __init__(self, hidden_size: int, vocab_size: int, dtype: torch.dtype, temperature: float = 1.0):
+    def __init__(
+        self,
+        hidden_size: int,
+        vocab_size: int,
+        dtype: torch.dtype,
+        temperature: float = 1.0,
+        return_entropy: bool = False,
+    ):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.empty(vocab_size, hidden_size, dtype=dtype))
         self.temperature = temperature
+        self.return_entropy = return_entropy
         torch.nn.init.normal_(self.weight, std=hidden_size**-0.5)
 
     def forward(self, x, target):
@@ -182,18 +200,29 @@ class FallbackLMHeadScaledCE(torch.nn.Module):
             target,
             self.temperature,
             -100,
-            False,
+            self.return_entropy,
         )
 
 
-def fixed_grad_output(tokens: int) -> torch.Tensor:
-    """The fixed ``[M]`` upstream gradient of the per-token NLL."""
+def fixed_grad_outputs(tokens: int, dtype: torch.dtype, return_entropy: bool) -> tuple[torch.Tensor, ...]:
+    """Fixed independent upstream gradients for the per-token outputs."""
     generator = torch.Generator(device=device).manual_seed(GRAD_SEED)
-    return torch.rand(tokens, generator=generator, device=device, dtype=torch.float32) + 0.25
+    grad_nll = torch.rand(tokens, generator=generator, device=device, dtype=torch.float32) + 0.25
+    if not return_entropy:
+        return (grad_nll,)
+    entropy_generator = torch.Generator(device=device).manual_seed(ENTROPY_GRAD_SEED)
+    grad_entropy = torch.rand(tokens, generator=entropy_generator, device=device, dtype=dtype) - 0.5
+    return grad_nll, grad_entropy
+
+
+def backward_outputs(outputs, grad_outputs, retain_graph=False):
+    """Backpropagate either the NLL tensor or the NLL/entropy tuple."""
+    outputs = (outputs,) if isinstance(outputs, torch.Tensor) else outputs
+    torch.autograd.backward(outputs, grad_outputs, retain_graph=retain_graph)
 
 
 def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
-    """Return ``(x, forward_fn, grad_output)`` for one benchmark point."""
+    """Return ``(x, forward_fn, grad_outputs)`` for one benchmark point."""
     cfg = input.extra_benchmark_config
     if isinstance(input.x, str):
         model_cfg = MODEL_REGISTRY[input.x]
@@ -206,6 +235,7 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
         hidden_size = cfg["hidden_size"]
         vocab_size = cfg["vocab_size"]
         dtype = cfg["dtype"]
+    return_entropy = cfg.get("return_entropy", False)
 
     x = torch.randn(total_tokens, hidden_size, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(vocab_size, (total_tokens,), dtype=torch.long, device=device)
@@ -216,9 +246,9 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
     elif provider == CUTILE_PREFIX:
         layer = CuTileLMHeadScaledCE(hidden_size, vocab_size, dtype)
     elif provider == SCALED_DEFAULT_PREFIX:
-        layer = DefaultLMHeadScaledCE(hidden_size, vocab_size, dtype)
+        layer = DefaultLMHeadScaledCE(hidden_size, vocab_size, dtype, return_entropy=return_entropy)
     elif provider == SCALED_FALLBACK_PREFIX:
-        layer = FallbackLMHeadScaledCE(hidden_size, vocab_size, dtype)
+        layer = FallbackLMHeadScaledCE(hidden_size, vocab_size, dtype, return_entropy=return_entropy)
     elif provider == "liger":
         layer = TritonLMHeadCE(hidden_size, vocab_size, dtype)
     elif provider == "torch":
@@ -228,10 +258,10 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
 
     layer = layer.to(device)
     weight = layer.weight if hasattr(layer, "weight") else layer.linear.weight
-    return x, weight, lambda: layer(x, target), fixed_grad_output(total_tokens)
+    return x, weight, lambda: layer(x, target), fixed_grad_outputs(total_tokens, dtype, return_entropy)
 
 
-def probe_forward_fn(x, weight, fwd_fn, grad_output):
+def probe_forward_fn(x, weight, fwd_fn, grad_outputs):
     """Adapter for the shared memory-probing helpers (setup returns a 4-tuple)."""
     return fwd_fn()
 
@@ -239,7 +269,7 @@ def probe_forward_fn(x, weight, fwd_fn, grad_output):
 def bench_speed_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     import triton
 
-    x, weight, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
+    x, weight, fwd_fn, grad_outputs = setup_fused_scaled_cross_entropy_sm90(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
@@ -248,11 +278,11 @@ def bench_speed_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) 
         y = fwd_fn()
 
         def bench_fn():
-            y.backward(grad_output, retain_graph=True)
+            backward_outputs(y, grad_outputs, retain_graph=True)
     elif mode == "full":
 
         def bench_fn():
-            fwd_fn().backward(grad_output)
+            backward_outputs(fwd_fn(), grad_outputs)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
@@ -266,7 +296,7 @@ def bench_speed_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) 
 
 
 def bench_memory_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, weight, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
+    x, weight, fwd_fn, grad_outputs = setup_fused_scaled_cross_entropy_sm90(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
@@ -277,13 +307,13 @@ def bench_memory_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput)
         def bench_fn():
             x.grad = None
             weight.grad = None
-            y.backward(grad_output, retain_graph=True)
+            backward_outputs(y, grad_outputs, retain_graph=True)
     elif mode == "full":
 
         def bench_fn():
             x.grad = None
             weight.grad = None
-            fwd_fn().backward(grad_output)
+            backward_outputs(fwd_fn(), grad_outputs)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
@@ -298,6 +328,11 @@ def parse_sweep_args():
     parser.add_argument("--hidden", type=int, default=None, help="Hidden size (H).")
     parser.add_argument("--vocab", type=int, default=None, help="Vocabulary size (V).")
     parser.add_argument("--providers", type=str, nargs="+", default=None, help="Explicit provider list.")
+    parser.add_argument(
+        "--return-entropy",
+        action="store_true",
+        help="Benchmark scaled NLL and differentiable entropy together (scaled providers only).",
+    )
     if any(flag in ("-h", "--help") for flag in sys.argv[1:]):
         parser.print_help()
         print()
@@ -307,8 +342,11 @@ def parse_sweep_args():
 
 
 def resolve_providers(sweep_args):
-    if sweep_args.providers:
-        for provider in sweep_args.providers:
+    providers = list(sweep_args.providers) if sweep_args.providers else None
+    if sweep_args.return_entropy and providers is None:
+        providers = [SCALED_FALLBACK_PREFIX, SCALED_DEFAULT_PREFIX]
+    if providers:
+        for provider in providers:
             if provider not in (
                 "torch",
                 "liger",
@@ -318,7 +356,11 @@ def resolve_providers(sweep_args):
                 SCALED_FALLBACK_PREFIX,
             ):
                 raise ValueError(f"Unknown provider {provider!r}")
-        return list(sweep_args.providers)
+        if sweep_args.return_entropy:
+            unsupported = [p for p in providers if p not in (SCALED_DEFAULT_PREFIX, SCALED_FALLBACK_PREFIX)]
+            if unsupported:
+                raise ValueError(f"--return-entropy only supports scaled providers, got {unsupported}")
+        return providers
     return ["torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX]
 
 
@@ -367,6 +409,9 @@ if __name__ == "__main__":
             common_configs["extra_benchmark_configs"].append(shape)
 
     common_configs["kernel_providers"] = resolve_providers(sweep_args)
+    if sweep_args.return_entropy:
+        for config in common_configs["extra_benchmark_configs"]:
+            config["return_entropy"] = True
 
     run_benchmarks(
         bench_test_fn=bench_speed_fused_scaled_cross_entropy_sm90,

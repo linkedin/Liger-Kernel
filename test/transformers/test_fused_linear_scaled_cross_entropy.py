@@ -353,6 +353,67 @@ def test_sm103_matches_fp32_reference(dtype, shape, temperature, gradient_mode):
         torch.testing.assert_close(actual_grad.float(), expected_grad.float(), atol=atol, rtol=rtol)
 
 
+def test_sm103_multichunk_ragged_tail_matches_fp32_reference(monkeypatch):
+    _require_sm103()
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("BF16 is not supported")
+
+    token_count, hidden_size, vocab_size = 7, 33, 257
+    dtype = torch.bfloat16
+    temperature = 0.8
+    generator = torch.Generator(device="cuda").manual_seed(49)
+    hidden_data = torch.randn(token_count, hidden_size, device="cuda", dtype=dtype, generator=generator) * 0.25
+    weight_data = (
+        torch.randn(vocab_size, hidden_size, device="cuda", dtype=dtype, generator=generator) / hidden_size**0.5
+    )
+    target = torch.randint(vocab_size, (token_count,), device="cuda", generator=generator)
+    target[::4] = -100
+    grad_nll = torch.randn(token_count, device="cuda", dtype=torch.float32, generator=generator)
+    grad_entropy = torch.randn(token_count, device="cuda", dtype=dtype, generator=generator)
+
+    workspace_bytes = 3 * vocab_size * hidden_data.element_size()
+    monkeypatch.setattr(_FRONTEND, "_SM103_LOGITS_WORKSPACE_BYTES", workspace_bytes)
+    assert _FRONTEND._calculate_sm103_token_chunk_size(token_count, vocab_size, hidden_data.element_size()) == 3
+
+    actual_hidden = hidden_data.clone().requires_grad_(True)
+    actual_weight = weight_data.clone().requires_grad_(True)
+    actual_nll, actual_entropy = _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction.apply(
+        actual_hidden,
+        actual_weight,
+        target,
+        temperature,
+        -100,
+        1,
+        True,
+    )
+    actual_grads = torch.autograd.grad(
+        (actual_nll, actual_entropy),
+        (actual_hidden, actual_weight),
+        (grad_nll, grad_entropy),
+    )
+
+    expected_hidden = hidden_data.float().requires_grad_(True)
+    expected_weight = weight_data.float().requires_grad_(True)
+    expected_nll, expected_entropy = _scaled_ce_reference(
+        expected_hidden,
+        expected_weight,
+        target,
+        temperature,
+        True,
+    )
+    expected_grads = torch.autograd.grad(
+        (expected_nll, expected_entropy),
+        (expected_hidden, expected_weight),
+        (grad_nll, grad_entropy.float()),
+    )
+
+    atol, rtol = 8e-2, 5e-2
+    torch.testing.assert_close(actual_nll, expected_nll, atol=atol, rtol=rtol)
+    torch.testing.assert_close(actual_entropy.float(), expected_entropy, atol=atol, rtol=rtol)
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(actual_grad.float(), expected_grad, atol=atol, rtol=rtol)
+
+
 def test_sm103_noncontiguous_inputs_partial_grads_repeated_backward_and_context(monkeypatch):
     _require_sm103()
     generator = torch.Generator(device="cuda").manual_seed(47)
