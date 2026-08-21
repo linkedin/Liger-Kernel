@@ -213,7 +213,6 @@ def _fused_up_proj_swiglu_kernel(
     tile_row_start_ptr,  # (num_m_tiles,) int32 — row_start per M-tile
     tile_expert_ptr,  # (num_m_tiles,) int32 — expert index per M-tile
     pre_act_ptr,  # (TK, 2*I)  pre-SwiGLU activations [saved for backward]
-    post_act_ptr,  # (TK, I)    post-SwiGLU activations
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_x_T,
@@ -223,15 +222,15 @@ def _fused_up_proj_swiglu_kernel(
     stride_w_K: tl.constexpr,
     stride_pre_TK,
     stride_pre_N: tl.constexpr,
-    stride_post_TK,
-    stride_post_N: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
     """Grid: (num_m_tiles,). One CTA per M-tile; N-tiles iterated in-kernel.
 
-    Ascend: 1D grid avoids exceeding the ~32K launch limit at large T.
+    Cube-only: writes pre-SwiGLU [gate, up]. SwiGLU is a separate vector kernel
+    because triton-ascend 3.2.2 ConvertLinalgRToBinary cannot lower mix
+    cube+vector (gather + dual tl.dot + silu + GM stores) to static UB shapes.
     """
     pid_m = tl.program_id(0)
 
@@ -283,12 +282,44 @@ def _fused_up_proj_swiglu_kernel(
         tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
         tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
 
-        sig_gate = tl.sigmoid(acc_gate)
-        silu_gate = acc_gate * sig_gate
-        a_out = silu_gate * acc_up
 
-        post_ptrs = post_act_ptr + row_offs[:, None] * stride_post_TK + n_idx[None, :] * stride_post_N
-        tl.store(post_ptrs, a_out.to(post_act_ptr.dtype.element_ty), mask=out_mask)
+@triton.jit
+def _swiglu_from_pre_act_kernel(
+    pre_act_ptr,  # (TK, 2*I)
+    post_act_ptr,  # (TK, I)
+    TK,
+    I_dim: tl.constexpr,
+    stride_pre_TK,
+    stride_pre_N: tl.constexpr,
+    stride_post_TK,
+    stride_post_N: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    """Vector epilogue: post = silu(gate) * up. Grid-stride over TK rows."""
+    pid = tl.program_id(0)
+    n_prog = tl.num_programs(0)
+    n_offs = tl.arange(0, BLOCK_N)
+
+    for tk in tl.range(pid, TK, n_prog):
+        for n_start in tl.range(0, I_dim, BLOCK_N):
+            n_idx = n_start + n_offs
+            n_mask = n_idx < I_dim
+            gate = tl.load(
+                pre_act_ptr + tk * stride_pre_TK + n_idx * stride_pre_N,
+                mask=n_mask,
+                other=0.0,
+            ).to(tl.float32)
+            up = tl.load(
+                pre_act_ptr + tk * stride_pre_TK + (n_idx + I_dim) * stride_pre_N,
+                mask=n_mask,
+                other=0.0,
+            ).to(tl.float32)
+            out = gate * tl.sigmoid(gate) * up
+            tl.store(
+                post_act_ptr + tk * stride_post_TK + n_idx * stride_post_N,
+                out.to(post_act_ptr.dtype.element_ty),
+                mask=n_mask,
+            )
 
 
 @triton.jit

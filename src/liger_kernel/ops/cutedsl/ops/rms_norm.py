@@ -70,6 +70,7 @@ _FORCE_NO_FAST = bool(int(os.environ.get("LIGER_RMS_FORCE_NO_FAST") or 0))
 _FORCE_SPLIT_BWD = bool(int(os.environ.get("LIGER_RMS_FORCE_SPLIT_BWD") or 0))
 _AUTOTUNE_FILE = os.environ.get("LIGER_RMS_AUTOTUNE_FILE") or None
 _FUSED_STRIP_MULT = int(os.environ.get("LIGER_RMS_FUSED_STRIP_MULT") or 0)
+_DW_REDUCTION_POLICY = os.environ.get("LIGER_RMS_DW_REDUCTION", "auto")
 # A/B switches for the two halves of the Blackwell fast path (see below).
 _FORCE_NO_FFI = bool(int(os.environ.get("LIGER_RMS_FORCE_NO_FFI") or 0))
 _FORCE_NO_PACKED = bool(int(os.environ.get("LIGER_RMS_FORCE_NO_PACKED") or 0))
@@ -156,6 +157,22 @@ def _is_blackwell(device=None) -> bool:
         else:
             device_id = device
         return infer_device_arch(device_id) in ("blackwell", "blackwell_ultra")
+    except Exception:  # pragma: no cover - no CUDA / bad device
+        return False
+
+
+def _is_hopper(device=None) -> bool:
+    """Whether ``device`` is an SM90 Hopper GPU."""
+    try:
+        if not torch.cuda.is_available():
+            return False
+        if isinstance(device, torch.device):
+            device_id = device.index if device.index is not None else torch.cuda.current_device()
+        elif device is None:
+            device_id = torch.cuda.current_device()
+        else:
+            device_id = device
+        return infer_device_arch(device_id) == "hopper"
     except Exception:  # pragma: no cover - no CUDA / bad device
         return False
 
@@ -389,6 +406,26 @@ def _warp_reduce_sum(val: Float32) -> Float32:
 
 
 @cute.jit
+def _cta_reduce_sum_one_barrier(
+    val: Float32,
+    sm_warp: cute.Tensor,
+    lane: Int32,
+    warp: Int32,
+    slot: Int32,
+    NUM_WARPS: cutlass.Constexpr,
+) -> Float32:
+    """Reduce warp partials with one CTA barrier and ping-pong scratch."""
+    val = _warp_reduce_sum(val)
+    if lane == 0:
+        sm_warp[slot, warp] = val
+    cute.arch.barrier()
+    result = Float32(0.0)
+    for warp_idx in cutlass.range_constexpr(NUM_WARPS):
+        result = result + sm_warp[slot, warp_idx]
+    return result
+
+
+@cute.jit
 def _cta_reduce_sum_warp0(
     val: Float32,
     sm_warp: cute.Tensor,
@@ -397,20 +434,15 @@ def _cta_reduce_sum_warp0(
     warp: Int32,
     NUM_WARPS: cutlass.Constexpr,
 ) -> Float32:
-    """Reduce warp partials with warp 0 and broadcast one shared scalar.
-
-    Only warp 0 reads the partials. This avoids the scalar fallback's shared-load
-    loop in every thread while retaining a simple, reusable CTA
-    reduction for the vector forward and backward paths.
-    """
+    """Reduce with warp 0 and broadcast through a second CTA barrier."""
     val = _warp_reduce_sum(val)
     if lane == 0:
-        sm_warp[warp] = val
+        sm_warp[0, warp] = val
     cute.arch.barrier()
     warp0_val = Float32(0.0)
     if warp == 0:
         if lane < NUM_WARPS:
-            warp0_val = sm_warp[lane]
+            warp0_val = sm_warp[0, lane]
         warp0_val = _warp_reduce_sum(warp0_val)
         if lane == 0:
             sm_result[0] = warp0_val
@@ -510,8 +542,11 @@ def _rms_norm_fwd_vector_kernel(
     row, _, _ = cute.arch.block_idx()
 
     smem = cutlass.utils.SmemAllocator()
-    sm_warp = smem.allocate_tensor(Float32, cute.make_layout(NUM_WARPS), byte_alignment=4)
-    sm_result = smem.allocate_tensor(Float32, cute.make_layout(1), byte_alignment=4)
+    sm_warp = smem.allocate_tensor(
+        Float32,
+        cute.make_layout((2, NUM_WARPS), stride=(NUM_WARPS, 1)),
+        byte_alignment=4,
+    )
 
     # Slicing a dynamic tensor loses its static alignment.  The host validates the
     # 16-byte base/row alignment before selecting this kernel, so reconstruct the
@@ -542,7 +577,7 @@ def _rms_norm_fwd_vector_kernel(
             x_ssa = x_frags[None, ct].load().to(Float32)
             partial = partial + (x_ssa * x_ssa).reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
 
-    total = _cta_reduce_sum_warp0(partial, sm_warp, sm_result, lane, warp, NUM_WARPS)
+    total = _cta_reduce_sum_one_barrier(partial, sm_warp, lane, warp, Int32(0), NUM_WARPS)
     rstd = cute.math.rsqrt(total / Float32(N_COLS) + eps)
     if tid == 0:
         mRSTD[row] = rstd.to(mRSTD.element_type)
@@ -673,7 +708,10 @@ def _rms_norm_bwd_dw_kernel(
         # llama rounds x*rstd to the input dtype before accumulating (Triton parity).
         if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
             xhat = xhat.to(mX.element_type).to(Float32)
-        acc = acc + dyf * xhat
+        dw_update = dyf * xhat
+        if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
+            dw_update = dw_update.to(mX.element_type).to(Float32)
+        acc = acc + dw_update
     if c < n_cols:
         mdW[strip, None][c] = acc.to(mdW.element_type)
 
@@ -711,7 +749,11 @@ def _rms_norm_bwd_fused_vector_kernel(
     n_vec = N_COLS // VEC
 
     smem = cutlass.utils.SmemAllocator()
-    sm_warp = smem.allocate_tensor(Float32, cute.make_layout(NUM_WARPS), byte_alignment=4)
+    sm_warp = smem.allocate_tensor(
+        Float32,
+        cute.make_layout((2, NUM_WARPS), stride=(NUM_WARPS, 1)),
+        byte_alignment=4,
+    )
     sm_result = smem.allocate_tensor(Float32, cute.make_layout(1), byte_alignment=4)
 
     # W and dW are persistent row vectors, matching Triton's per-program state.
@@ -735,32 +777,30 @@ def _rms_norm_bwd_fused_vector_kernel(
     # Triton assigns one contiguous ceil-divided row range to each SM program.
     rows_per_strip = (n_rows + num_strips - 1) // num_strips
     row_start = strip * rows_per_strip
+    row_linear_offset = row_start * N_COLS
     for i in cutlass.range(0, rows_per_strip):
         r = row_start + i
         r_valid = r < n_rows
-        # Constructing a row view is pointer arithmetic even when no copy follows.
-        # Clamp the inactive final iteration to row 0 to keep that pointer in bounds.
-        r_safe = Int32(0)
+        row_linear_safe = Int32(0)
         if r_valid:
-            r_safe = r
+            row_linear_safe = row_linear_offset
         rstd = Float32(0.0)
         if r_valid:
             rstd = mRSTD[r].to(Float32)
 
-        # Rebuild row views with the host-validated alignment for vector copies.
-        x_row = mX[r_safe, None]
-        dy_row = mdY[r_safe, None]
-        dx_row = mdX[r_safe, None]
+        x_row_ptr = mX.iterator + row_linear_safe
+        dy_row_ptr = mdY.iterator + row_linear_safe
+        dx_row_ptr = mdX.iterator + row_linear_safe
         gX = cute.make_tensor(
-            cute.make_ptr(mX.element_type, x_row.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
+            cute.make_ptr(mX.element_type, x_row_ptr.toint(), cute.AddressSpace.gmem, assumed_align=16),
             cute.make_layout((N_COLS,)),
         )
         gdY = cute.make_tensor(
-            cute.make_ptr(mdY.element_type, dy_row.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
+            cute.make_ptr(mdY.element_type, dy_row_ptr.toint(), cute.AddressSpace.gmem, assumed_align=16),
             cute.make_layout((N_COLS,)),
         )
         gdX = cute.make_tensor(
-            cute.make_ptr(mdX.element_type, dx_row.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
+            cute.make_ptr(mdX.element_type, dx_row_ptr.toint(), cute.AddressSpace.gmem, assumed_align=16),
             cute.make_layout((N_COLS,)),
         )
         gXv = cute.tiled_divide(gX, (VEC,))
@@ -802,7 +842,10 @@ def _rms_norm_bwd_fused_vector_kernel(
                     ).reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
         if const_expr(PACKED_MATH):
             dot = dot0 + dot1
-        dot_total = _cta_reduce_sum_warp0(dot, sm_warp, sm_result, lane, warp, NUM_WARPS)
+        if const_expr(mX.element_type.width == 32 and N_COLS > 2048):
+            dot_total = _cta_reduce_sum_warp0(dot, sm_warp, sm_result, lane, warp, NUM_WARPS)
+        else:
+            dot_total = _cta_reduce_sum_one_barrier(dot, sm_warp, lane, warp, Int32(i % 2), NUM_WARPS)
         coef = (Float32(0.0) - rstd * rstd * dot_total) / Float32(N_COLS)
 
         # Reuse the original register fragments for dX and dW.
@@ -832,7 +875,12 @@ def _rms_norm_bwd_fused_vector_kernel(
                         if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
                             h0 = h0.to(mX.element_type).to(Float32)
                             h1 = h1.to(mX.element_type).to(Float32)
-                        a0, a1 = carch.fma_packed_f32x2((dy0, dy1), (h0, h1), (ar[i], ar[i + 1]))
+                            p0, p1 = carch.mul_packed_f32x2((dy0, dy1), (h0, h1))
+                            p0 = p0.to(mX.element_type).to(Float32)
+                            p1 = p1.to(mX.element_type).to(Float32)
+                            a0, a1 = carch.add_packed_f32x2((ar[i], ar[i + 1]), (p0, p1))
+                        else:
+                            a0, a1 = carch.fma_packed_f32x2((dy0, dy1), (h0, h1), (ar[i], ar[i + 1]))
                         ar[i] = a0
                         ar[i + 1] = a1
                     cute.autovec_copy(dx_frag, gdXv[None, vec_idx])
@@ -845,7 +893,11 @@ def _rms_norm_bwd_fused_vector_kernel(
                     xhat = xf * rstd
                     if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
                         xhat = xhat.to(mX.element_type).to(Float32)
-                    dw_acc[None, ct].store(dw_acc[None, ct].load() + dyf * xhat)
+                    dw_update = dyf * xhat
+                    if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
+                        dw_update = dw_update.to(mX.element_type).to(Float32)
+                    dw_acc[None, ct].store(dw_acc[None, ct].load() + dw_update)
+        row_linear_offset = row_linear_offset + N_COLS
 
     # Emit this strip's dW partials; the host sums the num_strips partial rows.
     dw_row = mdW[strip, None]
@@ -883,7 +935,7 @@ def _rms_norm_fwd_vector_host(
     stream: cuda.CUstream = None,
 ):
     n_rows = mX.shape[0]
-    smem_bytes = (((NUM_WARPS + 1) * 4 + 15) // 16) * 16
+    smem_bytes = (((2 * NUM_WARPS + 1) * 4 + 15) // 16) * 16
     _rms_norm_fwd_vector_kernel(
         mX,
         mW,
@@ -1022,7 +1074,7 @@ def _rms_norm_bwd_fused_host(
 # which is what lets PyTorch tensors be handed straight to it. ``eps`` / ``offset``
 # stay runtime scalars so a change of either does not force a recompile.
 def _make_fwd_vector_ffi(casting_mode, elementwise_affine, n_cols, vec, num_vec_tiles, num_warps, num_threads):
-    smem_bytes = (((num_warps + 1) * 4 + 15) // 16) * 16
+    smem_bytes = (((2 * num_warps + 1) * 4 + 15) // 16) * 16
 
     @cute.jit
     def fwd(
@@ -1059,7 +1111,7 @@ def _make_fwd_vector_ffi(casting_mode, elementwise_affine, n_cols, vec, num_vec_
 
 
 def _make_bwd_fused_ffi(casting_mode, n_cols, vec, num_vec_tiles, num_threads, num_warps, packed):
-    smem_bytes = (((num_warps + 1) * 4 + 15) // 16) * 16
+    smem_bytes = (((2 * num_warps + 1) * 4 + 15) // 16) * 16
 
     @cute.jit
     def bwd(
@@ -1244,7 +1296,7 @@ def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_aff
     """
     n_cols_ = X.shape[1]
     if _use_ffi():
-        num_warps = fwd_warp_count(n_cols_, vec)
+        num_warps = fwd_warp_count(n_cols_, vec, X.shape[0], _is_hopper(X.device))
         num_threads = 32 * num_warps
         fn = _get_fwd_vector_ffi(
             X.dtype,
@@ -1275,7 +1327,7 @@ def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_aff
     rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
     w_ct = _to_cute_cached(W, assumed_align=16) if elementwise_affine else rstd_ct
     n_cols = X.shape[1]
-    num_warps = fwd_warp_count(n_cols, vec)
+    num_warps = fwd_warp_count(n_cols, vec, X.shape[0], _is_hopper(X.device))
     num_threads = 32 * num_warps
     num_vec_tiles = (n_cols // vec + num_threads - 1) // num_threads
     # Optionally bucket n_cols in the compile key to reduce cold-compile churn.
@@ -1452,7 +1504,7 @@ def _launch_bwd_fused(
     dw_ct = _to_cute_cached(dW_partial, assumed_align=16)  # fp32 (num_strips, n_cols)
     n_cols = X.shape[1]
     num_threads = 32 * num_warps
-    smem_bytes = (((num_warps + 1) * 4 + 15) // 16) * 16
+    smem_bytes = (((2 * num_warps + 1) * 4 + 15) // 16) * 16
 
     # The width and thread geometry size the register layouts and reduction
     # scratch, so every value is baked into the compiled specialization.
@@ -1708,7 +1760,19 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         _launch_bwd_dw(dY, X, RSTD, dW_partial, rows_per_strip, casting_mode)
         _launch_bwd_dx(dY, X, W, RSTD, dX, offset, casting_mode, elementwise_affine)
 
-    dW = dW_partial.sum(dim=0).to(W.dtype)
+    # The 32-warp epilogue needs at least four partials per warp; keep the
+    # established torch reduction for smaller or non-Hopper auto-dispatches.
+    use_custom_dw_reduction = _DW_REDUCTION_POLICY == "custom" or (
+        _DW_REDUCTION_POLICY == "auto" and num_strips >= 128 and _is_hopper(W.device)
+    )
+    if use_custom_dw_reduction:
+        from liger_kernel.ops.cutedsl.ops.rms_norm_dw_reduce import reduce_dw_partials
+
+        dW = reduce_dw_partials(dW_partial, W.dtype)
+    elif _DW_REDUCTION_POLICY in ("auto", "torch"):
+        dW = dW_partial.sum(dim=0).to(W.dtype)
+    else:
+        raise ValueError(f"Invalid LIGER_RMS_DW_REDUCTION policy: {_DW_REDUCTION_POLICY}")
     return dX.view(*shape), dW
 
 

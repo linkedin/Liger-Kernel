@@ -36,6 +36,9 @@ from liger_kernel.ops.cutile.ops.layer_norm import layer_norm_forward
 from liger_kernel.ops.cutile.ops.llama4_rope import LigerLlama4RopeFunction
 from liger_kernel.ops.cutile.ops.multi_token_attention import LigerMultiTokenAttentionFunction
 from liger_kernel.ops.cutile.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
+from liger_kernel.ops.cutile.ops.rms_norm import LigerRMSNormFunction
+from liger_kernel.ops.cutile.ops.rms_norm import rms_norm_backward
+from liger_kernel.ops.cutile.ops.rms_norm import rms_norm_forward
 from liger_kernel.ops.cutile.ops.rope import LigerRopeFunction
 from liger_kernel.ops.cutile.ops.rope import rope_backward
 from liger_kernel.ops.cutile.ops.rope import rope_forward
@@ -68,6 +71,9 @@ __all__ = [
     "LigerLlama4RopeFunction",
     "LigerMultiTokenAttentionFunction",
     "LigerQwen2VLMRopeFunction",
+    "LigerRMSNormFunction",
+    "rms_norm_backward",
+    "rms_norm_forward",
     "LigerRopeFunction",
     "rope_backward",
     "rope_forward",
