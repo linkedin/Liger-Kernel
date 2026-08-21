@@ -849,13 +849,25 @@ __device__ __forceinline__ void mlp4_consumer(
 		int cell_stride,
 		int batch_kb_start,
 		int batch_kb_end,
-		int k_split) {
-	Mlp4ConsumerImpl<Compute>::template run<Traits, Expert3D>(
-		pipe, state, smem, tma_reduce_db, tma_reduce_dc,
-		expert_k_starts, expert_k_ends, num_experts,
-		intermediate_dim, hidden_dim, total_m_rows,
-		num_m_tiles, num_n_tiles, outer_split,
-		cell_start, cell_stride, batch_kb_start, batch_kb_end, k_split);
+		int k_split,
+		const cutlass::arch::ClusterBarrier* pair_init_barrier = nullptr,
+		uint32_t* pair_init_phase = nullptr) {
+	if constexpr (Compute == 100) {
+		Mlp4ConsumerImpl<Compute>::template run<Traits, Expert3D>(
+			pipe, state, smem, tma_reduce_db, tma_reduce_dc,
+			expert_k_starts, expert_k_ends, num_experts,
+			intermediate_dim, hidden_dim, total_m_rows,
+			num_m_tiles, num_n_tiles, outer_split,
+			cell_start, cell_stride, batch_kb_start, batch_kb_end, k_split,
+			pair_init_barrier, pair_init_phase);
+	} else {
+		Mlp4ConsumerImpl<Compute>::template run<Traits, Expert3D>(
+			pipe, state, smem, tma_reduce_db, tma_reduce_dc,
+			expert_k_starts, expert_k_ends, num_experts,
+			intermediate_dim, hidden_dim, total_m_rows,
+			num_m_tiles, num_n_tiles, outer_split,
+			cell_start, cell_stride, batch_kb_start, batch_kb_end, k_split);
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1261,7 +1273,9 @@ static __device__ __forceinline__ void run(
 		int cell_stride,
 		int batch_kb_start,
 		int batch_kb_end,
-		int k_split) {
+		int k_split,
+		const cutlass::arch::ClusterBarrier* pair_init_barrier,
+		uint32_t* pair_init_phase) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	(void)intermediate_dim;
 	using Element = typename Traits::Element;
@@ -1301,6 +1315,23 @@ static __device__ __forceinline__ void run(
 	auto tCgC = cta_mma.partition_C(cAccFull);
 	auto tCtAcc = cta_mma.make_fragment_C(tCgC);
 
+	if (pair_init_barrier != nullptr) {
+		cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, 3);
+		if (warp_id == 3) {
+			if (cute::elect_one_sync()) {
+				uint32_t rank = cute::block_rank_in_cluster();
+				uint32_t peer = rank ^ 1;
+				bool leader = (rank % 2) == 0;
+				pair_init_barrier->arrive(peer, !leader);
+				pair_init_barrier->wait(*pair_init_phase);
+				pair_init_barrier->arrive(peer, leader);
+				*pair_init_phase ^= 1;
+			}
+			__syncwarp();
+		}
+		cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, 3);
+	}
+
 	using AccPipe = typename Traits::AccumulatorPipeline2Sm;
 	typename AccPipe::Params acc_params;
 	acc_params.role = is_mma_warp && is_leader_cta
@@ -1316,6 +1347,20 @@ static __device__ __forceinline__ void run(
 	typename AccPipe::PipelineState acc_cons_state;
 
 	cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, 3);
+	if (pair_init_barrier != nullptr && warp_id == 3) {
+		if (cute::elect_one_sync()) {
+			uint32_t rank = cute::block_rank_in_cluster();
+			uint32_t peer = rank ^ 1;
+			bool leader = (rank % 2) == 0;
+			pair_init_barrier->arrive(peer, !leader);
+			pair_init_barrier->wait(*pair_init_phase);
+			pair_init_barrier->arrive(peer, leader);
+			*pair_init_phase ^= 1;
+		}
+		__syncwarp();
+	}
+	if (pair_init_barrier != nullptr)
+		cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, 3);
 	uint32_t tmem_base = smem.tmem_base;
 	tCtAcc.data() = tmem_base;
 
@@ -1447,8 +1492,10 @@ static __device__ __forceinline__ void run(
 								tid_in_wg / Traits::WarpSize ==
 								subpart;
 						}
-						if (issue_tmem_load)
+						if (issue_tmem_load) {
 							copy(t2r, tAccChunk, tTR_rAcc);
+							cutlass::arch::fence_view_async_tmem_load();
+						}
 
 						if (store_in_flight)
 							cute::tma_store_wait<0>();

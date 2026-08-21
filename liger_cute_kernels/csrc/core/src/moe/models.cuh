@@ -180,6 +180,7 @@ struct SortBuffers {
 	int* sorted_token_ids;    // [total_slots]       — final output: slot → token
 	int* token_expert_slots;  // [T * K]             — final output: (token, k) → slot
 	int* expert_offsets;      // [E + 1]             — aligned expert boundaries (symmetric)
+	int* expert_counts;       // [E]                 — exact routed rows per expert (nullable)
 	int* tile_expert_ids;     // [max_total_tiles]   — expert ID per M-tile (nullable)
 	int* cta_done;            // [num_blocks]         — per-CTA completion flags (Blelloch tree)
 	int* cta_sums;            // [num_blocks * E]    — per-CTA expert totals for prefix sum
