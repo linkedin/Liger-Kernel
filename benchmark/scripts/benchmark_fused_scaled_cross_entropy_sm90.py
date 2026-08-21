@@ -4,7 +4,7 @@ The measured operation returns the **per-token NLL** ``[M]`` (never a mean or a
 sum), so the backward is driven by a *fixed* per-token gradient vector ``[M]``
 -- the same vector for every provider, every repetition and every operation
 mode -- instead of the shared harness' fresh ``randn_like`` draw.  That keeps
-the three providers numerically comparable and keeps the gradient allocation
+the providers numerically comparable and keeps the gradient allocation
 out of the timed region.
 
 Sweep parameters (all optional; defaults reproduce the previous behaviour)::
@@ -15,13 +15,15 @@ Sweep parameters (all optional; defaults reproduce the previous behaviour)::
     --providers NAME [NAME ...]     explicit provider list
 
 Providers: ``torch``, ``liger`` (Triton FLCE, ``reduction="none"``),
-``cutile``, and ``cutedsl-sm90`` (fixed 1024-token wave-batched backward).
+``scaled-default`` (the device-dispatching scaled-CE frontend),
+``scaled-fallback`` (its exact PyTorch fallback), ``cutile``, and
+``cutedsl-sm90`` (fixed 1024-token wave-batched backward).
 
 Example::
 
     python benchmark_fused_scaled_cross_entropy_sm90.py \\
         --tokens 4096 --hidden 4096 --vocab 131072 \\
-        --providers torch liger cutile cutedsl-sm90
+        --providers scaled-fallback scaled-default cutile
 """
 
 import argparse
@@ -40,7 +42,6 @@ from utils import _test_memory
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
-from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import LigerFusedScaledCrossEntropySM90Function
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.utils import infer_device
 
@@ -54,6 +55,8 @@ REPRESENTATIVE_CONFIG = {
 
 CUTEDSL_PREFIX = "cutedsl-sm90"
 CUTILE_PREFIX = "cutile"
+SCALED_DEFAULT_PREFIX = "scaled-default"
+SCALED_FALLBACK_PREFIX = "scaled-fallback"
 # Seed of the fixed per-token upstream gradient, so every provider and every
 # repetition sees byte-identical ``d(NLL)/d(loss)`` values.
 GRAD_SEED = 1234
@@ -101,6 +104,10 @@ class CuteDSLHopperLMHeadScaledCE(torch.nn.Module):
         torch.nn.init.normal_(self.weight, std=hidden_size**-0.5)
 
     def forward(self, x, target):
+        from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import (
+            LigerFusedScaledCrossEntropySM90Function,
+        )
+
         return LigerFusedScaledCrossEntropySM90Function.apply(
             x,
             self.weight,
@@ -134,6 +141,51 @@ class CuTileLMHeadScaledCE(torch.nn.Module):
         )
 
 
+class DefaultLMHeadScaledCE(torch.nn.Module):
+    """Device-dispatching scaled CE frontend used by public callers."""
+
+    def __init__(self, hidden_size: int, vocab_size: int, dtype: torch.dtype, temperature: float = 1.0):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.empty(vocab_size, hidden_size, dtype=dtype))
+        self.temperature = temperature
+        torch.nn.init.normal_(self.weight, std=hidden_size**-0.5)
+
+    def forward(self, x, target):
+        from liger_kernel.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
+
+        return LigerFusedLinearScaledCrossEntropyFunction.apply(
+            x,
+            self.weight,
+            target,
+            self.temperature,
+            -100,
+            1,
+            False,
+        )
+
+
+class FallbackLMHeadScaledCE(torch.nn.Module):
+    """Exact 512-token PyTorch fallback behind the scaled CE frontend."""
+
+    def __init__(self, hidden_size: int, vocab_size: int, dtype: torch.dtype, temperature: float = 1.0):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.empty(vocab_size, hidden_size, dtype=dtype))
+        self.temperature = temperature
+        torch.nn.init.normal_(self.weight, std=hidden_size**-0.5)
+
+    def forward(self, x, target):
+        from liger_kernel.ops.fused_linear_scaled_cross_entropy import _FusedLinearPPOFallbackFunction
+
+        return _FusedLinearPPOFallbackFunction.apply(
+            x,
+            self.weight,
+            target,
+            self.temperature,
+            -100,
+            False,
+        )
+
+
 def fixed_grad_output(tokens: int) -> torch.Tensor:
     """The fixed ``[M]`` upstream gradient of the per-token NLL."""
     generator = torch.Generator(device=device).manual_seed(GRAD_SEED)
@@ -163,6 +215,10 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
         layer = CuteDSLHopperLMHeadScaledCE(hidden_size, vocab_size, dtype)
     elif provider == CUTILE_PREFIX:
         layer = CuTileLMHeadScaledCE(hidden_size, vocab_size, dtype)
+    elif provider == SCALED_DEFAULT_PREFIX:
+        layer = DefaultLMHeadScaledCE(hidden_size, vocab_size, dtype)
+    elif provider == SCALED_FALLBACK_PREFIX:
+        layer = FallbackLMHeadScaledCE(hidden_size, vocab_size, dtype)
     elif provider == "liger":
         layer = TritonLMHeadCE(hidden_size, vocab_size, dtype)
     elif provider == "torch":
@@ -253,7 +309,14 @@ def parse_sweep_args():
 def resolve_providers(sweep_args):
     if sweep_args.providers:
         for provider in sweep_args.providers:
-            if provider not in ("torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX):
+            if provider not in (
+                "torch",
+                "liger",
+                CUTILE_PREFIX,
+                CUTEDSL_PREFIX,
+                SCALED_DEFAULT_PREFIX,
+                SCALED_FALLBACK_PREFIX,
+            ):
                 raise ValueError(f"Unknown provider {provider!r}")
         return list(sweep_args.providers)
     return ["torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX]
