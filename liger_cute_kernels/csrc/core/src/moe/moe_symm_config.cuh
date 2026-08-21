@@ -1,5 +1,7 @@
 #pragma once
 
+#include "moe_comm_config.cuh"
+
 // ============================================================================
 // MoeSymmConfig — fixed parameters for symmetric-memory sizing.
 //
@@ -32,13 +34,14 @@ struct MoeSymmConfig {
 	// session may run. The symmetric staging pool (moe_src/dst_staging) is
 	// a single shared key sized ONCE; because get_symmetric aborts on grow,
 	// it must be reserved at the largest CommNumStages × TileM any config
-	// uses (the tuner sweeps NS=16/CS=8/TileM=128). Per-config sizing would
+	// uses (the tuner sweeps NS=16/CS=8).
+	// Per-config sizing would
 	// let a small first config lock in a buffer a later large config can't
 	// grow into. Same reasoning as sizing by max hidden_dim, extended to
 	// the (CS, TileM) axes. The bwd path doesn't read these, but they MUST
 	// stay in the layout so its get_symm_config() view matches the fwd's.
-	int max_comm_stages = 8;   // max CommNumStages over LIGER_MOE_TUNE_CONFIGS
-	int max_tile_m      = 128; // max TileM (WGMMA-bounded)
+	int max_comm_stages = kMaxMoeCommStages;
+	int max_tile_m      = kMaxMoeCommTileM;
 	bool initialized = false;
 };
 
