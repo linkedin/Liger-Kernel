@@ -23,9 +23,9 @@ _DTYPES = [torch.bfloat16, torch.float16]
 _DTYPE_IDS = ["bf16", "fp16"]
 
 cuda_required = pytest.mark.skipif(not torch.cuda.is_available(), reason="cutedsl FLCE requires CUDA")
-sm100_required = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() != (10, 0),
-    reason="native cutedsl FLCE requires an SM100 GPU",
+native_blackwell_required = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3)),
+    reason="native cutedsl FLCE requires an SM100 or SM103 GPU",
 )
 
 
@@ -728,7 +728,7 @@ def test_flce_predicted_tokens_matches_triton(dtype, ignore_index):
     )
 
 
-@sm100_required
+@native_blackwell_required
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
 @pytest.mark.parametrize(
     ("return_token_accuracy", "return_predicted_tokens"),
@@ -869,9 +869,9 @@ def test_flce_all_features_matches_triton(dtype):
     )
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_all_native_features_use_one_path():
-    """Every feature supported on SM100 must stay on the single native path."""
+    """Every feature supported on native data-center Blackwell must stay on one path."""
     set_seed()
     BT, H, V = 256, 512, 4096
     masters = _Masters(BT, H, V, bias=True, ce_weight=True)
@@ -897,7 +897,7 @@ def test_flce_all_native_features_use_one_path():
     assert out["grad_bias"] is not None
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_odd_vocab_all_native_features_match_triton():
     """Logical vocabulary padding must preserve every native feature and gradient."""
     set_seed()
@@ -920,7 +920,7 @@ def test_flce_odd_vocab_all_native_features_match_triton():
     )
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_odd_vocab_padding_cannot_become_softmax_max():
     """Aligned zero padding must not replace a very negative logical row maximum."""
     BT, H, V = 33, 64, 513
@@ -931,7 +931,7 @@ def test_flce_odd_vocab_padding_cannot_become_softmax_max():
     _assert_flce_parity(masters, target, torch.bfloat16, reduction="mean")
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_first_backward_does_not_recompute(monkeypatch):
     """The normal backward must only hand off gradients produced during forward."""
     import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
@@ -963,7 +963,7 @@ def test_flce_first_backward_does_not_recompute(monkeypatch):
     loss.backward()
 
 
-@sm100_required
+@native_blackwell_required
 def test_flce_repeated_backward_recomputes_full_feature_gradients():
     """A retained graph may recompute once, and must preserve scalar scaling."""
     set_seed()
@@ -1065,6 +1065,53 @@ def test_flce_independent_requires_grad_matches_torch(trainable):
     _assert_close(out[1], ref[1], 5e-3, 5e-2, f"independent grad_{trainable}")
 
 
+@native_blackwell_required
+@pytest.mark.parametrize("dtype", _DTYPES, ids=_DTYPE_IDS)
+def test_flce_noncontiguous_inputs_match_torch(dtype):
+    set_seed()
+    BT, H, V = 33, 127, 513
+    x = torch.randn(BT, H * 2, device="cuda", dtype=dtype)[:, ::2].requires_grad_(True)
+    weight = (torch.randn(V, H * 2, device="cuda", dtype=dtype) * H**-0.5)[:, ::2].requires_grad_(True)
+    bias = (torch.randn(V * 2, device="cuda", dtype=dtype) * 0.1)[::2].requires_grad_(True)
+    target = torch.randint(0, V, (BT,), device="cuda", dtype=torch.long)
+    target[::7] = -100
+    assert not x.is_contiguous()
+    assert not weight.is_contiguous()
+    assert not bias.is_contiguous()
+
+    loss = _apply(
+        _cutedsl_flce(),
+        x,
+        weight,
+        target,
+        bias=bias,
+        label_smoothing=0.1,
+    )[0]
+    grad_output = torch.tensor(1.7, device="cuda", dtype=torch.float32)
+    gradients = torch.autograd.grad(loss, (x, weight, bias), grad_outputs=grad_output)
+
+    x_ref = x.detach().float().requires_grad_(True)
+    weight_ref = weight.detach().float().requires_grad_(True)
+    bias_ref = bias.detach().float().requires_grad_(True)
+    loss_ref = F.cross_entropy(
+        F.linear(x_ref, weight_ref, bias_ref),
+        target,
+        ignore_index=-100,
+        reduction="mean",
+        label_smoothing=0.1,
+    )
+    gradients_ref = torch.autograd.grad(loss_ref, (x_ref, weight_ref, bias_ref), grad_outputs=grad_output)
+    atol, rtol = _TOL[("mean", dtype)]
+    _assert_close(loss.float(), loss_ref, atol, rtol, "noncontiguous loss")
+    for name, actual, expected in zip(
+        ("input", "weight", "bias"),
+        gradients,
+        gradients_ref,
+        strict=True,
+    ):
+        _assert_close(actual.float(), expected, atol, rtol, f"noncontiguous grad_{name}")
+
+
 @cuda_required
 def test_flce_all_ignored_targets_are_valid():
     _input, weight, target = _basic_args(BT=16, V=256, dtype=torch.bfloat16)
@@ -1101,20 +1148,52 @@ def test_flce_invalid_inputs_raise(mutation, error):
         _apply(_cutedsl_flce(), _input, weight, target)
 
 
-@cuda_required
-def test_flce_native_support_requires_exact_sm100(monkeypatch):
+@pytest.mark.parametrize(
+    ("architecture", "capability", "expected"),
+    [
+        ("blackwell", (10, 0), True),
+        ("blackwell_ultra", (10, 3), True),
+        ("blackwell", (12, 0), False),
+        ("hopper", (9, 0), False),
+        ("blackwell_ultra", (10, 0), False),
+    ],
+)
+def test_flce_native_support_requires_exact_data_center_blackwell(monkeypatch, architecture, capability, expected):
     import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
 
-    tensor = torch.empty(1, device="cuda")
-    seen = []
+    class FakeTensor:
+        device = torch.device("cuda", 7)
 
-    def capability(device):
-        seen.append(device)
-        return (10, 3)
+    seen_arch = []
+    seen_capability = []
 
-    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
-    assert not flce._native_sm100_supported(tensor)
-    assert seen == [tensor.device]
+    def infer(device_id):
+        seen_arch.append(device_id)
+        return architecture
+
+    def get_capability(device):
+        seen_capability.append(device)
+        return capability
+
+    monkeypatch.setattr(flce, "infer_device_arch", infer)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", get_capability)
+    assert flce._native_blackwell_supported(FakeTensor()) is expected
+    assert seen_arch == [7]
+    assert seen_capability == [torch.device("cuda", 7)]
+
+
+def test_flce_native_support_rejects_non_cuda_before_device_queries(monkeypatch):
+    import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
+
+    class FakeTensor:
+        device = torch.device("cpu")
+
+    def unexpected(*_):
+        pytest.fail("non-CUDA support check queried CUDA device metadata")
+
+    monkeypatch.setattr(flce, "infer_device_arch", unexpected)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", unexpected)
+    assert not flce._native_blackwell_supported(FakeTensor())
 
 
 @cuda_required
@@ -1125,12 +1204,12 @@ def test_flce_native_function_rejects_fp32_inputs():
 
 
 @cuda_required
-def test_flce_native_function_rejects_non_sm100(monkeypatch):
+def test_flce_native_function_rejects_non_blackwell(monkeypatch):
     import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
 
-    monkeypatch.setattr(flce, "_native_sm100_supported", lambda _: False)
+    monkeypatch.setattr(flce, "_native_blackwell_supported", lambda _: False)
     _input, weight, target = _basic_args()
-    with pytest.raises(RuntimeError, match="exact SM100"):
+    with pytest.raises(RuntimeError, match="exact SM100 or SM103"):
         _apply(_cutedsl_flce(), _input, weight, target)
 
 
@@ -1158,6 +1237,55 @@ def test_flce_native_gemm_guards_noncurrent_device(monkeypatch):
     with gemm._device_guard(device):
         pass
     assert entered == [device]
+
+
+@cuda_required
+def test_flce_native_forward_guards_ce_launch_device(monkeypatch):
+    import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
+
+    input_device = torch.device("cuda", torch.cuda.current_device())
+    ambient_device = torch.device("cuda", input_device.index + 1)
+    active_device = [ambient_device]
+    entered = []
+    ce_devices = []
+
+    class Guard:
+        def __init__(self, device):
+            self.device = torch.device(device)
+            self.previous = None
+
+        def __enter__(self):
+            self.previous = active_device[0]
+            active_device[0] = self.device
+            entered.append(self.device)
+
+        def __exit__(self, *_):
+            active_device[0] = self.previous
+            return False
+
+    def fake_gemm(_, __, output, ___):
+        output.zero_()
+
+    def fake_ce(x, _, loss, *args, **kwargs):
+        del args, kwargs
+        ce_devices.append(active_device[0])
+        assert active_device[0] == x.device
+        loss.zero_()
+
+    monkeypatch.setattr(flce, "device_context", Guard)
+    monkeypatch.setattr(flce, "_native_blackwell_supported", lambda _: True)
+    monkeypatch.setattr(flce, "run_epilogue_gemm", fake_gemm)
+    monkeypatch.setattr(flce, "_launch_ce_fwd", fake_ce)
+
+    _input = torch.randn(2, 128, device=input_device, dtype=torch.bfloat16)
+    weight = torch.randn(16, 128, device=input_device, dtype=torch.bfloat16)
+    target = torch.tensor([1, 7], device=input_device)
+    loss, _, _, _, _ = flce.fused_linear_cross_entropy_forward(_input, weight, target)
+
+    assert loss == 0
+    assert entered == [input_device]
+    assert ce_devices == [input_device]
+    assert active_device == [ambient_device]
 
 
 # =============================================================================

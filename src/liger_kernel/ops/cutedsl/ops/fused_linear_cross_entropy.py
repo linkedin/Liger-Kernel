@@ -10,6 +10,7 @@ from liger_kernel.ops.cutedsl.ops.cross_entropy import _launch_ce_fwd
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.utils import infer_device_arch
 
 _SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
@@ -65,7 +66,7 @@ def _target_probability_from_logits(logits, target, ignore_index, softcap, vocab
     return torch.where(valid, torch.exp(target_logits - row_lse), torch.zeros_like(row_lse))
 
 
-def _native_forward(
+def _native_forward_on_device(
     X,
     W,
     target,
@@ -180,6 +181,45 @@ def _native_forward(
     return loss, z_loss, token_accuracy, predicted_tokens, grad_input, grad_weight, grad_bias
 
 
+def _native_forward(
+    X,
+    W,
+    target,
+    bias,
+    ce_weight,
+    ignore_index,
+    lse_square_scale,
+    label_smoothing,
+    reduction,
+    softcap,
+    return_z_loss,
+    accum_dtype,
+    use_token_scaling,
+    return_token_accuracy,
+    return_predicted_tokens,
+    needs_grad,
+):
+    with device_context(X.device):
+        return _native_forward_on_device(
+            X,
+            W,
+            target,
+            bias,
+            ce_weight,
+            ignore_index,
+            lse_square_scale,
+            label_smoothing,
+            reduction,
+            softcap,
+            return_z_loss,
+            accum_dtype,
+            use_token_scaling,
+            return_token_accuracy,
+            return_predicted_tokens,
+            needs_grad,
+        )
+
+
 def _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index):
     if _input.ndim != 2 or weight.ndim != 2:
         raise ValueError(f"_input and weight must be 2D, got {_input.shape} and {weight.shape}.")
@@ -219,11 +259,16 @@ def _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_
             raise AssertionError("Target out of bounds. Expected >= 0")
 
 
-def _native_sm100_supported(tensor):
+def _native_blackwell_supported(tensor):
     if tensor.device.type != "cuda":
         return False
     device_id = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
-    return infer_device_arch(device_id) == "blackwell" and torch.cuda.get_device_capability(tensor.device) == (10, 0)
+    architecture = infer_device_arch(device_id)
+    capability = torch.cuda.get_device_capability(tensor.device)
+    return (architecture, capability) in {
+        ("blackwell", (10, 0)),
+        ("blackwell_ultra", (10, 3)),
+    }
 
 
 class _FlceState:
@@ -248,18 +293,19 @@ def fused_linear_cross_entropy_forward(
     return_token_accuracy=False,
     return_predicted_tokens=False,
 ):
-    """Run the native SM100 CuTe DSL path."""
+    """Run the native data-center Blackwell CuTe DSL path."""
     ctx = _FlceState()
     _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index)
     needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
 
     if (
-        not _native_sm100_supported(_input)
+        not _native_blackwell_supported(_input)
         or _input.dtype not in (torch.bfloat16, torch.float16)
         or reduction not in ("mean", "sum")
     ):
         raise RuntimeError(
-            "Native CuTe DSL FLCE requires exact SM100 hardware, FP16/BF16 input and weight, and mean/sum reduction."
+            "Native CuTe DSL FLCE requires exact SM100 or SM103 hardware, FP16/BF16 input and weight, "
+            "and mean/sum reduction."
         )
 
     h_orig = None
