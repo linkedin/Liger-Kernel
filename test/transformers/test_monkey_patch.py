@@ -12,6 +12,7 @@ import transformers
 from packaging import version
 from test.utils import get_mllama_rope_config
 from test.utils import get_qwen3_vl_rope_config
+from torch.nn import LayerNorm as TorchLayerNorm
 from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
@@ -471,6 +472,106 @@ def test_patching_apis_support_patching_model_instance():
         assert "model" in sig.parameters, (
             f"{func.__name__} does not have 'model' as an argument. All patching methods must support patching an existing model instance."
         )
+
+
+@pytest.mark.parametrize(
+    "apply_fn_name,modeling_module_path,kwargs",
+    [
+        (
+            "apply_liger_kernel_to_gemma3",
+            "transformers.models.siglip.modeling_siglip",
+            {
+                "rope": False,
+                "cross_entropy": False,
+                "fused_linear_cross_entropy": False,
+                "rms_norm": False,
+                "geglu": False,
+            },
+        ),
+        (
+            "apply_liger_kernel_to_internvl",
+            "transformers.models.internvl.modeling_internvl",
+            {
+                "cross_entropy": False,
+                "fused_linear_cross_entropy": False,
+                "rms_norm": False,
+            },
+        ),
+        (
+            "apply_liger_kernel_to_mllama",
+            "transformers.models.mllama.modeling_mllama",
+            {
+                "rope": False,
+                "cross_entropy": False,
+                "fused_linear_cross_entropy": False,
+                "rms_norm": False,
+                "swiglu": False,
+            },
+        ),
+        (
+            "apply_liger_kernel_to_paligemma",
+            "transformers.models.siglip.modeling_siglip",
+            {
+                "rope": False,
+                "cross_entropy": False,
+                "fused_linear_cross_entropy": False,
+                "rms_norm": False,
+                "geglu": False,
+            },
+        ),
+        (
+            "apply_liger_kernel_to_smolvlm",
+            "transformers.models.smolvlm.modeling_smolvlm",
+            {
+                "cross_entropy": False,
+                "fused_linear_cross_entropy": False,
+                "rms_norm": False,
+            },
+        ),
+    ],
+)
+def test_class_level_layer_norm_patch_does_not_modify_torch_nn(apply_fn_name, modeling_module_path, kwargs):
+    modeling_module = pytest.importorskip(modeling_module_path)
+    apply_fn = getattr(monkey_patch, apply_fn_name)
+
+    with (
+        patch.object(torch.nn, "LayerNorm", TorchLayerNorm),
+        patch.object(modeling_module, "nn", torch.nn),
+    ):
+        apply_fn(layer_norm=True, **kwargs)
+
+        assert torch.nn.LayerNorm is TorchLayerNorm
+        assert modeling_module.nn is not torch.nn
+        assert modeling_module.nn.LayerNorm is LigerLayerNorm
+        assert modeling_module.nn.Linear is torch.nn.Linear
+
+
+def test_internvl_class_level_layer_norm_patch_updates_norm_factory():
+    modeling_internvl = pytest.importorskip("transformers.models.internvl.modeling_internvl")
+    from transformers.models.internvl.configuration_internvl import InternVLVisionConfig
+
+    with (
+        patch.object(torch.nn, "LayerNorm", TorchLayerNorm),
+        patch.object(modeling_internvl, "nn", torch.nn),
+        patch.dict(modeling_internvl.NORM2FN, {"layer_norm": TorchLayerNorm}),
+    ):
+        monkey_patch.apply_liger_kernel_to_internvl(
+            cross_entropy=False,
+            fused_linear_cross_entropy=False,
+            rms_norm=False,
+            layer_norm=True,
+        )
+        layer = modeling_internvl.InternVLVisionLayer(
+            InternVLVisionConfig(
+                hidden_size=32,
+                intermediate_size=64,
+                num_attention_heads=4,
+                norm_type="layer_norm",
+            )
+        )
+
+        assert isinstance(layer.layernorm_before, LigerLayerNorm)
+        assert isinstance(layer.layernorm_after, LigerLayerNorm)
 
 
 def test_apply_liger_kernel_to_instance_for_llama():
