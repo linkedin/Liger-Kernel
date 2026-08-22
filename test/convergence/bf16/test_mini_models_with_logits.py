@@ -1670,13 +1670,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if (
-            "glm4" in model_name
-            or "llama4" in model_name
-            or "qwen3_next" in model_name
-            or "qwen3_5" in model_name
-            or "deepseek_v4" in model_name
-        ):
+        if "glm4" in model_name or "llama4" in model_name or "qwen3_next" in model_name or "qwen3_5" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -1698,6 +1692,12 @@ def run_mini_model(
         kwargs["cross_entropy"] = False
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+        if model_name == "mini_deepseek_v4":
+            from transformers.models.deepseek_v4 import modeling_deepseek_v4
+
+            from liger_kernel.transformers.deepseek_v4_rope import liger_deepseek_v4_rotary_pos_emb
+
+            assert modeling_deepseek_v4.apply_rotary_pos_emb is liger_deepseek_v4_rotary_pos_emb
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 

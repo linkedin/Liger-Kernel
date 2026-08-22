@@ -12,6 +12,7 @@ from packaging import version
 from transformers import PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+from liger_kernel.transformers.deepseek_v4_rope import liger_deepseek_v4_rotary_pos_emb
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.geglu import LigerGEGLUMLPForGemma4
@@ -3378,7 +3379,7 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
 
 
 def apply_liger_kernel_to_deepseek_v4(
-    rope: bool = False,
+    rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -3388,14 +3389,12 @@ def apply_liger_kernel_to_deepseek_v4(
     """
     Apply Liger kernels to replace original implementation in HuggingFace DeepSeek-V4 models.
 
-    NOTE: RoPE and SwiGLU are not supported for DeepSeek-V4. DeepSeek-V4 uses interleaved
-    partial RoPE that is incompatible with ``liger_rotary_pos_emb``, and routed experts
-    apply ``swiglu_limit`` clamping that differs from the standard Liger fused MoE path.
-    Passing ``rope=True`` or ``swiglu=True`` emits a warning and skips the kernel swap.
+    NOTE: SwiGLU is not supported for DeepSeek-V4. Its routed experts apply ``swiglu_limit``
+    clamping that differs from the standard Liger fused MoE path. Passing ``swiglu=True``
+    emits a warning and skips the kernel swap.
 
     Args:
-        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
-            Currently unsupported; emits a warning and is a no-op.
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is True.
@@ -3417,10 +3416,7 @@ def apply_liger_kernel_to_deepseek_v4(
     from liger_kernel.transformers.model.deepseek_v4 import lce_forward as deepseek_v4_lce_forward
 
     if rope:
-        logger.warning_once(
-            "rope=True is not supported for DeepSeek-V4: interleaved partial RoPE is "
-            "incompatible with liger_rotary_pos_emb. Skipping rope kernel swap."
-        )
+        modeling_deepseek_v4.apply_rotary_pos_emb = liger_deepseek_v4_rotary_pos_emb
 
     if rms_norm:
         modeling_deepseek_v4.DeepseekV4RMSNorm = LigerRMSNorm
