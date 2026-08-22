@@ -64,24 +64,21 @@ def _jsd_kernel(
             loss = X_prob * (X - Y)
             dX = loss + X_prob
         else:
-            max_val = tl.maximum(tl.max(X, axis=0), tl.max(Y, axis=0))
+            max_val = tl.maximum(X, Y)
             X_shifted = X - max_val
             Y_shifted = Y - max_val
 
-            # Pre-compute exp(max_val) since it's used twice
-            exp_max = tl.exp(max_val)
+            # Compute log(M) before rescaling to probability space. Computing M
+            # directly can underflow to zero for low-probability vocabulary blocks.
+            M_shifted = beta * tl.exp(Y_shifted) + (1 - beta) * tl.exp(X_shifted)
+            log_M = max_val + tl.log(M_shifted)
 
-            # Compute exp terms with compensation
-            Q = tl.exp(X_shifted) * exp_max  # = exp(X)
-            P = tl.exp(Y_shifted) * exp_max  # = exp(Y)
-
-            # Pre-compute common terms
+            Q = tl.exp(X)
+            P = tl.exp(Y)
             beta_P = beta * P
             one_minus_beta_Q = (1 - beta) * Q
-            M = beta_P + one_minus_beta_Q
-            log_M = tl.log(M)  # No need to compensate as M is already in original scale
 
-            loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
+            loss = beta_P * (Y - log_M) + one_minus_beta_Q * (X - log_M)
             dX = one_minus_beta_Q * (X - log_M)
 
         # Pre-compute scaling factor
