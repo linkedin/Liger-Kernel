@@ -102,6 +102,15 @@ def is_ministral_available():
         return False
 
 
+def is_muse_glimmer_available():
+    try:
+        import transformers.models.muse_glimmer  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_qwen3_available():
     try:
         import transformers.models.qwen3  # noqa: F401
@@ -507,6 +516,129 @@ def test_apply_liger_kernel_to_instance_for_llama():
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
         # Ensure that the model patched with Liger modules can work properly
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_muse_glimmer_available(), reason="muse_glimmer module not available")
+def test_apply_liger_kernel_to_instance_for_muse_glimmer():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.muse_glimmer.modeling_muse_glimmer"):
+        from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerForConditionalGeneration
+
+        from liger_kernel.transformers.model.muse_glimmer import lce_forward as muse_glimmer_lce_forward
+        from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmer
+
+        # Instantiate a dummy model
+        config = transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerConfig(
+            attn_implementation="sdpa",
+            out_hidden_size=128,
+            projector_hidden_size=64,
+            vision_config=transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerVisionConfig(
+                hidden_size=32,
+                intermediate_size=64,
+                num_hidden_layers=2,
+                num_attention_heads=2,
+                patch_size=14,
+                pos_emb_height=4,
+                pos_emb_width=4,
+                max_position_embeddings=16,
+            ),
+            text_config=transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerTextConfig(
+                vocab_size=512,
+                hidden_size=64,
+                intermediate_size=128,
+                num_hidden_layers=4,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                head_dim=16,
+                max_position_embeddings=128,
+                sliding_window=16,
+            ),
+        )
+        dummy_model_instance = MuseGlimmerForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, MuseGlimmerForConditionalGeneration)
+
+        text_model = dummy_model_instance.model.language_model
+        vision_model = dummy_model_instance.model.vision_tower
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(muse_glimmer_lce_forward)
+        assert inspect.getsource(text_model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        assert inspect.getsource(text_model.embed_tokens.embed_norm.forward) != inspect.getsource(
+            LigerRMSNormForMuseGlimmer.forward
+        )
+        assert inspect.getsource(dummy_model_instance.model.perception_emb_norm.forward) != inspect.getsource(
+            LigerRMSNormForMuseGlimmer.forward
+        )
+        for decoder_layer in text_model.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(decoder_layer.pre_feedforward_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(decoder_layer.post_feedforward_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(decoder_layer.self_attn.qk_norm.forward) != inspect.getsource(
+                LigerRMSNormForMuseGlimmer.forward
+            )
+        assert inspect.getsource(vision_model.ln_pre.forward) != inspect.getsource(LigerLayerNorm.forward)
+        assert inspect.getsource(vision_model.ln_post.forward) != inspect.getsource(LigerLayerNorm.forward)
+        for vision_layer in vision_model.layers:
+            assert inspect.getsource(vision_layer.norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(vision_layer.norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(muse_glimmer_lce_forward)
+        assert inspect.getsource(text_model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        assert inspect.getsource(text_model.embed_tokens.embed_norm.forward) == inspect.getsource(
+            LigerRMSNormForMuseGlimmer.forward
+        )
+        assert inspect.getsource(dummy_model_instance.model.perception_emb_norm.forward) == inspect.getsource(
+            LigerRMSNormForMuseGlimmer.forward
+        )
+        for decoder_layer in text_model.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(decoder_layer.pre_feedforward_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(decoder_layer.post_feedforward_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(decoder_layer.self_attn.qk_norm.forward) == inspect.getsource(
+                LigerRMSNormForMuseGlimmer.forward
+            )
+            # MuseGlimmerTextCenteredRMSNorm scales by (1 + weight) and the post-norms use
+            # a distinct, much smaller epsilon -- both must survive patching.
+            assert decoder_layer.input_layernorm.offset == 1.0
+            assert decoder_layer.input_layernorm.casting_mode == "gemma"
+            assert decoder_layer.input_layernorm.in_place is False
+            assert decoder_layer.post_attention_layernorm.variance_epsilon == config.text_config.post_norm_eps
+            assert decoder_layer.input_layernorm.variance_epsilon == config.text_config.rms_norm_eps
+            # The scale-free QK norm has no weight to scale by
+            assert decoder_layer.self_attn.qk_norm.with_scale is False
+        # The final norm scales by weight directly (no +1 offset)
+        assert text_model.norm.offset == 0.0
+        assert inspect.getsource(vision_model.ln_pre.forward) == inspect.getsource(LigerLayerNorm.forward)
+        assert inspect.getsource(vision_model.ln_post.forward) == inspect.getsource(LigerLayerNorm.forward)
+        for vision_layer in vision_model.layers:
+            assert inspect.getsource(vision_layer.norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(vision_layer.norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
+
         try:
             print(dummy_model_instance)
         except Exception as e:
