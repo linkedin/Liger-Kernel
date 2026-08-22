@@ -312,6 +312,66 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, t
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
+        (1, 4, 8, 2048),  # forces chunk_size == 1, i.e. one kernel launch per token
+        (2, 64, 128, 4096),
+    ],
+)
+@pytest.mark.parametrize(
+    "temperature, beta, ignore_index",
+    [
+        (1.0, 0.0, -100),
+        (1.0, 0.5, -100),
+        (2.0, 0.1, 42),
+        (1.0, 1.0, 2),
+    ],
+)
+@torch.no_grad()
+def test_correctness_with_torch_compile(B, T, H, V, beta, ignore_index, temperature):
+    """`torch.compile` must not change the loss when some labels are `ignore_index`.
+
+    Regression test for silent numerical corruption: the per-chunk loss buffer used to be a
+    `loss_1d[start_idx:end_idx]` view with a non-zero storage offset. `torch.compile` functionalizes
+    the kernel's mutation of it by cloning `storage_offset + numel` elements out of a buffer
+    Inductor may size to the view alone, i.e. an out-of-bounds read. That garbage was normally
+    overwritten by the kernel, but on an `ignore_index` row `_jsd_kernel` returns early without
+    writing `loss_ptr`, so the garbage survived into the reduced loss.
+
+    Forward-only: `fused_linear_jsd_backward` branches on a tensor value, so the backward pass
+    cannot be captured with `fullgraph=True`.
+    """
+    student_weight = torch.rand(V, H // 2, device=device, dtype=torch.float32)
+    teacher_weight = torch.rand(V, H, device=device, dtype=torch.float32)
+    student_input = torch.rand(B * T, H // 2, device=device, dtype=torch.float32)
+    teacher_input = torch.rand(B * T, H, device=device, dtype=torch.float32)
+
+    label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    # at least one ignored label, but not all of them
+    label[torch.randperm(B * T)[: max(1, B * T // 4)]] = ignore_index
+
+    def call(student_input, teacher_input, label):
+        return liger_fused_linear_jsd(
+            student_input=student_input,
+            student_weight=student_weight,
+            teacher_input=teacher_input,
+            teacher_weight=teacher_weight,
+            shift_labels=label,
+            jsd_beta=beta,
+            ignore_index=ignore_index,
+            temperature=temperature,
+        )
+
+    expected = call(student_input, teacher_input, label)
+
+    torch._dynamo.reset()
+    actual = torch.compile(call, fullgraph=True)(student_input, teacher_input, label)
+
+    # Identical kernels on identical inputs: the only permitted difference is reduction ordering.
+    assert_verbose_allclose(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
         (8, 128, 1024, 4096),
         (4, 423, 167, 1423),  # random shape
     ],

@@ -57,8 +57,11 @@ def fused_linear_jsd_forward(
             torch.zeros_like(student_weight, dtype=accum_dtype, device=device) if student_weight.requires_grad else None
         )
     grad_input = torch.zeros_like(student_input)
-    # we use fp32 for loss accumulator
-    loss_1d = torch.zeros((BT, V), dtype=torch.float32, device=device)
+    # we use fp32 for loss accumulator.
+    # Only the reduced loss is ever returned, so accumulate a scalar per chunk rather than
+    # materializing an unreduced BT x V buffer -- the latter costs as much as the full logits
+    # tensor that chunking exists to avoid (~4 GB at BT=8192, V=128000).
+    loss = torch.zeros((), dtype=torch.float32, device=device)
 
     if has_label:
         n_non_ignore = (shift_labels != ignore_index).sum().item()
@@ -80,8 +83,13 @@ def fused_linear_jsd_forward(
         teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(torch.float32)
         chunk_n_rows = student_logits_chunk.shape[0]
 
-        # unreduced loss
-        loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size
+        # unreduced loss for this chunk
+        # NOTE: this must be a standalone contiguous buffer, *not* a view into a larger loss
+        # tensor. `torch.compile` functionalizes the kernel's mutation by cloning the pointer
+        # argument via `clone_preserve_strides`, which clones `storage_offset + numel` elements out
+        # of a buffer Inductor may have sized to the view alone -- an out-of-bounds read whose
+        # garbage survives into the loss on rows where the kernel returns early (ignore_index).
+        loss_chunk = torch.zeros((chunk_n_rows, V), dtype=torch.float32, device=device)
         # log-softmax with temperature
         student_logits_chunk = student_logits_chunk / temperature
         teacher_logits_chunk = teacher_logits_chunk / temperature
@@ -98,8 +106,8 @@ def fused_linear_jsd_forward(
             X_stride=student_prob_chunk.stride(-2),
             Y_ptr=teacher_prob_chunk,
             Y_stride=teacher_prob_chunk.stride(-2),
-            loss_ptr=loss_1d_slice,
-            loss_stride=loss_1d_slice.stride(-2),
+            loss_ptr=loss_chunk,
+            loss_stride=loss_chunk.stride(-2),
             dX_ptr=student_prob_chunk,
             dX_stride=student_prob_chunk.stride(-2),
             label_ptr=(
@@ -112,7 +120,7 @@ def fused_linear_jsd_forward(
             BLOCK_SIZE=BLOCK_SIZE,
             HAS_LABEL=has_label,
         )
-        loss_1d[start_idx:end_idx] = loss_1d_slice
+        loss = loss + loss_chunk.sum()
         # gradients of prob_chunk in place, shape: chunk_size x V
         # gradients of logits_chunk in place, shape: chunk_size x V
         student_logits_chunk = (
@@ -150,7 +158,6 @@ def fused_linear_jsd_forward(
                 else:
                     grad_weight.add_(torch.mm(grad_logits_t, student_input_chunk).float())
 
-    loss = torch.sum(loss_1d)
     grad_weight = (
         grad_weight.to(student_weight.dtype) if grad_weight is not None and accum_dtype is not None else grad_weight
     )
