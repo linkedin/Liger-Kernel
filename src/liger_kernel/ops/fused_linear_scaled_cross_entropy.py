@@ -23,6 +23,15 @@ def _validate_temperature(temperature):
         raise ValueError("temperature must be finite and > 0")
 
 
+def _validate_accum_dtype(accum_dtype):
+    if accum_dtype is None:
+        return
+    if not isinstance(accum_dtype, torch.dtype):
+        raise TypeError("accum_dtype must be a torch.dtype or None")
+    if not accum_dtype.is_floating_point:
+        raise ValueError("accum_dtype must be a floating-point dtype")
+
+
 def _validate_fallback_inputs(_input, weight, target, ignore_index):
     if _input.ndim != 2 or weight.ndim != 2 or target.ndim != 1:
         raise ValueError("expected input[M,H], weight[V,H], and target[M]")
@@ -95,10 +104,13 @@ def _fallback_backward_chunk(
 
 class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, hidden_states, vocab_weights, input_ids, temperature, ignore_index, return_entropy):
+    def forward(
+        ctx, hidden_states, vocab_weights, input_ids, temperature, ignore_index, return_entropy, accum_dtype=None
+    ):
         ctx.set_materialize_grads(False)
         _validate_fallback_inputs(hidden_states, vocab_weights, input_ids, ignore_index)
         _validate_temperature(temperature)
+        _validate_accum_dtype(accum_dtype)
 
         valid = input_ids != ignore_index
         safe_input_ids = input_ids.masked_fill(~valid, 0)
@@ -121,13 +133,19 @@ class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
 
         ctx.save_for_backward(hidden_states, vocab_weights, safe_input_ids, valid)
         ctx.temperature = temperature
+        ctx.accum_dtype = accum_dtype
         return (nll, entropy) if return_entropy else nll
 
     @staticmethod
     def backward(ctx, grad_nll, grad_entropy=None):
         hidden_states, vocab_weights, input_ids, valid = ctx.saved_tensors
         grad_hidden_states = torch.zeros_like(hidden_states) if ctx.needs_input_grad[0] else None
-        grad_vocab_weights = torch.zeros_like(vocab_weights) if ctx.needs_input_grad[1] else None
+        # The weight gradient is summed over every 512-token chunk, so in a
+        # low-precision dtype the running sum is rounded once per chunk.
+        grad_weight_dtype = ctx.accum_dtype if ctx.accum_dtype is not None else vocab_weights.dtype
+        grad_vocab_weights = (
+            torch.zeros_like(vocab_weights, dtype=grad_weight_dtype) if ctx.needs_input_grad[1] else None
+        )
 
         for start in range(0, hidden_states.shape[0], _FALLBACK_CHUNK_SIZE):
             end = min(start + _FALLBACK_CHUNK_SIZE, hidden_states.shape[0])
@@ -143,9 +161,12 @@ class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
             if grad_hidden_states is not None:
                 grad_hidden_states[start:end].add_(chunk_grad_hidden)
             if grad_vocab_weights is not None:
-                grad_vocab_weights.add_(chunk_grad_weight)
+                grad_vocab_weights.add_(chunk_grad_weight.to(grad_weight_dtype))
 
-        return grad_hidden_states, grad_vocab_weights, None, None, None, None
+        if grad_vocab_weights is not None and grad_vocab_weights.dtype != vocab_weights.dtype:
+            grad_vocab_weights = grad_vocab_weights.to(vocab_weights.dtype)
+
+        return grad_hidden_states, grad_vocab_weights, None, None, None, None, None
 
 
 def _resolve_implementation(device):
@@ -159,7 +180,14 @@ def _resolve_implementation(device):
 
 
 class LigerFusedLinearScaledCrossEntropyFunction:
-    """Dispatch fused scaled cross entropy to the implementation for ``input.device``."""
+    """Dispatch fused scaled cross entropy to the implementation for ``input.device``.
+
+    ``accum_dtype`` (torch.dtype): the dtype of the intermediate buffer used to
+    accumulate the weight gradient across token chunks. Recommended to set to a
+    higher precision, e.g. ``torch.float32``, if training is unstable with the
+    original dtype. Default: ``None``, accumulating in the weight dtype. Not
+    supported by the SM90 implementation, which accumulates inside a fused kernel.
+    """
 
     @staticmethod
     def apply(
@@ -170,6 +198,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
         ignore_index=-100,
         m_tiles_per_cluster=1,
         return_entropy=False,
+        accum_dtype=None,
     ):
         if not isinstance(m_tiles_per_cluster, int) or isinstance(m_tiles_per_cluster, bool):
             raise TypeError("m_tiles_per_cluster must be an int")
@@ -177,6 +206,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
             raise ValueError("m_tiles_per_cluster must be >= 1")
         if not isinstance(return_entropy, bool):
             raise TypeError("return_entropy must be a bool")
+        _validate_accum_dtype(accum_dtype)
 
         implementation = _resolve_implementation(_input.device)
         if implementation is _FusedLinearPPOFallbackFunction:
@@ -187,6 +217,12 @@ class LigerFusedLinearScaledCrossEntropyFunction:
                 temperature,
                 ignore_index,
                 return_entropy,
+                accum_dtype,
+            )
+        if accum_dtype is not None:
+            raise NotImplementedError(
+                "accum_dtype is not supported by the SM90 fused scaled cross entropy "
+                "implementation, which accumulates the weight gradient inside a fused kernel"
             )
         return implementation.apply(
             _input,

@@ -92,6 +92,49 @@ def test_frontend_dispatches_sm90_and_forwards_arguments(monkeypatch):
     assert calls == [(_input, weight, target, 0.7, -1, 3, True)]
 
 
+def test_frontend_rejects_accum_dtype_for_sm90(monkeypatch):
+    device = torch.device("cuda:3")
+    _input = SimpleNamespace(device=device)
+
+    class StubSM90Function:
+        @staticmethod
+        def apply(*args):
+            pytest.fail("SM90 must not be invoked when accum_dtype is requested")
+
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda actual: (9, 0))
+    monkeypatch.setattr(_FRONTEND, "_load_sm90_function", lambda: StubSM90Function)
+
+    with pytest.raises(NotImplementedError, match="accum_dtype"):
+        _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction.apply(
+            _input,
+            object(),
+            object(),
+            0.7,
+            -1,
+            3,
+            True,
+            torch.float32,
+        )
+
+
+@pytest.mark.parametrize(
+    ("accum_dtype", "error"),
+    [("float32", TypeError), (torch.int32, ValueError)],
+    ids=["not-a-dtype", "integer-dtype"],
+)
+def test_frontend_rejects_invalid_accum_dtype(accum_dtype, error):
+    _input = torch.randn(4, 8, requires_grad=True)
+    weight = torch.randn(16, 8, requires_grad=True)
+    target = torch.arange(4)
+
+    with pytest.raises(error, match="accum_dtype"):
+        _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction.apply(
+            _input, weight, target, 1.0, -100, 1, False, accum_dtype
+        )
+
+
 def test_frontend_fallback_matches_torch_with_entropy_and_ignored_rows():
     torch.manual_seed(42)
     token_count, hidden_size, vocab_size = 521, 7, 13
@@ -173,8 +216,51 @@ def test_frontend_fallback_supports_entropy_only_backward():
     assert weight.grad is not None
 
 
+def _fallback_bf16_weight_grad(accum_dtype):
+    """Run the bf16 fallback over many token chunks and return (grad, fp64 reference)."""
+    torch.manual_seed(7)
+    # 32 chunks of _FALLBACK_CHUNK_SIZE, so the running grad_weight sum is rounded
+    # 32 times when it is accumulated in the weight dtype.
+    token_count = _FRONTEND._FALLBACK_CHUNK_SIZE * 32
+    hidden_size, vocab_size, temperature = 8, 32, 0.9
+    target = torch.randint(vocab_size, (token_count,), dtype=torch.long)
+    grad_nll = torch.rand(token_count)
+
+    _input = (torch.randn(token_count, hidden_size) * 0.25).bfloat16().requires_grad_(True)
+    weight = (torch.randn(vocab_size, hidden_size) / hidden_size**0.5).bfloat16().requires_grad_(True)
+    nll = _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction.apply(
+        _input, weight, target, temperature, -100, 1, False, accum_dtype
+    )
+    nll.backward(grad_nll)
+
+    ref_input = _input.detach().double().requires_grad_(True)
+    ref_weight = weight.detach().double().requires_grad_(True)
+    ref_logits = (ref_input @ ref_weight.t()) / temperature
+    ref_nll = -ref_logits.log_softmax(dim=-1).gather(-1, target.unsqueeze(-1)).squeeze(-1)
+    ref_nll.backward(grad_nll.double())
+
+    return weight.grad, ref_weight.grad
+
+
+def test_frontend_fallback_accum_dtype_keeps_weight_grad_dtype():
+    grad, _ = _fallback_bf16_weight_grad(torch.float32)
+
+    assert grad.dtype == torch.bfloat16
+
+
+def test_frontend_fallback_accum_dtype_reduces_multi_chunk_weight_grad_error():
+    default_grad, reference = _fallback_bf16_weight_grad(None)
+    accum_grad, _ = _fallback_bf16_weight_grad(torch.float32)
+
+    default_error = (default_grad.double() - reference).abs().sum()
+    accum_error = (accum_grad.double() - reference).abs().sum()
+
+    assert accum_error < default_error
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
 @pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32], ids=["accumNone", "accumfp32"])
 @pytest.mark.parametrize(
     ("shape", "dtype", "atol", "rtol"),
     [
@@ -183,7 +269,7 @@ def test_frontend_fallback_supports_entropy_only_backward():
     ],
     ids=["fp32-ragged", "bf16-multichunk"],
 )
-def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype, atol, rtol):
+def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype, atol, rtol, accum_dtype):
     if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
         pytest.skip("BF16 is not supported")
 
@@ -209,6 +295,7 @@ def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype
         -100,
         3,
         True,
+        accum_dtype,
     )
     torch.autograd.backward((actual_nll, actual_entropy), (grad_nll, grad_entropy))
 
@@ -228,6 +315,56 @@ def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype
     torch.testing.assert_close(actual_entropy, expected_entropy, atol=atol, rtol=rtol)
     torch.testing.assert_close(actual_input.grad, expected_input.grad, atol=atol, rtol=rtol)
     torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=atol, rtol=rtol)
+    assert actual_weight.grad.dtype == dtype
+
+
+def _cutile_bf16_weight_grad(accum_dtype):
+    """Run the bf16 cuTile backward over 32 token chunks, returning (grad, fp64 reference)."""
+    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
+
+    torch.manual_seed(7)
+    # A 1 MiB workspace caps the chunk at 256 tokens for this vocabulary, so the
+    # running grad_weight sum is rounded 32 times when accumulated in bf16.
+    token_count, hidden_size, vocab_size, temperature = 8192, 32, 2048, 0.9
+    target = torch.randint(vocab_size, (token_count,), device="cuda", dtype=torch.int64)
+    grad_nll = torch.rand(token_count, device="cuda", dtype=torch.float32)
+
+    _input = (torch.randn(token_count, hidden_size, device="cuda") * 0.25).bfloat16().requires_grad_(True)
+    weight = (torch.randn(vocab_size, hidden_size, device="cuda") / hidden_size**0.5).bfloat16().requires_grad_(True)
+    nll = LigerFusedLinearScaledCrossEntropyFunction.apply(
+        _input, weight, target, temperature, -100, 1, False, accum_dtype
+    )
+    nll.backward(grad_nll)
+
+    ref_input = _input.detach().double().requires_grad_(True)
+    ref_weight = weight.detach().double().requires_grad_(True)
+    ref_logits = (ref_input @ ref_weight.t()) / temperature
+    ref_nll = -ref_logits.log_softmax(dim=-1).gather(-1, target.unsqueeze(-1)).squeeze(-1)
+    ref_nll.backward(grad_nll.double())
+
+    return weight.grad, ref_weight.grad
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
+@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
+def test_cutile_accum_dtype_reduces_multi_chunk_weight_grad_error(monkeypatch):
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("BF16 is not supported")
+
+    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import _WORKSPACE_MB_ENV
+
+    monkeypatch.setenv(_WORKSPACE_MB_ENV, "1")
+
+    default_grad, reference = _cutile_bf16_weight_grad(None)
+    accum_grad, _ = _cutile_bf16_weight_grad(torch.float32)
+
+    assert default_grad.dtype == torch.bfloat16
+    assert accum_grad.dtype == torch.bfloat16
+
+    default_error = (default_grad.double() - reference).abs().sum()
+    accum_error = (accum_grad.double() - reference).abs().sum()
+
+    assert accum_error < default_error
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")

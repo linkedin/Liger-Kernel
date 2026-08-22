@@ -250,6 +250,18 @@ The implementations share this public contract but use different schedules:
 - **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Its sole forward uses the fixed cluster-M2 N160 fragment kernel, with a measured split-N lookup for profiled long-sequence shapes, and never writes logits to HBM; `m_tiles_per_cluster` remains accepted for API compatibility but does not change that schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
 - **Fallback** uses a 512-token chunked PyTorch implementation adapted from Verl's fused PPO formulas when the default frontend cannot use the SM90 kernel.
 
+Backward sums `dW` across token chunks, so in a low-precision `weight` dtype the running sum is rounded once per chunk and the error compounds with the chunk count. The optional trailing `accum_dtype` argument keeps that accumulator in higher precision and casts back to `weight.dtype` at the end, at the cost of an extra `V x H` buffer:
+
+```python
+import torch
+
+nll, entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
+    x, weight, target, 1.0, -100, 1, True, torch.float32
+)
+```
+
+`accum_dtype` defaults to `None` (accumulate in the weight dtype). The cuTile and fallback implementations support it; the CuTe SM90 implementation accumulates `dW` inside a fused kernel and raises `NotImplementedError` if it is set.
+
 H100 BF16 forward medians from 60 interleaved samples per provider at
 `H=4096`, `V=131072`. Effective TFLOPS count the common projection work,
 `2*M*H*V`:

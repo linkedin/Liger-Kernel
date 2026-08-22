@@ -16,6 +16,8 @@ Sweep parameters (all optional; defaults reproduce the previous behaviour)::
 
 Providers: ``torch``, ``liger`` (Triton FLCE, ``reduction="none"``),
 ``cutile``, and ``cutedsl-sm90`` (fixed 1024-token wave-batched backward).
+``cutile-accum-fp32`` is ``cutile`` with ``accum_dtype=torch.float32``, which
+keeps the chunked ``dW`` accumulation in FP32 at the cost of a ``V x H`` buffer.
 
 Example::
 
@@ -54,6 +56,7 @@ REPRESENTATIVE_CONFIG = {
 
 CUTEDSL_PREFIX = "cutedsl-sm90"
 CUTILE_PREFIX = "cutile"
+CUTILE_ACCUM_PREFIX = "cutile-accum-fp32"
 # Seed of the fixed per-token upstream gradient, so every provider and every
 # repetition sees byte-identical ``d(NLL)/d(loss)`` values.
 GRAD_SEED = 1234
@@ -112,10 +115,18 @@ class CuteDSLHopperLMHeadScaledCE(torch.nn.Module):
 
 
 class CuTileLMHeadScaledCE(torch.nn.Module):
-    def __init__(self, hidden_size: int, vocab_size: int, dtype: torch.dtype, temperature: float = 1.0):
+    def __init__(
+        self,
+        hidden_size: int,
+        vocab_size: int,
+        dtype: torch.dtype,
+        temperature: float = 1.0,
+        accum_dtype=None,
+    ):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.empty(vocab_size, hidden_size, dtype=dtype))
         self.temperature = temperature
+        self.accum_dtype = accum_dtype
         torch.nn.init.normal_(self.weight, std=hidden_size**-0.5)
 
     def forward(self, x, target):
@@ -131,6 +142,7 @@ class CuTileLMHeadScaledCE(torch.nn.Module):
             -100,
             1,
             False,
+            self.accum_dtype,
         )
 
 
@@ -163,6 +175,8 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
         layer = CuteDSLHopperLMHeadScaledCE(hidden_size, vocab_size, dtype)
     elif provider == CUTILE_PREFIX:
         layer = CuTileLMHeadScaledCE(hidden_size, vocab_size, dtype)
+    elif provider == CUTILE_ACCUM_PREFIX:
+        layer = CuTileLMHeadScaledCE(hidden_size, vocab_size, dtype, accum_dtype=torch.float32)
     elif provider == "liger":
         layer = TritonLMHeadCE(hidden_size, vocab_size, dtype)
     elif provider == "torch":
@@ -253,7 +267,7 @@ def parse_sweep_args():
 def resolve_providers(sweep_args):
     if sweep_args.providers:
         for provider in sweep_args.providers:
-            if provider not in ("torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX):
+            if provider not in ("torch", "liger", CUTILE_PREFIX, CUTILE_ACCUM_PREFIX, CUTEDSL_PREFIX):
                 raise ValueError(f"Unknown provider {provider!r}")
         return list(sweep_args.providers)
     return ["torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX]
