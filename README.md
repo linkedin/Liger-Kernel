@@ -137,9 +137,10 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm
 
 #### Ascend NPU
 
-- `torch == 2.7.1`
-- `torch_npu == 2.7.1`
-- `triton-ascend == 3.2.1` Install from the Ascend PyPI mirror (not on default PyPI).
+- `torch == 2.9.0`
+- `torch_npu == 2.9.0`
+- `triton-ascend == 3.2.2` Install from the Ascend PyPI mirror (not on default PyPI).
+- `CANN == 9.1.0`
 
 ```bash
 pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple

@@ -71,6 +71,8 @@ struct LocalMlpTileIteratorBwd {
 		info.x_ptr  = x_base + (size_t)m * TileM * hidden_dim;
 		info.expert = expert_ids[m];
 		info.y_m    = tile_offset + m;
+		info.valid_m64_subtiles = TileM / 64;
+		info.m_subtile = 0;
 
 		m += col_stride;
 		return info;
@@ -128,16 +130,14 @@ struct LocalMlpTileIteratorBwd {
 
 template <typename Element, int NumStages, int NC = 2, int TileM = 128>
 struct RemoteMlpTileIteratorBwd {
-	// Slot's producer/consumer counts. RUNTIME (not constexpr) because the
-	// comm warp layout switches on the TMA-GET enable flag:
-	//   getmem  : 2·NC get warps produce X/dY, NC put warps consume dX
-	//   TMA     : 1·NC get warp  produces X/dY, 2·NC put warps consume dX
-	// Set in init() from tma_enabled so the acquire thresholds match the
-	// actual number of producer_release / consumer_release calls per slot.
+	// Slot's producer/consumer counts. The unified backward comm loop always
+	// uses one GET warp and one PUT warp per CTA; do_get_bwd_tma selects TMA or
+	// getmem per tile without changing warp ownership.
 	int NumProducersSrc;   // get warps × NC
 	int NumConsumersDst;   // put warps × NC
 
 	const int* tile_expert_ids;  // [L] — comm writes expert id at slot index
+	const int* tile_valid_rows;  // [L] — comm writes exact valid row count
 	int total_tiles;
 	int m_base;       // logical column (flat_id / runtime NS) — tile-seq start
 	int col_stride;   // grid_x = n_gemm / runtime NS (column stride)
@@ -162,6 +162,7 @@ struct RemoteMlpTileIteratorBwd {
 	// MC = n_gemm_ / NC. n_gemm_ < 0 falls back to gridDim.x · gridDim.y for
 	// legacy 2-D-grid standalone callers.
 	__device__ void init(const int* tile_expert_ids_,
+	                     const int* tile_valid_rows_,
 	                     int total_tiles_,
 	                     int m_base_,
 	                     int n_gemm_,
@@ -171,11 +172,11 @@ struct RemoteMlpTileIteratorBwd {
 	                     bool is_leader_,
 	                     int runtime_nsplit_,
 	                     bool tma_enabled_ = false) {
-		// Producer/consumer counts follow the comm-side warp layout, which is
-		// chosen by the same tma_enabled flag (see nvshmem_comm_main_bwd).
-		NumProducersSrc = (tma_enabled_ ? kNumGetWarpsBwd : kNumGetWarpsPerCta) * NC;
-		NumConsumersDst = (tma_enabled_ ? kNumPutWarpsBwd : 1) * NC;
+		(void)tma_enabled_;
+		NumProducersSrc = kNumGetWarpsBwd * NC;
+		NumConsumersDst = kNumPutWarpsBwd * NC;
 		tile_expert_ids = tile_expert_ids_;
+		tile_valid_rows = tile_valid_rows_;
 		total_tiles = total_tiles_;
 		m_base = m_base_;
 		num_splits = runtime_nsplit_;
@@ -219,6 +220,9 @@ struct RemoteMlpTileIteratorBwd {
 		info.x_ptr  = nullptr;  // not used — TMA loads by coordinate
 		info.expert = tile_expert_ids[cur_slot];
 		info.y_m    = cur_slot;
+		info.valid_m64_subtiles =
+			(tile_valid_rows[cur_slot] + 63) / 64;
+		info.m_subtile = 0;
 		idx++;
 		return info;
 	}
@@ -300,7 +304,7 @@ struct RemoteMlpTileIteratorBwd {
 	// Signal comm warps that dX is ready to be put. Per tile, dst_ready
 	// advances by N_SPLIT.
 	__device__ void release_dst(int lane) {
-		__threadfence();  // device-scope (NVLink-only build); IB put needs __threadfence_system()
+		__threadfence_system();
 		if (lane == 0) {
 			atomicAdd(&dst_ready[cur_slot], 1);
 		}
@@ -323,6 +327,7 @@ struct FusedMlpTileIteratorBwd {
 	RemoteMlpTileIteratorBwd<Element, NumStages, NC, TileM> remote;
 
 	__device__ void init_remote(const int* tile_expert_ids,
+	                             const int* tile_valid_rows,
 	                             int total_tiles,
 	                             int m_base,
 	                             int n_gemm,
@@ -332,7 +337,8 @@ struct FusedMlpTileIteratorBwd {
 	                             bool is_leader,
 	                             int runtime_nsplit,
 	                             bool tma_enabled = false) {
-		remote.init(tile_expert_ids, total_tiles, m_base, n_gemm,
+		remote.init(tile_expert_ids, tile_valid_rows,
+			total_tiles, m_base, n_gemm,
 			x_src_ready, x_src_consumed, dy_src_ready, dy_src_consumed,
 			dst_ready, dst_consumed, is_leader, runtime_nsplit, tma_enabled);
 	}

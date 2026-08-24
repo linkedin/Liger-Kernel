@@ -73,6 +73,63 @@ int   nvshmem_int_min_reduce(
 static int* g_tuner_status_src = nullptr;
 static int* g_tuner_status_dst = nullptr;
 
+__global__ void mark_nonfinite_bf16(
+		const uint16_t* data, size_t count, int* found) {
+	for (size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+	     i < count;
+	     i += blockDim.x * gridDim.x) {
+		if ((data[i] & UINT16_C(0x7f80)) == UINT16_C(0x7f80)) {
+			atomicExch(found, 1);
+			return;
+		}
+	}
+}
+
+static bool tuner_outputs_are_finite(
+		const torch::Tensor& y,
+		const torch::Tensor* dx,
+		const torch::Tensor* db,
+		const torch::Tensor* dc,
+		const torch::Tensor* da,
+		const torch::Tensor* dw,
+		cudaStream_t stream) {
+	if (getenv("MOE_FWDBWD_TUNE_CHECK_FINITE") == nullptr) return true;
+
+	int* found = nullptr;
+	if (cudaMalloc(&found, sizeof(int)) != cudaSuccess) return false;
+	if (cudaMemsetAsync(found, 0, sizeof(int), stream) != cudaSuccess) {
+		cudaFree(found);
+		return false;
+	}
+
+	auto check = [&](const torch::Tensor& tensor) {
+		constexpr int kThreads = 256;
+		const int blocks = static_cast<int>(std::min<int64_t>(
+			(tensor.numel() + kThreads - 1) / kThreads, 4096));
+		if (blocks > 0) {
+			mark_nonfinite_bf16<<<blocks, kThreads, 0, stream>>>(
+				static_cast<const uint16_t*>(tensor.data_ptr()),
+				static_cast<size_t>(tensor.numel()), found);
+		}
+	};
+
+	check(y);
+	if (dx != nullptr) {
+		check(*dx);
+		check(*db);
+		check(*dc);
+		check(*da);
+		check(*dw);
+	}
+
+	int host_found = 0;
+	cudaError_t status = cudaMemcpyAsync(
+		&host_found, found, sizeof(int), cudaMemcpyDeviceToHost, stream);
+	if (status == cudaSuccess) status = cudaStreamSynchronize(stream);
+	cudaFree(found);
+	return status == cudaSuccess && host_found == 0;
+}
+
 static inline void tuner_team_sync(nvshmem_team_t team, int n_pes) {
 	if (n_pes > 1) nvshmem_team_sync(team);
 }
@@ -336,7 +393,9 @@ static bool bwd_shape_valid(int D, int I, const TunerEntryBwd& e) {
 		const int TM = e.TileM, TN1 = e.TileN1, TK1 = e.TileK1, S1 = e.Stages1;
 		const int TM3 = e.TileM3, TN3 = e.TileN3, TK3 = e.TileK3, S3 = e.Stages3;
 		const int EN1 = e.EpiChunkN1, EN25 = e.EpiChunkN25, EN34 = e.EpiChunkN34;
-		int mlp1 = 2 * ((TM + 2 * TN1) * TK1 * S1) + 6 * 128 * EN1;
+		int act_store_m = e.Compute == 100 ? 32 : 64;
+		int mlp1 = 2 * ((TM + 2 * TN1) * TK1 * S1)
+			+ 12 * act_store_m * EN1;
 		int mlp25 = 2 * ((128 + 256) * TK1 * S1) + 2 * 128 * EN25;   // mlp2_t / mlp5
 		// SM100 mlp3/mlp4 2SM: sizeof(Mlp3FusedSmem2Sm<...>) /
 		// sizeof(Mlp4FusedSmem<...>) at the fixed joined TileN=256 collapse to
@@ -512,6 +571,14 @@ static bool run_pair_once(
 		fwd_status = 0;
 		(void)cudaGetLastError();
 	}
+	if (fwd_status == 1 && !run_backward &&
+	    !tuner_outputs_are_finite(
+		    Y, nullptr, nullptr, nullptr, nullptr, nullptr, stream)) {
+		fprintf(stderr,
+			"  [PE=%d FWD=%s @ %s FWD] non-finite output\n",
+			pe, fwd_e.name, step);
+		fwd_status = 0;
+	}
 	const int global_fwd_status = tuner_consensus_status(team, fwd_status);
 	if (global_fwd_status != 1) {
 		// The forward owns symmetric-stack entries, and a throwing rank may
@@ -565,6 +632,13 @@ static bool run_pair_once(
 			pe, bwd_e.name, step, cudaGetErrorString(e));
 		bwd_status = 0;
 		(void)cudaGetLastError();
+	}
+	if (bwd_status == 1 &&
+	    !tuner_outputs_are_finite(Y, &dX, &dB, &dC, &dA, &dW, stream)) {
+		fprintf(stderr,
+			"  [PE=%d BWD=%s @ %s BWD] non-finite output\n",
+			pe, bwd_e.name, step);
+		bwd_status = 0;
 	}
 	const int global_bwd_status = tuner_consensus_status(team, bwd_status);
 
@@ -749,7 +823,7 @@ static void dump_tuned_configs() {
 	  << "// n_pes is the tuning-time PE count;\n"
 	  << "// deployment lookup should compute TKE the same way.\n"
 	  << "// Each row pairs the best fwd template with the best bwd template for\n"
-	  << "// that shape. The COMM tile is fixed at 128 for both directions;\n"
+	  << "// that shape. The architecture-specific COMM tile matches in both directions;\n"
 	  << "// Fwd_TileM / Bwd_TileM are the per-direction GEMM tiles and may differ.\n"
 	  << "// Written incrementally; a partial file means the tuner crashed.\n\n"
 	  << "#include \"moe_fwd_bwd_tuning_config_types.cuh\"\n\n"
@@ -814,6 +888,14 @@ static void tune_shape(
 	if (const char* skew_env = getenv("MOE_FWDBWD_TUNE_TOKEN_SKEW")) {
 		const int skew = std::max(0, atoi(skew_env));
 		T = std::max(128, T - pe * skew);
+	}
+	if (K > E) {
+		if (pe == 0) {
+			printf("%-7d %-6d %-6d  SKIP (top_k=%d exceeds num_experts=%d)\n",
+				T, D, I, K, E);
+			fflush(stdout);
+		}
+		return;
 	}
 	int epp = E / n_pes;
 
@@ -1097,8 +1179,8 @@ static void tune_shape(
 	}
 
 	// Pick the best fwd and best bwd INDEPENDENTLY across the two GEMM-tile
-	// buckets. The comm tile is fixed at 128 for both directions, so the bwd
-	// always inherits a 128-aligned sort layout regardless of either side's
+	// buckets. The architecture-specific comm tile matches in both directions,
+	// so backward inherits the same sort layout regardless of either side's
 	// GEMM tile — fwd and bwd no longer need to share TileM. (bwd_ms in each
 	// bucket was measured paired with that bucket's seed fwd, but the bwd
 	// timing is invariant to the fwd config, so cross-bucket comparison is
@@ -1216,10 +1298,19 @@ static void tune_shape(
 int main(int argc, char** argv) {
 	setvbuf(stdout, nullptr, _IONBF, 0);
 
-	const char* procid = getenv("SLURM_PROCID");
-	if (procid) cudaSetDevice(atoi(procid));
+	const char* rank_env = getenv("SLURM_LOCALID");
+	if (rank_env == nullptr) rank_env = getenv("PMI_RANK");
+	if (rank_env == nullptr) rank_env = getenv("PMIX_RANK");
+	if (rank_env == nullptr) rank_env = getenv("OMPI_COMM_WORLD_LOCAL_RANK");
+	if (rank_env == nullptr) rank_env = getenv("SLURM_PROCID");
+	int device_count = 0;
+	if (rank_env != nullptr &&
+	    cudaGetDeviceCount(&device_count) == cudaSuccess &&
+	    device_count > 0) {
+		cudaSetDevice(atoi(rank_env) % device_count);
+	}
 	const bool has_pmi =
-		procid || getenv("PMI_RANK") || getenv("PMIX_RANK") ||
+		getenv("SLURM_PROCID") || getenv("PMI_RANK") || getenv("PMIX_RANK") ||
 		getenv("OMPI_COMM_WORLD_RANK");
 	auto nvshmem_status = LIGER_CUTE_OK;
 	if (has_pmi) {
@@ -1241,7 +1332,8 @@ int main(int argc, char** argv) {
 	nvshmem_team_t team = NVSHMEM_TEAM_WORLD;
 	int pe    = nvshmem_team_my_pe(team);
 	int n_pes = nvshmem_team_n_pes(team);
-	cudaSetDevice(pe);
+	if (device_count <= 0) cudaGetDeviceCount(&device_count);
+	if (device_count > 0) cudaSetDevice(pe % device_count);
 	g_tuner_n_pes = n_pes;  // selects single- vs multi-GPU config class on dump
 	int dev = 0;
 	cudaGetDevice(&dev);
@@ -1412,14 +1504,14 @@ int main(int argc, char** argv) {
 	// out at E_local=8 = E_global 64, far below these models). Pinning here
 	// also keeps the symm pool sized for the real E (pool sizing reads these).
 	//   Qwen3   E=128         -> E_local 16  (128 / 8)
-	//   Qwen3.5 E=256 and 512 -> E_local 32 and 64  (256/8, 512/8)
+	//   Qwen3.5 E=256         -> E_local 32  (256/8)
 	struct FamilySweep { const char* family; std::vector<int> E_local_values; };
 	const std::vector<FamilySweep> family_sweeps = {
 		// Qwen3 pinned to 16 experts/GPU (= real 128-expert model on 8 PEs).
 		{"QWEN3", {16}},
-		// Qwen3.5 spans two expert counts; sweep both real densities so the
-		// 256- and 512-expert variants each get a real-density data point.
-		{"QWEN35", {32, 64}},
+		// The 512-expert Qwen3.5 variant uses top_k=10, above MaxTopK=8.
+		// Keep only the supported 256-expert density in the tuning table.
+		{"QWEN35", {32}},
 		// SCOUT / MIXTRAL (and any unlisted family) default to {1, 2, 4, 8}.
 	};
 	auto sweep_local_Es_for_family = [&](const char* fam) -> std::vector<int> {
@@ -1626,15 +1718,9 @@ int main(int argc, char** argv) {
 						s.name, E_eff, n_pes);
 				continue;
 			}
-			// The router trait fixes MaxTopK=8 (router.cu RouterTraits); K>8
-			// (e.g. qwen3.5-397B's K=10) would throw "top_k exceeds MaxTopK" in
-			// moe_router_fwd. Skip cleanly instead of catching a stack trace.
-			if (K_eff > 8) {
-				if (pe == 0)
-					printf("%s [real]:  SKIP (top_k=%d > MaxTopK=8 unsupported)\n",
-						s.name, K_eff);
-				continue;
-			}
+			// Keep unsupported model metadata for future coverage, but omit its
+			// real run until the fused combine paths support top_k > 8.
+			if (K_eff > 8) continue;
 			if (real_tuned_in_sweep) continue;
 			if (pe == 0) {
 				bool E_ovr = E_eff != s.E;
