@@ -12,7 +12,12 @@ def get_default_dependencies():
     """Determine the appropriate dependencies based on detected hardware."""
     platform = get_platform()
 
-    if platform in ["cuda", "cpu"]:
+    if platform == "cuda":
+        return [
+            "torch==2.11.0.1+cu130",
+            "triton==3.6.0",
+        ]
+    elif platform == "cpu":
         return [
             "torch>=2.1.2",
             "triton>=2.3.1",
@@ -57,7 +62,8 @@ def get_optional_dependencies():
         "datasets>=2.19.2",
         "seaborn",
         "mkdocs-material",
-        "torchvision>=0.20",
+        "torchvision==0.26.0.1+cu130",
+        "numpy==1.26.4",
         "prek>=0.2.28",
     ]
     return {
