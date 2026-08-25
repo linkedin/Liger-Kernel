@@ -247,12 +247,31 @@ def test_frontend_fallback_supports_entropy_only_backward():
     assert weight.grad is not None
 
 
-def _require_sm103():
+def _force_sm103_candidate(monkeypatch):
+    """Exercise the generic SM103 candidate on any NVIDIA CUDA GPU.
+
+    As in #1271, CI forces this test-only dispatch because the Triton kernels and
+    ``torch.mm`` calls use no SM103-only instructions. Production dispatch remains
+    restricted to exact SM103 Blackwell Ultra devices.
+    """
     if not torch.cuda.is_available():
-        pytest.skip("requires CUDA")
-    device_id = torch.cuda.current_device()
-    if torch.cuda.get_device_capability(device_id) != (10, 3):
-        pytest.skip("requires SM103")
+        pytest.skip("requires NVIDIA CUDA")
+    if torch.version.hip is not None:
+        pytest.skip("requires NVIDIA CUDA")
+
+    import liger_kernel.ops.fused_linear_scaled_cross_entropy as canonical_frontend
+
+    monkeypatch.setattr(
+        _FRONTEND,
+        "_resolve_implementation",
+        lambda _device, _dtype=None: _FRONTEND._FusedLinearScaledCrossEntropySM103Function,
+    )
+    monkeypatch.setattr(
+        canonical_frontend,
+        "_resolve_implementation",
+        lambda _device, _dtype=None: canonical_frontend._FusedLinearScaledCrossEntropySM103Function,
+    )
+    return canonical_frontend
 
 
 def _scaled_ce_reference(hidden, weight, target, temperature, return_entropy):
@@ -287,8 +306,8 @@ def _scaled_ce_reference(hidden, weight, target, temperature, return_entropy):
     ids=["fp32-ragged", "fp16-wide-ragged", "bf16-power-of-two", "bf16-large-vocab"],
 )
 @pytest.mark.parametrize("gradient_mode", ["nll", "entropy", "mixed"])
-def test_sm103_matches_fp32_reference(dtype, shape, temperature, gradient_mode):
-    _require_sm103()
+def test_sm103_matches_fp32_reference(monkeypatch, dtype, shape, temperature, gradient_mode):
+    _force_sm103_candidate(monkeypatch)
     if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
         pytest.skip("BF16 is not supported")
 
@@ -354,7 +373,7 @@ def test_sm103_matches_fp32_reference(dtype, shape, temperature, gradient_mode):
 
 
 def test_sm103_multichunk_ragged_tail_matches_fp32_reference(monkeypatch):
-    _require_sm103()
+    _force_sm103_candidate(monkeypatch)
     if not torch.cuda.is_bf16_supported():
         pytest.skip("BF16 is not supported")
 
@@ -415,7 +434,7 @@ def test_sm103_multichunk_ragged_tail_matches_fp32_reference(monkeypatch):
 
 
 def test_sm103_noncontiguous_inputs_partial_grads_repeated_backward_and_context(monkeypatch):
-    _require_sm103()
+    _force_sm103_candidate(monkeypatch)
     generator = torch.Generator(device="cuda").manual_seed(47)
     hidden_base = torch.randn(11, 66, device="cuda", dtype=torch.bfloat16, generator=generator)
     weight_base = torch.randn(259, 66, device="cuda", dtype=torch.bfloat16, generator=generator)
@@ -451,8 +470,8 @@ def test_sm103_noncontiguous_inputs_partial_grads_repeated_backward_and_context(
     assert seen_devices == [hidden.device, hidden.device, hidden.device]
 
 
-def test_sm103_all_ignored_rows_return_zero_outputs_and_gradients():
-    _require_sm103()
+def test_sm103_all_ignored_rows_return_zero_outputs_and_gradients(monkeypatch):
+    _force_sm103_candidate(monkeypatch)
     hidden = torch.randn(5, 17, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     weight = torch.randn(513, 17, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     target = torch.full((5,), -100, device="cuda", dtype=torch.int64)
@@ -474,9 +493,9 @@ def test_sm103_all_ignored_rows_return_zero_outputs_and_gradients():
     assert torch.count_nonzero(weight.grad) == 0
 
 
-def test_sm103_weight_only_gradient_and_compiled_forward_match_eager():
-    _require_sm103()
-    from liger_kernel.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
+def test_sm103_weight_only_gradient_and_compiled_forward_match_eager(monkeypatch):
+    canonical_frontend = _force_sm103_candidate(monkeypatch)
+    fused_scaled_ce = canonical_frontend.LigerFusedLinearScaledCrossEntropyFunction
 
     generator = torch.Generator(device="cuda").manual_seed(48)
     hidden = torch.randn(13, 35, device="cuda", dtype=torch.bfloat16, generator=generator)
@@ -485,7 +504,7 @@ def test_sm103_weight_only_gradient_and_compiled_forward_match_eager():
     grad = torch.randn(13, device="cuda", dtype=torch.float32, generator=generator)
 
     def forward(input_, weight_, labels):
-        return LigerFusedLinearScaledCrossEntropyFunction.apply(
+        return fused_scaled_ce.apply(
             input_,
             weight_,
             labels,
