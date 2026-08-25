@@ -29,6 +29,7 @@ from liger_kernel.ops import LigerSiLUMulFunction
 from liger_kernel.ops import LigerSoftmaxFunction
 from liger_kernel.ops import LigerSparsemaxFunction
 from liger_kernel.ops import LigerTVDLossFunction
+from liger_kernel.ops import liger_cce as _liger_cce
 
 
 @dataclass
@@ -37,6 +38,30 @@ class CrossEntropyOutput:
     z_loss: Optional[torch.Tensor] = None
     token_accuracy: Optional[torch.Tensor] = None
     predicted_tokens: Optional[torch.Tensor] = None
+
+
+def liger_cce(
+    input,
+    weight,
+    target,
+    bias=None,
+    ignore_index: int = -100,
+    logit_scale: float = 1.0,
+    softcap: Optional[float] = None,
+    reduction: str = "mean",
+    return_metrics: bool = False,
+):
+    return _liger_cce(
+        input,
+        weight,
+        target,
+        bias=bias,
+        ignore_index=ignore_index,
+        logit_scale=logit_scale,
+        softcap=softcap,
+        reduction=reduction,
+        return_metrics=return_metrics,
+    )
 
 
 # conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html
