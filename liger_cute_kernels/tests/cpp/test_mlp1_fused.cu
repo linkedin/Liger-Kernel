@@ -56,7 +56,8 @@ using Element = cutlass::bfloat16_t;
 using TraitsFused = Mlp1Traits<Element, /*TileM=*/128, /*TileN=*/128,
                                /*TileK=*/64, /*Stages=*/4, /*EpiChunkN=*/64>;
 using TraitsAct   = Mlp1Traits<Element, /*TileM=*/128, /*TileN=*/128,
-                               /*TileK=*/64, /*Stages=*/3, /*EpiChunkN=*/32>;
+                               /*TileK=*/64, /*Stages=*/4, /*EpiChunkN=*/32,
+                               /*ActStoreTileM=*/32>;
 
 #define CUDA_OK(expr)                                                       \
 	do {                                                                    \
@@ -91,7 +92,8 @@ struct Mlp1ActKernelSmem {
 	typename MainloopPipelineFor<Traits, Compute>::SharedStorage pipe_storage;
 };
 
-template <typename Traits, int Compute, typename TmaLoadX, typename TmaLoadW, typename TmaStoreZ>
+template <typename Traits, int Compute, bool Expert3D,
+          typename TmaLoadX, typename TmaLoadW, typename TmaStoreZ>
 __global__ void __launch_bounds__(Traits::NumThreads, 1)
 mlp1_fused_test_kernel(
 		__grid_constant__ TmaLoadX const tma_load_x,
@@ -143,10 +145,12 @@ mlp1_fused_test_kernel(
 		int expert = expert_ids[m];
 		int expert_n_offset = expert * num_n_tiles;
 		if (is_producer) {
-			liger::mlp1_fused_producer<Traits>(
+			liger::mlp1_fused_producer<Traits, Expert3D>(
 				pipe, prod_state, smem.tile,
 				tma_load_x, tma_load_b, tma_load_c,
-				m, expert_n_offset, num_tokens, hidden_dim, total_n_rows,
+				m, Expert3D ? expert : expert_n_offset, num_tokens, hidden_dim,
+				num_n_tiles * Traits::TileN,
+				total_n_rows / (num_n_tiles * Traits::TileN), total_n_rows,
 				num_n_tiles, num_k_tiles);
 		} else if (is_consumer) {
 			if constexpr (Compute == 100) {
@@ -179,7 +183,8 @@ mlp1_fused_test_kernel(
 #endif
 }
 
-template <typename Traits, int Compute, typename TmaLoadX, typename TmaLoadW, typename TmaStore>
+template <typename Traits, int Compute, bool Expert3D,
+          typename TmaLoadX, typename TmaLoadW, typename TmaStore>
 __global__ void __launch_bounds__(Traits::NumThreads, 1)
 mlp1_act_test_kernel(
 		__grid_constant__ TmaLoadX const tma_load_x,
@@ -211,9 +216,10 @@ mlp1_act_test_kernel(
 			return liger::mlp1_make_pipe<Traits>(smem.pipe_storage);
 	}();
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
-	cute::TMEM::Allocator1Sm tmem_alloc{};
+	cute::TMEM::Allocator2Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
+		cute::cluster_sync();
 		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tile.tmem_base);
 			__syncwarp();
@@ -221,9 +227,12 @@ mlp1_act_test_kernel(
 	}
 #endif
 	__syncthreads();
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+	if constexpr (Compute == 100)
+		cute::cluster_sync();
+#endif
 
-	PipeState prod_state = cutlass::make_producer_start_state<Pipeline>();
-	PipeState cons_state;
+	uint32_t pipe_count = 0;
 
 	// Single block per M-tile here (gridDim.y == 1), so split_idx/num_splits
 	// degenerate to "this block owns every n-tile".
@@ -233,23 +242,30 @@ mlp1_act_test_kernel(
 	for (int m = blockIdx.x; m < num_m_tiles; m += gridDim.x) {
 		int expert = expert_ids[m];
 		int expert_n_offset = expert * num_n_tiles;
+		PipeState state = is_producer
+			? cutlass::make_producer_start_state<Pipeline>()
+			: PipeState{};
+		state.advance(pipe_count);
 		if (is_producer) {
-			liger::mlp1_fused_act_producer<Traits>(
-				pipe, prod_state, smem.tile,
+			liger::mlp1_fused_act_producer<Traits, Expert3D>(
+				pipe, state, smem.tile,
 				tma_load_x, tma_load_b, tma_load_c,
-				m, expert_n_offset, num_tokens, hidden_dim, total_n_rows,
+				m, Expert3D ? expert : expert_n_offset,
+				num_tokens, hidden_dim,
+				num_n_tiles * Traits::TileN,
+				total_n_rows / (num_n_tiles * Traits::TileN), total_n_rows,
 				num_n_tiles, num_k_tiles, split_idx, num_splits);
 		} else if (is_consumer) {
 			if constexpr (Compute == 100) {
 				liger::mlp1_fused_act_consumer<Traits, 100>(
-					pipe, cons_state, smem.tile,
+					pipe, state, smem.tile,
 					tma_store_du, tma_store_dv, tma_store_z,
 					m, num_n_tiles * Traits::TileN,
 					num_m_tiles, num_n_tiles, num_k_tiles, split_idx, num_splits);
 			} else {
 #if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 1000)
 				liger::mlp1_fused_act_consumer<Traits, 90>(
-					pipe, cons_state, smem.tile,
+					pipe, state, smem.tile,
 					tma_store_du, tma_store_dv, tma_store_z,
 					m, num_n_tiles * Traits::TileN,
 					num_m_tiles, num_n_tiles, num_k_tiles, split_idx, num_splits);
@@ -258,11 +274,13 @@ mlp1_act_test_kernel(
 #endif
 			}
 		}
+		pipe_count = state.count();
 	}
 	__syncthreads();
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
+		cute::cluster_sync();
 		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
 			tmem_alloc.free(smem.tile.tmem_base, kTmemColumns);
@@ -364,7 +382,8 @@ static RefOutputs cpu_reference(
 }
 
 // Build host inputs (bf16-rounded floats) + device buffers shared by both
-// variants. expert_ids[m] = m % num_experts.
+// variants. Offset large-E cases to exercise production-scale flattened TMA
+// coordinates without requiring many M tiles.
 struct Inputs {
 	std::vector<float> X, B, C;           // bf16-rounded host copies
 	std::vector<int>   expert_ids;
@@ -391,7 +410,8 @@ static void make_inputs(const Mlp1Shape& s, Inputs& in, unsigned seed) {
 	in.total_n_rows = s.num_experts * s.intermediate_dim;
 
 	in.expert_ids.resize(in.num_m_tiles);
-	for (int m = 0; m < in.num_m_tiles; ++m) in.expert_ids[m] = m % s.num_experts;
+	for (int m = 0; m < in.num_m_tiles; ++m)
+		in.expert_ids[m] = (m + (s.num_experts > 48 ? 48 : 0)) % s.num_experts;
 
 	upload_bf16(in.dX, in.X);
 	upload_bf16(in.dB, in.B);
@@ -439,9 +459,8 @@ static std::vector<float> download_rows(const Element* d, int padded_tokens,
 // Variant runners
 // ═══════════════════════════════════════════════════════════════════
 
-template <int Compute>
+template <int Compute, typename Traits = TraitsFused>
 static void run_fused(const Mlp1Shape& s) {
-	using Traits = TraitsFused;
 	Inputs in; make_inputs<Traits>(s, in, /*seed=*/1234);
 
 	int padded = in.num_m_tiles * Traits::TileM;
@@ -452,20 +471,42 @@ static void run_fused(const Mlp1Shape& s) {
 	// ── TMA descriptors ──
 	auto tX = make_tensor(make_gmem_ptr(in.dX.ptr),
 		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
-	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
-		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
-	auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
-		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 	auto tZ = make_tensor(make_gmem_ptr(dZ),
 		make_shape(padded, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
 
 	auto tma_x = make_tma_copy(SM90_TMA_LOAD{}, tX, typename Traits::SmemLayoutX_1{});
-	auto tma_b = make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
-	auto tma_c = make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+	auto tma_b = [&]() {
+		if constexpr (Compute == 90) {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+				make_stride(s.hidden_dim, Int<1>{},
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(in.total_n_rows, s.hidden_dim),
+				make_stride(s.hidden_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_c = [&]() {
+		if constexpr (Compute == 90) {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+				make_stride(s.hidden_dim, Int<1>{},
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(in.total_n_rows, s.hidden_dim),
+				make_stride(s.hidden_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		}
+	}();
 	auto tma_z = make_tma_copy(SM90_TMA_STORE{}, tZ, typename Traits::SmemLayoutStoreSlot{});
 
 	size_t smem_size = sizeof(Mlp1FusedKernelSmem<Traits, Compute>);
-	auto kernel = mlp1_fused_test_kernel<Traits, Compute,
+	auto kernel = mlp1_fused_test_kernel<Traits, Compute, Compute == 90,
 		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
 	CUDA_OK(cudaFuncSetAttribute(kernel,
 		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
@@ -504,32 +545,79 @@ static void run_act(const Mlp1Shape& s) {
 
 	auto tX = make_tensor(make_gmem_ptr(in.dX.ptr),
 		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
-	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
-		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
-	auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
-		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 	auto mkZ = [&](Element* p) {
 		return make_tensor(make_gmem_ptr(p),
 			make_shape(padded, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
 	};
 	auto tma_x  = make_tma_copy(SM90_TMA_LOAD{},  tX, typename Traits::SmemLayoutX_1{});
-	auto tma_b  = make_tma_copy(SM90_TMA_LOAD{},  tB, typename Traits::SmemLayoutW_1{});
-	auto tma_c  = make_tma_copy(SM90_TMA_LOAD{},  tC, typename Traits::SmemLayoutW_1{});
-	auto tma_du = make_tma_copy(SM90_TMA_STORE{}, mkZ(dU), typename Traits::SmemLayoutStoreSlot{});
-	auto tma_dv = make_tma_copy(SM90_TMA_STORE{}, mkZ(dV), typename Traits::SmemLayoutStoreSlot{});
-	auto tma_z  = make_tma_copy(SM90_TMA_STORE{}, mkZ(dZ), typename Traits::SmemLayoutStoreSlot{});
+	auto tma_b = [&]() {
+		if constexpr (Compute == 90) {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+				make_stride(s.hidden_dim, Int<1>{},
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(in.total_n_rows, s.hidden_dim),
+				make_stride(s.hidden_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_c = [&]() {
+		if constexpr (Compute == 90) {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+				make_stride(s.hidden_dim, Int<1>{},
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(in.total_n_rows, s.hidden_dim),
+				make_stride(s.hidden_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_du = make_tma_copy(
+		SM90_TMA_STORE{}, mkZ(dU), typename Traits::SmemLayoutActStoreSlot{});
+	auto tma_dv = make_tma_copy(
+		SM90_TMA_STORE{}, mkZ(dV), typename Traits::SmemLayoutActStoreSlot{});
+	auto tma_z = make_tma_copy(
+		SM90_TMA_STORE{}, mkZ(dZ), typename Traits::SmemLayoutActStoreSlot{});
 
-	size_t smem_size = sizeof(Mlp1ActKernelSmem<Traits, Compute>);
-	auto kernel = mlp1_act_test_kernel<Traits, Compute,
+	size_t smem_size = Compute == 100
+		? static_cast<size_t>(232000)
+		: sizeof(Mlp1ActKernelSmem<Traits, Compute>);
+	auto kernel = mlp1_act_test_kernel<Traits, Compute, Compute == 90,
 		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
 	CUDA_OK(cudaFuncSetAttribute(kernel,
 		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-	dim3 grid(in.num_m_tiles, 1);
-	kernel<<<grid, Traits::NumThreads, smem_size>>>(
-		tma_x, tma_b, tma_c, tma_du, tma_dv, tma_z, in.d_expert_ids,
-		s.num_tokens, s.hidden_dim, in.total_n_rows, in.num_m_tiles, in.num_n_tiles);
-	CUDA_OK(cudaGetLastError());
+	dim3 grid(2, 4);
+	if constexpr (Compute == 100) {
+		cudaLaunchConfig_t config{};
+		config.gridDim = grid;
+		config.blockDim = Traits::NumThreads;
+		config.dynamicSmemBytes = smem_size;
+		cudaLaunchAttribute cluster_attr{};
+		cluster_attr.id = cudaLaunchAttributeClusterDimension;
+		cluster_attr.val.clusterDim.x = 2;
+		cluster_attr.val.clusterDim.y = 1;
+		cluster_attr.val.clusterDim.z = 1;
+		config.attrs = &cluster_attr;
+		config.numAttrs = 1;
+		CUDA_OK(cudaLaunchKernelEx(
+			&config, kernel,
+			tma_x, tma_b, tma_c, tma_du, tma_dv, tma_z, in.d_expert_ids,
+			s.num_tokens, s.hidden_dim, in.total_n_rows,
+			in.num_m_tiles, in.num_n_tiles));
+	} else {
+		kernel<<<grid, Traits::NumThreads, smem_size>>>(
+			tma_x, tma_b, tma_c, tma_du, tma_dv, tma_z, in.d_expert_ids,
+			s.num_tokens, s.hidden_dim, in.total_n_rows,
+			in.num_m_tiles, in.num_n_tiles);
+		CUDA_OK(cudaGetLastError());
+	}
 	CUDA_OK(cudaDeviceSynchronize());
 
 	auto U = download_rows(dU, padded, s.num_tokens, s.intermediate_dim);
@@ -586,6 +674,10 @@ static int sm_count() {
 // reports the peak — this removes any guesswork about the best launch shape and
 // shows the effect of occupancy (small splits under-fill the SMs).
 static std::vector<int> candidate_splits(int num_n_tiles) {
+	if (const char* fixed = std::getenv("MLP1_BENCH_SPLIT")) {
+		int split = std::atoi(fixed);
+		if (split > 0) return {split};
+	}
 	std::vector<int> ds;
 	for (int d = 1; d <= num_n_tiles; ++d)
 		if (num_n_tiles % d == 0) ds.push_back(d);
@@ -633,9 +725,10 @@ static double tflops_of(const Mlp1Shape& s, double ms) {
 
 // ── Benchmark runners (setup mirrors run_fused/run_act; no compare) ──
 
-template <int Compute>
-static void run_fused_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
-	using Traits = TraitsFused;
+template <int Compute, typename Traits = TraitsFused>
+static void run_fused_bench(
+		const Mlp1Shape& s, const BenchCfg& cfg,
+		const char* label = "fused-bench") {
 	Inputs in; make_bench_inputs<Traits>(s, in);
 
 	int padded = in.num_m_tiles * Traits::TileM;
@@ -645,20 +738,42 @@ static void run_fused_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
 
 	auto tX = make_tensor(make_gmem_ptr(in.dX.ptr),
 		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
-	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
-		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
-	auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
-		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 	auto tZ = make_tensor(make_gmem_ptr(dZ),
 		make_shape(padded, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
 
 	auto tma_x = make_tma_copy(SM90_TMA_LOAD{}, tX, typename Traits::SmemLayoutX_1{});
-	auto tma_b = make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
-	auto tma_c = make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+	auto tma_b = [&]() {
+		if constexpr (Compute == 90) {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+				make_stride(s.hidden_dim, Int<1>{},
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(in.total_n_rows, s.hidden_dim),
+				make_stride(s.hidden_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_c = [&]() {
+		if constexpr (Compute == 90) {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+				make_stride(s.hidden_dim, Int<1>{},
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(in.total_n_rows, s.hidden_dim),
+				make_stride(s.hidden_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		}
+	}();
 	auto tma_z = make_tma_copy(SM90_TMA_STORE{}, tZ, typename Traits::SmemLayoutStoreSlot{});
 
 	size_t smem_size = sizeof(Mlp1FusedKernelSmem<Traits, Compute>);
-	auto kernel = mlp1_fused_test_kernel<Traits, Compute,
+	auto kernel = mlp1_fused_test_kernel<Traits, Compute, Compute == 90,
 		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
 	CUDA_OK(cudaFuncSetAttribute(kernel,
 		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
@@ -679,9 +794,9 @@ static void run_fused_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
 		double tf = tflops_of(s, ms);
 		if (tf > best_tf) { best_tf = tf; best_ms = ms; best_split = split; }
 	}
-	printf("[fused-bench C=%-3d T=%-5d H=%d I=%d E=%d] "
+	printf("[%-18s C=%-3d T=%-5d H=%d I=%d E=%d] "
 	       "peak %7.2f TFLOPS @ %7.4f ms (splits=%-2d, %4d CTAs / %d SMs)\n",
-		Compute, s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
+		label, Compute, s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
 		best_tf, best_ms, best_split, in.num_m_tiles * best_split, sm_count());
 
 	cudaFree(dZ);
@@ -700,23 +815,45 @@ static void run_act_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
 
 	auto tX = make_tensor(make_gmem_ptr(in.dX.ptr),
 		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
-	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
-		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
-	auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
-		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 	auto mkZ = [&](Element* p) {
 		return make_tensor(make_gmem_ptr(p),
 			make_shape(padded, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
 	};
 	auto tma_x  = make_tma_copy(SM90_TMA_LOAD{},  tX, typename Traits::SmemLayoutX_1{});
-	auto tma_b  = make_tma_copy(SM90_TMA_LOAD{},  tB, typename Traits::SmemLayoutW_1{});
-	auto tma_c  = make_tma_copy(SM90_TMA_LOAD{},  tC, typename Traits::SmemLayoutW_1{});
+	auto tma_b = [&]() {
+		if constexpr (Compute == 90) {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+				make_stride(s.hidden_dim, Int<1>{},
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(in.total_n_rows, s.hidden_dim),
+				make_stride(s.hidden_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_c = [&]() {
+		if constexpr (Compute == 90) {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+				make_stride(s.hidden_dim, Int<1>{},
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(in.total_n_rows, s.hidden_dim),
+				make_stride(s.hidden_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		}
+	}();
 	auto tma_du = make_tma_copy(SM90_TMA_STORE{}, mkZ(dU), typename Traits::SmemLayoutStoreSlot{});
 	auto tma_dv = make_tma_copy(SM90_TMA_STORE{}, mkZ(dV), typename Traits::SmemLayoutStoreSlot{});
 	auto tma_z  = make_tma_copy(SM90_TMA_STORE{}, mkZ(dZ), typename Traits::SmemLayoutStoreSlot{});
 
 	size_t smem_size = sizeof(Mlp1ActKernelSmem<Traits, Compute>);
-	auto kernel = mlp1_act_test_kernel<Traits, Compute,
+	auto kernel = mlp1_act_test_kernel<Traits, Compute, Compute == 90,
 		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
 	CUDA_OK(cudaFuncSetAttribute(kernel,
 		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
@@ -775,6 +912,7 @@ static const std::vector<Mlp1Shape> kShapes = {
 	{128, 512,  256, 1},   // deeper K, two N-tiles
 	{256, 256,  256, 2},   // two M-tiles across two experts
 	{384, 256,  128, 3},   // three M-tiles, one expert each
+	{1280, 2048, 512, 1},  // reaches pipeline count 130 on the fifth M tile
 };
 
 // Large, GPU-saturating shapes for the TFLOPS benchmark. T is a multiple of
@@ -842,9 +980,8 @@ TEST(Mlp1FusedActSm90, Correctness) {
 // these MLP1 kernels use none, so >0 == spill here. For the exact spill-store/
 // load byte split, build with nvcc --ptxas-options=-v.
 // ═══════════════════════════════════════════════════════════════════
-template <int Compute>
-static void check_fused_spill() {
-	using Traits = TraitsFused;
+template <int Compute, typename Traits = TraitsFused>
+static void check_fused_spill(const char* label = "fused") {
 	// A small valid shape — only the descriptor TYPES drive the instantiation
 	// we query; the values are irrelevant to the compiled register footprint.
 	const Mlp1Shape s{128, 512, 256, 1};
@@ -854,20 +991,33 @@ static void check_fused_spill() {
 	CUDA_OK(cudaMalloc(&dZ, (size_t)padded * s.intermediate_dim * sizeof(Element)));
 	auto tX = make_tensor(make_gmem_ptr(in.dX.ptr),
 		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
-	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
-		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 	auto tZ = make_tensor(make_gmem_ptr(dZ),
 		make_shape(padded, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
 	auto tma_x = make_tma_copy(SM90_TMA_LOAD{},  tX, typename Traits::SmemLayoutX_1{});
-	auto tma_b = make_tma_copy(SM90_TMA_LOAD{},  tB, typename Traits::SmemLayoutW_1{});
+	auto tma_b = [&]() {
+		if constexpr (Compute == 90) {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+				make_stride(s.hidden_dim, Int<1>{},
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(in.total_n_rows, s.hidden_dim),
+				make_stride(s.hidden_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		}
+	}();
 	auto tma_z = make_tma_copy(SM90_TMA_STORE{}, tZ, typename Traits::SmemLayoutStoreSlot{});
-	auto kernel = mlp1_fused_test_kernel<Traits, Compute,
+	auto kernel = mlp1_fused_test_kernel<Traits, Compute, Compute == 90,
 		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
 	cudaFuncAttributes a{};
 	CUDA_OK(cudaFuncGetAttributes(&a, kernel));
 	cudaFree(dZ);
-	printf("[spill fused C=%d] regs/thread=%d  local(spill)=%ld B  static_smem=%ld B  maxthreads/blk=%d\n",
-		Compute, a.numRegs, (long)a.localSizeBytes, (long)a.sharedSizeBytes, a.maxThreadsPerBlock);
+	printf("[spill %-12s C=%d AtomN=%d] regs/thread=%d  local(spill)=%ld B  "
+	       "static_smem=%ld B  maxthreads/blk=%d\n",
+		label, Compute, Traits::AtomN, a.numRegs, (long)a.localSizeBytes,
+		(long)a.sharedSizeBytes, a.maxThreadsPerBlock);
 	EXPECT_EQ(a.localSizeBytes, 0) << "MLP1 fused kernel spills registers to local memory";
 }
 
@@ -888,7 +1038,7 @@ static void check_act_spill() {
 	auto tma_x = make_tma_copy(SM90_TMA_LOAD{},  tX, typename Traits::SmemLayoutX_1{});
 	auto tma_b = make_tma_copy(SM90_TMA_LOAD{},  tB, typename Traits::SmemLayoutW_1{});
 	auto tma_z = make_tma_copy(SM90_TMA_STORE{}, tZ, typename Traits::SmemLayoutStoreSlot{});
-	auto kernel = mlp1_act_test_kernel<Traits, Compute,
+	auto kernel = mlp1_act_test_kernel<Traits, Compute, false,
 		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
 	cudaFuncAttributes a{};
 	CUDA_OK(cudaFuncGetAttributes(&a, kernel));
@@ -959,6 +1109,7 @@ TEST(Mlp1FusedAct, TFLOPs_Hopper) {
 // (and vice-versa on Hopper). The TFLOPS benchmarks are added to the default
 // selection only when MLP1_BENCH is set. An explicit --gtest_filter, or
 // --gtest_list_tests (used by ctest discovery), always takes precedence.
+//
 int main(int argc, char** argv) {
 	::testing::InitGoogleTest(&argc, argv);
 

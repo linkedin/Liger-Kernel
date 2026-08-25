@@ -157,7 +157,31 @@ struct MlpFusedBwdSmem {
 		Compute == 100,
 		cutlass::arch::ClusterBarrier,
 		uint32_t> tmem_pair_barrier;
+	alignas(16) cute::conditional_t<
+		Compute == 100,
+		cutlass::arch::ClusterBarrier,
+		uint32_t> tmem_init_barrier;
+	alignas(16) cute::conditional_t<
+		Compute == 100,
+		cutlass::arch::ClusterBarrier,
+		uint32_t> acc_pair_barrier;
 };
+
+__device__ __forceinline__ void mlp_bwd_pair_barrier_sync(
+		const cutlass::arch::ClusterBarrier& barrier,
+		int warp_id) {
+	if (warp_id == 3) {
+		if (cute::elect_one_sync()) {
+			uint32_t rank = cute::block_rank_in_cluster();
+			uint32_t peer = rank ^ 1;
+			bool leader = (rank % 2) == 0;
+			barrier.arrive(peer, !leader);
+			barrier.wait(0);
+			barrier.arrive(peer, leader);
+		}
+		__syncwarp();
+	}
+}
 
 template <typename Traits1, typename Traits2T, typename Traits3,
           typename Traits4, typename Traits5>
@@ -244,6 +268,7 @@ struct MlpBwdDims {
 	                            // clamped to bk_tiles=0.
 	int num_batches;
 	int local_expert_start;
+	int num_pes;
 	int experts_per_pe;  // Phase 3/4 use this to skip k-blocks whose expert
 	                     // falls outside [local_expert_start,
 	                     // local_expert_start + experts_per_pe). Required
@@ -318,6 +343,7 @@ struct MlpBwdBufs {
 	// sufficient.
 	const int* expert_for_k_block_mlp4;
 	const int* expert_for_k_block_mlp3;
+	const int* valid_rows_mlp4;
 
 	// Per-pass per-expert K-range scratch for Phase 2. Filled once at
 	// the start of each pass (in the bwd preamble) and consumed by both
@@ -411,14 +437,20 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1a(
 	int nc = (num_splits >= 0) ? num_splits : (int)gridDim.y;
 	auto s = mlp_bwd_resume_state<Mlp1MainloopPipelineFor<Traits1, Compute>>(
 		pa_count, warp_id == 0);
-	if (warp_id == 0)
-		mlp1_fused_act_producer<Traits1>(pa_pipe, s,
+	if (warp_id == 0) {
+		mlp1_fused_act_producer<Traits1, Compute == 90>(pa_pipe, s,
 			smem_mlp1, tma_load_x, tma_load_b_fwd, tma_load_c_fwd,
-			m, expert * dims.num_n_tiles_1,
-			dims.num_tokens, dims.hidden_dim, dims.total_n_rows_1,
+			m, (Compute == 90) ? expert : expert * dims.num_n_tiles_1,
+			dims.num_tokens, dims.hidden_dim, dims.intermediate_dim,
+			dims.experts_per_pe, dims.total_n_rows_1,
 			dims.num_n_tiles_1, dims.num_k_tiles_1,
 			ns, nc);
-	if constexpr (Compute == 100) smem_mlp1.tmem_base = tmem_base;
+		if constexpr (Compute == 100)
+			pa_pipe.producer_tail(s);
+	}
+	if constexpr (Compute == 100)
+		if (warp_id == 3 && threadIdx.x % Traits1::WarpSize == 0)
+			smem_mlp1.tmem_base = tmem_base;
 	constexpr int kFirstMlp12ConsumerWarp = (Compute == 100) ? 3 : 4;
 	if (warp_id >= kFirstMlp12ConsumerWarp)
 		mlp1_fused_act_consumer<Traits1, Compute>(pa_pipe, s,
@@ -446,15 +478,21 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1b(
 	int nc = (num_splits >= 0) ? num_splits : (int)gridDim.y;
 	auto s = mlp_bwd_resume_state<Mlp2TMainloopPipelineFor<Traits2T, Compute>>(
 		pb_count, warp_id == 0);
-	if (warp_id == 0)
-		mlp2_t_fused_producer<Traits2T>(pb_pipe, s,
+	if (warp_id == 0) {
+		mlp2_t_fused_producer<Traits2T, /*Expert3D=*/true,
+			/*ThrottleTma=*/false>(pb_pipe, s,
 			smem_mlp2t, tma_load_dy, tma_load_a_col,
-			m, expert * dims.num_k_tiles_2t,
+			m, expert,
 			dims.num_tokens, dims.hidden_dim, dims.intermediate_dim,
-			dims.total_k_cols_2t,
+			dims.experts_per_pe, dims.total_k_cols_2t,
 			dims.num_n_tiles_2t, dims.num_k_tiles_2t,
 			ns, nc);
-	if constexpr (Compute == 100) smem_mlp2t.tmem_base = tmem_base;
+		if constexpr (Compute == 100)
+			pb_pipe.producer_tail(s);
+	}
+	if constexpr (Compute == 100)
+		if (warp_id == 3 && threadIdx.x % Traits2T::WarpSize == 0)
+			smem_mlp2t.tmem_base = tmem_base;
 	constexpr int kFirstMlp12ConsumerWarp = (Compute == 100) ? 3 : 4;
 	if (warp_id >= kFirstMlp12ConsumerWarp)
 		mlp2_t_fused_consumer<Traits2T, Compute>(pb_pipe, s,
@@ -484,16 +522,21 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1d(
 	int nc = (num_splits >= 0) ? num_splits : (int)gridDim.y;
 	auto s = mlp_bwd_resume_state<Mlp5MainloopPipelineFor<Traits5, Compute>>(
 		pd_count, warp_id == 0);
-	if (warp_id == 0)
-		mlp5_fused_producer<Traits5>(pd_pipe, s,
+	if (warp_id == 0) {
+		mlp5_fused_producer<Traits5, Compute == 90>(pd_pipe, s,
 			smem_mlp5,
 			tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col,
-			m, expert * dims.num_k_tiles_5,
+			m, (Compute == 90) ? expert : expert * dims.num_k_tiles_5,
 			dims.num_tokens, dims.hidden_dim, dims.intermediate_dim,
-			dims.total_k_cols_5,
+			dims.experts_per_pe, dims.total_k_cols_5,
 			dims.num_n_tiles_5, dims.num_k_tiles_5,
 			ns, nc);
-	if constexpr (Compute == 100) smem_mlp5.tmem_base = tmem_base;
+		if constexpr (Compute == 100)
+			pd_pipe.producer_tail(s);
+	}
+	if constexpr (Compute == 100)
+		if (warp_id == 3 && threadIdx.x % Traits5::WarpSize == 0)
+			smem_mlp5.tmem_base = tmem_base;
 	constexpr int kFirstMlp5ConsumerWarp = (Compute == 100) ? 3 : 4;
 	if (warp_id >= kFirstMlp5ConsumerWarp)
 		mlp5_fused_consumer<Traits5, Compute>(pd_pipe, s,
@@ -508,10 +551,11 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1d(
 // Phase 2 per-batch build-ranges scan
 // ═══════════════════════════════════════════════════════════════════
 //
-// Warp 0 fills (k_start, k_end) per local expert for the current batch.
+// CTA 0 warp 0 fills (k_start, k_end) per local expert for the current batch.
 // Empty experts stay at (INT_MAX, 0); the chunk loop skips them via
-// `k_end <= k_start`. Ends with a NamedBarrier::sync so the caller can
-// proceed straight into the producer/consumer without extra plumbing.
+// `k_end <= k_start`. The caller follows this with a grid-wide barrier before
+// any CTA consumes the ranges. Restricting reset+scan to one warp avoids a
+// race where a late CTA reset erased ranges another CTA had already updated.
 //
 // Called once per (batch, phase). mlp3 and mlp4 use different
 // expert_for_k_block arrays and strides, so each phase scans its own.
@@ -527,15 +571,17 @@ __device__ __forceinline__ void mlp_bwd_phase_2_build_ranges(
 		int* k_starts,
 		int* k_ends,
 		const int* expert_for_k_block,
+		const int* valid_rows_for_tile,
 		int k_offset,
 		int num_k_in_batch,
 		int experts_per_pe,
 		int local_expert_start,
 		int efkb_stride,
+		int tile_k,
 		int warp_id,
 		int ring_kb = 0) {
 	constexpr int kMlpBwdBarrierThreads = kMlpBwdBarrierThreadsFor<Compute>;
-	if (warp_id == 0) {
+	if (blockIdx.x == 0 && blockIdx.y == 0 && warp_id == 0) {
 		int lane = threadIdx.x;
 		for (int e = lane; e < experts_per_pe; e += 32) {
 			k_starts[e] = INT_MAX;
@@ -545,7 +591,13 @@ __device__ __forceinline__ void mlp_bwd_phase_2_build_ranges(
 		for (int kb = lane; kb < num_k_in_batch; kb += 32) {
 			int kb_abs  = k_offset + kb;                                 // unwrapped
 			int kb_phys = (ring_kb > 0) ? (kb_abs % ring_kb) : kb_abs;   // ring slot
-			int eg = expert_for_k_block[kb_phys / efkb_stride];
+			int tile = kb_phys / efkb_stride;
+			if (valid_rows_for_tile != nullptr) {
+				int row_in_tile = (kb_phys - tile * efkb_stride) * tile_k;
+				if (row_in_tile >= valid_rows_for_tile[tile])
+					continue;
+			}
+			int eg = expert_for_k_block[tile];
 			int el = eg - local_expert_start;
 			if (el >= 0 && el < experts_per_pe) {
 				atomicMin(&k_starts[el], kb_abs);
@@ -586,7 +638,9 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 		int phase2_div, int phase2_mod,
 		const MlpBwdDims& dims,
 		uint32_t tmem_base,
-		int ring_kb = 0) {
+		int ring_kb = 0,
+		const cutlass::arch::ClusterBarrier* pair_init_barrier = nullptr,
+		uint32_t* pair_init_phase = nullptr) {
 	static_assert(Compute == 90 || Compute == 100,
 		"mlp_bwd_run_phase_2_mlp4: Compute must be 90 (Hopper 1SM) or "
 		"100 (Blackwell ClusterM=2 paired-CTA) — only Compute == 100 "
@@ -709,17 +763,20 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 			dims.num_m_tiles_4, dims.num_n_tiles_4, outer_split_4,
 			cell_start, cell_stride,
 			batch_kb_start, batch_kb_end, k_split_4, ring_kb);
-	if constexpr (Compute == 100) smem_mlp4.tmem_base = tmem_base;
+	if constexpr (Compute == 100)
+		if (warp_id == 3 && threadIdx.x % Traits4::WarpSize == 0)
+			smem_mlp4.tmem_base = tmem_base;
 	constexpr int kFirstMlp4ConsumerWarp = (Compute == 100) ? 3 : 4;
 	if (warp_id >= kFirstMlp4ConsumerWarp)
-		mlp4_consumer<Traits4, Compute>(
+		mlp4_consumer<Traits4, Compute, Compute == 90>(
 			p4_pipe, s,
 			smem_mlp4, tma_reduce_db, tma_reduce_dc,
 			k_starts, k_ends, experts_per_pe,
-			dims.hidden_dim, dims.total_m_rows_4,
+			dims.intermediate_dim, dims.hidden_dim, dims.total_m_rows_4,
 			dims.num_m_tiles_4, dims.num_n_tiles_4, outer_split_4,
 			cell_start, cell_stride,
-			batch_kb_start, batch_kb_end, k_split_4);
+			batch_kb_start, batch_kb_end, k_split_4,
+			pair_init_barrier, pair_init_phase);
 
 	cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 	p4_count = s.count();
@@ -752,7 +809,9 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 		int phase2_div, int phase2_mod,
 		const MlpBwdDims& dims,
 		uint32_t tmem_base,
-		int ring_kb = 0) {
+		int ring_kb = 0,
+		const cutlass::arch::ClusterBarrier* pair_init_barrier = nullptr,
+		uint32_t* pair_init_phase = nullptr) {
 	static_assert(Compute == 90 || Compute == 100,
 		"mlp_bwd_run_phase_2_mlp3: Compute must be 90 (Hopper 1SM) or "
 		"100 (Blackwell ClusterM=2 paired-CTA) — only Compute == 100 "
@@ -865,17 +924,20 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 			dims.num_m_tiles_3, dims.num_n_tiles_3, outer_split_3,
 			cell_start, cell_stride,
 			batch_kb_start, batch_kb_end, k_split_3, ring_kb);
-	if constexpr (Compute == 100) smem_mlp3.tmem_base = tmem_base;
+	if constexpr (Compute == 100)
+		if (warp_id == 3 && threadIdx.x % Traits3::WarpSize == 0)
+			smem_mlp3.tmem_base = tmem_base;
 	constexpr int kFirstMlp3ConsumerWarp = (Compute == 100) ? 3 : 4;
 	if (warp_id >= kFirstMlp3ConsumerWarp)
-		mlp3_consumer<Traits3, Compute>(
+		mlp3_consumer<Traits3, Compute, Compute == 90>(
 			p3_pipe, s,
 			smem_mlp3, tma_reduce_da,
 			k_starts, k_ends, experts_per_pe,
-			dims.intermediate_dim, dims.total_n_rows_3,
+			dims.hidden_dim, dims.intermediate_dim, dims.total_n_rows_3,
 			dims.num_m_tiles_3, dims.num_n_tiles_3, outer_split_3,
 			cell_start, cell_stride,
-			batch_kb_start, batch_kb_end, k_split_3);
+			batch_kb_start, batch_kb_end, k_split_3,
+			pair_init_barrier, pair_init_phase);
 
 	cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 	p3_count = s.count();
@@ -1064,16 +1126,15 @@ __device__ __forceinline__ void mlp_fused_bwd_run_batches(
 			int batch_kb_cnt = (bk_tiles * Traits1::TileM) / Traits4::TileK;
 			mlp_bwd_phase_2_build_ranges<Compute>(
 				bufs.expert_k_starts, bufs.expert_k_ends,
-				bufs.expert_for_k_block_mlp4,
+				bufs.expert_for_k_block_mlp4, bufs.valid_rows_mlp4,
 				batch_kb_off, batch_kb_cnt,
 				dims.experts_per_pe, dims.local_expert_start,
-				efkb_stride_4, warp_id);
+				efkb_stride_4, Traits4::TileK, warp_id);
 		}
 
-		// Cross-CTA barrier after the per-batch scan: k_starts/k_ends is shared
-		// by all CTAs (each runs build_ranges = reset + atomicMin/Max over the
-		// same window), so mlp4 must not read it until every CTA's scan is done,
-		// else producer/consumer tile-count desync → pipeline deadlock.
+		// Cross-CTA barrier after CTA 0 builds the shared ranges. MLP4 must not
+		// read them before the scan completes, or producer/consumer tile counts
+		// can diverge and deadlock the pipeline.
 		if (bk_tiles > 0)
 			global_barrier.wait();
 
@@ -1279,12 +1340,17 @@ __device__ __forceinline__ void mlp_fused_bwd(
 		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tmem_base);
 			if constexpr (Compute == 100) {
-				if (cute::elect_one_sync())
-					smem.tmem_pair_barrier.init(
-						Traits1::WarpSize);
+				if (cute::elect_one_sync()) {
+					smem.tmem_pair_barrier.init(1);
+					smem.tmem_init_barrier.init(1);
+					smem.acc_pair_barrier.init(1);
+				}
+				cutlass::arch::fence_barrier_init();
 			}
 			__syncwarp();
 		}
+		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+		mlp_bwd_pair_barrier_sync(smem.tmem_init_barrier, warp_id);
 		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 	}
 
@@ -1336,14 +1402,7 @@ __device__ __forceinline__ void mlp_fused_bwd(
 		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
-			if constexpr (Compute == 100) {
-				uint32_t rank = cute::block_rank_in_cluster();
-				uint32_t peer = rank ^ 1;
-				bool leader = (rank % 2) == 0;
-				smem.tmem_pair_barrier.arrive(peer, !leader);
-				smem.tmem_pair_barrier.wait(0);
-				smem.tmem_pair_barrier.arrive(peer, leader);
-			}
+			mlp_bwd_pair_barrier_sync(smem.tmem_pair_barrier, warp_id);
 			tmem_alloc.free(smem.tmem_base, kTmemColumns);
 		}
 	}
@@ -1370,8 +1429,8 @@ __device__ __forceinline__ void mlp_fused_bwd(
 template <typename Traits1, typename Traits2T, typename Traits3,
           typename Traits4, typename Traits5,
           int NSplit2, int SubBatch,
-          // SubTiles = CommTileM / GemmTileM ∈ {1,2}. >1 → Phase-1 (mlp1a/mlp2t/
-          // silu/mlp5) steps SubTiles GemmTileM-row sub-tiles per 128 comm slot;
+          // SubTiles = CommTileM / GemmTileM. >1 → Phase-1 (mlp1a/mlp2t/
+          // silu/mlp5) steps SubTiles GemmTileM-row sub-tiles per comm slot;
           // Phase-2 sees num_m_tiles·SubTiles GemmTileM token-tiles with
           // tile_expert_ids replicated SubTiles× (the K-block count is invariant).
           // 1 → unchanged single-tile path.
@@ -1525,12 +1584,17 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tmem_base);
 			if constexpr (Compute == 100) {
-				if (cute::elect_one_sync())
-					smem.tmem_pair_barrier.init(
-						Traits1::WarpSize);
+				if (cute::elect_one_sync()) {
+					smem.tmem_pair_barrier.init(1);
+					smem.tmem_init_barrier.init(1);
+					smem.acc_pair_barrier.init(1);
+				}
+				cutlass::arch::fence_barrier_init();
 			}
 			__syncwarp();
 		}
+		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+		mlp_bwd_pair_barrier_sync(smem.tmem_init_barrier, warp_id);
 		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 	}
 
@@ -1542,6 +1606,7 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 	uint32_t pd_count = 0;
 	uint32_t p3_count = 0;
 	uint32_t p4_count = 0;
+	uint32_t acc_pair_phase = 0;
 
 	using Element = typename Traits1::Element;
 
@@ -1556,23 +1621,15 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 	// Nothing to do if this PE has no tiles (remote_active is grid-uniform, so
 	// every CTA agrees and the early-out keeps the barriers below well-defined).
 	if (!remote_active) {
+		global_barrier.wait();
 		if constexpr (Compute == 100) {
 			constexpr int kTmemColumns =
 				MlpBwdTmemColumns<Traits1, Traits2T, Traits3, Traits4, Traits5>::value;
 			cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 			if (warp_id == 3) {
 				tmem_alloc.release_allocation_lock();
-				if constexpr (Compute == 100) {
-					uint32_t rank =
-						cute::block_rank_in_cluster();
-					uint32_t peer = rank ^ 1;
-					bool leader = (rank % 2) == 0;
-					smem.tmem_pair_barrier.arrive(
-						peer, !leader);
-					smem.tmem_pair_barrier.wait(0);
-					smem.tmem_pair_barrier.arrive(
-						peer, leader);
-				}
+				mlp_bwd_pair_barrier_sync(
+					smem.tmem_pair_barrier, warp_id);
 				tmem_alloc.free(smem.tmem_base, kTmemColumns);
 			}
 		}
@@ -1612,11 +1669,16 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 	// (=Traits1::TileM) tiles: num_m_tiles (Phase-1 buffer height) and num_tokens
 	// (M extent) scale by SubTiles = CommTileM/GemmTileM. The comm loop control
 	// (eff_subbatch, group_start, bk_tiles clamp, slot releases) stays in
-	// 128-comm-slot units via remote_dims. At SubTiles=1 the two are identical.
+	// communication-slot units via remote_dims. At SubTiles=1 the two are identical.
 	// (Other dims fields — N/K extents, expert counts — are M-axis-independent.)
 	MlpBwdDims gemm_dims = remote_dims;
 	gemm_dims.num_m_tiles *= SubTiles;
 	gemm_dims.num_tokens  *= SubTiles;
+	int first_sub = 0;
+	int last_sub = SubTiles;
+	int gemm_split = split;
+	int gemm_splits = num_splits;
+	constexpr int kM64PerGemmTile = Traits1::TileM / 64;
 
 	for (int g0 = 0; g0 < remote_batches; g0 += eff_subbatch) {
 		const int gcount = min(eff_subbatch, remote_batches - g0);
@@ -1630,59 +1692,68 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		// ── Phase 1: gcount sub-batches (mlp1a / mlp2t / silu_bwd / mlp5) ──
 		for (int s = 0; s < gcount; ++s) {
 			int  saved_m = -1, saved_expert = -1;
+			int  saved_valid_m64_subtiles = 0;
 			bool has_tile = false;
+			bool compute_tile = false;
 
 			// Gated by gemm_active — gap CTAs (flat_id ≥ n_gemm) skip Phase 1 and
 			// the per-column x_barrier, but still hit every global barrier below.
 			if (gemm_active && iter.has_next()) {
-				cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 				iter.acquire_src();
-				iter.acquire_src();
+				cutlass::arch::NamedBarrier::sync(
+					kMlpBwdBarrierThreads, kMlpBarrierId);
 				auto tile = iter.next();
 				int expert = tile.expert - remote_dims.local_expert_start;
 				int m = tile.y_m;
 
 				saved_m = m;
 				saved_expert = expert;
+				saved_valid_m64_subtiles = tile.valid_m64_subtiles;
 				has_tile = true;
+				compute_tile =
+					first_sub * kM64PerGemmTile <
+					saved_valid_m64_subtiles;
 
-				// One 128-row comm slot feeds SubTiles GemmTileM-row sub-tiles.
+				// One CommTileM-row slot feeds SubTiles GemmTileM-row sub-tiles.
 				// gemm coordinate of sub-tile `sub` = m·SubTiles + sub (the
 				// Phase-1 kernels multiply by Traits1::TileM=GemmTileM → rows
-				// m·128 + sub·64). gemm_dims carries the SubTiles-scaled
+				// m·CommTileM + sub·GemmTileM). gemm_dims carries the SubTiles-scaled
 				// num_m_tiles / num_tokens so the buffer tensor shapes match.
-				// Acquire/release of the comm slot stays once per 128 tile.
-				for (int sub = 0; sub < SubTiles; ++sub) {
-					mlp_bwd_run_phase_1a<Traits1, Compute>(
-						pa_pipe, pa_count, smem.mlp1,
-						tma_load_x_remote, tma_load_b_fwd, tma_load_c_fwd,
-						tma_store_du, tma_store_dv, tma_store_z,
-						warp_id, m * SubTiles + sub, expert, gemm_dims, smem.tmem_base, split, num_splits);
-					if (sub + 1 < SubTiles)
-						cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+				// Acquire/release stays once per communication tile.
+				if (compute_tile) {
+					for (int sub = first_sub; sub < last_sub; ++sub) {
+						mlp_bwd_run_phase_1a<Traits1, Compute>(
+							pa_pipe, pa_count, smem.mlp1,
+							tma_load_x_remote, tma_load_b_fwd, tma_load_c_fwd,
+							tma_store_du, tma_store_dv, tma_store_z,
+							warp_id, m * SubTiles + sub, expert, gemm_dims,
+							smem.tmem_base, gemm_split, gemm_splits);
+					}
 				}
 				cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+				x_barrier.wait();
 
 				iter.acquire_dy();
-				for (int sub = 0; sub < SubTiles; ++sub) {
-					mlp_bwd_run_phase_1b<Traits2T, Compute>(
-						pb_pipe, pb_count, smem.mlp2t,
-						tma_load_dy_remote, tma_load_a_col, tma_store_dz,
-						warp_id, m * SubTiles + sub, expert, gemm_dims, smem.tmem_base, split, num_splits);
-					if (sub + 1 < SubTiles)
-						cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+				if (compute_tile) {
+					for (int sub = first_sub; sub < last_sub; ++sub) {
+						mlp_bwd_run_phase_1b<Traits2T, Compute>(
+							pb_pipe, pb_count, smem.mlp2t,
+							tma_load_dy_remote, tma_load_a_col, tma_store_dz,
+							warp_id, m * SubTiles + sub, expert, gemm_dims,
+							smem.tmem_base, gemm_split, gemm_splits);
+					}
 				}
 
 				x_barrier.wait();
 
-				for (int sub = 0; sub < SubTiles; ++sub) {
-					silu_bwd_pair_tile<Element>(
-						remote_bufs.dz_buf, remote_bufs.du_buf, remote_bufs.dv_buf,
-						remote_bufs.du_buf, remote_bufs.dv_buf,
-						m * SubTiles + sub, Traits1::TileM, Traits2T::TileN,
-						remote_dims.intermediate_dim, split, num_splits);
-					if (sub + 1 < SubTiles)
-						cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+				if (compute_tile) {
+					for (int sub = first_sub; sub < last_sub; ++sub) {
+						silu_bwd_pair_tile<Element>(
+							remote_bufs.dz_buf, remote_bufs.du_buf, remote_bufs.dv_buf,
+							remote_bufs.du_buf, remote_bufs.dv_buf,
+							m * SubTiles + sub, Traits1::TileM, Traits2T::TileN,
+							remote_dims.intermediate_dim, gemm_split, gemm_splits);
+					}
 				}
 				cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 			}
@@ -1700,15 +1771,15 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 			// so it is emitted and its dst slot released immediately).
 			if (has_tile) {
 				iter.acquire_dst();
-				for (int sub = 0; sub < SubTiles; ++sub) {
-					mlp_bwd_run_phase_1d<Traits5, Compute>(
-						pd_pipe, pd_count, smem.mlp5,
-						tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col,
-						tma_store_dx_remote,
-						warp_id, saved_m * SubTiles + sub, saved_expert, gemm_dims,
-						smem.tmem_base, split, num_splits);
-					if (sub + 1 < SubTiles)
-						cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+				if (compute_tile) {
+					for (int sub = first_sub; sub < last_sub; ++sub) {
+						mlp_bwd_run_phase_1d<Traits5, Compute>(
+							pd_pipe, pd_count, smem.mlp5,
+							tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col,
+							tma_store_dx_remote,
+							warp_id, saved_m * SubTiles + sub, saved_expert, gemm_dims,
+							smem.tmem_base, gemm_split, gemm_splits);
+					}
 				}
 				__threadfence();  // dX flush for the NIC put (release_dst signals)
 				cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
@@ -1724,17 +1795,19 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		// and the producers wrap the physical slot by % ring_kb internally
 		// (ring_kb > 0 enables it). The group's gcount·grid_x live slots are
 		// guaranteed distinct (host check: ring > SubBatch·grid_x).
-		// group_start / bk_tiles_comm are in 128-comm-slot units (the iterator's
-		// tile granularity). Phase-2 works in GemmTileM tiles, so scale by
-		// SubTiles: the K-window ratio (× Traits1::TileM/TileK) then yields the
-		// same K-block count as the old CommTileM×comm-slot product. ring_kb uses
-		// gemm_dims.num_m_tiles (already ×SubTiles). SubTiles=1 → unchanged.
+		// group_start / bk_tiles_comm are in communication-slot units. Phase 2
+		// works in GemmTileM units, so scale the contiguous parent window by
+		// SubTiles; range construction skips padded K-blocks inside it.
 		int group_start   = g0 * grid_x;
-		int bk_tiles_comm = min(gcount * grid_x,
-		                        remote_dims.total_m_tiles_in_pass - group_start);
-		int bk_start = group_start   * SubTiles;
+		int bk_tiles_comm = min(
+			gcount * grid_x,
+			remote_dims.total_m_tiles_in_pass - group_start);
+		int bk_start = group_start * SubTiles;
 		int bk_tiles = bk_tiles_comm * SubTiles;
 		int ring_kb  = (gemm_dims.num_m_tiles * Traits1::TileM) / Traits4::TileK;
+		const cutlass::arch::ClusterBarrier* acc_pair_barrier = nullptr;
+		if constexpr (Compute == 100)
+			acc_pair_barrier = &smem.acc_pair_barrier;
 
 		// Per-group per-expert K-range scan over the group's window. Reads the
 		// LIVE X-pipe expert ids — none of the group's slots have been released
@@ -1745,11 +1818,12 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 			mlp_bwd_phase_2_build_ranges<Compute>(
 				remote_bufs.expert_k_starts, remote_bufs.expert_k_ends,
 				remote_bufs.expert_for_k_block_mlp4,
+				remote_bufs.valid_rows_mlp4,
 				batch_kb_off, batch_kb_cnt,
 				remote_dims.experts_per_pe, remote_dims.local_expert_start,
-				efkb_stride_4_remote, warp_id, ring_kb);
-			// Cross-CTA barrier: k_starts/k_ends is shared by all CTAs (each
-			// resets + atomicMin/Max), so no producer may read it mid-reset.
+				efkb_stride_4_remote, Traits4::TileK, warp_id, ring_kb);
+			// Cross-CTA barrier: CTA 0 owns reset+scan, so no producer may read
+			// the shared ranges until that work completes.
 			global_barrier.wait();
 		}
 
@@ -1762,7 +1836,8 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 				tma_reduce_db, tma_reduce_dc,
 				warp_id, bk_start, bk_tiles,
 				phase2_div, phase2_mod,
-				gemm_dims, smem.tmem_base, ring_kb);
+				gemm_dims, smem.tmem_base, ring_kb,
+				acc_pair_barrier, &acc_pair_phase);
 		}
 
 		global_barrier.wait();
@@ -1781,7 +1856,8 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 				tma_load_dyt3_remote, tma_load_zt3, tma_reduce_da,
 				warp_id, bk_start, bk_tiles,
 				phase2_div, phase2_mod,
-				gemm_dims, smem.tmem_base, ring_kb);
+				gemm_dims, smem.tmem_base, ring_kb,
+				acc_pair_barrier, &acc_pair_phase);
 		}
 
 		global_barrier.wait();
@@ -1799,14 +1875,7 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
-			if constexpr (Compute == 100) {
-				uint32_t rank = cute::block_rank_in_cluster();
-				uint32_t peer = rank ^ 1;
-				bool leader = (rank % 2) == 0;
-				smem.tmem_pair_barrier.arrive(peer, !leader);
-				smem.tmem_pair_barrier.wait(0);
-				smem.tmem_pair_barrier.arrive(peer, leader);
-			}
+			mlp_bwd_pair_barrier_sync(smem.tmem_pair_barrier, warp_id);
 			tmem_alloc.free(smem.tmem_base, kTmemColumns);
 		}
 	}

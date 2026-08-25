@@ -243,10 +243,27 @@ Run one rank per GPU under a PMI bootstrap; point the output env var at the tabl
 you are regenerating (without it the `.cuh` is written to the current directory):
 
 ```bash
-LIGER_MOE_FWDBWD_TUNED_OUTPUT=/abs/path/to/moe_fwd_bwd_tuning_configs_multi.cuh \
+LIGER_MOE_FWDBWD_TUNED_OUTPUT=/abs/path/to/moe_fwd_bwd_tuning_configs_multi_sm90.cuh \
     srun --mpi=pmi2 --ntasks=8 ./build/tuner/tune_moe_fwd_bwd   # multi-PE class
-# single-PE class (all experts local): --ntasks=1 + the _single.cuh output path
+# single-PE class (all experts local): --ntasks=1 + the _single_sm90.cuh output path
 ```
+
+Cross-rank diagnostics can deliberately vary otherwise independent rank-local
+work: `MOE_FWDBWD_TUNE_TOKEN_SKEW=N` subtracts `rank*N` tokens,
+`MOE_FWDBWD_TUNE_HETEROGENEOUS_SEED=1` cycles forward templates by rank, and
+`MOE_FWDBWD_TUNE_DETERMINISTIC_SEED=1` forces the first candidate instead of
+each rank's measured winner. Combine them with `MOE_FWDBWD_TUNE_VERBOSE=1` to
+log the selected templates. `MOE_FWDBWD_TUNE_COOLDOWN_MS=N` sleeps outside
+timed CUDA events, and `MOE_FWDBWD_TUNE_REVERSE_CANDIDATES=1` reverses sweep
+order to expose thermal/order bias. `MOE_FWDBWD_TUNE_FWD_ONLY=1` skips the
+backward sweep for forward-only diagnostics and therefore does not produce a
+complete tuned row. `MOE_FWDBWD_TUNE_T`, `_D`, `_I`, `_E`, and `_FAMILY` can
+pin an exact named-shape run; `MOE_FWDBWD_TUNE_K=N` overrides generic-sweep
+top-k. Routed inputs are deterministic by default;
+`MOE_FWDBWD_TUNE_INPUT_SEED=N` selects a different reproducible input and
+router distribution. `MOE_FWDBWD_TUNE_EXACT=1` runs exactly one arbitrary
+shape and requires the `T`, `D`, `I`, and local-`E` overrides (plus optional
+`K`).
 
 ## Building the lck wheel
 

@@ -91,9 +91,9 @@ struct CtaCounterBarrier {
 		__threadfence();
 		cutlass::arch::NamedBarrier::sync(NumThreads, BarrierId);
 		if (threadIdx.x == 0) {
-			atomicAdd(counter, 1);
 			cuda::atomic_ref<int, cuda::thread_scope_device> r(*counter);
-			while (r.load(cuda::memory_order_relaxed) < target) {}
+			r.fetch_add(1, cuda::memory_order_release);
+			while (r.load(cuda::memory_order_acquire) < target) {}
 		}
 		cutlass::arch::NamedBarrier::sync(NumThreads, BarrierId);
 	}
@@ -124,9 +124,9 @@ struct SyncThreadsCtaCounterBarrier {
 		__threadfence();
 		__syncthreads();
 		if (threadIdx.x == 0) {
-			atomicAdd(counter, 1);
 			cuda::atomic_ref<int, cuda::thread_scope_device> r(*counter);
-			while (r.load(cuda::memory_order_relaxed) < target) {}
+			r.fetch_add(1, cuda::memory_order_release);
+			while (r.load(cuda::memory_order_acquire) < target) {}
 		}
 		__syncthreads();
 	}

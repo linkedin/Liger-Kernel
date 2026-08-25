@@ -61,8 +61,10 @@ using MlpFwdCtaBarrierT = CtaCounterBarrier<(Compute == 100 ? 10 : 9) * 32, kMlp
 struct MlpDims {
 	int hidden_dim;
 	int intermediate_dim;
-	int total_n_rows_1;     // experts_per_pe * intermediate_dim
+	int num_experts;         // local experts represented by the weight tensors
+	int total_n_rows_1;     // physical rows spanned by the strided B/C views
 	int total_n_rows_2;     // experts_per_pe * hidden_dim
+	int expert_n_stride_1;  // B/C expert stride in TileN1 units
 	int num_n_tiles_1;      // intermediate_dim / TileN1
 	int num_n_tiles_2;      // ceildiv(hidden_dim/TileN2, NSub) — per-WG outer steps
 	int num_k_tiles_1;      // hidden_dim / TileK1
@@ -79,11 +81,11 @@ struct MlpDims {
 
 template <typename Traits1, typename Traits2,
           int ZBufferSlots = 2,
-          // SubTiles = CommTileM/GemmTileM ∈ {1,2}. When 2, each 128-wide comm
-          // tile (one acquire_src/release_src/acquire_dst/release_dst) is
-          // consumed as 2 GemmTileM(=64)-row sub-tiles: mlp1 runs both sub-tiles
-          // (into 2 Z regions), then mlp2 runs both. The comm semaphores stay
-          // 128-wide; only the TMA + wgmma granularity is finer. 1 → unchanged.
+          // SubTiles = CommTileM/GemmTileM. Each communication tile (one
+          // acquire_src/release_src/acquire_dst/release_dst) is consumed as
+          // SubTiles GemmTileM-row regions: mlp1 produces all Z regions, then
+          // mlp2 drains them. The communication tile remains intact; only the
+          // TMA + wgmma granularity is finer. 1 → unchanged.
           int SubTiles = 1,
           int Compute = 90,
           typename TileIter,
@@ -189,8 +191,8 @@ __device__ __forceinline__ void mlp_fused_fwd(
 
 	// Z buffer: [grid_x, ZBufferSlots, SubTiles, GemmTileM, intermediate_dim].
 	// Indexed in GemmTileM-row tiles: SubTiles Z regions per comm-tile slot so
-	// mlp1 can stage both sub-tiles before mlp2 drains them. z_rows is unchanged
-	// (grid_x·ZBuf·128 == grid_x·ZBuf·SubTiles·GemmTileM), only the indexing splits.
+	// mlp1 can stage all sub-tiles before mlp2 drains them. z_rows is unchanged
+	// (CommTileM == SubTiles·GemmTileM); only the indexing splits.
 	int z_col    = (col    >= 0) ? col    : (int)blockIdx.x;
 	int z_grid_x = (grid_x >= 0) ? grid_x : (int)gridDim.x;
 	int num_z_m_tiles = z_grid_x * ZBufferSlots * SubTiles;
@@ -226,26 +228,45 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		auto tile = iter.next();
 
 		int expert = tile.expert - local_expert_start;
+		int first_sub = 0;
+		int last_sub = SubTiles;
+		if constexpr (SubTiles > 1) {
+			first_sub = tile.m_subtile;
+			last_sub = first_sub + 1;
+		}
 		// Base Z region for this comm tile. SubTiles GemmTileM-row regions per
 		// slot, indexed z_m_base + sub. tile.y_m is the comm slot index in
 		// CommTileM(=GemmTileM·SubTiles) units; the GemmTileM-unit row coordinate
-		// of sub-tile `sub` into the 128-wide slot is tile.y_m·SubTiles + sub.
+		// of sub-tile `sub` in that slot is tile.y_m·SubTiles + sub.
 		int z_m_base = z_base + (tile_iter % ZBufferSlots) * SubTiles;
 
 		// Phase 1: for each GemmTileM sub-tile, Z[z_m_base+sub] = SiLU(B@X)·(C@X).
 		// One comm semaphore (acquire_src above) covers all SubTiles; the GEMM
 		// just steps finer. SubTiles==1 collapses to the original single tile.
-		for (int sub = 0; sub < SubTiles; ++sub) {
+		for (int sub = first_sub; sub < last_sub; ++sub) {
 			int x_mt = tile.y_m * SubTiles + sub;
 			int z_m  = z_m_base + sub;
-			if constexpr (Compute == 100) smem.mlp1.tmem_base = smem.tmem_base;
+			if constexpr (Compute == 100)
+				if (warp_id == 3 && threadIdx.x % Traits1::WarpSize == 0)
+					smem.mlp1.tmem_base = smem.tmem_base;
 			if (warp_id == 0) {
-				mlp1_fused_producer<Traits1>(
-					p1_pipe, p1_state,
-					smem.mlp1, tma_load_x, tma_load_b, tma_load_c,
-					x_mt, expert * dims.num_n_tiles_1,
-					num_tokens, dims.hidden_dim, dims.total_n_rows_1,
-					dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
+				if constexpr (Compute == 100) {
+					mlp1_fused_producer<Traits1>(
+						p1_pipe, p1_state,
+						smem.mlp1, tma_load_x, tma_load_b, tma_load_c,
+						x_mt, expert * dims.expert_n_stride_1,
+						num_tokens, dims.hidden_dim, dims.intermediate_dim,
+						dims.num_experts, dims.total_n_rows_1,
+						dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
+				} else {
+					mlp1_fused_producer<Traits1, true>(
+						p1_pipe, p1_state,
+						smem.mlp1, tma_load_x, tma_load_b, tma_load_c,
+						x_mt, expert,
+						num_tokens, dims.hidden_dim, dims.intermediate_dim,
+						dims.num_experts, dims.total_n_rows_1,
+						dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
+				}
 			}
 
 			// Fused MoE CTA warp map: warp 0 = TMA, warps 1..3 = NVSHMEM comm
@@ -260,19 +281,30 @@ __device__ __forceinline__ void mlp_fused_fwd(
 			// §5) — intentionally out of scope.
 			
 			if (warp_id >= 3 && warp_id <= 11) {
-				mlp1_fused_consumer<Traits1, Compute>(
-					p1_pipe, p1_cons_state,
-					smem.mlp1, tma_store_z, z_m, dims.intermediate_dim,
-					num_z_m_tiles, dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
+				if constexpr (Compute == 100) {
+					mlp1_fused_consumer<Traits1, 100>(
+						p1_pipe, p1_cons_state,
+						smem.mlp1, tma_store_z, z_m, dims.intermediate_dim,
+						num_z_m_tiles, dims.num_n_tiles_1, dims.num_k_tiles_1,
+						n_split, n_count);
+				} else {
+					mlp1_fused_consumer<Traits1, 90>(
+						p1_pipe, p1_cons_state,
+						smem.mlp1, tma_store_z, z_m, dims.intermediate_dim,
+						num_z_m_tiles, dims.num_n_tiles_1, dims.num_k_tiles_1,
+						n_split, n_count);
+				}
 			}
 
-			// Barrier between sub-tiles so the smem mlp1 union is free to reuse.
-			// The final sub-tile reuses the shared phase-1-done barrier below.
-			if (sub + 1 < SubTiles)
-				cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
+			if constexpr (Compute == 90) {
+				if (sub + 1 < SubTiles)
+					cutlass::arch::NamedBarrier::sync(
+						kMlpBarrierThreads, kMlpBarrierId);
+			}
 		}
 
-		// Intra-CTA sync: all MLP warps done with phase 1 (all sub-tiles).
+		// One phase barrier covers the full communication tile. The persistent
+		// TMA/UMMA pipeline states sequence its GEMM sub-tiles internally.
 		cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
 
 		// Release src staging (remote: free slot; local: no-op).
@@ -300,33 +332,59 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		int y_ntiles = (y_direct ? dims.y_buf_m_tiles : num_m_tiles) * SubTiles;
 		// Phase 2: for each sub-tile, Y[y_base·SubTiles+sub] = Z[z_m_base+sub] @ A^T.
 		// Cooperative-M-split: both consumer WGs cooperate on the same (m,n) tile.
-		// Cooperative-M-split: both consumer WGs cooperate on the same (m,n) tile.
-		for (int sub = 0; sub < SubTiles; ++sub) {
+		for (int sub = first_sub; sub < last_sub; ++sub) {
 			int z_m     = z_m_base + sub;
 			int y_coord = y_base * SubTiles + sub;
-			if constexpr (Compute == 100) smem.mlp2.tmem_base = smem.tmem_base;
+			constexpr int kM64PerGemmTile = Traits2::TileM / 64;
+			int valid_m64_subtiles = max(
+				0, min(kM64PerGemmTile,
+					tile.valid_m64_subtiles - sub * kM64PerGemmTile));
+			if constexpr (Compute == 100)
+				if (warp_id == 3 && threadIdx.x % Traits2::WarpSize == 0)
+					smem.mlp2.tmem_base = smem.tmem_base;
 			if (warp_id == 0) {
-				mlp2_fused_producer<Traits2>(
-					p2_pipe, p2_state,
-					smem.mlp2, tma_load_z, tma_load_a,
-					z_m, expert * dims.num_n_tiles_2,
-					num_z_m_tiles * Traits1::TileM, dims.intermediate_dim,
-					dims.total_n_rows_2,
-					dims.num_n_tiles_2, dims.num_k_tiles_2, n_split, n_count);
+				if constexpr (Compute == 100) {
+					mlp2_fused_producer<Traits2>(
+						p2_pipe, p2_state,
+						smem.mlp2, tma_load_z, tma_load_a,
+						z_m, expert * dims.num_n_tiles_2,
+						num_z_m_tiles * Traits1::TileM, dims.hidden_dim,
+						dims.intermediate_dim, dims.num_experts, dims.total_n_rows_2,
+						dims.num_n_tiles_2, dims.num_k_tiles_2, n_split, n_count);
+				} else {
+					mlp2_fused_producer<Traits2, true>(
+						p2_pipe, p2_state,
+						smem.mlp2, tma_load_z, tma_load_a,
+						z_m, expert,
+						num_z_m_tiles * Traits1::TileM, dims.hidden_dim,
+						dims.intermediate_dim, dims.num_experts, dims.total_n_rows_2,
+						dims.num_n_tiles_2, dims.num_k_tiles_2, n_split, n_count);
+				}
 			}
 			
 			if (warp_id >= 3 && warp_id <= 11) {
-				mlp2_fused_consumer<Traits2, Compute>(
-					p2_pipe, p2_cons_state,
-					smem.mlp2, y_desc,
-					y_coord, dims.hidden_dim,
-					y_ntiles, dims.num_n_tiles_2, dims.num_k_tiles_2, n_split, n_count);
+				if constexpr (Compute == 100) {
+					mlp2_fused_consumer<Traits2, 100>(
+						p2_pipe, p2_cons_state,
+						smem.mlp2, y_desc,
+						y_coord, dims.hidden_dim,
+						y_ntiles, dims.num_n_tiles_2, dims.num_k_tiles_2,
+						n_split, n_count, valid_m64_subtiles);
+				} else {
+					mlp2_fused_consumer<Traits2, 90>(
+						p2_pipe, p2_cons_state,
+						smem.mlp2, y_desc,
+						y_coord, dims.hidden_dim,
+						y_ntiles, dims.num_n_tiles_2, dims.num_k_tiles_2,
+						n_split, n_count);
+				}
 			}
 
-			// Barrier between sub-tiles so the smem mlp2 union is free to reuse.
-			// The final sub-tile reuses the shared post-phase-2 barrier below.
-			if (sub + 1 < SubTiles)
-				cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
+			if constexpr (Compute == 90) {
+				if (sub + 1 < SubTiles)
+					cutlass::arch::NamedBarrier::sync(
+						kMlpBarrierThreads, kMlpBarrierId);
+			}
 		}
 
 		// Release dst staging (remote: cross-CTA barrier + signal; local: no-op).
@@ -336,6 +394,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		// done by RemoteIter::release_dst below (all threads). This is just the
 		// intra-CTA ordering before the MLP-warp barrier.
 		__threadfence();
+		// As in phase 1, synchronize once after all GEMM sub-tiles.
 		cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
 		iter.release_dst(threadIdx.x);
 
