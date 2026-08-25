@@ -28,6 +28,7 @@ import torch
 from cuda.tile.tune import exhaustive_search
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 INV_LOG2 = 1.0 / math.log(2)
 
@@ -293,49 +294,53 @@ def _get_tuned_multi_bwd_kernel(n_cols: int, BLOCK_SIZE: int, n_rows: int, align
 
 
 def _softmax_forward_ct(x: torch.Tensor):
-    *batch, n_cols = x.shape
-    x2d = x.contiguous().view(-1, n_cols)
-    n_rows = x2d.shape[0]
-    y2d = torch.empty_like(x2d)
-    stream = torch.cuda.current_stream()
+    with device_context(x.device):
+        *batch, n_cols = x.shape
+        x2d = x.contiguous().view(-1, n_cols)
+        n_rows = x2d.shape[0]
+        y2d = torch.empty_like(x2d)
+        stream = torch.cuda.current_stream()
 
-    if n_cols <= _SINGLE_CHUNK_MAX_N_FWD:
-        BLOCK_SIZE = min(_next_power_of_2(n_cols), 65536)
-        is_tma = x2d.dtype == torch.float32
-        is_aligned = n_cols == BLOCK_SIZE
-        kernel = _get_tuned_single_kernel(n_cols, BLOCK_SIZE, n_rows, x2d.dtype, stream, y2d, x2d)
-        if is_tma:
-            ct.launch(stream, (n_rows, 1, 1), kernel, (y2d, x2d, int(n_cols), int(BLOCK_SIZE)))
+        if n_cols <= _SINGLE_CHUNK_MAX_N_FWD:
+            BLOCK_SIZE = min(_next_power_of_2(n_cols), 65536)
+            is_tma = x2d.dtype == torch.float32
+            is_aligned = n_cols == BLOCK_SIZE
+            kernel = _get_tuned_single_kernel(n_cols, BLOCK_SIZE, n_rows, x2d.dtype, stream, y2d, x2d)
+            if is_tma:
+                ct.launch(stream, (n_rows, 1, 1), kernel, (y2d, x2d, int(n_cols), int(BLOCK_SIZE)))
+            else:
+                ct.launch(stream, (n_rows, 1, 1), kernel, (y2d, x2d, int(n_cols), int(BLOCK_SIZE), is_aligned))
         else:
-            ct.launch(stream, (n_rows, 1, 1), kernel, (y2d, x2d, int(n_cols), int(BLOCK_SIZE), is_aligned))
-    else:
-        kernel = _get_tuned_multi_fwd_kernel(n_cols, _MULTI_CHUNK_BLOCK_SIZE_FWD, n_rows, stream, y2d, x2d)
-        ct.launch(stream, (n_rows, 1, 1), kernel, (y2d, x2d, int(n_cols), _MULTI_CHUNK_BLOCK_SIZE_FWD))
+            kernel = _get_tuned_multi_fwd_kernel(n_cols, _MULTI_CHUNK_BLOCK_SIZE_FWD, n_rows, stream, y2d, x2d)
+            ct.launch(stream, (n_rows, 1, 1), kernel, (y2d, x2d, int(n_cols), _MULTI_CHUNK_BLOCK_SIZE_FWD))
 
-    return y2d.view(*batch, n_cols)
+        return y2d.view(*batch, n_cols)
 
 
 def _softmax_backward_ct(dy: torch.Tensor, y: torch.Tensor):
-    *batch, n_cols = dy.shape
-    dy2d = dy.contiguous().view(-1, n_cols)
-    y2d = y.contiguous().view(-1, n_cols)
-    n_rows = dy2d.shape[0]
-    dx2d = torch.empty_like(dy2d)
-    stream = torch.cuda.current_stream()
+    with device_context(dy.device):
+        *batch, n_cols = dy.shape
+        dy2d = dy.contiguous().view(-1, n_cols)
+        y2d = y.contiguous().view(-1, n_cols)
+        n_rows = dy2d.shape[0]
+        dx2d = torch.empty_like(dy2d)
+        stream = torch.cuda.current_stream()
 
-    if n_cols <= _SINGLE_CHUNK_MAX_N_BWD:
-        BLOCK_SIZE = min(_next_power_of_2(n_cols), 65536)
-        aligned = n_cols == BLOCK_SIZE
-        kernel = _get_tuned_bwd_kernel(n_cols, BLOCK_SIZE, n_rows, dx2d.dtype, dx2d.device)
-        ct.launch(stream, (n_rows, 1, 1), kernel, (dx2d, dy2d, y2d, int(n_cols), int(BLOCK_SIZE), aligned))
-    else:
-        aligned = (n_cols % _MULTI_CHUNK_BLOCK_SIZE_BWD) == 0
-        kernel = _get_tuned_multi_bwd_kernel(
-            n_cols, _MULTI_CHUNK_BLOCK_SIZE_BWD, n_rows, aligned, dx2d.dtype, dx2d.device
-        )
-        ct.launch(stream, (n_rows, 1, 1), kernel, (dx2d, dy2d, y2d, int(n_cols), _MULTI_CHUNK_BLOCK_SIZE_BWD, aligned))
+        if n_cols <= _SINGLE_CHUNK_MAX_N_BWD:
+            BLOCK_SIZE = min(_next_power_of_2(n_cols), 65536)
+            aligned = n_cols == BLOCK_SIZE
+            kernel = _get_tuned_bwd_kernel(n_cols, BLOCK_SIZE, n_rows, dx2d.dtype, dx2d.device)
+            ct.launch(stream, (n_rows, 1, 1), kernel, (dx2d, dy2d, y2d, int(n_cols), int(BLOCK_SIZE), aligned))
+        else:
+            aligned = (n_cols % _MULTI_CHUNK_BLOCK_SIZE_BWD) == 0
+            kernel = _get_tuned_multi_bwd_kernel(
+                n_cols, _MULTI_CHUNK_BLOCK_SIZE_BWD, n_rows, aligned, dx2d.dtype, dx2d.device
+            )
+            ct.launch(
+                stream, (n_rows, 1, 1), kernel, (dx2d, dy2d, y2d, int(n_cols), _MULTI_CHUNK_BLOCK_SIZE_BWD, aligned)
+            )
 
-    return dx2d.view(*batch, n_cols)
+        return dx2d.view(*batch, n_cols)
 
 
 class LigerSoftmaxFunction(torch.autograd.Function):
