@@ -40,7 +40,7 @@ using namespace cute;
 //   Phase 2 (k=num_k_tiles..2K-1): Z=dV, W=C
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits, typename Pipeline,
+template <typename Traits, bool Expert3D = false, typename Pipeline,
           typename TmaLoadZ, typename TmaLoadW>
 __device__ __forceinline__ void mlp5_fused_producer(
 		Pipeline& pipe,
@@ -51,10 +51,11 @@ __device__ __forceinline__ void mlp5_fused_producer(
 		TmaLoadW const& tma_load_b,
 		TmaLoadW const& tma_load_c,
 		int m,
-		int expert_k_offset,
+		int expert_or_k_offset,
 		int num_tokens,
 		int hidden_dim,
 		int intermediate_dim,
+		int num_experts,
 		int total_k_cols,
 		int num_n_tiles,
 		int num_k_tiles,
@@ -73,12 +74,30 @@ __device__ __forceinline__ void mlp5_fused_producer(
 	auto mDV = tma_load_dv.get_tma_tensor(make_shape(
 		static_cast<int64_t>(num_tokens),
 		static_cast<int64_t>(intermediate_dim)));
-	auto mB  = tma_load_b.get_tma_tensor(make_shape(
-		static_cast<int64_t>(hidden_dim),
-		static_cast<int64_t>(total_k_cols)));
-	auto mC  = tma_load_c.get_tma_tensor(make_shape(
-		static_cast<int64_t>(hidden_dim),
-		static_cast<int64_t>(total_k_cols)));
+	auto mB = [&]() {
+		if constexpr (Expert3D) {
+			return tma_load_b.get_tma_tensor(make_shape(
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_load_b.get_tma_tensor(make_shape(
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(total_k_cols)));
+		}
+	}();
+	auto mC = [&]() {
+		if constexpr (Expert3D) {
+			return tma_load_c.get_tma_tensor(make_shape(
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_load_c.get_tma_tensor(make_shape(
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(total_k_cols)));
+		}
+	}();
 
 	auto cta_tma_du = tma_load_du.get_slice(Int<0>{});
 	auto cta_tma_b  = tma_load_b.get_slice(Int<0>{});
@@ -86,12 +105,28 @@ __device__ __forceinline__ void mlp5_fused_producer(
 	auto tZsZ = cta_tma_du.partition_D(sZ);
 	auto tWsW = cta_tma_b.partition_D(sW);
 
-	auto gB_all = local_tile(mB,
-		make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
-		make_coord(_, _));
-	auto gC_all = local_tile(mC,
-		make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
-		make_coord(_, _));
+	auto gB_all = [&]() {
+		if constexpr (Expert3D) {
+			return local_tile(mB,
+				make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+				make_coord(_, _, expert_or_k_offset));
+		} else {
+			return local_tile(mB,
+				make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+				make_coord(_, _));
+		}
+	}();
+	auto gC_all = [&]() {
+		if constexpr (Expert3D) {
+			return local_tile(mC,
+				make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+				make_coord(_, _, expert_or_k_offset));
+		} else {
+			return local_tile(mC,
+				make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+				make_coord(_, _));
+		}
+	}();
 	auto tBgB_all = cta_tma_b.partition_S(gB_all);
 	auto tCgC_all = cta_tma_b.partition_S(gC_all);
 
@@ -114,9 +149,14 @@ __device__ __forceinline__ void mlp5_fused_producer(
 				auto* bar = pipe.producer_get_barrier(state);
 				copy(tma_load_du.with(*bar, 0),
 					tZgDU(_, _, _, k), tZsZ(_, _, _, state.index()));
-				copy(tma_load_b.with(*bar, 0),
-					tBgB_all(_, _, _, n, expert_k_offset + k),
-					tWsW(_, _, _, state.index()));
+				if constexpr (Expert3D) {
+					copy(tma_load_b.with(*bar, 0),
+						tBgB_all(_, _, _, n, k), tWsW(_, _, _, state.index()));
+				} else {
+					copy(tma_load_b.with(*bar, 0),
+						tBgB_all(_, _, _, n, expert_or_k_offset + k),
+						tWsW(_, _, _, state.index()));
+				}
 			}
 			++state;
 		}
@@ -127,9 +167,14 @@ __device__ __forceinline__ void mlp5_fused_producer(
 				auto* bar = pipe.producer_get_barrier(state);
 				copy(tma_load_dv.with(*bar, 0),
 					tZgDV(_, _, _, k), tZsZ(_, _, _, state.index()));
-				copy(tma_load_c.with(*bar, 0),
-					tCgC_all(_, _, _, n, expert_k_offset + k),
-					tWsW(_, _, _, state.index()));
+				if constexpr (Expert3D) {
+					copy(tma_load_c.with(*bar, 0),
+						tCgC_all(_, _, _, n, k), tWsW(_, _, _, state.index()));
+				} else {
+					copy(tma_load_c.with(*bar, 0),
+						tCgC_all(_, _, _, n, expert_or_k_offset + k),
+						tWsW(_, _, _, state.index()));
+				}
 			}
 			++state;
 		}
@@ -497,6 +542,7 @@ static __device__ __forceinline__ void run(
 
 				// TMEM → registers (this chunk, full TileM rows).
 				copy(t2r, tTR_tAcc_stage(_, _, _, _0{}, chunk), tTR_rAcc);
+				cutlass::arch::fence_view_async_tmem_load();
 
 				// Store as MSub × (AtomTileM=64)-row TMA tiles (1 for TileM=64, 2 for 128).
 				CUTE_UNROLL

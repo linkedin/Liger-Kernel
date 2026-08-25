@@ -123,6 +123,9 @@ def liger_cross_entropy_kernel(
     if RETURN_PREDICTED_TOKENS:
         predicted_tokens_ptr += program_id * predicted_tokens_stride
 
+    if HAS_SOFTCAPPING:
+        softcap = softcap.to(tl.float32)
+
     # n_non_ignore, sum_non_ignore_weight and weight_sum arrive as 0-D device tensors
     # (pointers), not Python scalars, so the host never blocks on a .item() sync before this
     # kernel launches. The int64 count is cast to fp32 to keep the divisor precision the

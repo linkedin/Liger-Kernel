@@ -18,17 +18,16 @@ def backward_warp_count(n_cols: int) -> int:
     return 4
 
 
-def fwd_warp_count(n_cols: int, vec: int) -> int:
-    """Width-aware warp count for the vector forward kernel.
+def fwd_warp_count(n_cols: int, vec: int, n_rows: int | None = None, sm90: bool = False) -> int:
+    """Choose forward warps from width and, on SM90, available row parallelism."""
+    n_vectors = n_cols // vec
+    if not sm90 or n_rows is None:
+        return 8 if n_vectors >= 512 else 4
 
-    ``vec`` is the number of elements per 16-byte load, so ``n_cols // vec`` is the
-    number of vectors in a row. Wide rows (>= 512 vectors, e.g. bf16 hidden >= 4096)
-    profit from 8 warps: spreading the row over twice the threads halves the
-    register-resident vector tiles per thread, which lifts occupancy from ~55% to
-    ~88% and hides the DRAM-load latency that bounds this memory-bound kernel
-    (measured 4-7% faster at bf16 hidden 4096/8192, and faster still on tall inputs).
-    Narrow rows keep 4 warps: 8 warps would leave half the CTA idle (fewer vectors
-    than threads) and make the cross-warp reduction the bottleneck (up to ~30% slower
-    at bf16 hidden 1024/2048).
-    """
-    return 8 if (n_cols // vec) >= 512 else 4
+    if n_rows < 2048:
+        return 4 if n_vectors <= 128 else 8
+    if n_rows >= 4096 and n_cols <= 1024:
+        return 2
+    if n_rows >= 8192 and n_vectors <= 256:
+        return 2
+    return 4 if n_vectors <= 512 else 8

@@ -60,7 +60,7 @@ using Element = cutlass::bfloat16_t;
 // Shape/pipeline config. TileM=128 exercises the cooperative M-split (Hopper)
 // and MSub=2 row-tile store (Blackwell). EpiChunkN=32 → TmemLoadOp<32> =
 // SM100_TMEM_LOAD_32dp32b32x on the Blackwell epilogue.
-using TraitsT = Mlp2TTraits<Element, /*TileM=*/128, /*TileN=*/128,
+using TraitsT = Mlp2TTraits<Element, /*TileM=*/128, /*TileN=*/256,
                             /*TileK=*/64, /*Stages=*/4, /*EpiChunkN=*/32>;
 
 #define CUDA_OK(expr)                                                       \
@@ -137,13 +137,14 @@ mlp2_t_fused_test_kernel(
 		int expert = expert_ids[m];
 		// mlp2_t: the expert is contiguous along K (= hidden_dim), so the
 		// weight offset is along k_tile.
-		int expert_k_offset = expert * num_k_tiles;
 		if (is_producer) {
-			liger::mlp2_t_fused_producer<Traits>(
+			liger::mlp2_t_fused_producer<Traits, /*Expert3D=*/true,
+				/*ThrottleTma=*/Compute == 100>(
 				pipe, prod_state, smem.tile,
 				tma_load_z, tma_load_a,
-				m, expert_k_offset,
-				num_tokens, hidden_dim, intermediate_dim, total_k_cols,
+				m, expert,
+				num_tokens, hidden_dim, intermediate_dim,
+				total_k_cols / hidden_dim, total_k_cols,
 				num_n_tiles, num_k_tiles);
 		} else if (is_consumer) {
 			if constexpr (Compute == 100) {
@@ -280,7 +281,8 @@ static void make_inputs(const Mlp2Shape& s, Inputs& in, unsigned seed) {
 	in.total_k_cols = s.num_experts * s.hidden_dim;         // K columns = E·H
 
 	in.expert_ids.resize(in.num_m_tiles);
-	for (int m = 0; m < in.num_m_tiles; ++m) in.expert_ids[m] = m % s.num_experts;
+	for (int m = 0; m < in.num_m_tiles; ++m)
+		in.expert_ids[m] = (m + (s.num_experts > 233 ? 233 : 0)) % s.num_experts;
 
 	upload_bf16(in.dZ, in.Z);
 	upload_bf16(in.dA, in.A);
@@ -311,11 +313,12 @@ static auto make_tma_z(const Inputs& in, const Mlp2Shape& s) {
 		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 	return make_tma_copy(SM90_TMA_LOAD{}, tZ, typename Traits::SmemLayoutZ_1{});
 }
-template <typename Traits>
+template <typename Traits, int Compute>
 static auto make_tma_a(const Inputs& in, const Mlp2Shape& s) {
 	auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
-		make_shape(s.intermediate_dim, in.total_k_cols),
-		make_stride(Int<1>{}, s.intermediate_dim));
+		make_shape(s.intermediate_dim, s.hidden_dim, s.num_experts),
+		make_stride(Int<1>{}, s.intermediate_dim,
+			s.hidden_dim * s.intermediate_dim));
 	return make_tma_copy(SM90_TMA_LOAD{}, tA, typename Traits::SmemLayoutW_1{});
 }
 template <typename Traits>
@@ -340,7 +343,7 @@ static void run_t(const Mlp2Shape& s, bool verbose = true) {
 	cudaMemset(dY, 0, (size_t)padded * s.intermediate_dim * sizeof(Element));
 
 	auto tma_z = make_tma_z<Traits>(in, s);
-	auto tma_a = make_tma_a<Traits>(in, s);
+	auto tma_a = make_tma_a<Traits, Compute>(in, s);
 	auto tma_y = make_tma_y<Traits>(dY, padded, s);
 
 	size_t smem_size = sizeof(Mlp2TFusedKernelSmem<Traits, Compute>);
@@ -380,7 +383,7 @@ template <int Compute>
 static void run_t_single_tile() {
 	using Traits = TraitsT;
 	const int TM = Traits::TileM;
-	Mlp2Shape s{ /*T=*/TM, /*H=*/TM, /*I=*/TM, /*E=*/1 };
+	Mlp2Shape s{ /*T=*/TM, /*H=*/TM, /*I=*/Traits::TileN, /*E=*/1 };
 	Inputs in; make_inputs<Traits>(s, in, /*seed=*/7);
 
 	int padded = in.num_m_tiles * Traits::TileM;
@@ -389,7 +392,7 @@ static void run_t_single_tile() {
 	cudaMemset(dY, 0, (size_t)padded * s.intermediate_dim * sizeof(Element));
 
 	auto tma_z = make_tma_z<Traits>(in, s);
-	auto tma_a = make_tma_a<Traits>(in, s);
+	auto tma_a = make_tma_a<Traits, Compute>(in, s);
 	auto tma_y = make_tma_y<Traits>(dY, padded, s);
 
 	size_t smem_size = sizeof(Mlp2TFusedKernelSmem<Traits, Compute>);
@@ -517,7 +520,7 @@ static void run_t_bench(const Mlp2Shape& s, const BenchCfg& cfg) {
 	cudaMemset(dY, 0, (size_t)padded * s.intermediate_dim * sizeof(Element));
 
 	auto tma_z = make_tma_z<Traits>(in, s);
-	auto tma_a = make_tma_a<Traits>(in, s);
+	auto tma_a = make_tma_a<Traits, Compute>(in, s);
 	auto tma_y = make_tma_y<Traits>(dY, padded, s);
 
 	size_t smem_size = sizeof(Mlp2TFusedKernelSmem<Traits, Compute>);
@@ -574,13 +577,14 @@ static bool hopper_available() {
 }
 
 // Small correctness shapes. T mult of TileM (128), H mult of TileK (64) — the K
-// (contraction) axis; I mult of TileN (128) — the N (output) axis. Exact FLOP
+// (contraction) axis; I mult of TileN (256) — the N (output) axis. Exact FLOP
 // count, no padding.
 static const std::vector<Mlp2Shape> kShapes = {
-	{128, 128, 128, 1},   // single M-tile, single N-tile, single expert
+	{128, 128, 256, 1},   // single M-tile, single N-tile, single expert
 	{128,  64, 256, 1},   // shallow K (1 k-step), two N-tiles
 	{256, 256, 256, 2},   // two M-tiles across two experts, deeper K
 	{384, 128, 256, 3},   // three M-tiles, one expert each
+	{128, 2048, 512, 256}, // production-scale expert 233
 };
 
 // Large, GPU-saturating shapes for the TFLOPS benchmark. T mult of TileM (128)

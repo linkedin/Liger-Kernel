@@ -87,16 +87,16 @@ namespace liger {
 // illegal-instruction / smem-overrun bugs in the past.
 template <
     int NSplit2_        = 4,    // Phase 2 (mlp3/mlp4) virtual n-split (autotuning surface)
-	// Trait defaults match the standalone benches (bench_mlp{1_act,2_t,3,4,5})
-	// at Stages=4 cooperative-M-split TileM=128.
+	// SM100 uses Stage-3 Phase-1 traits to leave room for independent full-size
+	// X/dY TMA bounce buffers. SM90 dispatch rows provide their tuned values.
 	int TileM1_         = 128,
 	int TileN1_         = 128,
 	int TileK1_         = 64,
-	int Stages1_        = 4,
+	int Stages1_        = 3,
 	int EpiChunkN1_     = 32,         // mlp1_act
 	int TileN2_         = 256,
 	int TileK2_         = 64,
-	int Stages2_        = 4,
+	int Stages2_        = 3,
 	int TileM2T_        = 128,        // Phase 1b' (mlp2_t): TileM ∈ {64, 128}
 	// mlp3/mlp4 cooperative layout (#102) supports only (256,128) or (128,256)
 	// and needs Stages=2 to fit the 228 KiB smem cap — Stages=4 at TileN=256
@@ -113,7 +113,7 @@ template <
 	int TileM5_         = 128,
 	int TileN5_         = 256,
 	int TileK5_         = 64,
-	int Stages5_        = 4,
+	int Stages5_        = 3,
 	int EpiChunkN25_    = 64,         // shared by mlp2_t and mlp5 (same smem shape)
 	int EpiChunkN34_    = 64,         // shared by mlp3 and mlp4 (same smem shape)
     typename Element_   = bfloat16_t,
@@ -127,16 +127,19 @@ template <
 	int SubBatch_       = 2,
 	// CommTileM_ decouples the COMM staging tile (ring slots, semaphores,
 	// tile_expert_ids granularity) from the Phase-1 GEMM tile (Traits1::TileM =
-	// mlp1a/mlp2t/mlp5 = the GemmTileM hyperparameter ∈ {64,128}). CommTileM_ is
-	// fixed at 128; when Traits1::TileM < CommTileM_, Phase-1 steps through
+	// mlp1a/mlp2t/mlp5 = the GemmTileM hyperparameter ∈ {64,128}). When
+	// Traits1::TileM < CommTileM_, Phase-1 steps through
 	// kSubTiles = CommTileM_/Traits1::TileM sub-tiles of GemmTileM rows per
-	// 128-wide comm slot (mirrors the forward). Default == TileM1_ → kSubTiles=1
+	// communication slot (mirrors forward). Default == TileM1_ → kSubTiles=1
 	// → bit-identical to the old coupled path.
 	int CommTileM_      = 128,
 	int Compute_        = 90>
 struct MoeBwdConfig {
 	using Element  = Element_;
-	using Traits1  = Mlp1Traits <Element, TileM1_, TileN1_, TileK1_, Stages1_, EpiChunkN1_>;   // Phase 1a
+	static constexpr int kActStoreTileM = 64;
+	using Traits1  = Mlp1Traits <
+		Element, TileM1_, TileN1_, TileK1_, Stages1_, EpiChunkN1_,
+		kActStoreTileM>;                                                                       // Phase 1a
 	using Traits2T = Mlp2TTraits<Element, TileM2T_, TileN2_, TileK2_, Stages2_, EpiChunkN25_>;  // Phase 1b'
 	// Blackwell always uses the paired-CTA MLP3/MLP4 path. Hopper keeps the
 	// existing single-CTA traits and never instantiates SM100-only machinery.
@@ -164,19 +167,19 @@ struct MoeBwdConfig {
 	static constexpr int kCommNumStages = CommNumStages_;
 	static constexpr int kSubBatch      = SubBatch_;
 	// kTileM is the COMM staging tile (ring slots / semaphores / tile_expert_ids
-	// granularity), fixed at CommTileM_=128 — decoupled from the Phase-1 GEMM
-	// tile. kGemmTileM = Traits1::TileM (mlp1/2/5 GEMM tile, the hyperparameter);
+	// granularity), decoupled from the Phase-1 GEMM tile. kGemmTileM =
+	// Traits1::TileM (mlp1/2/5 GEMM tile);
 	// the mlp3/4 ratios (efkb_stride / bk↔Kblock / ring_kb) are computed from it.
-	static constexpr int kTileM         = CommTileM_;       // comm tile (128)
+	static constexpr int kTileM         = CommTileM_;
 	static constexpr int kGemmTileM     = Traits1::TileM;   // Phase-1 gemm tile (64/128)
-	static constexpr int kSubTiles      = CommTileM_ / Traits1::TileM;  // 1 or 2
+	static constexpr int kSubTiles      = CommTileM_ / Traits1::TileM;
 	static constexpr int kCompute       = Compute_;
 	static constexpr int kNumThreads    = 384;
 
 	static_assert(CommTileM_ % Traits1::TileM == 0,
 		"CommTileM must be an integer multiple of the Phase-1 GEMM TileM (Traits1::TileM)");
 	static_assert(kSubTiles == 1 || kSubTiles == 2,
-		"kSubTiles (CommTileM/GemmTileM) must be 1 or 2");
+		"CommTileM/GemmTileM must be 1 or 2");
 	// mlp1a/mlp2t/mlp5 must share the same Phase-1 GEMM tile so their sub-tiling
 	// and the Z/dU/dV/dZ buffer rows stay aligned.
 	static_assert(Traits1::TileM == Traits2T::TileM && Traits1::TileM == Traits5::TileM,
@@ -197,8 +200,10 @@ struct MoeBwdConfig {
 		"reduce TileN/TileK/Stages of one of the bwd phase traits");
 	
 	using LocalIter  = LocalMlpTileIteratorBwd<Element, kTileM>;
-	using RemoteIter = RemoteMlpTileIteratorBwd<Element, kCommNumStages, kNC, kTileM>;
-	using FusedIter  = FusedMlpTileIteratorBwd<Element, kCommNumStages, kNC, kTileM>;
+	using RemoteIter = RemoteMlpTileIteratorBwd<
+		Element, kCommNumStages, kNC, kTileM>;
+	using FusedIter  = FusedMlpTileIteratorBwd<
+		Element, kCommNumStages, kNC, kTileM>;
 };
 
 // ============================================================================
@@ -278,10 +283,11 @@ struct MoeBwdBuffers {
 	int*     cta_counter;
 	int*     phase_counter;              // mlp_bwd uses this
 	int*     barrier_counter;            // mlp_global_barrier
-	Element* z_buf;                      // [total_slots, I]
-	Element* du_buf;                     // [total_slots, I] -> dU after silu_bwd
-	Element* dv_buf;                     // [total_slots, I]
-	Element* dz_buf;                     // [total_slots, I]
+	Element* z_buf;                      // [scratch_rows, I]
+	Element* du_buf;                     // [scratch_rows, I] -> dU after silu_bwd
+	Element* dv_buf;                     // [scratch_rows, I]
+	Element* dz_buf;                     // [scratch_rows, I]
+	int      scratch_rows;               // max(local padded rows, remote ring rows)
 	int*     expert_for_k_block;         // num_k_blocks; populated post-sort
 
 	// Phase 2 per-expert K-range scratch. Filled in bwd preamble (once
@@ -307,6 +313,7 @@ struct MoeBwdBuffers {
 	// mlp3 reads tile_expert_ids_dy. See CommBuffersBwd docstring for why.
 	int* tile_expert_ids_x;
 	int* tile_expert_ids_dy;
+	int* tile_valid_rows_x;
 
 	// Sort-internal scratch.
 	int* tile_expert_counts;
@@ -365,8 +372,20 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	cudaMemsetAsync(b.phase_counter,   0, grid_x * sizeof(int),       stream);
 	cudaMemsetAsync(b.barrier_counter, 0, sizeof(int),                stream);
 
+	// Local Phase 1 indexes scratch by padded token row, while the remote pass
+	// indexes the same buffers by staging-ring slot. A deep comm ring can exceed
+	// the local padded extent (for example, 33 MC columns * CS8 * TileM128 =
+	// 33792 rows versus 17408 local rows for Mixtral-8x7B T=8K). Size for both
+	// coordinate spaces or a valid remote slot writes past z/du/dv/dz.
+	const int remote_m_tiles =
+		(num_blocks / Config::kNC) * Config::kCommNumStages;
+	const size_t remote_rows =
+		static_cast<size_t>(remote_m_tiles) * kTileM;
+	const size_t scratch_rows =
+		std::max(static_cast<size_t>(total_slots), remote_rows);
+	b.scratch_rows = static_cast<int>(scratch_rows);
 	size_t intermediate_bytes =
-		static_cast<size_t>(total_slots) * intermediate_dim * sizeof(Element);
+		scratch_rows * intermediate_dim * sizeof(Element);
 	b.z_buf  = static_cast<Element*>(pool.get_device("moe_bwd_z_buf",  intermediate_bytes));
 	b.du_buf = static_cast<Element*>(pool.get_device("moe_bwd_du_buf", intermediate_bytes));
 	b.dv_buf = static_cast<Element*>(pool.get_device("moe_bwd_dv_buf", intermediate_bytes));
@@ -417,13 +436,13 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	// Worst-case sizing across the whole tuner sweep: the symmetric/device
 	// pools cache by key and ABORT on grow, so the FIRST config to allocate a
 	// key locks its size. A small-TileM (64) or small-CommStages config must
-	// not lock in a buffer that a later TileM=128 / deeper-pipe config can't
-	// grow into. Size every comm buffer at the configured maxima (TileM=128,
-	// CommStages=8, hidden_dim=scfg.hidden_dim); the kernel indexes by the
-	// per-call (mc·kCommNumStages, kTileM) ≤ these UBs, so over-allocation is
-	// safe. Mirrors moe.cu's MoeSymmConfig.max_tile_m / max_comm_stages fix.
-	constexpr int kCommStagesUB = 8;    // max CommNumStages over the sweep
-	constexpr int kTileMUB      = 128;  // max TileM over the sweep (WGMMA-bounded)
+	// not lock in a buffer that a later TileM=256 / deeper-pipe config can't
+	// grow into. Size every comm buffer at the centralized TileM/stage maxima;
+	// the kernel indexes by the per-call
+	// (mc·kCommNumStages, kTileM) ≤ these UBs, so over-allocation is safe.
+	// Mirrors moe.cu's MoeSymmConfig.max_tile_m / max_comm_stages fix.
+	constexpr int kCommStagesUB = kMaxMoeCommStages;
+	constexpr int kTileMUB      = kMaxMoeCommTileM;
 	int comm_l_ub = sm_count * kCommStagesUB;
 	size_t stage_slots_bytes =
 		(size_t)comm_l_ub * kTileMUB * scfg.hidden_dim * sizeof(Element);
@@ -460,6 +479,8 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 		pool.get_device("moe_bwd_tile_expert_ids_x", eid_bytes));
 	b.tile_expert_ids_dy = static_cast<int*>(
 		pool.get_device("moe_bwd_tile_expert_ids_dy", eid_bytes));
+	b.tile_valid_rows_x = static_cast<int*>(
+		pool.get_device("moe_bwd_tile_valid_rows_x", eid_bytes));
 
 	// ── Sort scratch (sized to scfg max for stability across calls) ──
 	int max_sorted_slots = scfg.max_total_slots;
@@ -587,6 +608,9 @@ moe_bwd_kernel(
 	constexpr int kNumThreads    = Config::kNumThreads;
 	constexpr int kCommNumStages = Config::kCommNumStages;
 	constexpr int kNC            = Config::kNC;
+	constexpr int kGetBoxRowsBwd = Config::kCompute == 100
+		? liger::kGetBoxRowsBwdSm100
+		: liger::kGetBoxRowsBwdSm90;
 
 	// Target-based cross-CTA barrier — single instance per kernel call.
 	SyncThreadsCtaCounterBarrier pe_barrier(p.comm.pe_sync.cta_counter,
@@ -658,13 +682,23 @@ moe_bwd_kernel(
 
 		size_t offsets_region = sizeof(MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Config::kCompute>);
 		offsets_region = (offsets_region + sizeof(int) - 1) & ~(sizeof(int) - 1);
-		smem.comm.remote_offsets = reinterpret_cast<int*>(raw_smem + offsets_region);
+		size_t offsets_count =
+			(size_t)p.comm_bwd.num_pes * (p.comm_bwd.experts_per_pe + 1);
+		if (threadIdx.x == 0) {
+			smem.comm.remote_offsets =
+				reinterpret_cast<int*>(raw_smem + offsets_region);
+			smem.comm.remote_counts =
+				smem.comm.remote_offsets + offsets_count;
+		}
+		__syncthreads();
 
-		// Bwd TMA-GET bounce: 128-aligned region right after remote_offsets.
+		// Bwd TMA-GET bounce: 128-aligned region after offsets and counts.
 		// Mirrors the host smem sizing (align128(smem_mlp) + bounce). Only
 		// dereferenced when get_descs_bwd.enabled; harmless otherwise.
 		size_t bounce_off = offsets_region
-			+ (size_t)p.comm_bwd.num_pes * (p.comm_bwd.experts_per_pe + 1) * sizeof(int);
+			+ (offsets_count
+				+ (size_t)p.comm_bwd.num_pes * p.comm_bwd.experts_per_pe)
+				* sizeof(int);
 		bounce_off = (bounce_off + 127) & ~((size_t)127);
 		char* get_bounce = raw_smem + bounce_off;
 
@@ -723,7 +757,9 @@ moe_bwd_kernel(
 
 		if (is_comm_warp) {
 			if (smem.comm.total_tiles > 0) {
-				nvshmem_comm_main_bwd<Element, kTileM, kCommNumStages, kNC>(
+				nvshmem_comm_main_bwd<
+					Element, kTileM, kCommNumStages, kNC,
+					kGetBoxRowsBwd>(
 					smem.comm, p.comm_bwd, &get_descs_bwd, get_bounce);
 				nvshmem_quiet();
 			}
@@ -755,6 +791,7 @@ moe_bwd_kernel(
 				p.comm_bwd.dst_ready,    p.comm_bwd.dst_consumed,
 				p.comm_bwd.tile_expert_ids_x,
 				p.comm_bwd.tile_expert_ids_dy,
+				p.comm_bwd.tile_valid_rows_x,
 				runtime_mlp_dims, mlp_bufs,
 				col, grid_x, split, runtime_nsplit, gemm_active);
 		}
@@ -785,10 +822,10 @@ moe_bwd_kernel(
 // with the bwd's small box height. Returns false on encode failure → caller
 // disables the bwd TMA-get path (falls back to getmem/int4).
 static inline bool make_get_tma_map_bwd(CUtensorMap& m, void* base,
-		int hidden_dim, int n_rows) {
+		int hidden_dim, int n_rows, int box_rows) {
 	uint64_t gdim[2]    = { (uint64_t)hidden_dim, (uint64_t)n_rows };
 	uint64_t gstride[1] = { (uint64_t)hidden_dim * sizeof(bfloat16_t) };
-	uint32_t bdim[2]    = { (uint32_t)liger::kGetKChunk, (uint32_t)liger::kGetBoxRowsBwd };
+	uint32_t bdim[2]    = { (uint32_t)liger::kGetKChunk, (uint32_t)box_rows };
 	uint32_t estride[2] = { 1, 1 };
 	CUresult r = cuTensorMapEncodeTiled(
 		&m, CU_TENSOR_MAP_DATA_TYPE_UINT16, 2, base, gdim, gstride, bdim, estride,
@@ -813,6 +850,17 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	const int top_k       = a.top_k;
 	const nvshmem_team_t team = a.team;
 	cudaStream_t stream   = a.stream;
+	cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+	if (cudaError_t e = cudaStreamIsCapturing(stream, &capture_status);
+			e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_bwd: cudaStreamIsCapturing failed: ",
+			cudaGetErrorString(e));
+	if (capture_status == cudaStreamCaptureStatusNone) {
+		if (cudaError_t e = cudaStreamSynchronize(stream); e != cudaSuccess)
+			LIGER_FAIL_CUDA(
+				"moe_bwd: synchronizing the forward-to-backward NVSHMEM "
+				"handoff failed: ", cudaGetErrorString(e));
+	}
 
 	using Element  = typename Config::Element;
 	using Traits1  = typename Config::Traits1;
@@ -848,24 +896,19 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 
 	int num_sms;
 	cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, a.device);
-	// Flat 1-D launch: use ALL SMs. Phase 1 + comm partition over the
+	// Flat 1-D launch: use the largest NC-complete SM subset. Phase 1 + comm partition over the
 	// GEMM-active subset n_gemm = floor_NS (largest multiple of static_nsplit ≤
-	// num_sms); Phase 2 (mlp3/mlp4) grid-strides over all num_blocks CTAs
+	// num_blocks); Phase 2 (mlp3/mlp4) grid-strides over all num_blocks CTAs
 	// (no divisibility needed — cell stride = num_blocks); the gap CTAs
 	// [n_gemm, num_blocks) fall through Phase 1/comm but still run Phase 2
-	// and every barrier. This decouples the Phase-1 runtime NS and Phase-2
-	// (NSplit2) CTA counts: e.g. NS4/NS2-8 on 132 SMs no longer rounds to
-	// 128 — Phase 1 gets 132 and Phase 2 gets 132.
-	int n_gemm     = num_sms - num_sms % static_nsplit;  // static seed floor_NS
-	int grid_x     = n_gemm / static_nsplit;             // initial Phase 1 column count
-	int num_blocks = num_sms;
-	// Even-grid handling for the SM100 2SM paired-CTA cluster path: a
-	// cudaLaunchKernelEx cluster launch requires gridDim.x to be an exact
-	// multiple of ClusterM so every CTA pairs off cleanly (no partial
-	// cluster at the tail). Rounds DOWN so num_blocks never exceeds the
-	// device's SM count. No-op (kClusterM == 1) for every 1SM config.
-	if constexpr (Config::kUsesTwoSm)
-		num_blocks -= num_blocks % Config::kClusterM;
+	// and every barrier. NC-complete launch geometry is required because comm
+	// ring lengths, signal arrays, and TMA descriptors all use gridDim.x / NC.
+	// ClusterM divides NC for every supported configuration, so this also
+	// guarantees complete SM100 CTA pairs.
+	static_assert(Config::kNC % Config::kClusterM == 0);
+	int num_blocks = num_sms - num_sms % Config::kNC;
+	int n_gemm     = num_blocks - num_blocks % static_nsplit;
+	int grid_x     = n_gemm / static_nsplit;
 	int max_runtime_grid_x = (num_blocks + 1) / 2;       // min runtime NS candidate = 2
 	dim3 grid(num_blocks);
 	LIGER_CHECK(top_k <= kCombineMaxTopK,
@@ -930,6 +973,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	p.sort.sorted_token_ids   = buf.sorted_token_ids;
 	p.sort.token_expert_slots = a.token_expert_slots;
 	p.sort.expert_offsets     = local_expert_offsets;
+	p.sort.expert_counts      = nullptr;
 	p.sort.tile_expert_ids    = a.tile_expert_ids;
 	p.sort.cta_done           = buf.cta_done;
 	p.sort.cta_sums           = buf.cta_sums;
@@ -943,6 +987,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	p.comm.dst_ready    = nullptr;
 	p.comm.dst_consumed = nullptr;
 	p.comm.expert_offsets    = local_expert_offsets;
+	p.comm.expert_counts     = nullptr;
 	p.comm.sorted_token_ids  = buf.sorted_token_ids;
 	p.comm.local_tokens      = reinterpret_cast<Element*>(a.x_sorted);
 	p.comm.local_output      = buf.dx_sorted;
@@ -951,6 +996,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	// is a bwd-only mirror gated by release_dy).
 	p.comm.tile_expert_ids   = buf.tile_expert_ids_x;
 	p.comm.all_expert_offsets = a.expert_offsets;
+	p.comm.all_expert_counts = a.expert_counts;
 	p.comm.pe_sync.cta_counter   = buf.cta_counter;
 	p.comm.pe_sync.num_pes       = num_pes;
 	p.comm.pe_sync.my_pe         = my_pe;
@@ -972,6 +1018,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	p.comm_bwd.dst_consumed    = buf.dst_consumed;
 	p.comm_bwd.tile_expert_ids_x  = buf.tile_expert_ids_x;
 	p.comm_bwd.tile_expert_ids_dy = buf.tile_expert_ids_dy;
+	p.comm_bwd.tile_valid_rows_x  = buf.tile_valid_rows_x;
 	// Cross-PE pull sources. Both x_sorted and dy_sorted are in the
 	// same global-expert-sorted layout on every PE:
 	//   • x_sorted: forward's sort_tokens → dispatch wrote it.
@@ -985,6 +1032,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	p.comm_bwd.remote_dy = buf.dy_sorted;
 	p.comm_bwd.remote_dx = buf.dx_sorted;
 	p.comm_bwd.all_expert_offsets        = a.expert_offsets;
+	p.comm_bwd.all_expert_counts         = a.expert_counts;
 	p.comm_bwd.all_expert_offsets_stride = num_experts + 1;
 	p.comm_bwd.my_pe         = my_pe;
 	p.comm_bwd.num_pes       = num_pes;
@@ -1012,19 +1060,39 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	mlp_dims.hidden_dim       = hidden_dim;
 	mlp_dims.intermediate_dim = intermediate_dim;
 	mlp_dims.total_n_rows_1   = total_n_rows_1;
-	mlp_dims.num_n_tiles_1    = intermediate_dim / Traits1::TileN;
-	mlp_dims.num_k_tiles_1    = hidden_dim / Traits1::TileK;
+	mlp_dims.num_n_tiles_1    = (Config::kCompute == 90)
+		? (intermediate_dim + Traits1::TileN - 1) / Traits1::TileN
+		: intermediate_dim / Traits1::TileN;
+	mlp_dims.num_k_tiles_1    = (Config::kCompute == 90)
+		? (hidden_dim + Traits1::TileK - 1) / Traits1::TileK
+		: hidden_dim / Traits1::TileK;
 	mlp_dims.total_k_cols_2t  = total_k_cols_2;
-	mlp_dims.num_n_tiles_2t   = intermediate_dim / Traits2T::TileN;
-	mlp_dims.num_k_tiles_2t   = hidden_dim / Traits2T::TileK;
+	mlp_dims.num_n_tiles_2t   = (Config::kCompute == 90)
+		? (intermediate_dim + Traits2T::TileN - 1) / Traits2T::TileN
+		: intermediate_dim / Traits2T::TileN;
+	mlp_dims.num_k_tiles_2t   = (Config::kCompute == 90)
+		? (hidden_dim + Traits2T::TileK - 1) / Traits2T::TileK
+		: hidden_dim / Traits2T::TileK;
 	mlp_dims.total_k_cols_5   = total_n_rows_1;
-	mlp_dims.num_n_tiles_5    = hidden_dim / Traits5::TileN;
-	mlp_dims.num_k_tiles_5    = intermediate_dim / Traits5::TileK;
-	mlp_dims.num_m_tiles_3    = hidden_dim / Traits3::TileM;
-	mlp_dims.num_n_tiles_3    = intermediate_dim / Traits3::TileN;
+	mlp_dims.num_n_tiles_5    = (Config::kCompute == 90)
+		? (hidden_dim + Traits5::TileN - 1) / Traits5::TileN
+		: hidden_dim / Traits5::TileN;
+	mlp_dims.num_k_tiles_5    = (Config::kCompute == 90)
+		? (intermediate_dim + Traits5::TileK - 1) / Traits5::TileK
+		: intermediate_dim / Traits5::TileK;
+	mlp_dims.num_m_tiles_3    = (Config::kCompute == 90)
+		? (hidden_dim + Traits3::TileM - 1) / Traits3::TileM
+		: hidden_dim / Traits3::TileM;
+	mlp_dims.num_n_tiles_3    = (Config::kCompute == 90)
+		? (intermediate_dim + Traits3::TileN - 1) / Traits3::TileN
+		: intermediate_dim / Traits3::TileN;
 	mlp_dims.total_n_rows_3   = total_k_cols_2;
-	mlp_dims.num_m_tiles_4    = intermediate_dim / Traits4::TileM;
-	mlp_dims.num_n_tiles_4    = hidden_dim / Traits4::TileN;
+	mlp_dims.num_m_tiles_4    = (Config::kCompute == 90)
+		? (intermediate_dim + Traits4::TileM - 1) / Traits4::TileM
+		: intermediate_dim / Traits4::TileM;
+	mlp_dims.num_n_tiles_4    = (Config::kCompute == 90)
+		? (hidden_dim + Traits4::TileN - 1) / Traits4::TileN
+		: hidden_dim / Traits4::TileN;
 	mlp_dims.total_m_rows_4   = total_n_rows_1;
 	mlp_dims.phase_counter    = buf.phase_counter;
 	// Flat-grid geometry: Phase 1 columns = grid_x, GEMM-active count = n_gemm.
@@ -1042,6 +1110,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	// `local_expert = tile.expert - local_expert_start` to index this PE's
 	// local all_B/all_C/all_A. Forward kernel does the same (moe.cu:469).
 	mlp_dims.local_expert_start = my_pe * experts_per_pe;
+	mlp_dims.num_pes            = num_pes;
 	mlp_dims.experts_per_pe     = experts_per_pe;
 	// Local pass: expert_for_k_block is built per-K-block by
 	// build_expert_for_k_block (one entry per Traits{3,4}::TileK), so the
@@ -1076,6 +1145,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	// moe_fused_bwd overrides these to the per-pipe staging arrays.
 	mlp_bufs.expert_for_k_block_mlp4 = buf.expert_for_k_block;
 	mlp_bufs.expert_for_k_block_mlp3 = buf.expert_for_k_block;
+	mlp_bufs.valid_rows_mlp4         = nullptr;
 	mlp_bufs.expert_k_starts         = buf.expert_k_starts;
 	mlp_bufs.expert_k_ends           = buf.expert_k_ends;
 	mlp_bufs.gmem_da                 = reinterpret_cast<Element const*>(a.dA);
@@ -1093,6 +1163,9 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	auto* pA  = reinterpret_cast<Element const*>(a.all_A);
 	auto* pDX = reinterpret_cast<Element*>(buf.dx_sorted);
 
+	// All Hopper expert weights and weight-gradient targets use rank-3 tensor
+	// maps. TMA handles partial edge boxes as zero-filled loads / dropped
+	// stores, while the explicit expert coordinate prevents cross-expert tails.
 	// (See mlp_bwd.cu for the full pattern; here we mirror it but the
 	// "X" tensor is the symmetric x_sorted and "dY" is the symmetric
 	// dy_sorted, both of shape [max_total_slots, hidden_dim].)
@@ -1101,27 +1174,59 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits1::SmemLayoutX_1{});
 
-	auto tma_load_b_fwd = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pB), make_shape(total_n_rows_1, hidden_dim),
-			make_stride(hidden_dim, Int<1>{})),
-		typename Traits1::SmemLayoutW_1{});
-	auto tma_load_c_fwd = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pC), make_shape(total_n_rows_1, hidden_dim),
-			make_stride(hidden_dim, Int<1>{})),
-		typename Traits1::SmemLayoutW_1{});
+	auto tma_load_b_fwd = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pB),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits1::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pB),
+					make_shape(total_n_rows_1, hidden_dim),
+					make_stride(hidden_dim, Int<1>{})),
+				typename Traits1::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_load_c_fwd = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pC),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits1::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pC),
+					make_shape(total_n_rows_1, hidden_dim),
+					make_stride(hidden_dim, Int<1>{})),
+				typename Traits1::SmemLayoutW_1{});
+		}
+	}();
 
 	auto tma_store_z = make_tma_copy(TmaStoreAtom{},
-		make_tensor(make_gmem_ptr(buf.z_buf), make_shape(max_total_slots, intermediate_dim),
+		make_tensor(make_gmem_ptr(buf.z_buf), make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
-		typename Traits1::SmemLayoutStoreSlot{});
+		typename Traits1::SmemLayoutActStoreSlot{});
 	auto tma_store_u = make_tma_copy(TmaStoreAtom{},
-		make_tensor(make_gmem_ptr(buf.du_buf), make_shape(max_total_slots, intermediate_dim),
+		make_tensor(make_gmem_ptr(buf.du_buf), make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
-		typename Traits1::SmemLayoutStoreSlot{});
+		typename Traits1::SmemLayoutActStoreSlot{});
 	auto tma_store_v = make_tma_copy(TmaStoreAtom{},
-		make_tensor(make_gmem_ptr(buf.dv_buf), make_shape(max_total_slots, intermediate_dim),
+		make_tensor(make_gmem_ptr(buf.dv_buf), make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
-		typename Traits1::SmemLayoutStoreSlot{});
+		typename Traits1::SmemLayoutActStoreSlot{});
 
 	auto tma_load_dy = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pDY), make_shape(max_total_slots, hidden_dim),
@@ -1129,36 +1234,71 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		typename Traits2T::SmemLayoutZ_1{});
 	auto tma_load_a_col = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pA),
-			make_shape(intermediate_dim, total_k_cols_2),
-			make_stride(Int<1>{}, intermediate_dim)),
+			make_shape(static_cast<int64_t>(intermediate_dim),
+			           static_cast<int64_t>(hidden_dim),
+			           static_cast<int64_t>(experts_per_pe)),
+			make_stride(
+				Int<1>{},
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(hidden_dim) * intermediate_dim)),
 		typename Traits2T::SmemLayoutW_1{});
 	// One TMA box per sub-tile; consumer issues NSub stores per outer N-tile.
 	auto tma_store_dz = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(buf.dz_buf),
-			make_shape(max_total_slots, intermediate_dim),
+			make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits2T::SmemLayoutStore_1{});
 
 	auto tma_load_du = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.du_buf)),
-			make_shape(max_total_slots, intermediate_dim),
+			make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits5::SmemLayoutZ_1{});
 	auto tma_load_dv = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dv_buf)),
-			make_shape(max_total_slots, intermediate_dim),
+			make_shape(buf.scratch_rows, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits5::SmemLayoutZ_1{});
-	auto tma_load_b_col = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pB),
-			make_shape(hidden_dim, total_n_rows_1),
-			make_stride(Int<1>{}, hidden_dim)),
-		typename Traits5::SmemLayoutW_1{});
-	auto tma_load_c_col = make_tma_copy(TmaLoadAtom{},
-		make_tensor(make_gmem_ptr(pC),
-			make_shape(hidden_dim, total_n_rows_1),
-			make_stride(Int<1>{}, hidden_dim)),
-		typename Traits5::SmemLayoutW_1{});
+	auto tma_load_b_col = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pB),
+					make_shape(static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						Int<1>{},
+						static_cast<int64_t>(hidden_dim),
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits5::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pB),
+					make_shape(hidden_dim, total_n_rows_1),
+					make_stride(Int<1>{}, hidden_dim)),
+				typename Traits5::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_load_c_col = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pC),
+					make_shape(static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						Int<1>{},
+						static_cast<int64_t>(hidden_dim),
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits5::SmemLayoutW_1{});
+		} else {
+			return make_tma_copy(TmaLoadAtom{},
+				make_tensor(make_gmem_ptr(pC),
+					make_shape(hidden_dim, total_n_rows_1),
+					make_stride(Int<1>{}, hidden_dim)),
+				typename Traits5::SmemLayoutW_1{});
+		}
+	}();
 	// dX TMA: split-N store (TileN_half boxes per Mlp5::SmemLayoutStore_1).
 	auto tma_store_dx = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(pDX),
@@ -1188,7 +1328,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	}();
 	auto tma_load_zt3 = [&] {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.z_buf)),
-			make_shape(intermediate_dim, max_total_slots),
+			make_shape(intermediate_dim, buf.scratch_rows),
 			make_stride(Int<1>{}, intermediate_dim));
 		if constexpr (Config::kUsesTwoSm) {
 			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tensor,
@@ -1200,11 +1340,26 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 				typename Traits3::SmemLayoutZ_1{});
 		}
 	}();
-	auto tma_reduce_da = make_tma_copy(TmaReduceAddAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dA)),
-			make_shape(total_k_cols_2, intermediate_dim),
-			make_stride(intermediate_dim, Int<1>{})),
-		typename Traits3::SmemLayoutStore{});
+	auto tma_reduce_da = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dA)),
+					make_shape(static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(intermediate_dim),
+						Int<1>{},
+						static_cast<int64_t>(hidden_dim) * intermediate_dim)),
+				typename Traits3::SmemLayoutStore{});
+		} else {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dA)),
+					make_shape(total_k_cols_2, intermediate_dim),
+					make_stride(intermediate_dim, Int<1>{})),
+				typename Traits3::SmemLayoutStore{});
+		}
+	}();
 
 	auto tma_load_xt4 = [&] {
 		auto tensor = make_tensor(make_gmem_ptr(pX),
@@ -1222,7 +1377,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	}();
 	auto tma_load_dut4 = [&] {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.du_buf)),
-			make_shape(intermediate_dim, max_total_slots),
+			make_shape(intermediate_dim, buf.scratch_rows),
 			make_stride(Int<1>{}, intermediate_dim));
 		if constexpr (Config::kUsesTwoSm) {
 			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
@@ -1236,7 +1391,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	}();
 	auto tma_load_dvt4 = [&] {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dv_buf)),
-			make_shape(intermediate_dim, max_total_slots),
+			make_shape(intermediate_dim, buf.scratch_rows),
 			make_stride(Int<1>{}, intermediate_dim));
 		if constexpr (Config::kUsesTwoSm) {
 			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
@@ -1248,16 +1403,46 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 				typename Traits4::SmemLayoutA_1{});
 		}
 	}();
-	auto tma_reduce_db = make_tma_copy(TmaReduceAddAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dB)),
-			make_shape(total_n_rows_1, hidden_dim),
-			make_stride(hidden_dim, Int<1>{})),
-		typename Traits4::SmemLayoutStore{});
-	auto tma_reduce_dc = make_tma_copy(TmaReduceAddAtom{},
-		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dC)),
-			make_shape(total_n_rows_1, hidden_dim),
-			make_stride(hidden_dim, Int<1>{})),
-		typename Traits4::SmemLayoutStore{});
+	auto tma_reduce_db = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dB)),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits4::SmemLayoutStore{});
+		} else {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dB)),
+					make_shape(total_n_rows_1, hidden_dim),
+					make_stride(hidden_dim, Int<1>{})),
+				typename Traits4::SmemLayoutStore{});
+		}
+	}();
+	auto tma_reduce_dc = [&]() {
+		if constexpr (Config::kCompute == 90) {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dC)),
+					make_shape(static_cast<int64_t>(intermediate_dim),
+					           static_cast<int64_t>(hidden_dim),
+					           static_cast<int64_t>(experts_per_pe)),
+					make_stride(
+						static_cast<int64_t>(hidden_dim),
+						Int<1>{},
+						static_cast<int64_t>(intermediate_dim) * hidden_dim)),
+				typename Traits4::SmemLayoutStore{});
+		} else {
+			return make_tma_copy(TmaReduceAddAtom{},
+				make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dC)),
+					make_shape(total_n_rows_1, hidden_dim),
+					make_stride(hidden_dim, Int<1>{})),
+				typename Traits4::SmemLayoutStore{});
+		}
+	}();
 
 	// Remote (staging) TMAs — buffers cover L = MC · CommNumStages slots,
 	// each TileM rows tall. MC = (grid.x · NSplit) / NC.
@@ -1321,7 +1506,11 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	get_descs_bwd.enabled = 0;
 	get_descs_bwd.gpus_per_node = gpus_per_node;
 	get_descs_bwd.my_pe = my_pe;
-	size_t get_bounce_bytes_bwd = (size_t)liger::GetBounceBwd<Element>::kTotalBytes;
+	constexpr int kGetBoxRowsBwd = Config::kCompute == 100
+		? liger::kGetBoxRowsBwdSm100
+		: liger::kGetBoxRowsBwdSm90;
+	size_t get_bounce_bytes_bwd =
+		(size_t)liger::GetBounceBwd<Element, kGetBoxRowsBwd>::kTotalBytes;
 	{
 		// The single get warp's row band is TileM/NC; the small TMA box height
 		// must divide it (else the last band would over-read). Holds for NC≤8
@@ -1329,7 +1518,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		constexpr int kRowBandBwd = Config::kTileM / Config::kNC;
 		bool ok = (hidden_dim % liger::kGetKChunk == 0)
 			&& (gpus_per_node <= liger::kGetMaxPes)
-			&& (kRowBandBwd % liger::kGetBoxRowsBwd == 0);
+			&& (kRowBandBwd % kGetBoxRowsBwd == 0);
 		int host_start = (my_pe / gpus_per_node) * gpus_per_node;
 		for (int local_peer = 0; ok && local_peer < gpus_per_node; ++local_peer) {
 			int tp = host_start + local_peer;
@@ -1339,15 +1528,17 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 			void* pdy_peer = nvshmem_ptr(p.comm_bwd.remote_dy, gpe);  // peer dy_sorted
 			if (px_peer == nullptr || pdy_peer == nullptr) { ok = false; break; }
 			ok = make_get_tma_map_bwd(get_descs_bwd.src_x_desc[local_peer], px_peer,
-				hidden_dim, max_total_slots);
+				hidden_dim, max_total_slots, kGetBoxRowsBwd);
 			if (ok) ok = make_get_tma_map_bwd(get_descs_bwd.src_dy_desc[local_peer], pdy_peer,
-				hidden_dim, max_total_slots);
+				hidden_dim, max_total_slots, kGetBoxRowsBwd);
 		}
 		if (ok) ok = make_get_tma_map_bwd(get_descs_bwd.dst_x_staging_desc,
-			buf.x_staging, hidden_dim, remote_total_rows);
+			buf.x_staging, hidden_dim, remote_total_rows, kGetBoxRowsBwd);
 		if (ok) ok = make_get_tma_map_bwd(get_descs_bwd.dst_dy_staging_desc,
-			buf.dy_staging, hidden_dim, remote_total_rows);
+			buf.dy_staging, hidden_dim, remote_total_rows, kGetBoxRowsBwd);
 		get_descs_bwd.enabled = ok ? 1 : 0;
+		if (const char* e = std::getenv("LIGER_GET_TMA"))
+			if (e[0] == '0') get_descs_bwd.enabled = 0;
 	}
 
 	// ── Smem sizing ─────────────────────────────────────────────────
@@ -1357,6 +1548,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	size_t smem_mlp = sizeof(MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Config::kCompute>);
 	smem_mlp = (smem_mlp + sizeof(int) - 1) & ~(sizeof(int) - 1);
 	smem_mlp += num_pes * (experts_per_pe + 1) * sizeof(int);  // remote_offsets
+	smem_mlp += num_pes * experts_per_pe * sizeof(int);         // remote_counts
 
 	// Query the device's actual opt-in dynamic-smem cap rather than trust
 	// Config::kSmemBudget's compile-time 228 KiB constant: the 2SM paired-CTA
@@ -1445,42 +1637,24 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	// for K-blocks that straddle an expert boundary (see the
 	// build_expert_for_k_block comment for the alignment assumption).
 	cudaMemsetAsync(buf.dy_sorted,    0, static_cast<size_t>(max_total_slots) * hidden_dim * sizeof(Element), stream);
-	// dx_sorted: write-only buffer for routed slots — Phase 1d writes valid
-	// tiles, comm-warp dX put writes remote-routed slots, dispatch_tokens_bwd
-	// reads routed slots only via token_expert_slots. Padding rows are never
-	// read so they don't need pre-zero'ing.
-	//
-	// x_staging / dy_staging: comm warps fill the slots THIS CTA fetches;
-	// unfetched slots are gated out by tile_expert_ids_x/dy = -1 (the 0xff
-	// memset below), and the RemoteIter only iterates per_cta_tiles so Phase
-	// 1 never reads unfetched slots either. Stale prev-call contents are
-	// inert under both bounds checks.
-	//
-	// du_buf / dv_buf / dz_buf / z_buf: Phase 1 writes the full TileM rows
-	// of every tile the local-expert pass / staging-ring iterates over;
-	// Phase 2 mlp{3,4} read at K-block granularity and bounds-check via
-	// expert_for_k_block (build_expert_for_k_block stamps -1 past
-	// num_actual_k_blocks, and the remote pass aliases tile_expert_ids).
-	// Fake K-blocks are skipped → any stale slot from a previous call is
-	// inert.
-	//
-	// Total: ~2.5 GB of per-call memset bandwidth (4× intermediate_bytes +
-	// 2× stage_bytes + 1× symm_slot_bytes for dx_sorted) eliminated. The
-	// 0xff sentinel fill of tile_expert_ids_{x,dy} below is what makes
-	// these drops safe — keep that.
+	size_t intermediate_bytes =
+		static_cast<size_t>(buf.scratch_rows) * intermediate_dim * sizeof(Element);
+	cudaMemsetAsync(buf.z_buf,  0, intermediate_bytes, stream);
+	cudaMemsetAsync(buf.du_buf, 0, intermediate_bytes, stream);
+	cudaMemsetAsync(buf.dv_buf, 0, intermediate_bytes, stream);
+	cudaMemsetAsync(buf.dz_buf, 0, intermediate_bytes, stream);
 
 	// Sentinel-fill BOTH comm-side tile_expert_ids arrays so unfetched
 	// slots produce expert_id = -1, which the Phase 3/4 bounds check
 	// rejects. Without this, stale memory could land in [0, experts_per_pe)
-	// and trigger spurious dB/dC/dA writes for empty staging slots. This
-	// 0xff fill is also what lets us drop the x_staging / dy_staging /
-	// du_buf / dv_buf / dz_buf / z_buf memsets above.
+	// and trigger spurious dB/dC/dA writes for empty staging slots.
 	size_t comm_eid_bytes =
 		static_cast<size_t>(comm_l_local) * sizeof(int);
 	if (cudaError_t e = cudaMemsetAsync(buf.tile_expert_ids_x, 0xff, comm_eid_bytes, stream); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_bwd: cudaMemsetAsync(tile_expert_ids_x) failed: ", cudaGetErrorString(e));
 	if (cudaError_t e = cudaMemsetAsync(buf.tile_expert_ids_dy, 0xff, comm_eid_bytes, stream); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_bwd: cudaMemsetAsync(tile_expert_ids_dy) failed: ", cudaGetErrorString(e));
+	cudaMemsetAsync(buf.tile_valid_rows_x, 0, comm_eid_bytes, stream);
 	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_bwd: CUDA error before kernel launch: ", cudaGetErrorString(e));
 
@@ -1576,25 +1750,26 @@ moe_bwd_fwd_bf16_tuned(const MoeBwdArgs& a, int static_nsplit) {
 	// divisibility constraint — only requirement is that NC evenly divides
 	// gridDim.x · gridDim.y so MC is integer (e.g. NS=6, NC=4: MC = 22·6/4
 	// = 33).
-	// COMM tile FIXED at 128 (NC=4) for every config — uniform across PEs so the
-	// all-to-all dispatch padding (tile_expert_ids / x_sorted / expert_offsets)
-	// aligns. `TileM` is purely the Phase-1 GEMM-tile knob (flows to GemmTileM,
-	// default == TileM): a "TM64" bwd config = comm128/gemm64.
+	// Both architectures use CommTileM=128/NC4, matching forward metadata.
+	using CommGeometry = MoeCommGeometry<Compute>;
+	static constexpr int kPhase1TileM = Compute == 100 ? 128 : GemmTileM;
+	static constexpr int kSubBatch = 2;
 	using Config = MoeBwdConfig<
 		NSplit2,
-		GemmTileM, TileN1, TileK1, Stages1, EpiChunkN1,              // Phase 1a (mlp1_act) — GEMM tile
+		kPhase1TileM, TileN1, TileK1, Stages1, EpiChunkN1,           // Phase 1a (mlp1_act) — GEMM tile
 		/*TileN2=*/256, TileK1, Stages1,                              // Phase 1b' (Mlp2TTraits caps TileN ≤ 256)
-		/*TileM2T=*/GemmTileM,                                        // Phase 1b' GEMM tile
+		/*TileM2T=*/kPhase1TileM,                                     // Phase 1b' GEMM tile
 		TileM3, TileN3, TileK3, Stages3,                              // Phase 2 mlp3
 		TileN3, TileM3, TileK3, Stages3,                              // Phase 2 mlp4 (mlp3/mlp4 swap; cooperative)
-		GemmTileM, 256, TileK1, Stages1,                             // Phase 1d mlp5 — GEMM tile
+		kPhase1TileM, 256, TileK1, Stages1,                          // Phase 1d mlp5 — GEMM tile
 		EpiChunkN25,                                                  // shared mlp2_t + mlp5
 		EpiChunkN34,                                                  // shared mlp3 + mlp4
 		bfloat16_t,
-		CommNumStages,
-		/*NC_=*/4,
-		/*SubBatch_=*/2,
-		/*CommTileM_=*/128,                                           // comm tile fixed at 128
+		CommNumStages * CommGeometry::RingStageScale
+			+ CommGeometry::RingStageExtra,
+		/*NC_=*/CommGeometry::NC,
+		/*SubBatch_=*/kSubBatch,
+		/*CommTileM_=*/CommGeometry::TileM,
 		/*Compute_=*/Compute>;
 	moe_bwd_fwd_bf16<Config>(a, static_nsplit);
 }
@@ -1714,11 +1889,13 @@ static bool tuned_config_valid_bwd(int D, int I, const TunedConfigBwd& c) {
 	// 128-row comm tile. Keep mirrored SM90 TileM=64 tuning rows out of SM100
 	// auto-dispatch until that TMEM epilogue layout is implemented.
 	if (c.Compute == 100 && c.TileM != 128) return false;
-	if (D % c.TileK1 != 0)        return false;  // mlp1/mlp2_t/mlp5 K
-	if (D % (2 * c.TileN1) != 0)  return false;  // mlp5 N (= TileN2)
-	if (I % (2 * c.TileN1) != 0)  return false;  // mlp2_t N
-	if (I % c.TileK1 != 0)        return false;  // mlp5 K
-	if (I % c.TileK3 != 0)        return false;  // mlp3/mlp4 K
+	if (c.Compute == 100) {
+		if (D % c.TileK1 != 0)        return false;  // mlp1/mlp2_t/mlp5 K
+		if (D % (2 * c.TileN1) != 0)  return false;  // mlp5 N (= TileN2)
+		if (I % (2 * c.TileN1) != 0)  return false;  // mlp2_t N
+		if (I % c.TileK1 != 0)        return false;  // mlp5 K
+		if (I % c.TileK3 != 0)        return false;  // mlp3/mlp4 K
+	}
 	if (D % 8 != 0 || I % 8 != 0) return false;  // vectorization
 	if (c.Compute == 100) {
 		if (D % 256 != 0 || I % 256 != 0) return false;
@@ -1777,10 +1954,8 @@ static bool find_nearest_tuned_bwd(int compute, int TK, int TKE, int D, int I,
 	double lI   = std::log((double)I);
 	for (int i = 0; i < table_n; ++i) {
 		TunedConfigBwd c = project_bwd(table[i], compute);
-		// No fwd/bwd TileM match required: the comm tile is fixed at 128 for
-		// both directions, so tile_expert_ids / x_sorted / expert_offsets align
-		// regardless of each direction's GEMM tile. (fwd_tile_m retained for ABI
-		// but no longer constrains the bwd GEMM-tile choice.)
+		// Forward and backward select the same architecture-specific comm tile
+		// (M128 on both architectures), independent of the tuned GEMM tile.
 		(void)fwd_tile_m;
 		if (!tuned_config_valid_bwd(D, I, c)) continue;
 		// Guard against TKE=0 in legacy rows (would yield -inf in log).
@@ -1831,7 +2006,6 @@ void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
 	// Keep backward lookup consistent with forward for tiny token batches.
 	const int TKE = std::max(1, TK / E_local);
 	const int compute = moe_detect_compute_dispatch_key(a.device, "moe_fused_bwd_bf16_auto");
-
 	if (const char* s = std::getenv("LIGER_MOE_BWD_FORCE_CONFIG")) {
 		TunedConfigBwd tc{};
 		tc.Compute = compute;
@@ -1858,8 +2032,8 @@ void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
 		tc.TileM = vals[12];
 		tc.GemmTileM = (n == 14) ? vals[13] : tc.TileM;
 		if (tc.GemmTileM <= 0) tc.GemmTileM = tc.TileM;  // omitted → gemm == comm
-		// No fwd/bwd TileM match check: comm tile is fixed at 128 for both
-		// directions, so the sort/dispatch alignment holds for any GEMM tile.
+		// The wrapper selects the architecture-specific comm tile consistently
+		// with forward; the parsed TileM remains the GEMM tuning field.
 		(void)fwd_tile_m;
 		const DispatchEntryBwd* de = find_dispatch_entry_bwd(tc);
 		LIGER_CHECK(de != nullptr,

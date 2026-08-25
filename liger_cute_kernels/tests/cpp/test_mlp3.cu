@@ -121,7 +121,7 @@ mlp3_test_kernel(
 	using Smem = cute::conditional_t<Compute == 100, Mlp3Smem2Sm<Traits>, Mlp3Smem<Traits>>;
 	auto& smem = *reinterpret_cast<Smem*>(raw_smem);
 
-	mlp3_fwd<Traits, Compute>(
+	mlp3_fwd<Traits, Compute, Compute == 90>(
 		smem, tma_load_dyt, tma_load_z, tma_reduce_da,
 		expert_k_starts, expert_k_ends, num_experts,
 		hidden_dim, intermediate_dim, num_tokens, total_n_rows,
@@ -260,7 +260,7 @@ static std::vector<float> download_bf16(const Element* d, size_t n) {
 //    off Traits::TileShape + Traits::TiledMma2Sm) — exactly moe_bwd.cu's
 //    Phase-2 dY^T/Z descriptor construction for Config::kUsesTwoSm. The dA
 //    reduce-add output stays an ordinary (non-paired) TMA_REDUCE_ADD either
-//    way, so make_da_tma is Compute-agnostic. ──
+//    way, while its tensor rank follows the architecture-specific consumer. ──
 //   tma_load_dyt : dY[T,H] row-major, viewed (H, T) stride (1, H)  → A = dY^T
 //   tma_load_z   : Z[T,I]  row-major, viewed (I, T) stride (1, I)  → B = Z^T
 //   tma_reduce_da: dA[E·H, I] row-major, SM90_TMA_REDUCE_ADD, SmemLayoutStore box
@@ -290,13 +290,21 @@ static auto make_z_tma(const Inputs& in, const Mlp3Shape& s) {
 		return make_tma_copy(SM90_TMA_LOAD{}, t, typename Traits::SmemLayoutZ_1{});
 	}
 }
-template <typename Traits>
+template <typename Traits, int Compute>
 static auto make_da_tma(Element* dA, const Mlp3Shape& s) {
-	int total_n_rows = s.num_experts * s.hidden_dim;   // E·H
-	auto t = make_tensor(make_gmem_ptr(dA),
-		make_shape(total_n_rows, s.intermediate_dim),
-		make_stride(s.intermediate_dim, Int<1>{}));
-	return make_tma_copy(SM90_TMA_REDUCE_ADD{}, t, typename Traits::SmemLayoutStore{});
+	if constexpr (Compute == 90) {
+		auto t = make_tensor(make_gmem_ptr(dA),
+			make_shape(s.hidden_dim, s.intermediate_dim, s.num_experts),
+			make_stride(s.intermediate_dim, Int<1>{},
+				s.hidden_dim * s.intermediate_dim));
+		return make_tma_copy(SM90_TMA_REDUCE_ADD{}, t, typename Traits::SmemLayoutStore{});
+	} else {
+		int total_n_rows = s.num_experts * s.hidden_dim;
+		auto t = make_tensor(make_gmem_ptr(dA),
+			make_shape(total_n_rows, s.intermediate_dim),
+			make_stride(s.intermediate_dim, Int<1>{}));
+		return make_tma_copy(SM90_TMA_REDUCE_ADD{}, t, typename Traits::SmemLayoutStore{});
+	}
 }
 
 static int sm_count() {
@@ -333,7 +341,7 @@ static void run3_once(const Mlp3Shape& s, Inputs& in, int outer_split,
 
 	auto tma_dyt = make_dyt_tma<Traits, Compute>(in, s);
 	auto tma_z   = make_z_tma<Traits, Compute>(in, s);
-	auto tma_da  = make_da_tma<Traits>(dA, s);
+	auto tma_da  = make_da_tma<Traits, Compute>(dA, s);
 
 	using Smem = cute::conditional_t<Compute == 100, Mlp3Smem2Sm<Traits>, Mlp3Smem<Traits>>;
 	size_t smem_size = sizeof(Smem);
@@ -482,7 +490,7 @@ static void run3_bench(const Mlp3Shape& s, const BenchCfg& cfg) {
 
 	auto tma_dyt = make_dyt_tma<Traits, Compute>(in, s);
 	auto tma_z   = make_z_tma<Traits, Compute>(in, s);
-	auto tma_da  = make_da_tma<Traits>(dA, s);
+	auto tma_da  = make_da_tma<Traits, Compute>(dA, s);
 
 	using Smem = cute::conditional_t<Compute == 100, Mlp3Smem2Sm<Traits>, Mlp3Smem<Traits>>;
 	size_t smem_size = sizeof(Smem);

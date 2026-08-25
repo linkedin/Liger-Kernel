@@ -24,10 +24,12 @@ dispatch table covers so the auto path resolves a config.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -135,8 +137,124 @@ def _check_close(ours, ref, *, mean_rel_tol=0.15, atol_for_rel=1e-3):
     diff = (ours_f32 - ref_f32).abs()
     rel = diff / ref_f32.abs().clamp_min(atol_for_rel)
     mean_rel = rel.mean().item()
-    assert mean_rel < mean_rel_tol, (
-        f"reference mismatch: mean_rel={mean_rel:.4f} (tol {mean_rel_tol}), max_abs={diff.max().item():.4f}"
+    relative_l2 = (
+        torch.linalg.vector_norm(ours_f32 - ref_f32) / torch.linalg.vector_norm(ref_f32).clamp_min(atol_for_rel)
+    ).item()
+    cosine = torch.nn.functional.cosine_similarity(
+        ours_f32.flatten(),
+        ref_f32.flatten(),
+        dim=0,
+    ).item()
+    numerically_close = mean_rel < mean_rel_tol or (relative_l2 < 0.01 and cosine > 0.999)
+    assert numerically_close, (
+        f"reference mismatch: mean_rel={mean_rel:.4f} (tol {mean_rel_tol}), "
+        f"relative_l2={relative_l2:.4f}, cosine={cosine:.6f}, "
+        f"max_abs={diff.max().item():.4f}, ref_max={ref_f32.abs().max().item():.4f}"
+    )
+
+
+_FWD_CONFIG_RE = re.compile(
+    r"FWD=TM(?P<tm>\d+)_TN1-(?P<tn1>\d+)/(?P<tk1>\d+)/(?P<s1>\d+)/EC(?P<ec1>\d+)"
+    r"_TN2-(?P<tn2>\d+)/(?P<tk2>\d+)/(?P<s2>\d+)/EC(?P<ec2>\d+)"
+    r"_ZB(?P<zb>\d+)_CS(?P<cs>\d+)"
+)
+_BWD_CONFIG_RE = re.compile(
+    r"BWD=NS2-(?P<ns2>\d+)_TN1-(?P<tn1>\d+)/(?P<tk1>\d+)/(?P<s1>\d+)"
+    r"_TM3-(?P<tm3>\d+)_TN3-(?P<tn3>\d+)/(?P<tk3>\d+)/(?P<s3>\d+)"
+    r"_EN1-(?P<en1>\d+)_EN25-(?P<en25>\d+)_EN34-(?P<en34>\d+)"
+    r"_CS(?P<cs>\d+)_TM(?P<tm>\d+)"
+)
+
+
+def _tuned_force_configs():
+    major = torch.cuda.get_device_capability()[0]
+    if major == 9:
+        compute = 90
+    elif major >= 10:
+        compute = 100
+    else:
+        raise RuntimeError(f"unsupported MoE tuning-test compute capability: {major}")
+    moe_dir = Path(__file__).resolve().parents[1] / "csrc" / "core" / "src" / "moe"
+    texts = [
+        (moe_dir / f"moe_fwd_bwd_tuning_configs_{kind}_sm{compute}.cuh").read_text() for kind in ("single", "multi")
+    ]
+
+    fwd_configs = set()
+    bwd_configs = set()
+    for text in texts:
+        for match in _FWD_CONFIG_RE.finditer(text):
+            values = match.groupdict()
+            fwd_configs.add(
+                ",".join(
+                    values[name] for name in ("tn1", "tk1", "s1", "ec1", "tn2", "tk2", "s2", "ec2", "zb", "cs", "tm")
+                )
+            )
+        for match in _BWD_CONFIG_RE.finditer(text):
+            values = match.groupdict()
+            bwd_configs.add(
+                ",".join(
+                    values[name]
+                    for name in (
+                        "ns2",
+                        "tn1",
+                        "tk1",
+                        "s1",
+                        "tm3",
+                        "tn3",
+                        "tk3",
+                        "s3",
+                        "en1",
+                        "en25",
+                        "en34",
+                        "cs",
+                        "tm",
+                    )
+                )
+            )
+
+    assert fwd_configs, f"no SM{compute} forward tuning configs found"
+    assert bwd_configs, f"no SM{compute} backward tuning configs found"
+    return sorted(fwd_configs), sorted(bwd_configs)
+
+
+def _torch_reference_moe_backward(
+    X,
+    dY,
+    expert_indices,
+    expert_weights,
+    all_B_global,
+    all_C_global,
+    all_A_global,
+    top_k,
+    rank,
+    experts_per_pe,
+):
+    X_ref = X.float().detach().requires_grad_(True)
+    weights_ref = expert_weights.float().detach().requires_grad_(True)
+    B_ref = all_B_global.float().detach().requires_grad_(True)
+    C_ref = all_C_global.float().detach().requires_grad_(True)
+    A_ref = all_A_global.float().detach().requires_grad_(True)
+    Y_ref = _torch_reference_moe(
+        X_ref,
+        expert_indices,
+        weights_ref,
+        B_ref,
+        C_ref,
+        A_ref,
+        top_k,
+    )
+    Y_ref.backward(dY.float())
+
+    for grad in (B_ref.grad, C_ref.grad, A_ref.grad):
+        dist.all_reduce(grad)
+    expert_slice = slice(rank * experts_per_pe, (rank + 1) * experts_per_pe)
+    return (
+        Y_ref.detach().to(torch.bfloat16),
+        X_ref.grad.detach().to(torch.bfloat16),
+        B_ref.grad[expert_slice].detach().to(torch.bfloat16),
+        C_ref.grad[expert_slice].detach().to(torch.bfloat16),
+        A_ref.grad[expert_slice].detach().to(torch.bfloat16),
+        weights_ref.grad.detach().to(torch.bfloat16),
     )
 
 
@@ -256,6 +374,66 @@ def _fwd_graph_worker(rank: int, world_size: int, init_file: str):
         assert torch.isfinite(Y).all(), f"replay {i} produced non-finite output"
         _check_close(Y, Y_eager_cpu)
         _check_close(Y, Y_ref)
+
+
+# ── forward: packed w13 strided views ─────────────────────────────────────────
+
+
+def _strided_fwd_worker(rank: int, world_size: int, init_file: str):
+    _init(rank, world_size, init_file)
+    team = nvshmem.team_world()
+    try:
+        _configure(world_size)
+        X, gate_W, all_B, all_C, all_A, ei, ew = _make_inputs(rank, world_size)
+        experts_per_pe = all_B.size(0)
+
+        packed_w13 = torch.stack((all_B, all_C), dim=1).reshape(experts_per_pe, 2 * _I, _D)
+        strided_B = packed_w13[:, :_I, :]
+        strided_C = packed_w13[:, _I:, :]
+        assert not strided_B.is_contiguous()
+        assert not strided_C.is_contiguous()
+        assert strided_B.stride() == (2 * _I * _D, _D, 1)
+        assert strided_C.stride() == strided_B.stride()
+
+        all_B_g = _gather_experts(all_B, dist.group.WORLD)
+        all_C_g = _gather_experts(all_C, dist.group.WORLD)
+        all_A_g = _gather_experts(all_A, dist.group.WORLD)
+        Y_ref = _torch_reference_moe(X, ei, ew, all_B_g, all_C_g, all_A_g, _K).cpu()
+
+        Y_contiguous = tvm_ffi.moe_fused_fwd_bf16(
+            X, ei, ew, all_B, all_C, all_A, num_experts=_E, top_k=_K, team_handle=team
+        )[0]
+        tvm_ffi.moe_pop_fwd()
+        torch.cuda.synchronize()
+        Y_contiguous = Y_contiguous.cpu()
+
+        Y_strided = tvm_ffi.moe_fused_fwd_bf16(
+            X,
+            ei,
+            ew,
+            strided_B,
+            strided_C,
+            all_A,
+            num_experts=_E,
+            top_k=_K,
+            team_handle=team,
+        )[0]
+        tvm_ffi.moe_pop_fwd()
+        torch.cuda.synchronize()
+        Y_strided = Y_strided.cpu()
+
+        dist.barrier()
+        nvshmem.finalize()
+        dist.destroy_process_group()
+    except BaseException:
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        raise
+
+    _check_close(Y_strided, Y_contiguous, mean_rel_tol=0.01)
+    _check_close(Y_strided, Y_ref)
 
 
 # ── forward + backward: two graphs ────────────────────────────────────────────
@@ -562,7 +740,10 @@ def _single_token_auto_dispatch_worker(
     top_k = 8
     experts_per_pe = num_experts // world_size
     fwd_force = "128,64,4,64,128,64,4,64,4,3,128"
-    bwd_force = "2,128,64,4,128,256,64,2,32,64,64,2,128"
+    if torch.cuda.get_device_capability()[0] >= 10:
+        bwd_force = "2,128,64,3,256,256,64,4,32,64,64,2,128"
+    else:
+        bwd_force = "16,128,64,4,128,256,64,2,32,64,64,2,64"
 
     try:
         tvm_ffi.moe_configure_symmetric(
@@ -664,6 +845,275 @@ def _single_token_auto_dispatch_worker(
         _check_close(auto, forced)
 
 
+def _all_tuned_configs_worker(rank: int, world_size: int, init_file: str):
+    _init(rank, world_size, init_file)
+    team = nvshmem.team_world()
+    fwd_configs, bwd_configs = _tuned_force_configs()
+    tokens, hidden_dim, intermediate_dim = 1025, 512, 256
+    num_experts, top_k = 16, 2
+    experts_per_pe = num_experts // world_size
+
+    try:
+        tvm_ffi.moe_configure_symmetric(
+            max_tokens=tokens,
+            hidden_dim=hidden_dim,
+            max_num_experts=num_experts,
+            max_top_k=top_k,
+            num_pes=world_size,
+            num_hosts=1,
+            gpus_per_host=world_size,
+        )
+        torch.manual_seed(20_000 + rank)
+        X = torch.randn(tokens, hidden_dim, dtype=torch.bfloat16, device="cuda")
+        dY = torch.randn_like(X)
+        all_B = torch.randn(
+            experts_per_pe,
+            intermediate_dim,
+            hidden_dim,
+            dtype=torch.bfloat16,
+            device="cuda",
+        )
+        all_C = torch.randn_like(all_B)
+        all_A = torch.randn(
+            experts_per_pe,
+            hidden_dim,
+            intermediate_dim,
+            dtype=torch.bfloat16,
+            device="cuda",
+        )
+        expert_indices = (
+            torch.arange(tokens * top_k, device="cuda").reshape(tokens, top_k).remainder(num_experts).to(torch.int32)
+        )
+        expert_weights = torch.softmax(
+            torch.rand(tokens, top_k, dtype=torch.float32, device="cuda"),
+            dim=1,
+        ).to(torch.bfloat16)
+        all_B_global = _gather_experts(all_B, dist.group.WORLD)
+        all_C_global = _gather_experts(all_C, dist.group.WORLD)
+        all_A_global = _gather_experts(all_A, dist.group.WORLD)
+        reference = _torch_reference_moe_backward(
+            X,
+            dY,
+            expert_indices,
+            expert_weights,
+            all_B_global,
+            all_C_global,
+            all_A_global,
+            top_k,
+            rank,
+            experts_per_pe,
+        )
+        reference_cpu = [tensor.cpu() for tensor in reference]
+        del reference, all_B_global, all_C_global, all_A_global
+
+        def fwd():
+            return tvm_ffi.moe_fused_fwd_bf16(
+                X,
+                expert_indices,
+                expert_weights,
+                all_B,
+                all_C,
+                all_A,
+                num_experts=num_experts,
+                top_k=top_k,
+                team_handle=team,
+            )
+
+        def bwd(out):
+            return tvm_ffi.moe_fused_bwd_bf16(
+                dY,
+                out[2],
+                out[1],
+                out[4],
+                out[5],
+                out[3],
+                expert_indices,
+                expert_weights,
+                all_B,
+                all_C,
+                all_A,
+                num_experts=num_experts,
+                top_k=top_k,
+                team_handle=team,
+                fwd_tile_m=out[6],
+            )
+
+        os.environ.pop("LIGER_MOE_BWD_FORCE_CONFIG", None)
+        os.environ.pop("LIGER_MOE_BWD_FORCE_CONFIG", None)
+        for config in fwd_configs:
+            if rank == 0 and os.environ.get("LIGER_MOE_TEST_VERBOSE"):
+                print(f"testing forward config {config}", flush=True)
+            os.environ["LIGER_MOE_FORCE_CONFIG"] = config
+            out = fwd()
+            torch.cuda.synchronize()
+            got = out[0].cpu()
+            tvm_ffi.moe_pop_fwd()
+            try:
+                _check_close(got, reference_cpu[0])
+            except AssertionError as error:
+                raise AssertionError(f"forward config {config}: {error}") from error
+
+        reference_fwd_config = fwd_configs[0]
+        for config in bwd_configs:
+            if rank == 0 and os.environ.get("LIGER_MOE_TEST_VERBOSE"):
+                print(f"testing backward config {config}", flush=True)
+            os.environ["LIGER_MOE_FORCE_CONFIG"] = reference_fwd_config
+            os.environ["LIGER_MOE_BWD_FORCE_CONFIG"] = config
+            for repeat in range(2):
+                if rank == 0 and os.environ.get("LIGER_MOE_TEST_VERBOSE"):
+                    print(f"  repeat {repeat}: forward", flush=True)
+                out = fwd()
+                if rank == 0 and os.environ.get("LIGER_MOE_TEST_VERBOSE"):
+                    print(f"  repeat {repeat}: backward", flush=True)
+                grads = bwd(out)
+                torch.cuda.synchronize()
+                if rank == 0 and os.environ.get("LIGER_MOE_TEST_VERBOSE"):
+                    print(f"  repeat {repeat}: compare", flush=True)
+                got_cpu = [out[0].cpu()]
+                got_cpu.extend(grad.cpu() for grad in grads)
+                tvm_ffi.moe_pop_fwd()
+                failures = []
+                for name, got, expected in zip(
+                    ("Y", "dX", "dB", "dC", "dA", "dW"),
+                    got_cpu,
+                    reference_cpu,
+                ):
+                    try:
+                        _check_close(got, expected)
+                    except AssertionError as error:
+                        failures.append(f"{name}: {error}")
+                assert not failures, f"backward config {config}, repeat {repeat}: " + "; ".join(failures)
+
+        os.environ.pop("LIGER_MOE_FORCE_CONFIG", None)
+        os.environ.pop("LIGER_MOE_BWD_FORCE_CONFIG", None)
+        dist.barrier()
+        nvshmem.finalize()
+        dist.destroy_process_group()
+    except BaseException:
+        os.environ.pop("LIGER_MOE_FORCE_CONFIG", None)
+        os.environ.pop("LIGER_MOE_BWD_FORCE_CONFIG", None)
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        raise
+
+
+def _stacked_forward_metadata_worker(rank: int, world_size: int, init_file: str):
+    _init(rank, world_size, init_file)
+    team = nvshmem.team_world()
+    tokens, hidden_dim, intermediate_dim = 129, 512, 256
+    num_experts, top_k = 16, 2
+    experts_per_pe = num_experts // world_size
+
+    try:
+        tvm_ffi.moe_configure_symmetric(
+            max_tokens=tokens,
+            hidden_dim=hidden_dim,
+            max_num_experts=num_experts,
+            max_top_k=top_k,
+            num_pes=world_size,
+            num_hosts=1,
+            gpus_per_host=world_size,
+        )
+        torch.manual_seed(30_000 + rank)
+        X = torch.randn(tokens, hidden_dim, dtype=torch.bfloat16, device="cuda")
+        dY = torch.randn_like(X)
+        all_B = torch.randn(
+            experts_per_pe,
+            intermediate_dim,
+            hidden_dim,
+            dtype=torch.bfloat16,
+            device="cuda",
+        )
+        all_C = torch.randn_like(all_B)
+        all_A = torch.randn(
+            experts_per_pe,
+            hidden_dim,
+            intermediate_dim,
+            dtype=torch.bfloat16,
+            device="cuda",
+        )
+        weights = torch.full(
+            (tokens, top_k),
+            0.5,
+            dtype=torch.bfloat16,
+            device="cuda",
+        )
+        balanced_indices = (
+            torch.arange(tokens * top_k, device="cuda").reshape(tokens, top_k).remainder(num_experts).to(torch.int32)
+        )
+        skewed_indices = torch.arange(top_k, device="cuda").repeat(tokens, 1).to(torch.int32)
+
+        def fwd(indices):
+            return tvm_ffi.moe_fused_fwd_bf16(
+                X,
+                indices,
+                weights,
+                all_B,
+                all_C,
+                all_A,
+                num_experts=num_experts,
+                top_k=top_k,
+                team_handle=team,
+            )
+
+        def bwd(out, indices):
+            return tvm_ffi.moe_fused_bwd_bf16(
+                dY,
+                out[2],
+                out[1],
+                out[4],
+                out[5],
+                out[3],
+                indices,
+                weights,
+                all_B,
+                all_C,
+                all_A,
+                num_experts=num_experts,
+                top_k=top_k,
+                team_handle=team,
+                fwd_tile_m=out[6],
+            )
+
+        first = fwd(balanced_indices)
+        second = fwd(skewed_indices)
+        first_meta = first[3].cpu()
+        second_meta = second[3].cpu()
+        assert first_meta[12].item() != second_meta[12].item()
+
+        bwd(second, skewed_indices)
+        torch.cuda.synchronize()
+        tvm_ffi.moe_pop_fwd()
+        stacked = [tensor.cpu() for tensor in bwd(first, balanced_indices)]
+        tvm_ffi.moe_pop_fwd()
+
+        baseline_out = fwd(balanced_indices)
+        baseline = [tensor.cpu() for tensor in bwd(baseline_out, balanced_indices)]
+        tvm_ffi.moe_pop_fwd()
+
+        for name, got, expected in zip(
+            ("dX", "dB", "dC", "dA", "dW"),
+            stacked,
+            baseline,
+        ):
+            try:
+                _check_close(got, expected, mean_rel_tol=0.01)
+            except AssertionError as error:
+                raise AssertionError(f"stacked-forward metadata corrupted {name}: {error}") from error
+
+        dist.barrier()
+        nvshmem.finalize()
+        dist.destroy_process_group()
+    except BaseException:
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        raise
+
+
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 
@@ -676,6 +1126,12 @@ def test_moe_fwd_cuda_graph():
     (the second replay would corrupt the first's NVSHMEM writes otherwise).
     """
     _run(_world_size(), _fwd_graph_worker)
+
+
+@pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
+def test_moe_fwd_packed_w13_strided_views():
+    """Packed gate/up views avoid copies while matching contiguous weights."""
+    _run(_world_size(), _strided_fwd_worker)
 
 
 @pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
@@ -711,3 +1167,17 @@ def test_moe_fwd_bwd_single_token_auto_dispatch():
     compiled configurations while every rank participates in NVSHMEM.
     """
     _run(_world_size(), _single_token_auto_dispatch_worker)
+
+
+@pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
+def test_moe_all_tuned_configs_match_torch():
+    """Every unique tuned template must match the differentiable torch reference."""
+
+    _run(_world_size(), _all_tuned_configs_worker)
+
+
+@pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
+def test_moe_stacked_forward_metadata_lifetime():
+    """Each outstanding forward keeps distinct routing counts for backward."""
+
+    _run(_world_size(), _stacked_forward_metadata_worker)

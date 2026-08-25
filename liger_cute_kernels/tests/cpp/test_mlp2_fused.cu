@@ -13,8 +13,8 @@
 // are printed):
 //   * sm_100 (Blackwell) → Compute=100 / UMMA  (Traits::MainloopPipelineUmma)
 //   * sm_90  (Hopper)    → Compute=90  / WGMMA (Traits::MainloopPipeline)
-// Both paths share the same shapes, cpu_reference and tolerances (run_fused
-// is templated only on Compute), so neither arch is held to a looser bar. The
+// Both paths share the same shapes, cpu_reference and tolerances, so neither
+// arch is held to a looser bar. The
 // non-matching path is still compiled — the Compute=100 body is gated on
 // __CUDA_ARCH__>=1000 and the Compute=90 launcher call on __CUDA_ARCH__<1000
 // (both trap otherwise) — so one source builds cleanly for sm_90a and sm_100a.
@@ -49,6 +49,8 @@ using Element = cutlass::bfloat16_t;
 // epilogue (mlp2_fused's default epilogue chunk width).
 using TraitsFused = Mlp2Traits<Element, /*TileM=*/128, /*TileN=*/128,
                                /*TileK=*/64, /*Stages=*/4, /*EpiChunkN=*/32>;
+using TraitsFused192 = Mlp2Traits<Element, /*TileM=*/128, /*TileN=*/192,
+                                  /*TileK=*/64, /*Stages=*/4, /*EpiChunkN=*/64>;
 
 #define CUDA_OK(expr)                                                       \
 	do {                                                                    \
@@ -124,10 +126,12 @@ mlp2_fused_test_kernel(
 		int expert = expert_ids[m];
 		int expert_n_offset = expert * num_n_tiles;
 		if (is_producer) {
-			liger::mlp2_fused_producer<Traits>(
+			liger::mlp2_fused_producer<Traits, Compute == 90>(
 				pipe, prod_state, smem.tile,
 				tma_load_z, tma_load_a,
-				m, expert_n_offset, num_tokens, intermediate_dim, total_n_rows,
+				m, (Compute == 90) ? expert : expert_n_offset, num_tokens,
+				num_n_tiles * Traits::TileN, intermediate_dim,
+				total_n_rows / (num_n_tiles * Traits::TileN), total_n_rows,
 				num_n_tiles, num_k_tiles);
 		} else if (is_consumer) {
 			if constexpr (Compute == 100) {
@@ -285,9 +289,8 @@ static std::vector<float> download_rows(const Element* d, int padded_tokens,
 // Variant runner
 // ═══════════════════════════════════════════════════════════════════
 
-template <int Compute>
+template <typename Traits, int Compute>
 static void run_fused(const Mlp2Shape& s) {
-	using Traits = TraitsFused;
 	Inputs in; make_inputs<Traits>(s, in, /*seed=*/1234);
 
 	int padded = in.num_m_tiles * Traits::TileM;
@@ -298,13 +301,24 @@ static void run_fused(const Mlp2Shape& s) {
 	// ── TMA descriptors ──
 	auto tZ = make_tensor(make_gmem_ptr(in.dZ.ptr),
 		make_shape(s.num_tokens, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
-	auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
-		make_shape(in.total_n_rows, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
 	auto tY = make_tensor(make_gmem_ptr(dY),
 		make_shape(padded, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 
 	auto tma_z = make_tma_copy(SM90_TMA_LOAD{},  tZ, typename Traits::SmemLayoutZ_1{});
-	auto tma_a = make_tma_copy(SM90_TMA_LOAD{},  tA, typename Traits::SmemLayoutW_1{});
+	auto tma_a = [&]() {
+		if constexpr (Compute == 90) {
+			auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
+				make_shape(s.hidden_dim, s.intermediate_dim, s.num_experts),
+				make_stride(s.intermediate_dim, Int<1>{},
+					s.hidden_dim * s.intermediate_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tA, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
+				make_shape(in.total_n_rows, s.intermediate_dim),
+				make_stride(s.intermediate_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tA, typename Traits::SmemLayoutW_1{});
+		}
+	}();
 	auto tma_y = make_tma_copy(SM90_TMA_STORE{}, tY, typename Traits::SmemLayoutStoreSlot{});
 
 	size_t smem_size = sizeof(Mlp2FusedKernelSmem<Traits, Compute>);
@@ -422,13 +436,24 @@ static void run_fused_bench(const Mlp2Shape& s, const BenchCfg& cfg) {
 
 	auto tZ = make_tensor(make_gmem_ptr(in.dZ.ptr),
 		make_shape(s.num_tokens, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
-	auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
-		make_shape(in.total_n_rows, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
 	auto tY = make_tensor(make_gmem_ptr(dY),
 		make_shape(padded, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 
 	auto tma_z = make_tma_copy(SM90_TMA_LOAD{},  tZ, typename Traits::SmemLayoutZ_1{});
-	auto tma_a = make_tma_copy(SM90_TMA_LOAD{},  tA, typename Traits::SmemLayoutW_1{});
+	auto tma_a = [&]() {
+		if constexpr (Compute == 90) {
+			auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
+				make_shape(s.hidden_dim, s.intermediate_dim, s.num_experts),
+				make_stride(s.intermediate_dim, Int<1>{},
+					s.hidden_dim * s.intermediate_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tA, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tA = make_tensor(make_gmem_ptr(in.dA.ptr),
+				make_shape(in.total_n_rows, s.intermediate_dim),
+				make_stride(s.intermediate_dim, Int<1>{}));
+			return make_tma_copy(SM90_TMA_LOAD{}, tA, typename Traits::SmemLayoutW_1{});
+		}
+	}();
 	auto tma_y = make_tma_copy(SM90_TMA_STORE{}, tY, typename Traits::SmemLayoutStoreSlot{});
 
 	size_t smem_size = sizeof(Mlp2FusedKernelSmem<Traits, Compute>);
@@ -494,6 +519,13 @@ static const std::vector<Mlp2Shape> kShapes = {
 	{384, 128, 256, 3},   // three M-tiles, one expert each
 };
 
+static const std::vector<Mlp2Shape> kShapes192 = {
+	{128, 192, 128, 1},
+	{128, 384, 256, 1},
+	{256, 384, 256, 2},
+	{384, 192, 256, 3},
+};
+
 // Large, GPU-saturating shapes for the TFLOPS benchmark. T is a multiple of
 // TileM (128) → no token padding, so 2·T·H·I is exact; H is a multiple of
 // TileN (128). Realistic MoE dims (H=I=4096, E=8).
@@ -507,7 +539,7 @@ static const std::vector<Mlp2Shape> kBenchShapes = {
 // ── Blackwell (Compute=100 / UMMA) — requires an sm_100 GPU at runtime ──
 TEST(Mlp2Fused, Correctness) {
 	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
-	for (const auto& s : kShapes) run_fused<100>(s);
+	for (const auto& s : kShapes) run_fused<TraitsFused, 100>(s);
 }
 
 // ── Hopper (Compute=90 / WGMMA) — requires an sm_90 GPU at runtime ──
@@ -516,7 +548,12 @@ TEST(Mlp2Fused, Correctness) {
 // the identical bar — no relaxed thresholds, no bias.
 TEST(Mlp2FusedSm90, Correctness) {
 	if (!hopper_available()) GTEST_SKIP() << "requires an sm_90 (Hopper) GPU";
-	for (const auto& s : kShapes) run_fused<90>(s);
+	for (const auto& s : kShapes) run_fused<TraitsFused, 90>(s);
+}
+
+TEST(Mlp2FusedSm90, TileN192Correctness) {
+	if (!hopper_available()) GTEST_SKIP() << "requires an sm_90 (Hopper) GPU";
+	for (const auto& s : kShapes192) run_fused<TraitsFused192, 90>(s);
 }
 
 // ═══════════════════════════════════════════════════════════════════
