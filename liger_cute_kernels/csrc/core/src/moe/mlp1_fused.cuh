@@ -72,7 +72,8 @@ template <
 	int TileN_      = 128,
 	int TileK_      = 64,
 	int Stages_     = 4,
-	int EpiChunkN_  = 32
+	int EpiChunkN_  = 32,
+	int ActStoreTileM_ = 64
 >
 struct Mlp1Traits {
 	using Element      = Element_;
@@ -83,6 +84,7 @@ struct Mlp1Traits {
 	static constexpr int TileK      = TileK_;
 	static constexpr int Stages     = Stages_;
 	static constexpr int EpiChunkN  = EpiChunkN_;
+	static constexpr int ActStoreTileM = ActStoreTileM_;
 
 	static_assert(TileM == 64 || TileM == 128, "TileM must be 64 or 128");
 
@@ -96,6 +98,10 @@ struct Mlp1Traits {
 
 	static_assert(TileN <= 256,             "TileN must fit TMA box limit");
 	static_assert(WgTileN % EpiChunkN == 0, "EpiChunkN must divide WgTileN");
+	static_assert(ActStoreTileM == 32 || ActStoreTileM == 64,
+		"activation TMA stores support M32 or M64");
+	static_assert(TileM % ActStoreTileM == 0,
+		"activation store TileM must divide the GEMM TileM");
 	static_assert(kMSplit || (TileN % 2 == 0),
 		"TileN must be even when TileM=64 (cooperative N-split halves)");
 	static constexpr int NumEpiRounds = WgTileN / EpiChunkN;
@@ -127,6 +133,9 @@ struct Mlp1Traits {
 		Shape<Int<AtomTileM>, Int<EpiChunkN>>,
 		Stride<Int<EpiChunkN>, _1>>;
 	using SmemLayoutStore_1 = SmemLayoutStoreSlot;
+	using SmemLayoutActStoreSlot = Layout<
+		Shape<Int<ActStoreTileM>, Int<EpiChunkN>>,
+		Stride<Int<EpiChunkN>, _1>>;
 
 	using MainloopPipeline = cutlass::PipelineTmaAsync<Stages>;
 	using PipelineState    = cutlass::PipelineState<Stages>;
@@ -283,7 +292,8 @@ __device__ __forceinline__ auto mlp1_make_pipe_umma(
 // Single fused X + W1 + W2 TMA pipe per k-step.
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits, bool Expert3D = false, typename Pipeline,
+template <typename Traits, bool Expert3D = false, int MSubTiles = 1,
+          typename Pipeline,
           typename TmaLoadX, typename TmaLoadW>
 __device__ __forceinline__ void mlp1_fused_producer(
 		Pipeline& pipe,
@@ -349,11 +359,6 @@ __device__ __forceinline__ void mlp1_fused_producer(
 	auto tW1sW1 = cta_tma_b.partition_D(sW1);
 	auto tW2sW2 = cta_tma_c.partition_D(sW2);
 
-	auto gX = local_tile(mX,
-		make_tile(Int<Traits::TileM>{}, Int<Traits::TileK>{}),
-		make_coord(m, _));
-	auto tXgX = cta_tma_x.partition_S(gX);
-
 	int n_start  = (split_idx  >= 0) ? split_idx  : (int)blockIdx.y;
 	int n_stride = (num_splits >= 0) ? num_splits : (int)gridDim.y;
 
@@ -383,6 +388,13 @@ __device__ __forceinline__ void mlp1_fused_producer(
 		auto tBgB = cta_tma_b.partition_S(gB);
 		auto tCgC = cta_tma_c.partition_S(gC);
 
+		CUTE_UNROLL
+		for (int m_sub = 0; m_sub < MSubTiles; ++m_sub) {
+		auto gX = local_tile(mX,
+			make_tile(Int<Traits::TileM>{}, Int<Traits::TileK>{}),
+			make_coord(m + m_sub, _));
+		auto tXgX = cta_tma_x.partition_S(gX);
+
 		for (int k = 0; k < num_k_tiles; ++k) {
 			pipe.producer_acquire(state);
 			if (threadIdx.x == 0) {
@@ -395,6 +407,7 @@ __device__ __forceinline__ void mlp1_fused_producer(
 					tCgC(_, _, _, k), tW2sW2(_, _, _, state.index()));
 			}
 			++state;
+		}
 		}
 	}
 }
@@ -425,7 +438,7 @@ struct Mlp1FusedConsumerImpl;
 
 template <>
 struct Mlp1FusedConsumerImpl<90> {
-template <typename Traits, typename Pipeline, typename TmaStoreZ>
+template <typename Traits, int MSubTiles, typename Pipeline, typename TmaStoreZ>
 static __device__ __forceinline__ void run(
 		Pipeline& pipe,
 		typename Traits::PipelineState& state,
@@ -440,6 +453,8 @@ static __device__ __forceinline__ void run(
 		int split_idx,
 		int num_splits) {
 
+	static_assert(MSubTiles == 1,
+		"Hopper MLP1 consumer processes one GEMM M-tile per invocation");
 	using Element = typename Traits::Element;
 	typename Traits::TiledMma tiled_mma;
 	int tid_in_mma = threadIdx.x - Traits::WarpGroupSize;   // 0..255
@@ -628,7 +643,7 @@ static __device__ __forceinline__ void run(
 
 template <>
 struct Mlp1FusedConsumerImpl<100> {
-template <typename Traits, typename Pipeline, typename TmaStoreZ>
+template <typename Traits, int MSubTiles, typename Pipeline, typename TmaStoreZ>
 static __device__ __forceinline__ void run(
 		Pipeline& pipe,
 		typename Traits::PipelineState& state,
@@ -764,6 +779,8 @@ static __device__ __forceinline__ void run(
 	bool store_in_flight = false;
 
 	for (int n = n_start; n < num_n_tiles; n += n_stride) {
+		CUTE_UNROLL
+		for (int m_sub = 0; m_sub < MSubTiles; ++m_sub) {
 
 		// ── Mainloop (MMA warp = warp 3 only): bracket the k-loop with the
 		//    accumulator pipeline. producer_acquire selects the free TMEM stage
@@ -823,6 +840,7 @@ static __device__ __forceinline__ void run(
 				// TMEM → registers (this chunk, full TileM rows).
 				copy(t2r, tTR_tAccU(_, _, _, _0{}, chunk), tTR_rU);
 				copy(t2r, tTR_tAccV(_, _, _, _0{}, chunk), tTR_rV);
+				cutlass::arch::fence_view_async_tmem_load();
 
 				// SiLU(U)·V fused in place (overwrites the U regs) so it overlaps
 				// the prior in-flight store. The cast to Element happens at the
@@ -850,7 +868,7 @@ static __device__ __forceinline__ void run(
 
 					if (is_wg_leader) {
 						cute::tma_store_fence();
-						int m_tile_idx = MSub * z_m + ms;
+						int m_tile_idx = MSub * (z_m + m_sub) + ms;
 						int n_tile_idx = n * (TileN / EpiChunkN) + chunk;
 						auto gZ = local_tile(mZ,
 							make_tile(Int<AtomTileM>{}, Int<EpiChunkN>{}),
@@ -870,6 +888,7 @@ static __device__ __forceinline__ void run(
 			if (tid_in_epi == 0)
 				acc_pipe.consumer_release(acc_cons_state);
 			++acc_cons_state;
+		}
 		}
 	}
 	if (is_epilogue && store_in_flight)
@@ -892,7 +911,7 @@ static __device__ __forceinline__ void run(
 // pass mlp1_fused_consumer<Traits, 100>(...) to select the Blackwell path.
 // ───────────────────────────────────────────────────────────────────
 
-template <typename Traits, int Compute = 90,
+template <typename Traits, int Compute = 90, int MSubTiles = 1,
           typename Pipeline, typename TmaStoreZ>
 __device__ __forceinline__ void mlp1_fused_consumer(
 		Pipeline& pipe,
@@ -906,7 +925,8 @@ __device__ __forceinline__ void mlp1_fused_consumer(
 		int num_k_tiles,
 		int split_idx = -1,
 		int num_splits = -1) {
-	Mlp1FusedConsumerImpl<Compute>::template run<Traits, Pipeline, TmaStoreZ>(
+	Mlp1FusedConsumerImpl<Compute>::template run<
+		Traits, MSubTiles, Pipeline, TmaStoreZ>(
 		pipe, state, smem, tma_store_z, z_m, intermediate_dim,
 		num_z_m_tiles, num_n_tiles, num_k_tiles, split_idx, num_splits);
 }

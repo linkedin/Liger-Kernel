@@ -237,7 +237,7 @@ void moe_fused_fwd_bf16(
     ffi::TensorView all_B, ffi::TensorView all_C, ffi::TensorView all_A, int64_t num_experts,
     int64_t top_k, int64_t team_handle, ffi::TensorView Y, ffi::TensorView token_expert_slots,
     ffi::TensorView tile_expert_ids, ffi::TensorView symm_meta) {
-  RequireCpuInt64(symm_meta, 13);
+  RequireCpuInt64(symm_meta, 17);
   DLDataType bf16{kDLBfloat, 16, 1};
   DLDataType i32{kDLInt, 32, 1};
   RequireCudaTensor(X, 2, bf16, "X");
@@ -283,6 +283,7 @@ void moe_fused_fwd_bf16(
   void* x_sorted = nullptr;
   void* y_buf = nullptr;
   void* all_expert_offsets = nullptr;
+  void* all_expert_counts = nullptr;
   liger::MoeFwdArgs args{};
   args.X = X.data_ptr();
   args.expert_indices = static_cast<const int*>(expert_indices.data_ptr());
@@ -306,6 +307,7 @@ void moe_fused_fwd_bf16(
   args.x_sorted_out = &x_sorted;
   args.y_buf_out = &y_buf;
   args.all_expert_offsets_out = &all_expert_offsets;
+  args.all_expert_counts_out = &all_expert_counts;
   try {
     liger::moe_fused_fwd_dispatch(args, &chosen_tile_m);
   } catch (const std::exception& e) {
@@ -314,7 +316,8 @@ void moe_fused_fwd_bf16(
   WriteMeta(symm_meta, 0, x_sorted, cfg.max_total_slots, cfg.hidden_dim, 3);
   WriteMeta(symm_meta, 4, y_buf, cfg.max_total_slots, cfg.hidden_dim, 3);
   WriteMeta(symm_meta, 8, all_expert_offsets, cfg.num_pes, cfg.max_num_experts + 1, 7);
-  static_cast<int64_t*>(symm_meta.data_ptr())[12] = chosen_tile_m;
+  WriteMeta(symm_meta, 12, all_expert_counts, cfg.num_pes, cfg.max_num_experts, 7);
+  static_cast<int64_t*>(symm_meta.data_ptr())[16] = chosen_tile_m;
 }
 
 void moe_fused_bwd_bf16(
@@ -323,7 +326,7 @@ void moe_fused_bwd_bf16(
     ffi::TensorView all_B, ffi::TensorView all_C, ffi::TensorView all_A, int64_t num_experts,
     int64_t top_k, int64_t team_handle, ffi::TensorView dX, ffi::TensorView dB,
     ffi::TensorView dC, ffi::TensorView dA, ffi::TensorView dW) {
-  RequireCpuInt64(symm_meta, 13);
+  RequireCpuInt64(symm_meta, 17);
   DLDataType bf16{kDLBfloat, 16, 1};
   DLDataType i32{kDLInt, 32, 1};
   RequireCudaTensor(dY, 2, bf16, "dY");
@@ -342,6 +345,7 @@ void moe_fused_bwd_bf16(
   Meta2 x_sorted = ReadMeta(symm_meta, 0);
   Meta2 y_buf = ReadMeta(symm_meta, 4);
   Meta2 expert_offsets = ReadMeta(symm_meta, 8);
+  Meta2 expert_counts = ReadMeta(symm_meta, 12);
   int64_t stream_handle =
       reinterpret_cast<int64_t>(TVMFFIEnvGetStream(dY.device().device_type, dY.device().device_id));
   int device = 0;
@@ -353,6 +357,7 @@ void moe_fused_bwd_bf16(
   args.token_expert_slots = static_cast<int*>(token_expert_slots.data_ptr());
   args.tile_expert_ids = static_cast<int*>(tile_expert_ids.data_ptr());
   args.expert_offsets = static_cast<int*>(expert_offsets.ptr);
+  args.expert_counts = static_cast<int*>(expert_counts.ptr);
   args.expert_indices = static_cast<int*>(expert_indices.data_ptr());
   args.expert_weights = expert_weights.data_ptr();
   args.all_B = all_B.data_ptr();
@@ -373,7 +378,7 @@ void moe_fused_bwd_bf16(
   args.dA = dA.data_ptr();
   args.dW = dW.data_ptr();
   try {
-    liger::moe_bwd_dispatch(args, static_cast<int>(static_cast<const int64_t*>(symm_meta.data_ptr())[12]));
+    liger::moe_bwd_dispatch(args, static_cast<int>(static_cast<const int64_t*>(symm_meta.data_ptr())[16]));
   } catch (const std::exception& e) {
     ThrowCoreError("moe_fused_bwd_bf16", e);
   }
