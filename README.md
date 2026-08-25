@@ -137,9 +137,10 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm
 
 #### Ascend NPU
 
-- `torch == 2.7.1`
-- `torch_npu == 2.7.1`
-- `triton-ascend == 3.2.1` Install from the Ascend PyPI mirror (not on default PyPI).
+- `torch == 2.9.0`
+- `torch_npu == 2.9.0`
+- `triton-ascend == 3.2.2` Install from the Ascend PyPI mirror (not on default PyPI).
+- `CANN == 9.1.0`
 
 ```bash
 pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple
@@ -150,7 +151,7 @@ pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
 - `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
 - `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
-- `nvidia-cutlass-dsl >= 4.5.2`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
+- `nvidia-cutlass-dsl >= 4.6.0`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -220,7 +221,18 @@ pip install "liger-kernel[cutedsl]"
 LIGER_KERNEL_IMPL=cutedsl python your_script.py
 ```
 
-It currently provides genuine `cutlass.cute` implementations of **RMSNorm**, **cross entropy**, and **fused scaled cross entropy**. Ops without a CuTe DSL kernel transparently fall back to the default Triton kernel.
+It currently provides genuine `cutlass.cute` implementations of:
+
+- **RMSNorm**
+- **RoPE**
+- **SwiGLU**
+- **Cross entropy**
+- **Fused linear cross entropy** (with an SM90-specialized variant)
+- **Fused scaled cross entropy** (SM90)
+
+Ops without a CuTe DSL kernel transparently fall back to the default Triton kernel.
+
+The `cutedsl` extra also pulls in `apache-tvm-ffi`, which lets compiled kernels take PyTorch tensors directly rather than marshalling each one per call. It is optional — every kernel falls back to the marshalling launch without it — but short kernels are dominated by that per-call cost, so installing it is strongly recommended.
 
 ### Optional: FlyDSL (ROCm / AMD)
 

@@ -13,6 +13,7 @@ _helpers = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_helpers)
 fast_path_vector_width = _helpers.fast_path_vector_width
 backward_warp_count = _helpers.backward_warp_count
+fwd_warp_count = _helpers.fwd_warp_count
 
 
 def test_fast_path_vector_width_uses_largest_participating_element():
@@ -40,3 +41,26 @@ def test_fast_path_vector_width_rejects_non_vectorizable_size():
 )
 def test_backward_warp_count(n_cols, expected):
     assert backward_warp_count(n_cols) == expected
+
+
+@pytest.mark.parametrize(
+    ("n_rows", "n_cols", "vec", "expected"),
+    [
+        (1024, 1024, 8, 4),
+        (1024, 2048, 8, 8),
+        (2048, 1024, 8, 4),
+        (2048, 4096, 8, 4),
+        (4096, 1024, 4, 2),
+        (4096, 2048, 8, 4),
+        (8192, 2048, 8, 2),
+        (8192, 2048, 4, 4),
+        (8192, 4096, 4, 8),
+    ],
+)
+def test_hopper_forward_warp_count_uses_row_parallelism(n_rows, n_cols, vec, expected):
+    assert fwd_warp_count(n_cols, vec, n_rows, sm90=True) == expected
+
+
+def test_forward_warp_count_preserves_width_policy_off_hopper():
+    assert fwd_warp_count(2048, 8, 8192, sm90=False) == 4
+    assert fwd_warp_count(4096, 8, 8192, sm90=False) == 8

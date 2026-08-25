@@ -70,6 +70,7 @@ from liger_kernel.ops.llama4_rope import LigerLlama4RopeFunction  # noqa: F401
 from liger_kernel.ops.mhc import LigerMHCCoeffsFunction  # noqa: F401
 from liger_kernel.ops.mhc import LigerMHCPostResFunction  # noqa: F401
 from liger_kernel.ops.mhc import LigerMHCPreFunction  # noqa: F401
+from liger_kernel.ops.mlp import LigerMLPFunction  # noqa: F401
 from liger_kernel.ops.modulated_rms_norm import LigerModulatedRMSNormFunction  # noqa: F401
 from liger_kernel.ops.modulated_rms_norm import modulated_rms_norm_backward  # noqa: F401
 from liger_kernel.ops.modulated_rms_norm import modulated_rms_norm_forward  # noqa: F401

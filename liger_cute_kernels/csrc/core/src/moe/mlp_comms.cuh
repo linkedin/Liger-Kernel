@@ -218,22 +218,25 @@ struct CommSmem {
 	// mlp_global_barrier requires every CTA to make the same enter/skip
 	// decision, so per-CTA per_cta_tiles can't be the gate.
 	int global_total;
-	int runtime_nsplit;
+	int runtime_nsplit;        // N-split CTAs per GEMM M-row
 	int runtime_n_gemm;
 	int runtime_grid_x;
 
 	// Pre-fetched remote expert offsets, assigned to dynamic smem at runtime.
 	// Layout: [num_pes][experts_per_pe + 1]
 	int* remote_offsets;
+	// Exact routed-row counts matching remote_offsets.
+	// Layout: [num_pes][experts_per_pe]
+	int* remote_counts;
 };
 
 __device__ __forceinline__ int select_runtime_nsplit_from_tiles(
 		int total_tiles, int num_n_tiles_1, int num_n_tiles_2,
 		int num_k_tiles_1, int num_k_tiles_2,
-		int num_blocks, int static_nsplit) {
-	if (total_tiles <= 0) return 2;
-	constexpr int candidates[5] = {2, 4, 6, 8, 16};
-	int best_ns = static_nsplit;
+		int num_blocks, int static_nsplit, int m_subtiles = 1) {
+	if (total_tiles <= 0) return 2 * m_subtiles;
+	constexpr int base_candidates[5] = {2, 4, 6, 8, 16};
+	int best_base_ns = static_nsplit;
 	long long best_cost = -1;
 	long long best_waste = -1;
 	int best_n_gemm = -1;
@@ -241,23 +244,23 @@ __device__ __forceinline__ int select_runtime_nsplit_from_tiles(
 	long long phase2_weight = (long long)num_k_tiles_2;
 	#pragma unroll
 	for (int i = 0; i < 5; ++i) {
-		int ns = candidates[i];
-		if (ns > num_blocks) continue;
-		int n_gemm = (num_blocks / ns) * ns;
-		int ms = n_gemm / ns;
+		int base_ns = base_candidates[i];
+		if (base_ns * m_subtiles > num_blocks) continue;
+		int n_gemm = (num_blocks / base_ns) * base_ns;
+		int ms = n_gemm / base_ns;
 		if (ms <= 0) continue;
 		int m_waves = (total_tiles + ms - 1) / ms;
-		int n1_waves = (num_n_tiles_1 + ns - 1) / ns;
-		int n2_waves = (num_n_tiles_2 + ns - 1) / ns;
+		int n1_waves = (num_n_tiles_1 + base_ns - 1) / base_ns;
+		int n2_waves = (num_n_tiles_2 + base_ns - 1) / base_ns;
 
 		long long phase_cost = phase1_weight * n1_waves
 		                     + phase2_weight * n2_waves;
 		long long cost = (long long)m_waves * phase_cost;
 		long long phase1_waste =
-			(long long)m_waves * ms * n1_waves * ns
+			(long long)m_waves * ms * n1_waves * base_ns
 			- (long long)total_tiles * num_n_tiles_1;
 		long long phase2_waste =
-			(long long)m_waves * ms * n2_waves * ns
+			(long long)m_waves * ms * n2_waves * base_ns
 			- (long long)total_tiles * num_n_tiles_2;
 		long long waste = phase1_weight * phase1_waste
 		                + phase2_weight * phase2_waste;
@@ -268,10 +271,10 @@ __device__ __forceinline__ int select_runtime_nsplit_from_tiles(
 			best_cost = cost;
 			best_waste = waste;
 			best_n_gemm = n_gemm;
-			best_ns = ns;
+			best_base_ns = base_ns;
 		}
 	}
-	return best_ns;
+	return best_base_ns * m_subtiles;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -325,6 +328,7 @@ struct CommBuffers {
 	int* dst_consumed;              // nvshmem → consumer: put completed, slot free
 
 	const int* expert_offsets;      // [E + 1] local (from radix sort, TileM-aligned, symmetric)
+	const int* expert_counts;       // [E] exact routed rows per expert
 	const int* sorted_token_ids;    // [total_slots] local sorted token IDs
 
 	void* local_tokens;            // [T, hidden_dim] local input (symmetric)
@@ -337,6 +341,8 @@ struct CommBuffers {
 	// All PEs' expert offsets, gathered into local symmetric memory.
 	// Layout: [num_pes][num_experts + 1] — symmetric.
 	int* all_expert_offsets;
+	// All PEs' exact expert counts. Layout: [num_pes][num_experts].
+	int* all_expert_counts;
 
 	// Cross-PE synchronization for offset broadcast/consume.
 	PeSync pe_sync;
@@ -366,6 +372,9 @@ struct TileInfo {
 	int pe;              // remote PE
 	int token_offset;    // offset into remote PE's token buffer (in tokens)
 	int expert;          // local expert index (for weight selection)
+	int valid_rows;      // valid prefix rows in this communication tile
+	int m_subtile;       // GemmTileM row within this communication tile
+	int parent_tile;     // flat communication-tile index
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -381,6 +390,8 @@ struct TileIterator {
 
 	const int* remote_offsets;  // smem: [num_pes][experts_per_pe + 1]
 	int offsets_stride;         // experts_per_pe + 1
+	const int* remote_counts;   // smem: [num_pes][experts_per_pe] (nullable)
+	int counts_stride;          // experts_per_pe
 	int experts_per_pe;
 	int num_pes;
 	int my_pe;
@@ -393,6 +404,7 @@ struct TileIterator {
 	int tile;           // tile within current (expert, pe) pair
 	int remote_tiles;   // total tiles for current (expert, pe) pair
 	int remote_start;   // start offset for current (expert, pe)
+	int remote_count;   // exact valid rows for current (expert, pe)
 
 	int total_tiles;    // this iterator's tile count
 
@@ -443,6 +455,9 @@ struct TileIterator {
 					tile = skip;
 					remote_start = rs;
 					remote_tiles = ntiles;
+					remote_count = remote_counts != nullptr
+						? remote_counts[pe * counts_stride + e]
+						: ntiles * TileM;
 					return;
 				}
 				skip -= ntiles;
@@ -462,6 +477,9 @@ struct TileIterator {
 		info.pe = pe;
 		info.token_offset = remote_start + tile * TileM;
 		info.expert = le;
+		info.valid_rows = max(0, min(TileM, remote_count - tile * TileM));
+		info.m_subtile = 0;
+		info.parent_tile = -1;
 
 		// Advance by stride in the flat tile space.
 		// Carry the remainder across (expert, pe) boundaries.
@@ -478,6 +496,140 @@ struct TileIterator {
 			remote_start = remote_offsets[next_pe * offsets_stride + le];
 			int remote_end = remote_offsets[next_pe * offsets_stride + le + 1];
 			remote_tiles = (remote_end - remote_start) / TileM;
+			remote_count = remote_counts != nullptr
+				? remote_counts[next_pe * counts_stride + le]
+				: remote_tiles * TileM;
+			tile = remaining;
+		}
+		return info;
+	}
+};
+
+template <int TileM_, int MSubTiles_>
+struct GemmTileIterator {
+	static constexpr int TileM = TileM_;
+	static constexpr int MSubTiles = MSubTiles_;
+	static constexpr int GemmTileM = TileM / MSubTiles;
+
+	const int* remote_offsets;
+	int offsets_stride;
+	const int* remote_counts;
+	int counts_stride;
+	int experts_per_pe;
+	int num_pes;
+	int my_pe;
+	int stride;
+
+	int le;
+	int pe_idx;
+	int tile;
+	int remote_tiles;
+	int remote_parent_tiles;
+	int remote_start;
+	int remote_count;
+	int parent_prefix;
+	int total_tiles;
+
+	__device__ void init(int start, int str) {
+		stride = str;
+		le = 0;
+		pe_idx = 0;
+		total_tiles = 0;
+
+		int lane = threadIdx.x & 31;
+		int local_total = 0;
+		int n_experts = experts_per_pe * num_pes;
+		for (int idx = lane; idx < n_experts; idx += 32) {
+			int e = idx / num_pes;
+			int p = idx - e * num_pes;
+			int pe = liger::g_dest_table[
+				(liger::comm_slot_of(my_pe) + p) % num_pes];
+			int count = remote_counts[pe * counts_stride + e];
+			local_total += (count + GemmTileM - 1) / GemmTileM;
+		}
+		#pragma unroll
+		for (int delta = 16; delta > 0; delta >>= 1)
+			local_total += __shfl_down_sync(0xffffffff, local_total, delta);
+		int global_total = __shfl_sync(0xffffffff, local_total, 0);
+		if (start < global_total)
+			total_tiles = (global_total - 1 - start) / stride + 1;
+
+		int skip = start;
+		parent_prefix = 0;
+		for (int e = 0; e < experts_per_pe; ++e) {
+			for (int p = 0; p < num_pes; ++p) {
+				int pe = liger::g_dest_table[
+					(liger::comm_slot_of(my_pe) + p) % num_pes];
+				int rs = remote_offsets[pe * offsets_stride + e];
+				int re = remote_offsets[pe * offsets_stride + e + 1];
+				int count = remote_counts[pe * counts_stride + e];
+				int ntiles = (count + GemmTileM - 1) / GemmTileM;
+				int nparents = (re - rs) / TileM;
+				if (skip < ntiles) {
+					le = e;
+					pe_idx = p;
+					tile = skip;
+					remote_tiles = ntiles;
+					remote_parent_tiles = nparents;
+					remote_start = rs;
+					remote_count = count;
+					return;
+				}
+				skip -= ntiles;
+				parent_prefix += nparents;
+			}
+		}
+		le = experts_per_pe;
+	}
+
+	__device__ bool has_next() const {
+		return le < experts_per_pe;
+	}
+
+	__device__ int current_parent_tile() const {
+		return parent_prefix + tile / MSubTiles;
+	}
+
+	__device__ int current_m_subtile() const {
+		return tile % MSubTiles;
+	}
+
+	__device__ TileInfo next() {
+		int pe = liger::g_dest_table[
+			(liger::comm_slot_of(my_pe) + pe_idx) % num_pes];
+		int parent_in_expert = tile / MSubTiles;
+		TileInfo info;
+		info.pe = pe;
+		info.token_offset = remote_start + parent_in_expert * TileM;
+		info.expert = le;
+		info.valid_rows = max(
+			0, min(TileM, remote_count - parent_in_expert * TileM));
+		info.m_subtile = tile % MSubTiles;
+		info.parent_tile = parent_prefix + parent_in_expert;
+
+		tile += stride;
+		while (tile >= remote_tiles && le < experts_per_pe) {
+			int remaining = tile - remote_tiles;
+			parent_prefix += remote_parent_tiles;
+			pe_idx++;
+			if (pe_idx >= num_pes) {
+				pe_idx = 0;
+				le++;
+			}
+			if (le >= experts_per_pe)
+				break;
+			int next_pe = liger::g_dest_table[
+				(liger::comm_slot_of(my_pe) + pe_idx) % num_pes];
+			remote_start =
+				remote_offsets[next_pe * offsets_stride + le];
+			int remote_end =
+				remote_offsets[next_pe * offsets_stride + le + 1];
+			remote_count =
+				remote_counts[next_pe * counts_stride + le];
+			remote_tiles =
+				(remote_count + GemmTileM - 1) / GemmTileM;
+			remote_parent_tiles =
+				(remote_end - remote_start) / TileM;
 			tile = remaining;
 		}
 		return info;
@@ -623,9 +775,9 @@ struct GetBounce {
 	static constexpr int kTotalBytes    = kPerWarpStride * kNumGetWarpsFwd;
 };
 
-template <typename Element, int TileM, int K, int NC>
+template <typename Element, int TileM, int K, int NC, int MSubTiles>
 __device__ __forceinline__ void do_get(
-		StagePipe<K, kNumGetWarpsFwd * NC, 1>& src_pipe,
+		StagePipe<K, kNumGetWarpsFwd * (NC / MSubTiles), 1>& src_pipe,
 		const CommBuffers& bufs,
 		const TileInfo& info,
 		Element* src_staging,  // base of flat staging buffer
@@ -633,6 +785,9 @@ __device__ __forceinline__ void do_get(
 		int xc,                // start slot in flat list
 		int MC,                // stride between consecutive comm stages
 		int chunk_idx,         // 0..kNumGetWarpsPerCta * NC - 1
+		int m_subtile,
+		int row_chunk_idx,
+		bool row_empty,
 		int& ib_seq,           // IB-tile counter (round-robin turn; advanced here)
 		int lane,
 		const GetTmaDescs* descs,  // per-peer src + local dst TMA descriptors (nullptr → getmem)
@@ -648,6 +803,10 @@ __device__ __forceinline__ void do_get(
 	// all dispatch writes on all PEs are complete.
 
 	int slot = xc + src_pipe.producer_stage() * MC;
+	if (row_empty) {
+		src_pipe.producer_release(lane);
+		return;
+	}
 
 	// Locality of this tile's source PE (same-host NVLink vs cross-host IB).
 	// Pure arithmetic; gates the TMA get path below. The MLP's release_dst
@@ -734,10 +893,18 @@ __device__ __forceinline__ void do_get(
 	int global_pe = nvshmem_team_translate_pe(bufs.team(), info.pe, NVSHMEM_TEAM_WORLD);
 	bool is_ib = descs != nullptr && !is_local;
 	if (is_ib) {
-		int turn = ib_seq % kWarpsPerTile;
-		if (chunk_idx == turn) {
-			nvshmemx_getmem_warp(local_base, remote_base,
-				(size_t)src_tile_elems * sizeof(Element), global_pe);
+		constexpr int kRowNC = NC / MSubTiles;
+		constexpr int kRowsPerSubtile = TileM / MSubTiles;
+		int turn = ib_seq % kRowNC;
+		if (row_chunk_idx == turn) {
+			int row_start = m_subtile * kRowsPerSubtile;
+			int valid_rows = max(
+				0, min(kRowsPerSubtile, info.valid_rows - row_start));
+			int row_offset = row_start * bufs.hidden_dim;
+			nvshmemx_getmem_warp(
+				local_base + row_offset, remote_base + row_offset,
+				(size_t)valid_rows * bufs.hidden_dim * sizeof(Element),
+				global_pe);
 		}
 		ib_seq++;
 	} else {
@@ -750,9 +917,9 @@ __device__ __forceinline__ void do_get(
 	src_pipe.producer_release(lane);
 }
 
-template <typename Element, int TileM, int K, int NC>
+template <typename Element, int TileM, int K, int NC, int MSubTiles>
 __device__ __forceinline__ void do_put(
-		StagePipe<K, 1, kNumPutWarpsFwd * NC>& dst_pipe,
+		StagePipe<K, 1, kNumPutWarpsFwd * (NC / MSubTiles)>& dst_pipe,
 		const CommBuffers& bufs,
 		const TileInfo& info,
 		Element* dst_staging,
@@ -760,6 +927,9 @@ __device__ __forceinline__ void do_put(
 		int xc,                // start slot in flat list
 		int MC,                // stride between consecutive comm stages
 		int yc,                // 0..NC-1 — CTA's chunk index within the tile
+		int m_subtile,
+		int row_chunk_idx,
+		bool row_empty,
 		int& ib_seq,           // IB-tile counter (round-robin turn; advanced here)
 		int lane,
 		int put_local_idx,     // 0..kNumPutWarpsFwd-1 — put warp within the CTA
@@ -773,6 +943,10 @@ __device__ __forceinline__ void do_put(
 	int my_bytes = chunk * sizeof(Element);
 
 	dst_pipe.consumer_acquire();
+	if (row_empty) {
+		dst_pipe.consumer_release(lane);
+		return;
+	}
 
 	// Direct-store: for same-host (NVLink) tiles the GEMM has already TMA-stored
 	// Y straight into the peer's symmetric local_output, so this put warp must
@@ -790,11 +964,20 @@ __device__ __forceinline__ void do_put(
 		int global_pe = nvshmem_team_translate_pe(bufs.team(), info.pe, NVSHMEM_TEAM_WORLD);
 		bool is_ib = descs != nullptr;
 		if (is_ib) {
-			int turn = ib_seq % kWarpsPerTile;
-			int warp_idx = yc * kNumPutWarpsFwd + put_local_idx;
-			if (warp_idx == turn) {
-				nvshmemx_putmem_warp(remote_base, local_base,
-					(size_t)dst_tile_elems * sizeof(Element), global_pe);
+			constexpr int kRowNC = NC / MSubTiles;
+			constexpr int kRowsPerSubtile = TileM / MSubTiles;
+			int turn = ib_seq % (kNumPutWarpsFwd * kRowNC);
+			int row_warp_idx =
+				row_chunk_idx * kNumPutWarpsFwd + put_local_idx;
+			if (row_warp_idx == turn) {
+				int row_start = m_subtile * kRowsPerSubtile;
+				int valid_rows = max(
+					0, min(kRowsPerSubtile, info.valid_rows - row_start));
+				int row_offset = row_start * bufs.hidden_dim;
+				nvshmemx_putmem_warp(
+					remote_base + row_offset, local_base + row_offset,
+					(size_t)valid_rows * bufs.hidden_dim * sizeof(Element),
+					global_pe);
 			}
 			ib_seq++;
 		} else {
@@ -852,6 +1035,10 @@ __device__ __forceinline__ void broadcast_expert_offsets(
 		int* local_dst = bufs.all_expert_offsets + my_pe * offsets_stride;
 		for (int i = 0; i <= num_experts; ++i)
 			local_dst[i] = my_offsets[i];
+		int* local_counts_dst =
+			bufs.all_expert_counts + my_pe * num_experts;
+		for (int i = 0; i < num_experts; ++i)
+			local_counts_dst[i] = bufs.expert_counts[i];
 	}
 
 	// CTA i puts offsets to PE i (if valid remote PE).
@@ -865,6 +1052,12 @@ __device__ __forceinline__ void broadcast_expert_offsets(
 	nvshmemx_int_put_nbi_block(
 		remote_dst, my_offsets,
 		offsets_stride,
+		global_target);
+	int* remote_counts_dst =
+		bufs.all_expert_counts + my_pe * num_experts;
+	nvshmemx_int_put_nbi_block(
+		remote_counts_dst, bufs.expert_counts,
+		num_experts,
 		global_target);
 }
 
@@ -926,6 +1119,10 @@ __device__ __forceinline__ void nvshmem_comm_prologue(
 			for (int i = tid; i <= experts_per_pe; i += (kCommWarpsPerCta * 32))
 				smem.remote_offsets[pe * dst_stride + i] =
 					bufs.all_expert_offsets[pe * src_stride + local_e_start + i];
+			for (int i = tid; i < experts_per_pe; i += (kCommWarpsPerCta * 32))
+				smem.remote_counts[pe * experts_per_pe + i] =
+					bufs.all_expert_counts[
+						pe * bufs.num_experts + local_e_start + i];
 		}
 	}
 	__syncwarp();
@@ -952,6 +1149,8 @@ __device__ __forceinline__ void nvshmem_comm_prologue(
 	TileIterator<TileM> iter;
 	iter.remote_offsets = smem.remote_offsets;
 	iter.offsets_stride = dst_stride;
+	iter.remote_counts = smem.remote_counts;
+	iter.counts_stride = experts_per_pe;
 	iter.experts_per_pe = experts_per_pe;
 	iter.num_pes = num_pes;
 	iter.my_pe = my_pe;
@@ -1011,7 +1210,7 @@ __device__ __forceinline__ void nvshmem_comm_prologue(
 // getter blocks in producer_acquire once its NumStages-slot subset is
 // pending MLP consumption, and the putter blocks in consumer_acquire
 // until MLP releases a dst slot.
-template <typename Element, int TileM, int NumStages, int NC>
+template <typename Element, int TileM, int NumStages, int NC, int MSubTiles = 1>
 __device__ __forceinline__ void nvshmem_comm_main(
 		CommSmem& smem,
 		const CommBuffers& bufs,
@@ -1039,6 +1238,11 @@ __device__ __forceinline__ void nvshmem_comm_main(
 	int xc = cta_id / NC;
 	int yc = cta_id % NC;
 	int MC = n_comm / NC;
+	static_assert(NC % MSubTiles == 0,
+		"communication CTAs must divide evenly across GEMM M-subtiles");
+	constexpr int kRowNC = NC / MSubTiles;
+	int m_subtile = yc / kRowNC;
+	int row_yc = yc % kRowNC;
 	if (cta_id >= n_comm) return;
 
 	// Per-warp leader: each comm warp must independently spin in
@@ -1055,6 +1259,8 @@ __device__ __forceinline__ void nvshmem_comm_main(
 	TileIterator<TileM> iter;
 	iter.remote_offsets = smem.remote_offsets;
 	iter.offsets_stride = bufs.experts_per_pe + 1;
+	iter.remote_counts = smem.remote_counts;
+	iter.counts_stride = bufs.experts_per_pe;
 	iter.experts_per_pe = bufs.experts_per_pe;
 	iter.num_pes = bufs.num_pes();
 	iter.my_pe = bufs.my_pe();
@@ -1075,16 +1281,29 @@ __device__ __forceinline__ void nvshmem_comm_main(
 		// NumProducers = N_SPLIT (GEMM CTAs produce Y), NumConsumers =
 		// kNumPutWarpsFwd·NC.
 		const int put_local_idx = 0;
-		StagePipe<K, 1, kNumPutWarpsFwd * NC> dst_pipe;
-		dst_pipe.init(bufs.dst_ready + xc, bufs.dst_consumed + xc, is_leader, MC,
-			runtime_nsplit, kNumPutWarpsFwd * NC);
+		StagePipe<K, 1, kNumPutWarpsFwd * kRowNC> dst_pipe;
+		dst_pipe.init(
+			bufs.dst_ready + xc * MSubTiles + m_subtile,
+			bufs.dst_consumed + xc * MSubTiles + m_subtile,
+			is_leader, MC * MSubTiles,
+			runtime_nsplit, kNumPutWarpsFwd * kRowNC);
 
 		int ib_seq = 0;  // advances only on IB tiles (inside do_put)
 		for (int i = 0; i < my_total; ++i) {
 			TileInfo info = iter.next();
-			do_put<Element, TileM, K, NC>(
+			constexpr int kRowsPerSubtile = TileM / MSubTiles;
+			bool row_empty =
+				info.valid_rows <= m_subtile * kRowsPerSubtile;
+			if (row_empty && row_yc == 0 && lane == 0) {
+				int s = dst_pipe.consumer_stage();
+				atomicAdd(
+					&dst_pipe.ready[s * dst_pipe.stride],
+					runtime_nsplit);
+			}
+			do_put<Element, TileM, K, NC, MSubTiles>(
 				dst_pipe, bufs, info,
-				dst_staging_base, tile_elems, xc, MC, yc, ib_seq, lane,
+				dst_staging_base, tile_elems, xc, MC, yc,
+				m_subtile, row_yc, row_empty, ib_seq, lane,
 				put_local_idx, get_descs);
 		}
 	} else if (warp_id == kCommGetWarp) {  // single TMA get warp
@@ -1092,18 +1311,31 @@ __device__ __forceinline__ void nvshmem_comm_main(
 
 		// NumProducers = kNumGetWarpsFwd·NC (= NC: one get warp × NC CTAs),
 		// NumConsumers = N_SPLIT (all GEMM CTAs consume cooperatively).
-		StagePipe<K, kNumGetWarpsFwd * NC, 1> src_pipe;
-		src_pipe.init(bufs.src_ready + xc, bufs.src_consumed + xc, is_leader, MC,
-			kNumGetWarpsFwd * NC, runtime_nsplit);
+		StagePipe<K, kNumGetWarpsFwd * kRowNC, 1> src_pipe;
+		src_pipe.init(
+			bufs.src_ready + xc * MSubTiles + m_subtile,
+			bufs.src_consumed + xc * MSubTiles + m_subtile,
+			is_leader, MC * MSubTiles,
+			kNumGetWarpsFwd * kRowNC, runtime_nsplit);
 		char* bounce_warp = get_bounce;  // single warp → slice 0
 
 		int ib_seq = 0;  // advances only on IB tiles (inside do_get)
 		for (int i = 0; i < my_total; ++i) {
 			TileInfo info = iter.next();
-			do_get<Element, TileM, K, NC>(
+			constexpr int kRowsPerSubtile = TileM / MSubTiles;
+			bool row_empty =
+				info.valid_rows <= m_subtile * kRowsPerSubtile;
+			int s = src_pipe.producer_stage();
+			do_get<Element, TileM, K, NC, MSubTiles>(
 				src_pipe, bufs, info,
-				src_staging_base, tile_elems, xc, MC, chunk_idx, ib_seq, lane,
+				src_staging_base, tile_elems, xc, MC, chunk_idx,
+				m_subtile, row_yc, row_empty, ib_seq, lane,
 				get_descs, bounce_warp);
+			if (row_empty && row_yc == 0 && lane == 0) {
+				atomicAdd(
+					&src_pipe.consumed[s * src_pipe.stride],
+					runtime_nsplit);
+			}
 		}
 	}
 }

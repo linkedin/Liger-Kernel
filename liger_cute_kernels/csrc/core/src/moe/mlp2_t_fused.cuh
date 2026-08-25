@@ -130,7 +130,8 @@ __device__ __forceinline__ auto mlp2_t_make_pipe_umma(
 // with N along intermediate_dim and K along E·hidden_dim.
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits, bool Expert3D = false, typename Pipeline,
+template <typename Traits, bool Expert3D = false, bool ThrottleTma = false,
+          typename Pipeline,
           typename TmaLoadZ, typename TmaLoadW>
 __device__ __forceinline__ void mlp2_t_fused_producer(
 		Pipeline& pipe,
@@ -202,6 +203,17 @@ __device__ __forceinline__ void mlp2_t_fused_producer(
 		auto tAgA = cta_tma_a.partition_S(gA);
 
 		for (int k = 0; k < num_k_tiles; ++k) {
+			if constexpr (ThrottleTma) {
+				if (state.count() >= 1) {
+					using FullBarrier = typename Pipeline::FullBarrier;
+					auto completed =
+						cutlass::make_producer_start_state<Pipeline>();
+					completed.advance(state.count() - 1);
+					FullBarrier::wait(
+						pipe.producer_get_barrier(completed),
+						completed.phase() ^ 1);
+				}
+			}
 			pipe.producer_acquire(state);
 			if (threadIdx.x == 0) {
 				auto* bar = pipe.producer_get_barrier(state);
@@ -214,6 +226,10 @@ __device__ __forceinline__ void mlp2_t_fused_producer(
 					copy(tma_load_a.with(*bar, 0),
 						tAgA(_, _, _, expert_or_k_offset + k),
 						tWsW(_, _, _, state.index()));
+				}
+				if constexpr (ThrottleTma) {
+					using FullBarrier = typename Pipeline::FullBarrier;
+					FullBarrier::wait(bar, state.phase() ^ 1);
 				}
 			}
 			++state;
@@ -580,6 +596,7 @@ static __device__ __forceinline__ void run(
 
 				// TMEM → registers (this chunk, full TileM rows).
 				copy(t2r, tTR_tAcc_stage(_, _, _, _0{}, chunk), tTR_rAcc);
+				cutlass::arch::fence_view_async_tmem_load();
 
 				// Store as MSub × (AtomTileM=64)-row TMA tiles (1 for TileM=64, 2 for 128).
 				CUTE_UNROLL
