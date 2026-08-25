@@ -103,8 +103,8 @@ template <
     int NC_             = 4,
     // GemmTileM_ decouples the GEMM compute tile (mlp1/mlp2 wgmma + TMA) from
     // the COMM staging tile (TileM_). TileM_ is the comm tile — staging ring
-    // slots, per-tile semaphores, NC, sort/dispatch — and is fixed at 128.
-    // GemmTileM_ ∈ {64,128}: when < TileM_, the GEMM waits on the 128-wide comm
+    // slots, per-tile semaphores, NC, sort/dispatch — and may be wider than the
+    // GEMM tile. GemmTileM_ ∈ {64,128}: when < TileM_, the GEMM waits on one comm
     // semaphore once, then steps through kSubTiles = TileM_/GemmTileM_ sub-tiles
     // of GemmTileM_ rows each (finer TMA + wgmma) within that one comm slot.
     // Default GemmTileM_ = TileM_ → kSubTiles = 1 → bit-identical to the old
@@ -140,24 +140,27 @@ struct MoeFusedConfig {
     static constexpr int kZBufferSlots  = ZBufferSlots_;
     static constexpr int kCommNumStages = CommNumStages_;
     // kTileM is the COMM tile (staging ring slots, per-tile semaphores, NC,
-    // sort/dispatch granularity). Fixed at 128 for the decoupled path.
-    static constexpr int kTileM         = TileM_;          // comm tile (128)
+    // sort/dispatch granularity).
+    static constexpr int kTileM         = TileM_;
     static constexpr int kGemmTileM     = GemmTileM_;      // gemm tile ∈ {64,128}
-    static constexpr int kSubTiles      = TileM_ / GemmTileM_;  // 1 or 2
+    static constexpr int kSubTiles      = TileM_ / GemmTileM_;
     static constexpr int kCompute       = Compute_;
     static constexpr int kNumThreads    = 384;             // fixed
 
     static_assert(TileM_ % GemmTileM_ == 0,
         "CommTileM must be an integer multiple of GemmTileM");
+    static_assert(TileM_ % NC_ == 0,
+        "CommTileM must be divisible by NC");
     static_assert(kSubTiles == 1 || kSubTiles == 2,
-        "kSubTiles (CommTileM/GemmTileM) must be 1 or 2");
+        "CommTileM/GemmTileM must be 1 or 2");
     static_assert(GemmTileM_ == 64 || GemmTileM_ == 128,
         "GemmTileM must be 64 or 128");
 
-    // Iterators operate on the COMM tile (kTileM): staging slots / semaphores
-    // are 128-wide regardless of the GEMM sub-tile size.
+    // Iterators operate on the COMM tile (kTileM), independent of the GEMM
+    // sub-tile size.
     using LocalIter  = LocalMlpTileIterator<Element, kTileM>;
-    using RemoteIter = RemoteMlpTileIterator<Element, kCommNumStages, kNC, kTileM>;
+    using RemoteIter = RemoteMlpTileIterator<
+        Element, kCommNumStages, kNC, kTileM, kSubTiles>;
 };
 
 // ============================================================================
@@ -225,6 +228,7 @@ struct MoeBuffers {
 
 	// All PEs' expert offsets -- symmetric.
 	int* all_expert_offsets;
+	int* all_expert_counts;
 	int* cta_counter;             // [1] device memory — shared monotonic
 
 	// Sort buffers.
@@ -232,6 +236,7 @@ struct MoeBuffers {
 	int* sorted_token_ids;
 	int* token_expert_slots;
 	int* expert_offsets;       // symmetric
+	int* expert_counts;        // symmetric exact counts
 	int* cta_done;
 	int* cta_sums;
 
@@ -255,7 +260,7 @@ void moe_configure_symmetric(
 		int num_pes,
 		int num_hosts,
 		int gpus_per_host) {
-	static constexpr int kTileM = 128;  // fixed by WGMMA
+	static constexpr int kTileM = kMaxMoeCommTileM;
 
 	// num_hosts × gpus_per_host must equal the team size so the comm
 	// schedule (g_dest_table / g_rank_table) addresses exactly the PEs
@@ -279,7 +284,7 @@ void moe_configure_symmetric(
 	cfg.max_top_k = max_top_k;
 	cfg.initialized = true;
 
-	// Preset sizes for the symmetric stack used to hold X / Y / offsets
+	// Preset sizes for the symmetric stack used to hold X / Y / routing metadata
 	// across fwd → bwd. Element type is bf16 (= 2 bytes); kept in sync
 	// with allocate_moe_buffers below.
 	constexpr std::size_t kElemBytes = 2;  // sizeof(__nv_bfloat16)
@@ -287,15 +292,18 @@ void moe_configure_symmetric(
 		static_cast<std::size_t>(cfg.max_total_slots) * cfg.hidden_dim * kElemBytes;
 	std::size_t all_off_bytes =
 		static_cast<std::size_t>(cfg.num_pes) * (cfg.max_num_experts + 1) * sizeof(int);
+	std::size_t all_count_bytes =
+		static_cast<std::size_t>(cfg.num_pes) * cfg.max_num_experts * sizeof(int);
 
 	auto& stack = global_symmetric_stack();
 	stack.set_size(kSymmKeyXSorted,          symm_slot_bytes);
 	stack.set_size(kSymmKeyYBuf,             symm_slot_bytes);
 	stack.set_size(kSymmKeyAllExpertOffsets, all_off_bytes);
+	stack.set_size(kSymmKeyAllExpertCounts,  all_count_bytes);
 }
 
-// Releases the x_sorted / y_buf / all_expert_offsets entries pushed onto the
-// symmetric stack by the most recent fwd call. Must be called collectively
+// Releases the forward metadata entries pushed onto the symmetric stack by the
+// most recent fwd call. Must be called collectively
 // on every PE in LIFO order vs. the fwd that produced them. After this,
 // the buffers can be reused by a subsequent fwd. The torch::Tensor views
 // returned by fwd remain valid pointers but will alias whatever lives in
@@ -303,7 +311,9 @@ void moe_configure_symmetric(
 void moe_pop_fwd() {
 	auto& stack = global_symmetric_stack();
 	// LIFO order: bottom pushes first. Reverse the put order in
-	// allocate_moe_buffers (x_sorted, y_buf, all_expert_offsets).
+	// allocate_moe_buffers (x_sorted, y_buf, all_expert_offsets,
+	// all_expert_counts).
+	stack.pop(kSymmKeyAllExpertCounts);
 	stack.pop(kSymmKeyAllExpertOffsets);
 	stack.pop(kSymmKeyYBuf);
 	stack.pop(kSymmKeyXSorted);
@@ -333,8 +343,6 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	using Element = typename Config::Element;
 	static constexpr int kTileM         = Config::kTileM;
 	static constexpr int kZBufferSlots  = Config::kZBufferSlots;
-	static constexpr int kCommNumStages = Config::kCommNumStages;
-	static constexpr int kNC            = Config::kNC;
 
 	// Staging is a flat ring of L = MC · kCommNumStages slots, where
 	// MC = num_blocks / NC (num_blocks == launched gridDim.x). This MUST equal
@@ -348,8 +356,6 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	// end of src_ready / tile_expert_ids (OOB). num_blocks/NC == gridDim.x/NC
 	// == n_gemm/NC in the divisible (legacy) case, so this is a no-op there.
 	// Comm strides MC through NumStages per xc; MLP (ticket iterator) wraps mod L.
-	int mc = num_blocks / kNC;
-	int comm_l = mc * kCommNumStages;
 	// Raw SM count — used as the device-independent upper bound on the comm
 	// staging row count (mc <= sm_count) so the symmetric staging size is a
 	// worst-case bound across configs (see staging sizing below).
@@ -367,8 +373,8 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	auto& scfg = get_symm_config();
 	LIGER_CHECK(scfg.initialized, "Call moe_configure_symmetric before moe_fused_fwd_bf16");
 
-	// Persistent symmetric tensors (x_sorted, y_buf, all_expert_offsets) live
-	// in the symmetric stack so they can survive across fwd calls into bwd.
+	// Persistent symmetric tensors and routing metadata live in the symmetric
+	// stack so they can survive across fwd calls into bwd.
 	auto& sym_stack = global_symmetric_stack();
 
 	// Z buffer (device).
@@ -387,9 +393,6 @@ static MoeBuffers<Config> allocate_moe_buffers(
 
 	// Output Y -- symmetric, local MLP writes here, remote PEs put here.
 	b.y_buf = reinterpret_cast<Element*>(sym_stack.put(kSymmKeyYBuf));
-	size_t actual_y_bytes = static_cast<size_t>(total_slots) * hidden_dim * sizeof(Element);
-	if (cudaError_t e = cudaMemsetAsync(b.y_buf, 0, actual_y_bytes, stream); e != cudaSuccess)
-		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(y_buf) failed: ", cudaGetErrorString(e));
 
 	// Phase counters.
 	size_t counter_bytes = max_runtime_grid_x * sizeof(int);
@@ -418,8 +421,13 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	b.src_staging = reinterpret_cast<Element*>(pool.get_symmetric("moe_src_staging", src_bytes));
 	b.dst_staging = reinterpret_cast<Element*>(pool.get_symmetric("moe_dst_staging", dst_bytes));
 
-	// Stage pipe signals — one entry per flat slot.
-	size_t sig_bytes = (size_t)comm_l * sizeof(int);
+	// Device buffers are cached by key across tuning/config changes, so size and
+	// clear them at a configuration-independent upper bound. Since
+	// kSubTiles <= NC, (num_blocks / NC) * stages * kSubTiles is bounded by
+	// sm_count * max_comm_stages.
+	size_t signal_l_ub =
+		static_cast<size_t>(sm_count) * scfg.max_comm_stages;
+	size_t sig_bytes = signal_l_ub * sizeof(int);
 	b.src_ready    = static_cast<int*>(pool.get_device("moe_src_ready",    sig_bytes));
 	b.src_consumed = static_cast<int*>(pool.get_device("moe_src_consumed", sig_bytes));
 	b.dst_ready    = static_cast<int*>(pool.get_device("moe_dst_ready",    sig_bytes));
@@ -433,12 +441,13 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	if (cudaError_t e = cudaMemsetAsync(b.dst_consumed, 0, sig_bytes, stream); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(dst_consumed) failed: ", cudaGetErrorString(e));
 
-	// Per-slot expert IDs — one entry per flat slot.
-	size_t eid_bytes = (size_t)comm_l * sizeof(int);
+	// Per-parent-slot expert IDs use the same conservative upper bound.
+	size_t eid_bytes = signal_l_ub * sizeof(int);
 	b.tile_expert_ids = static_cast<int*>(pool.get_device("moe_tile_expert_ids", eid_bytes));
 
 	// All PEs' expert offsets (symmetric). Use max experts for stable sizing.
 	b.all_expert_offsets = static_cast<int*>(sym_stack.put(kSymmKeyAllExpertOffsets));
+	b.all_expert_counts = static_cast<int*>(sym_stack.put(kSymmKeyAllExpertCounts));
 
 	// CTA counter for local all-CTA barriers around NVSHMEM collectives.
 	b.cta_counter = static_cast<int*>(
@@ -460,6 +469,8 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	b.token_expert_slots = token_expert_slots_ptr;
 	b.expert_offsets = static_cast<int*>(
 		pool.get_symmetric("moe_sort_offsets", (scfg.max_num_experts + 1) * sizeof(int)));
+	b.expert_counts = static_cast<int*>(
+		pool.get_symmetric("moe_sort_counts", scfg.max_num_experts * sizeof(int)));
 	b.cta_done = static_cast<int*>(
 		pool.get_device("moe_sort_cta_done", num_blocks * sizeof(int)));
 	b.cta_sums = static_cast<int*>(
@@ -586,7 +597,15 @@ moe_fused_kernel(
 
 		size_t offsets_region = sizeof(MoeSmem<Traits1, Traits2, Config::kCompute>);
 		offsets_region = (offsets_region + sizeof(int) - 1) & ~(sizeof(int) - 1);
-		smem.comm.remote_offsets = reinterpret_cast<int*>(raw_smem + offsets_region);
+		size_t offsets_count =
+			(size_t)p.comm.num_pes() * (p.comm.experts_per_pe + 1);
+		if (threadIdx.x == 0) {
+			smem.comm.remote_offsets =
+				reinterpret_cast<int*>(raw_smem + offsets_region);
+			smem.comm.remote_counts =
+				smem.comm.remote_offsets + offsets_count;
+		}
+		__syncthreads();
 
 		// GET-via-TMA bounce region: placed after remote_offsets, 128-aligned
 		// (TMA dst smem must be 128B-aligned). MUST match the host smem_size
@@ -595,7 +614,9 @@ moe_fused_kernel(
 		char* get_bounce = nullptr;
 		if (get_descs.enabled) {
 			size_t boff = offsets_region
-				+ (size_t)p.comm.num_pes() * (p.comm.experts_per_pe + 1) * sizeof(int);
+				+ (offsets_count
+					+ (size_t)p.comm.num_pes() * p.comm.experts_per_pe)
+					* sizeof(int);
 			boff = (boff + 127) & ~((size_t)127);
 			get_bounce = raw_smem + boff;
 		}
@@ -624,8 +645,21 @@ moe_fused_kernel(
 
 		if (threadIdx.x == 0) {
 			int total_m_tiles = smem.comm.global_total;
+			int mlp_tiles = total_m_tiles;
+			if constexpr (Config::kSubTiles > 1) {
+				mlp_tiles = 0;
+				for (int pe = 0; pe < p.comm.num_pes(); ++pe) {
+					for (int e = 0; e < p.comm.experts_per_pe; ++e) {
+						int count = smem.comm.remote_counts[
+							pe * p.comm.experts_per_pe + e];
+						mlp_tiles +=
+							(count + Config::kGemmTileM - 1) /
+							Config::kGemmTileM;
+					}
+				}
+			}
 			runtime_nsplit = select_runtime_nsplit_from_tiles(
-				total_m_tiles,
+				mlp_tiles,
 				mlp_dims.num_n_tiles_1,
 				mlp_dims.num_n_tiles_2,
 				mlp_dims.num_k_tiles_1,
@@ -635,9 +669,10 @@ moe_fused_kernel(
 			n_gemm = ((int)gridDim.x / runtime_nsplit) * runtime_nsplit;
 			grid_x = n_gemm / runtime_nsplit;
 			col = flat_id / runtime_nsplit;
+
 			int mlp_count = 0;
-			if (flat_id < n_gemm && col < total_m_tiles)
-				mlp_count = (total_m_tiles - 1 - col) / grid_x + 1;
+			if (flat_id < n_gemm && col < mlp_tiles)
+				mlp_count = (mlp_tiles - 1 - col) / grid_x + 1;
 			smem.comm.per_cta_tiles = mlp_count;
 			smem.comm.runtime_nsplit = runtime_nsplit;
 			smem.comm.runtime_n_gemm = n_gemm;
@@ -660,7 +695,8 @@ moe_fused_kernel(
 			// on the precomputed comm tile count — no GEMM coupling, so a
 			// comm-only CTA (no local GEMM work) still drives its comm tiles.
 			if (smem.comm.total_tiles > 0) {
-				nvshmem_comm_main<Element, kTileM, kCommNumStages, kNC>(
+				nvshmem_comm_main<
+					Element, kTileM, kCommNumStages, kNC, Config::kSubTiles>(
 					smem.comm, p.comm, &get_descs, get_bounce);
 			}
 		} else if (flat_id < n_gemm) {
@@ -777,18 +813,21 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	//     pipeline (more in-flight slots = grid.x/NC).
 	//   - TileM=64:  NC=2 already matches NC=4 throughput because tiles
 	//     are half-size, so twice as many flow through the same pipeline.
-	// COMM tile is FIXED at 128 (NC=4) for EVERY config. This keeps the
+	// Both architectures use CommTileM=128 with NC=4. Keeping CommTileM uniform per
+	// architecture preserves
 	// all-to-all dispatch padding (x_sorted / expert_offsets, padded to the
-	// comm tile) uniform across PEs — required for correctness and what makes
-	// ragged-token auto-dispatch work (a per-PE comm tile would misalign the
-	// cross-PE get/put). `TileM` is now purely the GEMM-tile knob: it flows to
-	// GemmTileM (which defaults to TileM), so a "TM64" config = comm128/gemm64.
+	// comm tile) across PEs. The 256/8 ratio keeps each SM100 comm CTA's row
+	// band and GET-bounce footprint unchanged.
+	using CommGeometry = MoeCommGeometry<Compute>;
 	using Config = MoeFusedConfig<
-		Element_, /*CommTileM=*/128,
+		Element_, /*CommTileM=*/CommGeometry::TileM,
 		TileN1, TileK1, Stages1, EpiChunkN1,
 		TileN2, TileK2, Stages2, EpiChunkN2,
-		ZBufferSlots, CommNumStages,
-		/*NC=*/4, /*GemmTileM=*/GemmTileM, /*Compute_=*/Compute>;
+		ZBufferSlots,
+		CommNumStages * CommGeometry::RingStageScale
+			+ CommGeometry::RingStageExtra,
+		/*NC=*/CommGeometry::NC,
+		/*GemmTileM=*/GemmTileM, /*Compute_=*/Compute>;
 
 	using Element  = typename Config::Element;
 	using Traits1  = typename Config::Traits1;
@@ -913,6 +952,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	p.sort.sorted_token_ids   = buf.sorted_token_ids;
 	p.sort.token_expert_slots = buf.token_expert_slots;
 	p.sort.expert_offsets     = buf.expert_offsets;
+	p.sort.expert_counts      = buf.expert_counts;
 	p.sort.tile_expert_ids    = buf.mlp_tile_expert_ids;
 	p.sort.cta_done           = buf.cta_done;
 	p.sort.cta_sums           = buf.cta_sums;
@@ -928,11 +968,13 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	p.comm.dst_ready           = buf.dst_ready;
 	p.comm.dst_consumed        = buf.dst_consumed;
 	p.comm.expert_offsets      = buf.expert_offsets;
+	p.comm.expert_counts       = buf.expert_counts;
 	p.comm.sorted_token_ids    = buf.sorted_token_ids;
 	p.comm.local_tokens        = buf.x_sorted;
 	p.comm.local_output        = y_buf_ptr;
 	p.comm.tile_expert_ids     = buf.tile_expert_ids;
 	p.comm.all_expert_offsets  = buf.all_expert_offsets;
+	p.comm.all_expert_counts   = buf.all_expert_counts;
 	p.comm.pe_sync.cta_counter   = buf.cta_counter;
 	p.comm.pe_sync.num_pes       = num_pes;
 	p.comm.pe_sync.my_pe         = my_pe;
@@ -1148,8 +1190,6 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 			ok = make_get_tma_map(get_descs.dst_staging_desc, buf.src_staging,
 				hidden_dim, remote_total_rows, kGetBoxRows);
 		get_descs.enabled = ok ? 1 : 0;
-		// A/B toggle: LIGER_GET_TMA=0 forces the warp-getmem path at the same
-		// config (no bounce smem), isolating the GET mechanism on the same pod.
 		if (const char* e = std::getenv("LIGER_GET_TMA"))
 			if (e[0] == '0') get_descs.enabled = 0;
 	}
@@ -1197,6 +1237,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	size_t smem_mlp    = sizeof(MoeSmem<Traits1, Traits2, Config::kCompute>);
 	smem_mlp = (smem_mlp + sizeof(int) - 1) & ~(sizeof(int) - 1);
 	smem_mlp += num_pes * (experts_per_pe + 1) * sizeof(int);  // remote_offsets
+	smem_mlp += num_pes * experts_per_pe * sizeof(int);        // remote_counts
 
 	// GET-via-TMA bounce: append a 128-aligned region (must match the kernel's
 	// get_bounce offset). Disable the TMA-get path if it would exceed the
@@ -1265,7 +1306,9 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 		// ids for those slots (see the OOB note in allocate_moe_buffers).
 		int mc_local = num_blocks / Config::kNC;
 		int comm_l = mc_local * Config::kCommNumStages;
-		size_t sig_bytes = static_cast<size_t>(comm_l) * sizeof(int);
+		size_t sig_bytes =
+			static_cast<size_t>(comm_l) * Config::kSubTiles * sizeof(int);
+		size_t eid_bytes = static_cast<size_t>(comm_l) * sizeof(int);
 		int max_m_tiles = scfg.max_total_slots / kTileM;
 		int max_tile_counts = max_m_tiles * scfg.max_num_experts;
 
@@ -1282,7 +1325,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 		fused_memset_add(ma, buf.src_consumed,     sig_bytes, 0x00);
 		fused_memset_add(ma, buf.dst_ready,        sig_bytes, 0x00);
 		fused_memset_add(ma, buf.dst_consumed,     sig_bytes, 0x00);
-		fused_memset_add(ma, buf.tile_expert_ids,  sig_bytes, 0xff);
+		fused_memset_add(ma, buf.tile_expert_ids,  eid_bytes, 0xff);
 		fused_memset_add(ma, buf.tile_expert_counts,
 			static_cast<size_t>(max_tile_counts) * sizeof(int), 0x00);
 		fused_memset_add(ma, buf.cta_sums,
@@ -1342,6 +1385,8 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	*a.x_sorted_out            = buf.x_sorted;
 	*a.y_buf_out               = y_buf_ptr;
 	*a.all_expert_offsets_out  = buf.all_expert_offsets;
+	if (a.all_expert_counts_out != nullptr)
+		*a.all_expert_counts_out = buf.all_expert_counts;
 }
 
 // ── Runtime dispatch table for tuned-config lookup ────────────────────
@@ -1354,8 +1399,8 @@ struct DispatchEntry {
 	int TileN1, TileK1, Stages1, EpiChunkN1;
 	int TileN2, TileK2, Stages2, EpiChunkN2;
 	int ZBufferSlots, CommNumStages;
-	int TileM;      // COMM tile (staging/semaphores/NC)
-	int GemmTileM;  // GEMM tile ∈ {64,128}; == TileM for non-decoupled configs
+	int TileM;      // tuned GEMM-tile field (legacy dispatch-table name)
+	int GemmTileM;  // GEMM tile ∈ {64,128}
 	MoeFwdFn fn;
 };
 
@@ -1618,7 +1663,9 @@ void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m) {
 			"LIGER_MOE_FORCE_CONFIG=", s, " is not in the compiled dispatch "
 			"table. Add it to LIGER_MOE_TUNE_CONFIGS in moe_fwd_bwd_tune_configs.hpp.");
 		de->fn(a, kFwdRuntimeNsplitSeed);
-		*chosen_tile_m = tc.TileM;
+		*chosen_tile_m = de->Compute == 100
+			? MoeCommGeometry<100>::TileM
+			: MoeCommGeometry<90>::TileM;
 		return;
 	}
 
@@ -1643,7 +1690,9 @@ void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m) {
 		"Add it to LIGER_MOE_TUNE_CONFIGS in moe_fwd_bwd_tune_configs.hpp.");
 
 	de->fn(a, kFwdRuntimeNsplitSeed);
-	*chosen_tile_m = tc.TileM;
+	*chosen_tile_m = de->Compute == 100
+		? MoeCommGeometry<100>::TileM
+		: MoeCommGeometry<90>::TileM;
 }
 
 // ─────────────────────────────────────────────────────────────────────

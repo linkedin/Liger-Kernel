@@ -40,6 +40,7 @@ using namespace cute;
 inline constexpr const char* kSymmKeyXSorted          = "x_sorted";
 inline constexpr const char* kSymmKeyYBuf             = "y_buf";
 inline constexpr const char* kSymmKeyAllExpertOffsets = "all_expert_offsets";
+inline constexpr const char* kSymmKeyAllExpertCounts  = "all_expert_counts";
 
 // ═══════════════════════════════════════════════════════════════════
 // MoE shared memory — union of MLP smem + comm smem
@@ -62,9 +63,9 @@ template <typename Traits1, typename Traits2,
           int ZBufferSlots,
           int CommNumStages,
           int NC,
-          // kSubTiles = CommTileM / GemmTileM ∈ {1,2}. >1 means the GEMM steps
+          // kSubTiles = CommTileM / GemmTileM. >1 means the GEMM steps
           // through SubTiles sub-tiles of Traits1::TileM (=GemmTileM) rows per
-          // 128-wide comm staging slot. 1 → unchanged single-tile path.
+          // communication staging slot. 1 → unchanged single-tile path.
           int SubTiles,
           int Compute = 90,
           typename LocalIter, typename RemoteIter,
@@ -158,7 +159,8 @@ __device__ __forceinline__ void moe_fused_fwd(
 	RemoteIter remote_iter;
 	remote_iter.init(
 		// remote_offsets in SMEM drives the embedded walker (null → no derivation).
-		smem.comm.remote_offsets, experts_per_pe, num_pes, my_pe, gpus_per_node,
+		smem.comm.remote_offsets, smem.comm.remote_counts,
+		experts_per_pe, num_pes, my_pe, gpus_per_node,
 		smem.comm.per_cta_tiles,
 		col,
 		n_gemm,

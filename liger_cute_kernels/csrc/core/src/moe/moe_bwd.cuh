@@ -41,8 +41,8 @@ struct MoeBwdSmem {
 template <typename Traits1, typename Traits2T, typename Traits3,
           typename Traits4, typename Traits5,
           int CommNumStages, int NSplit2, int SubBatch,
-          // SubTiles = CommTileM / GemmTileM ∈ {1,2}. >1 → Phase-1 (mlp1a/mlp2t/
-          // silu/mlp5) steps through SubTiles GemmTileM-row sub-tiles per 128-wide
+          // SubTiles = CommTileM / GemmTileM. >1 → Phase-1 (mlp1a/mlp2t/
+          // silu/mlp5) steps through SubTiles GemmTileM-row sub-tiles per
           // comm staging slot; the mlp3/4 ratios use Traits1::TileM (= GemmTileM).
           int SubTiles,
           int Compute = 90,
@@ -107,6 +107,7 @@ __device__ __forceinline__ void moe_fused_bwd(
 		// when release_src has already let comm refill the X-pipe array.
 		const int* remote_tile_expert_ids_x,
 		const int* remote_tile_expert_ids_dy,
+		const int* remote_tile_valid_rows_x,
 		// Dims + buffers
 		const MlpBwdDims& dims,
 		const MlpBwdBufs<typename Traits1::Element>& bufs,
@@ -137,6 +138,7 @@ __device__ __forceinline__ void moe_fused_bwd(
 	// (mirrors RemoteMlpTileIterator's init in moe.cuh).
 	iter.init_remote(
 		remote_tile_expert_ids_x,
+		remote_tile_valid_rows_x,
 		smem.comm.per_cta_tiles,
 		col,
 		dims.n_gemm,
@@ -167,13 +169,12 @@ __device__ __forceinline__ void moe_fused_bwd(
 	MlpBwdBufs<typename Traits1::Element> remote_bufs = bufs;
 	remote_bufs.expert_for_k_block_mlp4 = remote_tile_expert_ids_x;
 	remote_bufs.expert_for_k_block_mlp3 = remote_tile_expert_ids_dy;
+	remote_bufs.valid_rows_mlp4 = remote_tile_valid_rows_x;
 
-	// Volatile load: written by warp 2 of this CTA in nvshmem_comm_prologue_bwd
-	// then made visible via __syncthreads() in moe_bwd_kernel. Without volatile
-	// the compiler may hoist above the syncthreads, returning a stale 0 →
-	// multi-PE deadlock (this CTA skips remote while peers wait at the
-	// remote-pass mlp_global_barrier).
-	bool remote_active = (*reinterpret_cast<int volatile*>(&smem.comm.global_total) != 0);
+	// Grid-uniform activity predicate. The unified path stages local tiles even
+	// at world size one, so every valid non-empty launch is active.
+	bool remote_active =
+		(dims.num_pes > 0) && (dims.num_tokens > 0);
 
 	// The remote staging ring (L = MC·CommNumStages tiles, MC = n_gemm/NC) is a
 	// STREAMING buffer: when global_total > L it wraps and physical slots are
@@ -190,9 +191,9 @@ __device__ __forceinline__ void moe_fused_bwd(
 	// mlp_fused_bwd_dual drives. Only the staging-ring (remote) TMAs and dims/bufs
 	// are passed; the weight/intermediate descriptors are shared across all tiles.
 	// efkb_stride maps a (GemmTileM-granular) Phase-2 K-block to its parent
-	// COMM-tile slot in tile_expert_ids (which the comm warps emit one-per-128).
+	// COMM-tile slot in tile_expert_ids (which the comm warps emit once per slot).
 	// = CommTileM/TileK = Traits1::TileM·SubTiles/Traits4::TileK. The integer
-	// division floors each gemm sub-tile to its parent 128-slot's expert (the
+	// division floors each GEMM sub-tile to its parent communication slot's expert (the
 	// interpolation). SubTiles=1 → Traits1::TileM/TileK, unchanged.
 	constexpr int kEfkbStride4Remote = Traits1::TileM * SubTiles / Traits4::TileK;
 	mlp_fused_bwd_dual<
