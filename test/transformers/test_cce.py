@@ -42,8 +42,8 @@ def _make_cce_inputs(
     return hidden, weight, targets, bias_value
 
 
-def _clone_with_grad(tensor):
-    return tensor.detach().clone().requires_grad_(True) if tensor is not None else None
+def _clone_with_grad(*tensors):
+    return tuple(tensor.detach().clone().requires_grad_(True) if tensor is not None else None for tensor in tensors)
 
 
 def _torch_cce(
@@ -73,8 +73,8 @@ def test_cce_forward_backward(shape, dtype, reduction, bias):
     hidden, weight, targets, bias_value = _make_cce_inputs(shape, dtype=dtype, bias=bias)
     targets[::7] = -100
 
-    torch_hidden, torch_weight, torch_bias = map(_clone_with_grad, (hidden, weight, bias_value))
-    liger_hidden, liger_weight, liger_bias = map(_clone_with_grad, (hidden, weight, bias_value))
+    torch_hidden, torch_weight, torch_bias = _clone_with_grad(hidden, weight, bias_value)
+    liger_hidden, liger_weight, liger_bias = _clone_with_grad(hidden, weight, bias_value)
 
     torch_loss = _torch_cce(
         torch_hidden,
@@ -145,8 +145,8 @@ def test_cce_all_ignored_has_connected_zero_gradients(reduction):
 def test_cce_int32_targets_and_noncontiguous_inputs():
     hidden, weight, targets, _ = _make_cce_inputs((23, 38, 89), target_dtype=torch.int32)
 
-    torch_hidden, torch_weight = map(_clone_with_grad, (hidden, weight))
-    liger_hidden, liger_weight = map(_clone_with_grad, (hidden, weight))
+    torch_hidden, torch_weight = _clone_with_grad(hidden, weight)
+    liger_hidden, liger_weight = _clone_with_grad(hidden, weight)
     expected = _torch_cce(torch_hidden[:, ::2], torch_weight[:, ::2], targets)
     actual = liger_cce(liger_hidden[:, ::2], liger_weight[:, ::2], targets)
     assert_verbose_allclose(expected, actual, atol=2e-5, rtol=2e-4)
