@@ -36,6 +36,8 @@ struct MlpTileInfo {
 	                    // per-peer TMA descriptor built over nvshmem_ptr(y_buf, pe).
 	bool is_local;      // same-host (NVLink) → GEMM TMA-stores Y straight into the
 	                    // peer's symmetric local_output, bypassing dst_staging+put.
+	int valid_m64_subtiles; // number of 64-row output subtiles containing valid rows
+	int m_subtile;      // GemmTileM row within the parent communication tile
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -115,6 +117,8 @@ struct LocalMlpTileIterator {
 		info.y_store_m = info.y_m;
 		info.peer_rank = 0;
 		info.is_local  = false;
+		info.valid_m64_subtiles = TileM / 64;
+		info.m_subtile = 0;
 
 		m += col_stride;
 		return info;
@@ -308,13 +312,17 @@ struct LocalFlatMlpTileIterator {
 // that NC evenly divides gridDim.x · gridDim.y so MC is integer
 // (host-side concern, not a template constraint).
 
-template <typename Element, int NumStages, int NC = 2, int TileM = 128>
+template <typename Element, int NumStages, int NC = 2, int TileM = 128,
+          int MSubTiles = 1>
 struct RemoteMlpTileIterator {
 	// Slot's producer/consumer counts (compile-time, used for ticket math).
 	// FWD steady-state GET uses kNumGetWarpsFwd active warps/CTA (the TMA path
 	// saturates with one), so the MLP waits for kNumGetWarpsFwd·NC src signals.
-	static constexpr int NumProducersSrc = kNumGetWarpsFwd * NC;  // active get warps × NC
-	static constexpr int NumConsumersDst = kNumPutWarpsFwd * NC;  // put warps × NC
+	static_assert(NC % MSubTiles == 0,
+		"communication CTAs must divide evenly across GEMM M-subtiles");
+	static constexpr int RowNC = NC / MSubTiles;
+	static constexpr int NumProducersSrc = kNumGetWarpsFwd * RowNC;
+	static constexpr int NumConsumersDst = kNumPutWarpsFwd * RowNC;
 
 	// (expert, pe) are re-derived in SMEM, NOT read from HBM: the MLP's j-th tile
 	// is global flat tile T_j = m_base + j·col_stride — the same flat position the
@@ -322,7 +330,7 @@ struct RemoteMlpTileIterator {
 	// guarantees the rendezvous). So an embedded TileIterator init(m_base,
 	// col_stride) walked in lockstep with idx reproduces what the comm wrote,
 	// with zero per-tile HBM load and fewer registers than holding HBM pointers.
-	TileIterator<TileM> tit;     // embedded comm-side walker
+	GemmTileIterator<TileM, MSubTiles> tit;
 	bool derive_on;              // false → no remote_offsets (test harness) → local
 	int gpus_per_node;           // same-host divisor for is_local
 	int iter_my_pe;              // this PE (team space) for is_local
@@ -333,7 +341,7 @@ struct RemoteMlpTileIterator {
 	                  // tile-sequence start
 	int col_stride;   // logical grid_x (= n_gemm / runtime NS) — tile-sequence
 	                  // stride; NOT gridDim.x under the flat-grid launch
-	int ring_len;     // L = MC · NumStages, set at init
+	int ring_len;     // physical communication slots: L = MC · NumStages
 	int num_splits;
 
 	int* src_ready;
@@ -345,13 +353,17 @@ struct RemoteMlpTileIterator {
 
 	int idx;          // iteration counter within this column
 	int cur_slot;     // cached slot for current acquire/release cycle
+	int cur_data_slot;
 	int cur_ticket;   // cached ticket for current acquire/release cycle
+	int cur_m_subtile;
+	int cur_parent_tile;
 
 	// remote_offsets (SMEM) drives the embedded walker; pass nullptr to disable
 	// derivation (e.g. the standalone handshake test, which only exercises the
 	// ticket/slot protocol). experts_per_pe/num_pes/my_pe/gpus_per_node feed the
 	// walker and the same-host is_local predicate.
 	__device__ void init(const int* remote_offsets,
+	                     const int* remote_counts,
 	                     int experts_per_pe,
 	                     int num_pes,
 	                     int my_pe,
@@ -388,11 +400,11 @@ struct RemoteMlpTileIterator {
 		if (derive_on) {
 			tit.remote_offsets = remote_offsets;
 			tit.offsets_stride = experts_per_pe + 1;
+			tit.remote_counts = remote_counts;
+			tit.counts_stride = experts_per_pe;
 			tit.experts_per_pe = experts_per_pe;
 			tit.num_pes        = num_pes;
 			tit.my_pe          = my_pe;
-			// Walk the MLP column's flat-tile subsequence (start m_base, stride
-			// col_stride) — identical positions to compute_slot()'s T_j.
 			tit.init(m_base_, col_stride);
 		}
 	}
@@ -405,9 +417,19 @@ struct RemoteMlpTileIterator {
 	// Called by acquire_src() — the rest of the per-tile API (next,
 	// release_src, acquire_dst, release_dst) reuses the cached values.
 	__device__ void compute_slot() {
-		int T = m_base + idx * col_stride;
-		cur_slot   = T % ring_len;
-		cur_ticket = T / ring_len;
+		int parent_t;
+		if (derive_on) {
+			parent_t = tit.current_parent_tile();
+			cur_m_subtile = tit.current_m_subtile();
+		} else {
+			int virtual_t = m_base + idx * col_stride;
+			parent_t = virtual_t / MSubTiles;
+			cur_m_subtile = virtual_t % MSubTiles;
+		}
+		cur_parent_tile = parent_t;
+		cur_data_slot = parent_t % ring_len;
+		cur_slot   = cur_data_slot * MSubTiles + cur_m_subtile;
+		cur_ticket = parent_t / ring_len;
 	}
 
 	// Re-derive (expert, pe) for this tile from SMEM offsets — the embedded
@@ -416,7 +438,7 @@ struct RemoteMlpTileIterator {
 	__device__ MlpTileInfo next() {
 		MlpTileInfo info;
 		info.x_ptr  = nullptr;  // not used — TMA loads by coordinate
-		info.y_m    = cur_slot;
+		info.y_m    = cur_data_slot;
 		if (derive_on) {
 			TileInfo ti = tit.next();
 			info.expert  = ti.expert;
@@ -429,6 +451,8 @@ struct RemoteMlpTileIterator {
 			info.peer_rank = (gpus_per_node > 0) ? (ti.pe % gpus_per_node) : 0;
 			// Direct-store row = this tile's token offset in the peer's local_output.
 			info.y_store_m = ti.token_offset / TileM;
+			info.valid_m64_subtiles = (ti.valid_rows + 63) / 64;
+			info.m_subtile = ti.m_subtile;
 		} else {
 			// Test harness (no SMEM offsets): no derivation, no direct store.
 			info.expert    = 0;
@@ -436,6 +460,8 @@ struct RemoteMlpTileIterator {
 			info.is_local  = false;
 			info.peer_rank = 0;
 			info.y_store_m = cur_slot;
+			info.valid_m64_subtiles = TileM / 64;
+			info.m_subtile = 0;
 		}
 		idx++;
 		return info;

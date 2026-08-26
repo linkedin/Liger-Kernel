@@ -148,3 +148,138 @@ def test_rms_norm_mixed_weight_dtype_no_cache_collision():
         torch.testing.assert_close(y_cd, y_tr, atol=atol, rtol=rtol)
         torch.testing.assert_close(dx_cd, dx_tr, atol=atol, rtol=rtol)
         torch.testing.assert_close(dw_cd, dw_tr, atol=atol, rtol=rtol)
+
+
+# =============================================================================
+# Blackwell fast path (TVM-FFI direct call + packed-f32x2 fused backward)
+# =============================================================================
+# These exercise machinery the parity suite above cannot reach: it only covers
+# hidden widths <= 4096, so it never compiles the packed-f32x2 backward, and it
+# always runs on the default stream.
+def _rms_norm_mod():
+    """The cutedsl rms_norm module, or skip if CUTLASS isn't installed."""
+    try:
+        from liger_kernel.ops.cutedsl.ops import rms_norm as mod
+    except ImportError as exc:
+        pytest.skip(f"cutedsl backend not importable (cutlass.cute missing?): {exc}")
+    return mod
+
+
+def _fwd_bwd(mod, X, W, dY, casting_mode="llama", offset=0.0):
+    """One forward + backward through the module-level functional API.
+
+    ``dW`` is ``None`` in the non-affine case; callers zip over the names.
+    """
+    Y, X2, RSTD, BS, NW, cm = mod.rms_norm_forward(X, W, 1e-6, offset, casting_mode, None)
+    dX, dW = mod.rms_norm_backward(dY, X2, W, RSTD, offset, cm, BS, NW, False, None)
+    return Y, dX, dW
+
+
+@cuda_required
+@pytest.mark.skipif(not _supports_bf16(), reason="bf16 needs SM80+")
+@pytest.mark.parametrize("n_cols", [2048, 8192])
+@pytest.mark.parametrize("casting_mode", ["llama", "none"])
+@pytest.mark.parametrize("elementwise_affine", [True, False])
+def test_rms_norm_ffi_matches_marshalling_path(monkeypatch, n_cols, casting_mode, elementwise_affine):
+    """The TVM-FFI direct-call path must be bit-identical to the marshalling path.
+
+    Both compile the same kernel; only the calling convention differs, so any
+    difference means the abstract-tensor layouts baked at compile time do not
+    describe the tensors actually handed over (wrong stride divisibility, wrong
+    dtype for the non-affine dummy W, ...). The non-affine case is the one that
+    pins the dummy-W layout: it hands RSTD over in W's slot, so the compiled
+    signature must expect an fp32 vector there.
+    """
+    mod = _rms_norm_mod()
+    if not mod._TVM_FFI_PRESENT:
+        pytest.skip("apache-tvm-ffi not installed; only the marshalling path exists")
+
+    set_seed(0)
+    X = torch.randn(512, n_cols, device="cuda", dtype=torch.bfloat16)
+    W = torch.randn(n_cols, device="cuda", dtype=torch.bfloat16) if elementwise_affine else None
+    dY = torch.randn(512, n_cols, device="cuda", dtype=torch.bfloat16)
+
+    monkeypatch.setattr(mod, "_FORCE_NO_FFI", True)
+    ref = [None if t is None else t.clone() for t in _fwd_bwd(mod, X, W, dY, casting_mode)]
+    monkeypatch.setattr(mod, "_FORCE_NO_FFI", False)
+    got = _fwd_bwd(mod, X, W, dY, casting_mode)
+
+    # Guard the test itself: both launch paths must really have been exercised,
+    # or this degenerates into comparing one path against itself.
+    assert any(k[0] == "fwd_vec" for k in mod._compile_cache), "marshalling path never compiled"
+    assert any(k[0] == "fwd_vec_ffi" for k in mod._ffi_compile_cache), "FFI path never compiled"
+
+    for name, a, b in zip(("Y", "dX", "dW"), got, ref):
+        if a is None or b is None:
+            assert a is b is None, f"{name} present on only one launch path"
+            continue
+        assert torch.equal(a, b), f"{name} differs between the FFI and marshalling launch paths"
+
+
+@cuda_required
+@pytest.mark.skipif(not _supports_bf16(), reason="bf16 needs SM80+")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_rms_norm_packed_backward_matches_scalar(monkeypatch, dtype):
+    """The packed-f32x2 fused backward must agree with the scalar one.
+
+    Only the instruction form changes -- the packed variant pairs lanes and
+    keeps two fp32 accumulators, so results differ at most by fp32 reassociation
+    (and one output rounding step), never structurally. Uses a width above the
+    ``_use_packed_math`` threshold so the packed kernel is the one compiled.
+    """
+    mod = _rms_norm_mod()
+    if not mod._is_blackwell(torch.device("cuda")):
+        pytest.skip("packed-f32x2 math needs a data-center Blackwell (sm_100/sm_103)")
+
+    set_seed(0)
+    n_cols = 8192  # > 4096, the _use_packed_math threshold
+    X = torch.randn(1024, n_cols, device="cuda", dtype=dtype)
+    W = torch.randn(n_cols, device="cuda", dtype=dtype)
+    dY = torch.randn(1024, n_cols, device="cuda", dtype=dtype)
+
+    assert mod._use_packed_math(X.device, n_cols, 16 // X.element_size())
+    monkeypatch.setattr(mod, "_FORCE_NO_PACKED", True)
+    ref = [t.clone() for t in _fwd_bwd(mod, X, W, dY)]
+    monkeypatch.setattr(mod, "_FORCE_NO_PACKED", False)
+    got = _fwd_bwd(mod, X, W, dY)
+
+    # Guard the test itself: the packed flag is the last element of the fused
+    # backward compile keys, and both specializations must have been built.
+    bwd_keys = [k for k in (*mod._compile_cache, *mod._ffi_compile_cache) if k[0].startswith("bwd_fused")]
+    assert {k[-1] for k in bwd_keys} == {True, False}, f"only one backward variant compiled: {bwd_keys}"
+
+    tol = 1e-5 if dtype == torch.float32 else 8e-3
+    for name, a, b in zip(("Y", "dX", "dW"), got, ref):
+        torch.testing.assert_close(a, b, atol=tol, rtol=tol, msg=lambda m, n=name: f"{n}: {m}")
+
+
+@cuda_required
+@pytest.mark.skipif(not _supports_bf16(), reason="bf16 needs SM80+")
+def test_rms_norm_runs_on_the_current_stream():
+    """Kernels must follow ``torch.cuda.current_stream()``, not the default stream.
+
+    The TVM-FFI path drops the stream argument and reads the caller's
+    environment stream instead; if that ever stopped tracking torch, every
+    launch under ``torch.cuda.stream(...)`` would silently race with the
+    surrounding side-stream work. A CUDA graph is the sharpest available probe:
+    capture only records work issued on the capturing stream, so a kernel that
+    escaped to the default stream would leave the poisoned output untouched.
+    """
+    from liger_kernel.ops.cutedsl.ops.rms_norm import LigerRMSNormFunction as fn
+
+    set_seed(0)
+    X = torch.randn(256, 4096, device="cuda", dtype=torch.bfloat16)
+    W = torch.randn(4096, device="cuda", dtype=torch.bfloat16)
+
+    expected = fn.apply(X, W, 1e-6, 0.0, "llama", False, None).clone()
+    torch.cuda.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = fn.apply(X, W, 1e-6, 0.0, "llama", False, None)
+    captured.zero_()  # poison: only a captured kernel can restore this
+    torch.cuda.synchronize()
+    graph.replay()
+    torch.cuda.synchronize()
+
+    assert torch.equal(captured, expected), "kernel did not run on the capturing stream"

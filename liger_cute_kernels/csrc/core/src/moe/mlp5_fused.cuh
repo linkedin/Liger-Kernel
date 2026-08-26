@@ -542,6 +542,7 @@ static __device__ __forceinline__ void run(
 
 				// TMEM → registers (this chunk, full TileM rows).
 				copy(t2r, tTR_tAcc_stage(_, _, _, _0{}, chunk), tTR_rAcc);
+				cutlass::arch::fence_view_async_tmem_load();
 
 				// Store as MSub × (AtomTileM=64)-row TMA tiles (1 for TileM=64, 2 for 128).
 				CUTE_UNROLL
