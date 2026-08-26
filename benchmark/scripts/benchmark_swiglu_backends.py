@@ -188,9 +188,10 @@ def _time_graph(fn, iters: int = 50, replays: int = 30):
             per_call.append(start.elapsed_time(end) / iters)
     p20, p50, p80 = _percentiles(per_call)
     # Guard against an EMPTY capture: if a kernel launches on a stream other than the
-    # capture stream (e.g. CuTe DSL SwiGLU, which unlike CuTe DSL RoPE does not thread
-    # torch's current stream into its launch), nothing gets recorded and replay is a
-    # ~0us no-op. Every real SwiGLU kernel here is >>1us, so treat sub-us as not-captured.
+    # capture stream, nothing gets recorded and replay is a ~0us no-op. (All three
+    # backends now thread torch's current stream and capture correctly; this guard
+    # remains as a safety net.) Every real SwiGLU kernel here is >>1us, so treat
+    # sub-us as not-captured.
     if p50 * 1e3 < 1.0:  # p50 is ms; 1e3 -> us
         return _NAN
     return SingleBenchmarkRunOutput(y_20=p20, y_50=p50, y_80=p80)
@@ -305,8 +306,9 @@ if __name__ == "__main__":
         extra_benchmark_configs = [{"tokens": t, "dtype": torch.bfloat16} for t in (2048, DEFAULT_TOKENS)]
     else:
         x_name, x_label, x_values = "T", "tokens (rows)", TOKENS
-        # one "good" (14336, ÷2048 -> cuTile fast path) and one "bad" (13824, not ÷2048
-        # -> cuTile masked path) FFN width, to see whether the cliff is token-dependent.
+        # one ÷2048 width (14336) and one non-÷2048 width (13824) FFN size, to confirm
+        # both widths now scale identically with tokens (cuTile's old non-2048 cliff is
+        # gone since the exact-fit pow2 forward landed).
         extra_benchmark_configs = [{"n_cols": c, "dtype": torch.bfloat16} for c in (14336, 13824)]
 
     all_providers = ["huggingface"] + list(PROVIDER_FNS.keys())
