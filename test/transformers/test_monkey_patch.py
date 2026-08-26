@@ -515,8 +515,21 @@ def test_apply_liger_kernel_to_instance_for_llama():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
+def _unregister_liger_tiled_mlp():
+    """Drop only Liger's tiled MLP registrations, leaving anything else registered untouched.
+
+    unregister_patch_mapping raises on a key it does not hold, and the instance patching path registers
+    nothing at all, so the currently registered subset is what gets removed.
+    """
+    from transformers.monkey_patching import get_patch_mapping
+    from transformers.monkey_patching import unregister_patch_mapping
+
+    registered = [key for key in monkey_patch.LIGER_TILED_MLP_PATCH_MAPPING if key in get_patch_mapping()]
+    if registered:
+        unregister_patch_mapping(registered)
+
+
 def test_apply_liger_kernel_to_instance_for_llama_with_tiled_mlp():
-    from transformers.monkey_patching import clear_patch_mapping
 
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.llama.modeling_llama"):
@@ -548,7 +561,7 @@ def test_apply_liger_kernel_to_instance_for_llama_with_tiled_mlp():
                 assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
                 assert layer.mlp.num_shards == 4
         finally:
-            clear_patch_mapping()
+            _unregister_liger_tiled_mlp()
 
 
 def test_apply_liger_tiled_mlp_to_instance():
@@ -615,7 +628,6 @@ def test_apply_liger_tiled_mlp_rejects_extra_computation():
 
 
 def test_apply_liger_tiled_mlp_registers_supported_models():
-    from transformers.monkey_patching import clear_patch_mapping
 
     llama_config = transformers.models.llama.configuration_llama.LlamaConfig(
         dtype=torch.bfloat16,
@@ -646,7 +658,7 @@ def test_apply_liger_tiled_mlp_registers_supported_models():
         for layer in gemma2_model.model.layers:
             assert isinstance(layer.mlp, LigerTiledGEGLUMLP)
     finally:
-        clear_patch_mapping()
+        _unregister_liger_tiled_mlp()
 
 
 @pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
