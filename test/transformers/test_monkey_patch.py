@@ -599,7 +599,7 @@ def test_apply_liger_tiled_mlp_rejects_mismatched_activation():
     )
     model = AutoModelForCausalLM.from_config(config)
 
-    with pytest.raises(ValueError, match="would replace with silu/swish"):
+    with pytest.raises(ValueError, match="does not implement"):
         monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=4)
 
     # the rejected model must be left exactly as it was

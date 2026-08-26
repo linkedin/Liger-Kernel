@@ -575,3 +575,40 @@ def test_tiled_glu_stays_tiled_without_a_fused_kernel(hidden_act):
 
     y_reference.sum().backward()
     torch.testing.assert_close(x_tiled.grad, x_reference.grad, msg="Input gradients don't match")
+
+
+def test_tiled_geglu_rejects_exact_gelu():
+    """LigerGELUMulFunction is the tanh approximation, so the GEGLU modules must not accept exact (erf)
+    gelu and quietly approximate it. LigerTiledGLUMLP computes it exactly instead."""
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act="gelu")
+
+    with pytest.raises(ValueError, match="tanh-approximation GELU"):
+        LigerTiledGEGLUMLP(config=config)
+
+    # the generic module takes it, applying erf gelu eagerly while still tiling
+    generic = LigerTiledGLUMLP(config=config, num_shards=4).to(device).to(torch.float64)
+    from liger_kernel.transformers.tiled_mlp import _fused_mul_for
+
+    assert _fused_mul_for(generic) is None
+
+    x = torch.randn(2, 256, 128, device=device, dtype=torch.float64, requires_grad=True)
+    reference = generic.down_proj(generic.act_fn(generic.gate_proj(x)) * generic.up_proj(x))
+    torch.testing.assert_close(generic(x), reference, msg="erf gelu must be computed exactly")
+
+
+def test_tiled_mlp_guard_rejects_exact_gelu_on_instance_path():
+    """Instance patching never runs __init__, so the guard has to catch exact gelu itself. Matching the
+    activation by name cannot: GELUActivation and GELUTanh both contain 'gelu'."""
+    config = LlamaConfig(
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        vocab_size=128,
+        hidden_act="gelu",
+    )
+    model = AutoModelForCausalLM.from_config(config)
+
+    with pytest.raises(ValueError, match="does not implement"):
+        monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=4, mapping={"LlamaMLP": LigerTiledGEGLUMLP})

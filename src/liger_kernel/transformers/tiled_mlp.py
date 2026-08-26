@@ -33,12 +33,16 @@ class LigerTiledGEGLUMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
 
         # Validate activation function
+        # LigerGELUMulFunction is the tanh approximation, so exact (erf) gelu is not one of these;
+        # LigerTiledGLUMLP handles it without approximating.
         if hasattr(config, "hidden_act") and config.hidden_act not in [
-            "gelu",
             "gelu_new",
             "gelu_pytorch_tanh",
         ]:
-            raise ValueError(f"LigerTiledGEGLUMLP requires GELU activation, got {config.hidden_act}")
+            raise ValueError(
+                f"LigerTiledGEGLUMLP requires tanh-approximation GELU, got {config.hidden_act}. "
+                "Use LigerTiledGLUMLP to keep the tiling with this activation."
+            )
 
     def _mlp_forward(self, module, x):
         """Internal MLP forward function for tiled computation."""
@@ -230,3 +234,12 @@ class LigerTiledGLUMLP(nn.Module):
             num_shards=self.num_shards,
             compute_params=compute_params,
         )
+
+
+# The fused kernel each activation-specific tiled module hardcodes. Callers use this to check whether a
+# module's activation actually matches, without having to instantiate anything. LigerTiledGLUMLP is
+# absent on purpose: it adapts to whatever activation the module carries.
+_REQUIRED_FUSED_MUL = {
+    LigerTiledSwiGLUMLP: LigerSiLUMulFunction,
+    LigerTiledGEGLUMLP: LigerGELUMulFunction,
+}

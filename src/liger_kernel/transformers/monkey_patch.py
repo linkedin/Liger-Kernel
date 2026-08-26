@@ -142,12 +142,6 @@ def _patch_swiglu_module(module, liger_module):
 
 # The activation each tiled MLP hardcodes in its fused kernel, as substrings of the activation's class
 # or function name (SiLU, GELUActivation, PytorchGELUTanh, ...).
-_TILED_MLP_EXPECTED_ACTIVATIONS = {
-    "LigerTiledSwiGLUMLP": ("silu", "swish"),
-    "LigerTiledGEGLUMLP": ("gelu",),
-}
-
-
 def _tiled_mlp_activation_name(module):
     """The name of the activation an MLP instance applies, or None if it exposes none.
 
@@ -172,14 +166,19 @@ def _check_tiled_mlp_activation(module, liger_tiled_module):
     already-built module so that never runs. Without this the fused kernel would apply its own
     activation and quietly produce different numerics.
     """
-    expected = _TILED_MLP_EXPECTED_ACTIVATIONS.get(liger_tiled_module.__name__)
+    from liger_kernel.transformers.tiled_mlp import _REQUIRED_FUSED_MUL
+    from liger_kernel.transformers.tiled_mlp import _fused_mul_for
+
+    required = _REQUIRED_FUSED_MUL.get(liger_tiled_module)
     name = _tiled_mlp_activation_name(module)
-    if expected is None or name is None:
+    if required is None or name is None:
         return
-    if not any(token in name.lower() for token in expected):
+    # compared by fused kernel rather than by activation name: the tanh-approximation kernel must not
+    # pick up exact (erf) gelu, and transformers renames these classes between versions
+    if _fused_mul_for(module) is not required:
         raise ValueError(
             f"{module.__class__.__name__} uses the {name} activation, which {liger_tiled_module.__name__} "
-            f"would replace with {'/'.join(expected)}. Drop it from the tiled MLP mapping instead."
+            "does not implement. Map it to LigerTiledGLUMLP to keep the tiling with this activation."
         )
 
 
