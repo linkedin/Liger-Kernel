@@ -22,6 +22,7 @@ from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP
+from liger_kernel.transformers.tiled_mlp import LigerTiledGLUMLP
 from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP
 from liger_kernel.utils import infer_device
 
@@ -493,3 +494,84 @@ def test_tiled_mlp_under_ddp(num_shards):
         )
     finally:
         shutil.rmtree(rdzv, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "hidden_act, fused",
+    [
+        ("silu", "LigerSiLUMulFunction"),
+        ("gelu_pytorch_tanh", "LigerGELUMulFunction"),
+        ("gelu_new", "LigerGELUMulFunction"),
+        # erf gelu has no fused kernel: LigerGELUMulFunction is the tanh approximation
+        ("gelu", None),
+        ("relu", None),
+    ],
+)
+def test_tiled_glu_selects_fused_kernel_only_when_it_matches(hidden_act, fused):
+    from liger_kernel.transformers.tiled_mlp import _fused_mul_for
+
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act=hidden_act)
+    mlp = LigerTiledGLUMLP(config=config).to(device).to(torch.float32)
+
+    selected = _fused_mul_for(mlp)
+    assert (selected.__name__ if selected is not None else None) == fused
+
+
+@pytest.mark.parametrize("hidden_act", ["silu", "gelu_pytorch_tanh"])
+def test_tiled_glu_matches_the_activation_specific_module(hidden_act):
+    """Where a fused kernel exists the generic module must be numerically identical to the dedicated one."""
+    specific_cls = LigerTiledSwiGLUMLP if hidden_act == "silu" else LigerTiledGEGLUMLP
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act=hidden_act)
+
+    generic = LigerTiledGLUMLP(config=config, num_shards=4).to(device).to(torch.float32)
+    specific = specific_cls(config=config, num_shards=4).to(device).to(torch.float32)
+    specific.load_state_dict(generic.state_dict(), strict=False)
+
+    x = torch.randn(2, 512, 128, device=device)
+    x_generic = x.detach().clone().requires_grad_(True)
+    x_specific = x.detach().clone().requires_grad_(True)
+
+    y_generic = generic(x_generic)
+    y_specific = specific(x_specific)
+    torch.testing.assert_close(y_generic, y_specific, msg="Forward outputs don't match")
+
+    dy = torch.randn_like(y_generic)
+    y_generic.backward(dy.clone())
+    y_specific.backward(dy.clone())
+
+    for p_generic, p_specific in zip(generic.parameters(), specific.parameters()):
+        torch.testing.assert_close(p_generic.grad, p_specific.grad, msg="Weight gradients don't match")
+    torch.testing.assert_close(x_generic.grad, x_specific.grad, msg="Input gradients don't match")
+
+
+@pytest.mark.parametrize("hidden_act", ["gelu", "relu"])
+def test_tiled_glu_stays_tiled_without_a_fused_kernel(hidden_act):
+    """An activation with no fused kernel keeps the tiling -- that is where the memory saving is -- and
+    must still match an untiled reference."""
+    num_shards = 4
+    config = LlamaConfig(hidden_size=64, intermediate_size=128, hidden_act=hidden_act)
+    mlp = LigerTiledGLUMLP(config=config, num_shards=num_shards).to(device).to(torch.float64)
+
+    shard_calls = []
+    original_mlp_forward = mlp._mlp_forward
+
+    def recording_mlp_forward(module, shard):
+        shard_calls.append(shard)
+        return original_mlp_forward(module, shard)
+
+    mlp._mlp_forward = recording_mlp_forward
+
+    x = torch.randn(2, 256, 64, device=device, dtype=torch.float64)
+    x_tiled = x.detach().clone().requires_grad_(True)
+    x_reference = x.detach().clone().requires_grad_(True)
+
+    y_tiled = mlp(x_tiled)
+    y_reference = mlp.down_proj(mlp.act_fn(mlp.gate_proj(x_reference)) * mlp.up_proj(x_reference))
+    torch.testing.assert_close(y_tiled, y_reference, msg="Forward outputs don't match")
+
+    # tiling still happens, in both forward and backward
+    y_tiled.sum().backward()
+    assert len(shard_calls) == 2 * num_shards
+
+    y_reference.sum().backward()
+    torch.testing.assert_close(x_tiled.grad, x_reference.grad, msg="Input gradients don't match")
