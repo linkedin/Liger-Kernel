@@ -140,7 +140,68 @@ def _patch_swiglu_module(module, liger_module):
     _bind_method_to_module(module, "_get_name", lambda self: liger_module.__name__)
 
 
+# The activation each tiled MLP hardcodes in its fused kernel, as substrings of the activation's class
+# or function name (SiLU, GELUActivation, PytorchGELUTanh, ...).
+_TILED_MLP_EXPECTED_ACTIVATIONS = {
+    "LigerTiledSwiGLUMLP": ("silu", "swish"),
+    "LigerTiledGEGLUMLP": ("gelu",),
+}
+
+
+def _tiled_mlp_activation_name(module):
+    """The name of the activation an MLP instance applies, or None if it exposes none.
+
+    Model MLPs disagree on the attribute name: most use ``act_fn``, Llama4 uses ``activation_fn``.
+    """
+    for attr in ("act_fn", "activation_fn"):
+        act = getattr(module, attr, None)
+        if act is not None:
+            return getattr(act, "__name__", type(act).__name__)
+    return None
+
+
+# Everything a gate/up/down MLP is allowed to own. The tiled replacement computes exactly
+# down_proj(act(gate_proj(x)) * up_proj(x)), so anything else the module holds would be dropped.
+_TILED_MLP_ALLOWED_CHILDREN = frozenset({"gate_proj", "up_proj", "down_proj", "act_fn", "activation_fn"})
+
+
+def _check_tiled_mlp_activation(module, liger_tiled_module):
+    """Reject an MLP whose activation the tiled replacement would silently change.
+
+    The tiled modules validate this in ``__init__``, but instance patching rebinds methods onto an
+    already-built module so that never runs. Without this the fused kernel would apply its own
+    activation and quietly produce different numerics.
+    """
+    expected = _TILED_MLP_EXPECTED_ACTIVATIONS.get(liger_tiled_module.__name__)
+    name = _tiled_mlp_activation_name(module)
+    if expected is None or name is None:
+        return
+    if not any(token in name.lower() for token in expected):
+        raise ValueError(
+            f"{module.__class__.__name__} uses the {name} activation, which {liger_tiled_module.__name__} "
+            f"would replace with {'/'.join(expected)}. Drop it from the tiled MLP mapping instead."
+        )
+
+
+def _check_tiled_mlp_layout(module, liger_tiled_module):
+    """Reject an MLP that computes more than the gate/up/down product.
+
+    Replacing ``forward`` discards whatever the original did beyond that product, so an extra scale
+    (Inkling's ``global_scale``) or an intermediate dropout (T5Gemma) would vanish without a trace.
+    """
+    extra_children = sorted(set(dict(module.named_children())) - _TILED_MLP_ALLOWED_CHILDREN)
+    extra_params = sorted(name for name, _ in module.named_parameters(recurse=False))
+    if extra_children or extra_params:
+        raise ValueError(
+            f"{module.__class__.__name__} owns {extra_children + extra_params}, which "
+            f"{liger_tiled_module.__name__} does not compute; replacing forward would silently drop it. "
+            "Drop it from the tiled MLP mapping instead."
+        )
+
+
 def _patch_tiled_mlp_module(module, liger_tiled_module, num_shards=None):
+    _check_tiled_mlp_activation(module, liger_tiled_module)
+    _check_tiled_mlp_layout(module, liger_tiled_module)
     module.num_shards = num_shards
     _bind_method_to_module(module, "_mlp_forward", liger_tiled_module._mlp_forward)
     _bind_method_to_module(module, "forward", liger_tiled_module.forward)
@@ -180,8 +241,9 @@ def apply_liger_tiled_mlp(model=None, num_shards=None, mapping=LIGER_TILED_MLP_P
 
     Tiled MLP recomputes the MLP forward during the backward to trade compute for a large activation
     memory saving on long sequences. It is opt-in. Gradients have been verified to match a non-tiled
-    reference under both FSDP2 (`torch.distributed.fsdp.fully_shard`) and DeepSpeed ZeRO-3, where the
-    backward defers ZeRO-3 gradient reduction to the last shard. Plain DDP is not yet covered.
+    reference under DDP, FSDP2 (`torch.distributed.fsdp.fully_shard`) and DeepSpeed ZeRO-3. Each weight
+    is accumulated once per backward, except under ZeRO-3 where the reduction is instead deferred to the
+    last shard.
 
     Args:
         model (PreTrainedModel): An already-loaded model to patch in place. If None, the replacement is

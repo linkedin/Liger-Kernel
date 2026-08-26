@@ -572,6 +572,48 @@ def test_apply_liger_tiled_mlp_to_instance():
         assert layer.mlp.num_shards == 4
 
 
+def test_apply_liger_tiled_mlp_rejects_mismatched_activation():
+    """Instance patching rebinds methods onto an already-built module, so the tiled MLP's own __init__
+    check never runs. A model whose activation the fused kernel would silently replace must be rejected
+    rather than quietly given different numerics."""
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="gelu_pytorch_tanh",
+        num_hidden_layers=2,
+    )
+    model = AutoModelForCausalLM.from_config(config)
+
+    with pytest.raises(ValueError, match="would replace with silu/swish"):
+        monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=4)
+
+    # the rejected model must be left exactly as it was
+    for layer in model.model.layers:
+        assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLP.forward)
+
+
+def test_apply_liger_tiled_mlp_rejects_extra_computation():
+    """The tiled replacement computes only down_proj(act(gate(x)) * up(x)), so an MLP holding anything
+    else — Inkling's global_scale, T5Gemma's intermediate dropout — must be refused rather than have
+    that computation silently dropped."""
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=2,
+    )
+    model = AutoModelForCausalLM.from_config(config)
+    for layer in model.model.layers:
+        layer.mlp.global_scale = torch.nn.Parameter(torch.ones(1))
+
+    with pytest.raises(ValueError, match="global_scale"):
+        monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=4)
+
+
 def test_apply_liger_tiled_mlp_registers_supported_models():
     from transformers.monkey_patching import clear_patch_mapping
 
