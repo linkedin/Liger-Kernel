@@ -299,19 +299,21 @@ def test_tiled_mlp_zero3_gradient_reduction_deferral(mlp_cls, hidden_act, num_sh
         torch.testing.assert_close(p.grad, ref)
 
 
-def test_tiled_mlp_synchronizes_num_shards_across_ranks(monkeypatch):
-    """Under a distributed sharded-parameter backend num_shards must be raised to the per-rank maximum,
-    so every rank runs the same number of weight-gathering collectives and cannot deadlock."""
+def _run_with_fake_collective(monkeypatch, mlp, global_max_shards):
+    """Drive one forward/backward with dist stubbed out, reporting the shard count and whether the
+    num_shards harmonizing all_reduce was issued."""
     import torch.distributed as dist
 
-    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act="silu")
-    mlp = LigerTiledSwiGLUMLP(config=config, num_shards=2).to(device).to(torch.float32)
-
-    global_max_shards = 4
+    all_reduce_calls = []
     monkeypatch.setattr(dist, "is_available", lambda: True)
     monkeypatch.setattr(dist, "is_initialized", lambda: True)
     monkeypatch.setattr(dist, "get_world_size", lambda: 2)
-    monkeypatch.setattr(dist, "all_reduce", lambda tensor, op=None: tensor.fill_(global_max_shards))
+
+    def fake_all_reduce(tensor, op=None):
+        all_reduce_calls.append(op)
+        return tensor.fill_(global_max_shards)
+
+    monkeypatch.setattr(dist, "all_reduce", fake_all_reduce)
 
     shard_calls = []
     original_mlp_forward = mlp._mlp_forward
@@ -322,9 +324,36 @@ def test_tiled_mlp_synchronizes_num_shards_across_ranks(monkeypatch):
 
     mlp._mlp_forward = recording_mlp_forward
     mlp(torch.randn(2, 512, 128, device=device).requires_grad_(True)).pow(2).sum().backward()
+    return len(shard_calls), len(all_reduce_calls)
+
+
+def test_tiled_mlp_synchronizes_num_shards_across_ranks(monkeypatch):
+    """Under a sharded-parameter backend num_shards must be raised to the per-rank maximum, so every rank
+    runs the same number of weight-gathering collectives and cannot deadlock."""
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act="silu")
+    mlp = LigerTiledSwiGLUMLP(config=config, num_shards=2).to(device).to(torch.float32)
+    for param in mlp.parameters():
+        param.ds_id = 0
+
+    global_max_shards = 4
+    shard_calls, all_reduce_calls = _run_with_fake_collective(monkeypatch, mlp, global_max_shards)
 
     # this rank locally wanted 2 shards but must run the global max of 4, in both forward and backward
-    assert len(shard_calls) == 2 * global_max_shards
+    assert shard_calls == 2 * global_max_shards
+    assert all_reduce_calls == 1
+
+
+def test_tiled_mlp_skips_num_shards_collective_when_replicated(monkeypatch):
+    """DDP replicates the weights, so nothing is gathered inside the recompute and the harmonizing
+    all_reduce would cost one collective per MLP per step for no benefit."""
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act="silu")
+    mlp = LigerTiledSwiGLUMLP(config=config, num_shards=2).to(device).to(torch.float32)
+
+    shard_calls, all_reduce_calls = _run_with_fake_collective(monkeypatch, mlp, global_max_shards=4)
+
+    assert all_reduce_calls == 0
+    # the locally chosen shard count stands, in both forward and backward
+    assert shard_calls == 2 * 2
 
 
 class _PlainMLP(nn.Module):

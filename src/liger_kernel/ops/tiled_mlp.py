@@ -9,6 +9,22 @@ import torch.distributed as dist
 
 from liger_kernel.ops.utils import ensure_contiguous
 
+try:
+    from torch.distributed.tensor import DTensor as _DTensor
+except Exception:
+    _DTensor = ()
+
+
+def _has_sharded_params(compute_params: Optional[List[torch.nn.Parameter]]) -> bool:
+    """Whether any weight is partitioned across ranks and gathered inside the recompute.
+
+    Only those backends need every rank to run the same shard count. Returns True when the weights are
+    unknown, so an unrecognised backend keeps the harmonizing collective rather than risking a deadlock.
+    """
+    if not compute_params:
+        return True
+    return any(hasattr(p, "ds_id") or isinstance(p, _DTensor) for p in compute_params)
+
 
 def _autograd_input_params(
     compute_params: Optional[List[torch.nn.Parameter]],
@@ -197,10 +213,16 @@ def apply_tiled_mlp(
     # Ensure num_shards is at least 1
     num_shards = max(1, num_shards)
 
-    # All ranks must run the same number of shards: a sharded-parameter backend (DeepSpeed ZeRO-3, FSDP)
-    # gathers weights inside each shard's recompute, so a rank that runs fewer shards stops participating
-    # in those collectives and deadlocks the others. Harmonize on the per-rank maximum.
-    if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+    # A sharded-parameter backend (DeepSpeed ZeRO-3, FSDP) gathers weights inside each shard's recompute,
+    # so a rank running fewer shards stops participating in those collectives and deadlocks the others.
+    # Harmonize on the per-rank maximum. Replicated backends such as DDP gather nothing, so this runs
+    # once per MLP per step for no benefit and is skipped.
+    if (
+        dist.is_available()
+        and dist.is_initialized()
+        and dist.get_world_size() > 1
+        and _has_sharded_params(compute_params)
+    ):
         num_shards_tensor = torch.tensor(num_shards, device=x.device)
         dist.all_reduce(num_shards_tensor, op=dist.ReduceOp.MAX)
         num_shards = int(num_shards_tensor.item())

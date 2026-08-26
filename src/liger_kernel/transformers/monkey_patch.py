@@ -209,10 +209,17 @@ def _patch_tiled_mlp_module(module, liger_tiled_module, num_shards=None):
 
 
 # Maps the transformers MLP class name to the Liger tiled MLP that replaces it. Only models whose MLP
-# matches the gate/up/down SwiGLU or GEGLU layout are listed; MoE experts, fused gate_up (phi3) and
-# Gemma4 use bespoke layouts and are intentionally excluded until tiled variants exist.
+# matches the gate/up/down SwiGLU or GEGLU layout are listed; MoE expert stacks, fused gate_up (phi3,
+# glm4), the Qwen vision MLPs (linear_fc1/linear_fc2) and MLPs carrying an extra scale or dropout
+# (deepseek_v4, falcon_h1, inkling, t5gemma) use bespoke layouts and stay excluded. _patch_tiled_mlp_module
+# re-checks each instance, so an entry added here in error is rejected rather than silently miscomputed.
 LIGER_TILED_MLP_PATCH_MAPPING = {
     "LlamaMLP": LigerTiledSwiGLUMLP,
+    "GraniteMLP": LigerTiledSwiGLUMLP,
+    "Qwen2_5_VLMLP": LigerTiledSwiGLUMLP,
+    "Qwen3_5MLP": LigerTiledSwiGLUMLP,
+    "Qwen3VLTextMLP": LigerTiledSwiGLUMLP,
+    "Qwen3VLMoeTextMLP": LigerTiledSwiGLUMLP,
     "MllamaTextMLP": LigerTiledSwiGLUMLP,
     "Llama4TextMLP": LigerTiledSwiGLUMLP,
     "MistralMLP": LigerTiledSwiGLUMLP,
