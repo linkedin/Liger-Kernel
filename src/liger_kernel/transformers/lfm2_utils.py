@@ -2,7 +2,7 @@ import torch
 
 from liger_kernel.utils import infer_device_arch
 
-_HOPPER_NATIVE_SEQUENCE_CUTOFF = 1024
+_HOPPER_NATIVE_SEQUENCE_CUTOFF = 4096
 
 
 def use_lfm2_native_forward(tensor: torch.Tensor) -> bool:
