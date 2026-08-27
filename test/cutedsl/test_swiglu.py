@@ -11,10 +11,9 @@ import importlib.util
 import pytest
 import torch
 
-from test.utils import supports_bfloat16
-
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.utils import infer_device
+from test.utils import supports_bfloat16
 
 device = infer_device()
 

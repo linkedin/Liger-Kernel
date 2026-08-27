@@ -3,7 +3,10 @@ name: NVIDIA GPU
 on:
   workflow_dispatch:  # Enables manual trigger
   schedule:
-    - cron: '0 0 * * *'  # Daily at 00:00 UTC
+    # Randomized off-peak time (09:24 UTC) rather than a round hour like 00:00.
+    # GitHub throttles/delays scheduled workflows that pile up at the top of the
+    # hour (especially midnight), so an odd minute avoids that contention.
+    - cron: '24 9 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
