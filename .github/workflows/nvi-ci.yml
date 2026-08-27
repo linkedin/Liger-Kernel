@@ -1,25 +1,19 @@
 name: NVIDIA GPU
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-  merge_group:
-    types: [checks_requested]
-    branches:
-      - main
   workflow_dispatch:  # Enables manual trigger
+  schedule:
+    # Randomized off-peak time (09:24 UTC) rather than a round hour like 00:00.
+    # GitHub throttles/delays scheduled workflows that pile up at the top of the
+    # hour (especially midnight), so an odd minute avoids that contention.
+    - cron: '24 9 * * *'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   nvi-correctness-tests:
-    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -44,7 +38,6 @@ jobs:
         modal run -m dev.modal.tests::liger_correctness_tests
 
   nvi-convergence-tests:
-    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -69,7 +62,6 @@ jobs:
         modal run -m dev.modal.tests::liger_convergence_tests
 
   nvi-correctness-tests-with-transformers-4-52-0:
-    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -95,7 +87,6 @@ jobs:
 
 
   nvi-convergence-tests-with-transformers-4-52-0:
-    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
