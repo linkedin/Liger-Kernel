@@ -15,6 +15,8 @@
 
 #include <cuda_runtime.h>
 
+#include <cstdint>
+
 namespace liger {
 
 // Forward launcher inputs. bf16 payloads are carried as void* and reinterpret_cast
@@ -26,6 +28,7 @@ struct MoeFwdArgs {
 	const void* all_B;             // [epp, I, D] bf16
 	const void* all_C;             // [epp, I, D] bf16
 	const void* all_A;             // [epp, D, I] bf16
+	int64_t weight_expert_stride;  // all_B/all_C expert stride in bf16 elements
 	int num_tokens, hidden_dim, intermediate_dim, experts_per_pe;
 	int num_experts, top_k;
 	int team;                      // NVSHMEM team id (nvshmem_team_t == int)
@@ -40,6 +43,7 @@ struct MoeFwdArgs {
 	void** x_sorted_out;
 	void** y_buf_out;
 	void** all_expert_offsets_out;
+	void** all_expert_counts_out;
 };
 
 // Backward launcher inputs. dB/dC/dA/dW are gradient ACCUMULATION targets — the
@@ -51,6 +55,7 @@ struct MoeBwdArgs {
 	int*        token_expert_slots; // [T*top_k] int32
 	int*        tile_expert_ids;    // [max_m_tiles] int32
 	int*        expert_offsets;     // [num_pes, num_experts+1] int32 (fwd's all_*)
+	int*        expert_counts;      // [num_pes, num_experts] int32 (fwd's exact counts)
 	int*        expert_indices;     // [T, K] int32
 	const void* expert_weights;     // [T, K] bf16
 	const void* all_B;              // [epp, I, D] bf16

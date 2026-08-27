@@ -44,7 +44,8 @@ struct Mlp1FusedActSmem {
 
 	static constexpr int smem_X_size     = cosize_v<typename Traits::SmemLayoutX>;
 	static constexpr int smem_W_size     = cosize_v<typename Traits::SmemLayoutW>;
-	static constexpr int smem_store_size = cosize_v<typename Traits::SmemLayoutStoreSlot>;
+	static constexpr int smem_store_size =
+		cosize_v<typename Traits::SmemLayoutActStoreSlot>;
 
 	alignas(128) Element smem_X[smem_X_size];
 	alignas(128) Element smem_W1[smem_W_size];
@@ -69,7 +70,7 @@ struct Mlp1FusedActSmem {
 // Single fused X + W1 + W2 TMA pipe per k-step.
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits, typename Pipeline,
+template <typename Traits, bool Expert3D = false, typename Pipeline,
           typename TmaLoadX, typename TmaLoadW>
 __device__ __forceinline__ void mlp1_fused_act_producer(
 		Pipeline& pipe,
@@ -79,9 +80,11 @@ __device__ __forceinline__ void mlp1_fused_act_producer(
 		TmaLoadW const& tma_load_b,
 		TmaLoadW const& tma_load_c,
 		int m,
-		int expert_n_offset,
+		int expert_or_n_offset,
 		int num_tokens,
 		int hidden_dim,
+		int intermediate_dim,
+		int num_experts,
 		int total_n_rows,
 		int num_n_tiles,
 		int num_k_tiles,
@@ -96,12 +99,30 @@ __device__ __forceinline__ void mlp1_fused_act_producer(
 	auto mX = tma_load_x.get_tma_tensor(make_shape(
 		static_cast<int64_t>(num_tokens),
 		static_cast<int64_t>(hidden_dim)));
-	auto mB = tma_load_b.get_tma_tensor(make_shape(
-		static_cast<int64_t>(total_n_rows),
-		static_cast<int64_t>(hidden_dim)));
-	auto mC = tma_load_c.get_tma_tensor(make_shape(
-		static_cast<int64_t>(total_n_rows),
-		static_cast<int64_t>(hidden_dim)));
+	auto mB = [&]() {
+		if constexpr (Expert3D) {
+			return tma_load_b.get_tma_tensor(make_shape(
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_load_b.get_tma_tensor(make_shape(
+				static_cast<int64_t>(total_n_rows),
+				static_cast<int64_t>(hidden_dim)));
+		}
+	}();
+	auto mC = [&]() {
+		if constexpr (Expert3D) {
+			return tma_load_c.get_tma_tensor(make_shape(
+				static_cast<int64_t>(intermediate_dim),
+				static_cast<int64_t>(hidden_dim),
+				static_cast<int64_t>(num_experts)));
+		} else {
+			return tma_load_c.get_tma_tensor(make_shape(
+				static_cast<int64_t>(total_n_rows),
+				static_cast<int64_t>(hidden_dim)));
+		}
+	}();
 
 	auto cta_tma_x = tma_load_x.get_slice(Int<0>{});
 	auto cta_tma_b = tma_load_b.get_slice(Int<0>{});
@@ -117,12 +138,28 @@ __device__ __forceinline__ void mlp1_fused_act_producer(
 	auto tXgX = cta_tma_x.partition_S(gX);
 
 	for (int n = split_idx; n < num_n_tiles; n += num_splits) {
-		auto gB = local_tile(mB,
-			make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
-			make_coord(expert_n_offset + n, _));
-		auto gC = local_tile(mC,
-			make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
-			make_coord(expert_n_offset + n, _));
+		auto gB = [&]() {
+			if constexpr (Expert3D) {
+				return local_tile(mB,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(n, _, expert_or_n_offset));
+			} else {
+				return local_tile(mB,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(expert_or_n_offset + n, _));
+			}
+		}();
+		auto gC = [&]() {
+			if constexpr (Expert3D) {
+				return local_tile(mC,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(n, _, expert_or_n_offset));
+			} else {
+				return local_tile(mC,
+					make_tile(Int<Traits::TileN>{}, Int<Traits::TileK>{}),
+					make_coord(expert_or_n_offset + n, _));
+			}
+		}();
 		auto tBgB = cta_tma_b.partition_S(gB);
 		auto tCgC = cta_tma_c.partition_S(gC);
 
@@ -206,16 +243,23 @@ static __device__ __forceinline__ void run(
 	const int my_barrier_id = 1 + my_wg;                          // 1 or 2
 	const bool is_my_wg_leader = (tid_in_wg == 0);
 
-	constexpr int store_slot_elems = Traits::AtomTileM * Traits::EpiChunkN;
+	static_assert(Traits::AtomTileM % Traits::ActStoreTileM == 0,
+		"activation store TileM must divide the Hopper warpgroup strip");
+	constexpr int StoreSlicesPerWg =
+		Traits::AtomTileM / Traits::ActStoreTileM;
+	constexpr int StoreTilesPerM =
+		Traits::TileM / Traits::ActStoreTileM;
+	constexpr int store_slot_elems =
+		Traits::ActStoreTileM * Traits::EpiChunkN;
 	Element* my_store_u = smem.store_buf_u + my_wg * store_slot_elems;
 	Element* my_store_v = smem.store_buf_v + my_wg * store_slot_elems;
 	Element* my_store_z = smem.store_buf_z + my_wg * store_slot_elems;
 	auto sStoreU = make_tensor(make_smem_ptr(my_store_u),
-		typename Traits::SmemLayoutStoreSlot{});
+		typename Traits::SmemLayoutActStoreSlot{});
 	auto sStoreV = make_tensor(make_smem_ptr(my_store_v),
-		typename Traits::SmemLayoutStoreSlot{});
+		typename Traits::SmemLayoutActStoreSlot{});
 	auto sStoreZ = make_tensor(make_smem_ptr(my_store_z),
-		typename Traits::SmemLayoutStoreSlot{});
+		typename Traits::SmemLayoutActStoreSlot{});
 
 	// int64_t cast: num_z_m_tiles · TileM · intermediate_dim can exceed INT_MAX.
 	auto out_shape = make_shape(
@@ -291,77 +335,84 @@ static __device__ __forceinline__ void run(
 		//   col_tile = n * (TileN/EpiChunkN) + my_wg*NER + r.
 		CUTE_UNROLL
 		for (int r = 0; r < Traits::NumEpiRounds; ++r) {
-			if (store_in_flight)
-				cute::tma_store_wait<0>();
-
-			cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, my_barrier_id);
-
-			int chunk_start = r * Traits::EpiChunkN;
 			CUTE_UNROLL
-			for (int i = 0; i < size(acc_B); ++i) {
-				auto coord = tCcC(i);
-				int m_loc = get<0>(coord);
-				int n_loc = get<1>(coord);
-				int m_local, n_local;
-				if constexpr (Traits::kMSplit) {
-					m_local = m_loc - my_wg * Traits::AtomTileM;
-					n_local = n_loc;
-				} else {
-					m_local = m_loc;
-					n_local = n_loc - my_wg * Traits::WgTileN;
-				}
-				if (n_local >= chunk_start &&
-				    n_local <  chunk_start + Traits::EpiChunkN) {
-					int chunk_n = n_local - chunk_start;
-					float u = acc_B(i);
-					float v = acc_C(i);
-					float sig    = fast_sigmoid(u);
-					float vprime = u * sig;                          // silu(U)
-					float sil_d  = sig + vprime * (1.0f - sig);      // silu'(U)
-					float uprime = v * sil_d;                        // V · silu'(U)
-					float z      = vprime * v;                       // Z = V' * V
-					sStoreU(m_local, chunk_n) = static_cast<Element>(uprime);
-					sStoreV(m_local, chunk_n) = static_cast<Element>(vprime);
-					sStoreZ(m_local, chunk_n) = static_cast<Element>(z);
-				}
-			}
+			for (int ms = 0; ms < StoreSlicesPerWg; ++ms) {
+				if (store_in_flight)
+					cute::tma_store_wait<0>();
 
-			cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, my_barrier_id);
+				cutlass::arch::NamedBarrier::sync(
+					Traits::WarpGroupSize, my_barrier_id);
 
-			if (is_my_wg_leader) {
-				cute::tma_store_fence();
-				int row_tile, col_tile;
-				if constexpr (Traits::kMSplit) {
-					// TileM=128: 2 row tiles per logical M tile.
-					row_tile = 2 * z_m + my_wg;
-					col_tile = n * Traits::NumEpiRounds + r;
-				} else {
-					// TileM=64: 1 row tile per logical M tile; WG_w handles
-					// its N-half.
-					row_tile = z_m;
-					col_tile = n * (Traits::TileN / Traits::EpiChunkN)
-					         + my_wg * Traits::NumEpiRounds + r;
+				int chunk_start = r * Traits::EpiChunkN;
+				CUTE_UNROLL
+				for (int i = 0; i < size(acc_B); ++i) {
+					auto coord = tCcC(i);
+					int m_loc = get<0>(coord);
+					int n_loc = get<1>(coord);
+					int m_local, n_local;
+					if constexpr (Traits::kMSplit) {
+						m_local = m_loc - my_wg * Traits::AtomTileM;
+						n_local = n_loc;
+					} else {
+						m_local = m_loc;
+						n_local = n_loc - my_wg * Traits::WgTileN;
+					}
+					if (m_local >= ms * Traits::ActStoreTileM
+					    && m_local < (ms + 1) * Traits::ActStoreTileM
+					    && n_local >= chunk_start
+					    && n_local < chunk_start + Traits::EpiChunkN) {
+						int store_m = m_local - ms * Traits::ActStoreTileM;
+						int chunk_n = n_local - chunk_start;
+						float u = acc_B(i);
+						float v = acc_C(i);
+						float sig    = fast_sigmoid(u);
+						float vprime = u * sig;
+						float sil_d  = sig + vprime * (1.0f - sig);
+						sStoreU(store_m, chunk_n) =
+							static_cast<Element>(v * sil_d);
+						sStoreV(store_m, chunk_n) =
+							static_cast<Element>(vprime);
+						sStoreZ(store_m, chunk_n) =
+							static_cast<Element>(vprime * v);
+					}
 				}
-				auto gU = local_tile(mU,
-					make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
-					make_coord(row_tile, col_tile));
-				auto gV = local_tile(mV,
-					make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
-					make_coord(row_tile, col_tile));
-				auto gZ = local_tile(mZ,
-					make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
-					make_coord(row_tile, col_tile));
-				copy(tma_store_du_coef, cta_tma_u.partition_S(sStoreU),
-					cta_tma_u.partition_D(gU));
-				cute::tma_store_arrive();
-				copy(tma_store_dv_coef, cta_tma_v.partition_S(sStoreV),
-					cta_tma_v.partition_D(gV));
-				cute::tma_store_arrive();
-				copy(tma_store_z, cta_tma_z.partition_S(sStoreZ),
-					cta_tma_z.partition_D(gZ));
-				cute::tma_store_arrive();
+
+				cutlass::arch::NamedBarrier::sync(
+					Traits::WarpGroupSize, my_barrier_id);
+
+				if (is_my_wg_leader) {
+					cute::tma_store_fence();
+					int row_tile, col_tile;
+					if constexpr (Traits::kMSplit) {
+						row_tile = StoreTilesPerM * z_m
+							+ my_wg * StoreSlicesPerWg + ms;
+						col_tile = n * Traits::NumEpiRounds + r;
+					} else {
+						row_tile = StoreTilesPerM * z_m + ms;
+						col_tile = n * (Traits::TileN / Traits::EpiChunkN)
+							+ my_wg * Traits::NumEpiRounds + r;
+					}
+					auto tile = make_tile(
+						Int<Traits::ActStoreTileM>{},
+						Int<Traits::EpiChunkN>{});
+					auto gU = local_tile(
+						mU, tile, make_coord(row_tile, col_tile));
+					auto gV = local_tile(
+						mV, tile, make_coord(row_tile, col_tile));
+					auto gZ = local_tile(
+						mZ, tile, make_coord(row_tile, col_tile));
+					copy(tma_store_du_coef, cta_tma_u.partition_S(sStoreU),
+						cta_tma_u.partition_D(gU));
+					cute::tma_store_arrive();
+					copy(tma_store_dv_coef, cta_tma_v.partition_S(sStoreV),
+						cta_tma_v.partition_D(gV));
+					cute::tma_store_arrive();
+					copy(tma_store_z, cta_tma_z.partition_S(sStoreZ),
+						cta_tma_z.partition_D(gZ));
+					cute::tma_store_arrive();
+				}
+				store_in_flight = true;
 			}
-			store_in_flight = true;
 		}
 	}
 	if (store_in_flight)
@@ -398,13 +449,13 @@ static __device__ __forceinline__ void run(
 	constexpr int TileM     = Traits::TileM;
 	constexpr int TileN     = Traits::TileN;
 	constexpr int EpiChunkN = Traits::EpiChunkN;
-	constexpr int AtomTileM = Traits::AtomTileM;
+	constexpr int StoreTileM = Traits::ActStoreTileM;
 	static_assert(TileN % 2 == 0,
 		"Blackwell consumer splits TileN across the two consumer warpgroups");
 	constexpr int WgN         = TileN / 2;
 	static_assert(WgN % EpiChunkN == 0, "EpiChunkN must divide TileN/2");
 	constexpr int NChunksHalf = WgN / EpiChunkN;
-	constexpr int MSub        = TileM / AtomTileM;
+	constexpr int MSub        = TileM / StoreTileM;
 
 	const int  warp_id       = threadIdx.x / Traits::WarpSize;
 	const bool is_mma_warp   = (warp_id == 3);
@@ -458,13 +509,13 @@ static __device__ __forceinline__ void run(
 	tCtAccV.data() = tmem_base + uint32_t(TileN);
 
 	// Three per-WG store slots (U', V', Z) — same smem as Hopper.
-	constexpr int store_slot_elems = AtomTileM * EpiChunkN;
+	constexpr int store_slot_elems = StoreTileM * EpiChunkN;
 	auto sStoreU = make_tensor(make_smem_ptr(smem.store_buf_u + wg * store_slot_elems),
-		typename Traits::SmemLayoutStoreSlot{});
+		typename Traits::SmemLayoutActStoreSlot{});
 	auto sStoreV = make_tensor(make_smem_ptr(smem.store_buf_v + wg * store_slot_elems),
-		typename Traits::SmemLayoutStoreSlot{});
+		typename Traits::SmemLayoutActStoreSlot{});
 	auto sStoreZ = make_tensor(make_smem_ptr(smem.store_buf_z + wg * store_slot_elems),
-		typename Traits::SmemLayoutStoreSlot{});
+		typename Traits::SmemLayoutActStoreSlot{});
 
 	auto out_shape = make_shape(
 		static_cast<int64_t>(num_z_m_tiles) * TileM,
@@ -551,6 +602,7 @@ static __device__ __forceinline__ void run(
 				// one MSub slice, so this evaluates each element once.
 				copy(t2r, tTR_tAccU_stage(_, _, _, _0{}, chunk), tTR_rU);
 				copy(t2r, tTR_tAccV_stage(_, _, _, _0{}, chunk), tTR_rV);
+				cutlass::arch::fence_view_async_tmem_load();
 
 				CUTE_UNROLL
 				for (int ms = 0; ms < MSub; ++ms) {
@@ -562,16 +614,20 @@ static __device__ __forceinline__ void run(
 					for (int i = 0; i < size(tTR_rU); ++i) {
 						int m_row = get<0>(tTR_cChunk(i));
 						int n_col = get<1>(tTR_cChunk(i));
-						if (m_row >= ms * AtomTileM && m_row < (ms + 1) * AtomTileM) {
-							int m_loc = m_row - ms * AtomTileM;
+						if (m_row >= ms * StoreTileM && m_row < (ms + 1) * StoreTileM) {
+							int m_loc = m_row - ms * StoreTileM;
 							float u = tTR_rU(i);
 							float v = tTR_rV(i);
 							float sig    = fast_sigmoid(u);
 							float vprime = u * sig;                      // silu(U)
 							float sil_d  = sig + vprime * (1.0f - sig);  // silu'(U)
-							sStoreU(m_loc, n_col) = static_cast<Element>(v * sil_d);  // V·silu'(U)
-							sStoreV(m_loc, n_col) = static_cast<Element>(vprime);     // silu(U)
-							sStoreZ(m_loc, n_col) = static_cast<Element>(vprime * v); // V'·V
+							float uprime = v * sil_d;
+							Element uprime_e = static_cast<Element>(uprime);
+							Element vprime_e = static_cast<Element>(vprime);
+							Element z_e = static_cast<Element>(vprime * v);
+							sStoreU(m_loc, n_col) = uprime_e;  // V·silu'(U)
+							sStoreV(m_loc, n_col) = vprime_e;  // silu(U)
+							sStoreZ(m_loc, n_col) = z_e;       // V'·V
 						}
 					}
 					cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, wg_barrier_id);
@@ -581,13 +637,13 @@ static __device__ __forceinline__ void run(
 						int row_tile = MSub * z_m + ms;
 						int col_tile = n * (TileN / EpiChunkN) + chunk;
 						auto gU = local_tile(mU,
-							make_tile(Int<AtomTileM>{}, Int<EpiChunkN>{}),
+							make_tile(Int<StoreTileM>{}, Int<EpiChunkN>{}),
 							make_coord(row_tile, col_tile));
 						auto gV = local_tile(mV,
-							make_tile(Int<AtomTileM>{}, Int<EpiChunkN>{}),
+							make_tile(Int<StoreTileM>{}, Int<EpiChunkN>{}),
 							make_coord(row_tile, col_tile));
 						auto gZ = local_tile(mZ,
-							make_tile(Int<AtomTileM>{}, Int<EpiChunkN>{}),
+							make_tile(Int<StoreTileM>{}, Int<EpiChunkN>{}),
 							make_coord(row_tile, col_tile));
 						copy(tma_store_du_coef, cta_tma_u.partition_S(sStoreU),
 							cta_tma_u.partition_D(gU));

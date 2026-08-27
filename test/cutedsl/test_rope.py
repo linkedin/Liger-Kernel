@@ -11,7 +11,6 @@ import importlib.util
 import pytest
 import torch
 
-from test.utils import supports_bfloat16
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
@@ -19,6 +18,7 @@ from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.utils import infer_device
 from liger_kernel.utils import transformers_version_dispatch
+from test.utils import supports_bfloat16
 
 device = infer_device()
 
@@ -168,6 +168,82 @@ def test_cutedsl_backward_contiguous_grad(bsz, seq_len, num_q_heads, num_kv_head
 
     q_hf_grad, k_hf_grad = torch.autograd.grad((hf_q, hf_k), (q_hf, k_hf), (dq, dk), allow_unused=True)
     q_cu_grad, k_cu_grad = rope_backward(dq.clone(), dk.clone(), cos, sin)
+
+    assert torch.allclose(q_cu_grad, q_hf_grad, atol=atol, rtol=rtol)
+    assert torch.allclose(k_cu_grad, k_hf_grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "seq_len, num_heads, head_dim",
+    [
+        # TMA fast path (even head_dim)
+        (128, 32, 64),
+        (256, 16, 128),
+        # token fallback (head_dim=92 is not TMA-vectorizable)
+        (423, 73, 92),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        (torch.float16, 1e-2, 1e-5),
+    ],
+)
+def test_cutedsl_vision_2d_cos_sin(seq_len, num_heads, head_dim, dtype, atol, rtol):
+    """Vision RoPE feeds a 2-D ``(seq_len, head_dim)`` cos/sin table (no batch dim).
+
+    ``liger_rotary_pos_emb_vision`` transposes q/k to 4-D but forwards cos/sin
+    *unchanged* as rank-2 tensors, so the kernel must accept a rank-2 table (the
+    CuteDSL ``rope_forward``/``rope_backward`` handle this via a ``cos.dim()==2``
+    unsqueeze). Numerics are checked against HuggingFace (fed the equivalent 3-D
+    table) and the Triton kernel (fed the same 2-D table), for both the TMA and
+    the token-fallback code paths.
+    """
+    rotary_emb = transformers_version_dispatch(
+        "4.48.0",
+        LlamaRotaryEmbedding,
+        LlamaRotaryEmbedding,
+        before_kwargs={"dim": head_dim, "device": device},
+        after_kwargs={"config": LlamaConfig(num_kv_heads=num_heads, head_dim=head_dim), "device": device},
+    )
+
+    _q = torch.randn((seq_len, num_heads, head_dim), device=device).to(dtype)
+    _k = torch.randn((seq_len, num_heads, head_dim), device=device).to(dtype)
+
+    def to_4d(x):
+        return x.unsqueeze(0).transpose(1, 2).contiguous()
+
+    q_hf = to_4d(_q).clone().requires_grad_(True)
+    k_hf = to_4d(_k).clone().requires_grad_(True)
+    q_tt = to_4d(_q).clone().requires_grad_(True)
+    k_tt = to_4d(_k).clone().requires_grad_(True)
+    q_cu = to_4d(_q).clone().requires_grad_(True)
+    k_cu = to_4d(_k).clone().requires_grad_(True)
+
+    pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
+    cos_3d, sin_3d = rotary_emb(k_hf, pos_ids)  # (1, seq_len, head_dim)
+    cos_2d, sin_2d = cos_3d[0], sin_3d[0]  # (seq_len, head_dim) -- the vision table
+
+    hf_q, hf_k = apply_rotary_pos_emb(q_hf, k_hf, cos_3d, sin_3d)
+    tt_q, tt_k = LigerRopeFunction.apply(q_tt, k_tt, cos_2d, sin_2d)
+    cu_q, cu_k = LigerRopeCuteDSLFunction.apply(q_cu, k_cu, cos_2d, sin_2d)
+
+    assert torch.allclose(cu_q, hf_q, atol=atol, rtol=rtol)
+    assert torch.allclose(cu_k, hf_k, atol=atol, rtol=rtol)
+    assert torch.allclose(cu_q, tt_q, atol=atol, rtol=rtol)
+    assert torch.allclose(cu_k, tt_k, atol=atol, rtol=rtol)
+
+    dq = torch.randn_like(hf_q)
+    dk = torch.randn_like(hf_k)
+    q_hf_grad, k_hf_grad = torch.autograd.grad((hf_q, hf_k), (q_hf, k_hf), (dq, dk), allow_unused=True)
+    q_cu_grad, k_cu_grad = torch.autograd.grad((cu_q, cu_k), (q_cu, k_cu), (dq.clone(), dk.clone()), allow_unused=True)
 
     assert torch.allclose(q_cu_grad, q_hf_grad, atol=atol, rtol=rtol)
     assert torch.allclose(k_cu_grad, k_hf_grad, atol=atol, rtol=rtol)

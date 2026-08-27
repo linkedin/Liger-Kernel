@@ -26,7 +26,7 @@ def get_default_dependencies():
             "torch>=2.6.0",
         ]
     elif platform == "npu":
-        return ["torch==2.7.1", "torch_npu==2.7.1", "triton-ascend==3.2.1"]
+        return ["torch==2.9.0", "torch_npu==2.9.0", "triton-ascend==3.2.2"]
 
 
 def get_optional_dependencies():
@@ -39,6 +39,11 @@ def get_optional_dependencies():
     ]
     cutedsl_deps = [
         "nvidia-cutlass-dsl>=4.6.0",
+        # Lets compiled CuTe DSL kernels take PyTorch tensors directly instead of
+        # marshalling each one through DLPack per call. The kernels fall back to
+        # the marshalling launch when it is absent, but on short kernels that
+        # per-call cost dominates: RMSNorm forward measured 53us -> 15us on B200.
+        "apache-tvm-ffi>=0.1.0",
     ]
     dev_deps = [
         "transformers>=4.52.0",

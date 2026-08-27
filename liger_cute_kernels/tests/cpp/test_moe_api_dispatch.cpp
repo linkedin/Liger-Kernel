@@ -6,15 +6,20 @@
 #include <tvm/ffi/extra/module.h>
 #include <tvm/ffi/function.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "moe_dispatch_configs_sm90.cuh"
 #include "moe_dispatch_configs_sm100.cuh"
+#include "moe_fwd_bwd_tuning_configs.cuh"
 
 namespace {
 
@@ -25,10 +30,12 @@ namespace ffi = tvm::ffi;
 #endif
 
 constexpr int kTokens = 256;
-constexpr int kHiddenDim = 512;
-constexpr int kIntermediateDim = 2048;
+constexpr int kHiddenDim = 2048;
+constexpr int kIntermediateDim = 768;
+constexpr int kNumExperts = 16;
 constexpr int kTopK = 1;
 constexpr int kCommTileM = 128;
+constexpr int kBwdRepeats = 3;
 
 DLDataType bf16_dtype() { return DLDataType{kDLBfloat, 16, 1}; }
 DLDataType i32_dtype() { return DLDataType{kDLInt, 32, 1}; }
@@ -117,6 +124,69 @@ std::string force_string(const BwdConfig& c) {
 	return os.str();
 }
 
+bool matches(const BwdConfig& dispatch, const liger::TunedConfigFwdBwd& tuned) {
+	return dispatch.ns2 == tuned.Bwd_NSplit2 &&
+	       dispatch.tn1 == tuned.Bwd_TileN1 &&
+	       dispatch.tk1 == tuned.Bwd_TileK1 &&
+	       dispatch.s1 == tuned.Bwd_Stages1 &&
+	       dispatch.tm3 == tuned.Bwd_TileM3 &&
+	       dispatch.tn3 == tuned.Bwd_TileN3 &&
+	       dispatch.tk3 == tuned.Bwd_TileK3 &&
+	       dispatch.s3 == tuned.Bwd_Stages3 &&
+	       dispatch.en1 == tuned.Bwd_EpiChunkN1 &&
+	       dispatch.en25 == tuned.Bwd_EpiChunkN25 &&
+	       dispatch.en34 == tuned.Bwd_EpiChunkN34 &&
+	       dispatch.cs == tuned.Bwd_CommNumStages &&
+	       dispatch.tm == tuned.Bwd_TileM &&
+	       dispatch.gtm == tuned.Bwd_TileM;
+}
+
+void expect_tuned_rows_dispatchable(
+		int compute,
+		const liger::TunedConfigFwdBwdTable* tables,
+		int table_count) {
+	const auto configs = all_bwd_configs();
+	for (int table_index = 0; table_index < table_count; ++table_index) {
+		const auto& table = tables[table_index];
+		if (table.Compute != compute) continue;
+		for (int i = 0; i < table.count; ++i) {
+			const auto& tuned = table.configs[i];
+			EXPECT_TRUE(std::any_of(
+				configs.begin(), configs.end(), [&](const BwdConfig& dispatch) {
+					return dispatch.compute == compute && matches(dispatch, tuned);
+				})) << "missing dispatch row for tuned BWD config at index " << i;
+		}
+	}
+}
+
+bool table_contains(
+		const BwdConfig& dispatch,
+		int compute,
+		const liger::TunedConfigFwdBwdTable* tables,
+		int table_count) {
+	for (int table_index = 0; table_index < table_count; ++table_index) {
+		const auto& table = tables[table_index];
+		if (table.Compute != compute) continue;
+		for (int i = 0; i < table.count; ++i)
+			if (matches(dispatch, table.configs[i])) return true;
+	}
+	return false;
+}
+
+void expect_dispatch_rows_tuned(int compute) {
+	for (const auto& dispatch : all_bwd_configs()) {
+		if (dispatch.compute != compute) continue;
+		EXPECT_TRUE(
+			table_contains(
+				dispatch, compute, liger::kTunedConfigTablesSingle,
+				liger::kNumTunedConfigTablesSingle) ||
+			table_contains(
+				dispatch, compute, liger::kTunedConfigTablesMulti,
+				liger::kNumTunedConfigTablesMulti))
+			<< "untuned backward dispatch row: " << force_string(dispatch);
+	}
+}
+
 int compute_dispatch_key() {
 	int dev = 0;
 	cudaDeviceProp prop{};
@@ -159,16 +229,23 @@ ffi::Function module_func(const char* name) {
 struct TensorArg {
 	DLTensor dl{};
 	std::vector<int64_t> shape;
+	std::vector<int64_t> strides;
 
 	TensorArg() = default;
 	TensorArg(void* data, std::vector<int64_t> dims, DLDataType dtype, DLDevice device)
 	    : shape(std::move(dims)) {
+		strides.resize(shape.size());
+		int64_t stride = 1;
+		for (size_t i = shape.size(); i-- > 0;) {
+			strides[i] = stride;
+			stride *= shape[i];
+		}
 		dl.data = data;
 		dl.device = device;
 		dl.ndim = static_cast<int32_t>(shape.size());
 		dl.dtype = dtype;
 		dl.shape = shape.data();
-		dl.strides = nullptr;
+		dl.strides = strides.data();
 		dl.byte_offset = 0;
 	}
 
@@ -200,6 +277,41 @@ struct DeviceBuffer {
 	DeviceBuffer& operator=(const DeviceBuffer&) = delete;
 };
 
+std::vector<uint16_t> copy_bf16(const DeviceBuffer& buffer) {
+	std::vector<uint16_t> host(buffer.bytes / sizeof(uint16_t));
+	check_cuda(cudaMemcpy(
+		host.data(), buffer.ptr, buffer.bytes, cudaMemcpyDeviceToHost),
+		"cudaMemcpy finite check");
+	return host;
+}
+
+bool all_finite_bf16(const std::vector<uint16_t>& values) {
+	return std::all_of(values.begin(), values.end(), [](uint16_t value) {
+		return (value & UINT16_C(0x7f80)) != UINT16_C(0x7f80);
+	});
+}
+
+float bf16_to_float(uint16_t value) {
+	uint32_t bits = static_cast<uint32_t>(value) << 16;
+	float result;
+	std::memcpy(&result, &bits, sizeof(result));
+	return result;
+}
+
+bool mean_relative_close(
+		const std::vector<uint16_t>& actual,
+		const std::vector<uint16_t>& expected) {
+	if (actual.size() != expected.size() || actual.empty()) return false;
+	double relative_error = 0.0;
+	for (size_t i = 0; i < actual.size(); ++i) {
+		const float actual_value = bf16_to_float(actual[i]);
+		const float expected_value = bf16_to_float(expected[i]);
+		relative_error += std::abs(actual_value - expected_value) /
+			std::max(std::abs(expected_value), 1.0e-3f);
+	}
+	return relative_error / actual.size() < 0.15;
+}
+
 struct MoeBuffers {
 	int n_pes;
 	int num_experts;
@@ -227,7 +339,7 @@ struct MoeBuffers {
 
 	MoeBuffers(int pes, int device_id)
 	    : n_pes(pes),
-	      num_experts(pes > 0 ? pes : 1),
+	      num_experts(kNumExperts),
 	      experts_per_pe(num_experts / n_pes),
 	      max_total_slots(kTokens * kTopK + num_experts * kCommTileM),
 	      tile_id_slots(max_total_slots / kCommTileM),
@@ -247,12 +359,19 @@ struct MoeBuffers {
 	      dC(sizeof(uint16_t) * experts_per_pe * kIntermediateDim * kHiddenDim),
 	      dA(sizeof(uint16_t) * experts_per_pe * kHiddenDim * kIntermediateDim),
 	      dW(sizeof(uint16_t) * kTokens * kTopK),
-	      symm_meta(13) {
+	      symm_meta(17) {
 		std::vector<int32_t> h_indices(kTokens * kTopK);
 		for (int t = 0; t < kTokens; ++t) h_indices[t] = t % num_experts;
 		check_cuda(cudaMemcpy(expert_indices.ptr, h_indices.data(),
 		                      h_indices.size() * sizeof(int32_t), cudaMemcpyHostToDevice),
 		           "cudaMemcpy expert_indices");
+		check_cuda(cudaMemset(X.ptr, 0x3f, X.bytes), "initialize X");
+		check_cuda(cudaMemset(dY.ptr, 0x3f, dY.bytes), "initialize dY");
+		check_cuda(cudaMemset(expert_weights.ptr, 0x3f, expert_weights.bytes),
+		           "initialize expert_weights");
+		check_cuda(cudaMemset(all_B.ptr, 0x3f, all_B.bytes), "initialize B");
+		check_cuda(cudaMemset(all_C.ptr, 0x3f, all_C.bytes), "initialize C");
+		check_cuda(cudaMemset(all_A.ptr, 0x3f, all_A.bytes), "initialize A");
 	}
 
 	DLDevice cuda_dev() const { return cuda_device(device); }
@@ -401,6 +520,7 @@ void run_dispatch_coverage_for_compute(int target_compute) {
 	ASSERT_FALSE(fwd_configs.empty());
 	ASSERT_FALSE(bwd_configs.empty());
 
+	std::vector<uint16_t> reference_y;
 	unsetenv("LIGER_MOE_BWD_FORCE_CONFIG");
 	for (const auto& cfg : fwd_configs) {
 		const std::string force = force_string(cfg);
@@ -408,19 +528,52 @@ void run_dispatch_coverage_for_compute(int target_compute) {
 		SCOPED_TRACE("fwd " + force);
 		run_fwd(buffers, team, fwd_fn);
 		check_cuda(cudaDeviceSynchronize(), "fwd sync");
+		auto y = copy_bf16(buffers.Y);
+		EXPECT_TRUE(all_finite_bf16(y)) << "non-finite forward output";
+		if (reference_y.empty())
+			reference_y = y;
+		else
+			EXPECT_TRUE(mean_relative_close(y, reference_y))
+				<< "forward output differs from the reference template";
 		pop_fwd_fn();
 	}
 
 	const std::string fwd_force = force_string(fwd_configs.front());
 	setenv("LIGER_MOE_FORCE_CONFIG", fwd_force.c_str(), 1);
+	std::array<std::vector<uint16_t>, 5> reference_grads;
+	bool have_reference_grads = false;
+	const char* grad_names[] = {"dX", "dB", "dC", "dA", "dW"};
 	for (const auto& cfg : bwd_configs) {
 		const std::string force = force_string(cfg);
 		setenv("LIGER_MOE_BWD_FORCE_CONFIG", force.c_str(), 1);
 		SCOPED_TRACE("bwd " + force);
-		run_fwd(buffers, team, fwd_fn);
-		run_bwd(buffers, team, bwd_fn);
-		check_cuda(cudaDeviceSynchronize(), "bwd sync");
-		pop_fwd_fn();
+		for (int repeat = 0; repeat < kBwdRepeats; ++repeat) {
+			SCOPED_TRACE("repeat " + std::to_string(repeat));
+			run_fwd(buffers, team, fwd_fn);
+			run_bwd(buffers, team, bwd_fn);
+			check_cuda(cudaDeviceSynchronize(), "bwd sync");
+			std::array<std::vector<uint16_t>, 5> grads = {
+				copy_bf16(buffers.dX),
+				copy_bf16(buffers.dB),
+				copy_bf16(buffers.dC),
+				copy_bf16(buffers.dA),
+				copy_bf16(buffers.dW),
+			};
+			for (size_t i = 0; i < grads.size(); ++i) {
+				EXPECT_TRUE(all_finite_bf16(grads[i]))
+					<< "non-finite " << grad_names[i];
+				if (have_reference_grads) {
+					EXPECT_TRUE(mean_relative_close(grads[i], reference_grads[i]))
+						<< grad_names[i]
+						<< " differs from the reference backward template";
+				}
+			}
+			if (!have_reference_grads) {
+				reference_grads = std::move(grads);
+				have_reference_grads = true;
+			}
+			pop_fwd_fn();
+		}
 	}
 
 	unsetenv("LIGER_MOE_FORCE_CONFIG");
@@ -439,6 +592,30 @@ TEST(MoeApiDispatchSm90, RunsEveryForwardAndBackwardDispatchEntry) {
 TEST(MoeApiDispatchSm100, RunsEveryForwardAndBackwardDispatchEntry) {
 	run_dispatch_coverage_for_compute(100);
 }
+
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
+TEST(MoeApiDispatchSm90, EveryTunedBackwardRowIsDispatchable) {
+	expect_tuned_rows_dispatchable(
+		90, liger::kTunedConfigTablesSingle,
+		liger::kNumTunedConfigTablesSingle);
+	expect_tuned_rows_dispatchable(
+		90, liger::kTunedConfigTablesMulti,
+		liger::kNumTunedConfigTablesMulti);
+	expect_dispatch_rows_tuned(90);
+}
+#endif
+
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
+TEST(MoeApiDispatchSm100, EveryTunedBackwardRowIsDispatchable) {
+	expect_tuned_rows_dispatchable(
+		100, liger::kTunedConfigTablesSingle,
+		liger::kNumTunedConfigTablesSingle);
+	expect_tuned_rows_dispatchable(
+		100, liger::kTunedConfigTablesMulti,
+		liger::kNumTunedConfigTablesMulti);
+	expect_dispatch_rows_tuned(100);
+}
+#endif
 
 int main(int argc, char** argv) {
 	::testing::InitGoogleTest(&argc, argv);
