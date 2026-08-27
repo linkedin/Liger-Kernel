@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
 from liger_kernel.utils import infer_device_arch
 
 
@@ -174,23 +175,24 @@ class LigerLfm2ShortConvFunction(torch.autograd.Function):
 
         output = torch.empty((batch_size, seq_len, hidden_size), dtype=bcx.dtype, device=bcx.device)
         n_elements = output.numel()
-        _short_conv_forward[(triton.cdiv(n_elements, 512),)](
-            bcx,
-            weight,
-            bias,
-            output,
-            n_elements,
-            seq_len,
-            hidden_size,
-            bcx.stride(0),
-            bcx.stride(1),
-            bcx.stride(2),
-            weight.stride(0),
-            weight.stride(2),
-            K=weight.shape[2],
-            HAS_BIAS=bias is not None,
-            BLOCK=512,
-        )
+        with device_context(bcx.device):
+            _short_conv_forward[(triton.cdiv(n_elements, 512),)](
+                bcx,
+                weight,
+                bias,
+                output,
+                n_elements,
+                seq_len,
+                hidden_size,
+                bcx.stride(0),
+                bcx.stride(1),
+                bcx.stride(2),
+                weight.stride(0),
+                weight.stride(2),
+                K=weight.shape[2],
+                HAS_BIAS=bias is not None,
+                BLOCK=512,
+            )
         saved_bias = bias if bias is not None else torch.empty(0, dtype=bcx.dtype, device=bcx.device)
         ctx.save_for_backward(bcx, weight, saved_bias)
         ctx.has_bias = bias is not None
@@ -206,24 +208,25 @@ class LigerLfm2ShortConvFunction(torch.autograd.Function):
         n_elements = batch_size * seq_len * hidden_size
 
         grad_bcx = torch.empty_like(bcx)
-        _short_conv_input_backward[(triton.cdiv(n_elements, 512),)](
-            grad_output,
-            bcx,
-            weight,
-            bias,
-            grad_bcx,
-            n_elements,
-            seq_len,
-            hidden_size,
-            bcx.stride(0),
-            bcx.stride(1),
-            bcx.stride(2),
-            weight.stride(0),
-            weight.stride(2),
-            K=kernel_size,
-            HAS_BIAS=ctx.has_bias,
-            BLOCK=512,
-        )
+        with device_context(bcx.device):
+            _short_conv_input_backward[(triton.cdiv(n_elements, 512),)](
+                grad_output,
+                bcx,
+                weight,
+                bias,
+                grad_bcx,
+                n_elements,
+                seq_len,
+                hidden_size,
+                bcx.stride(0),
+                bcx.stride(1),
+                bcx.stride(2),
+                weight.stride(0),
+                weight.stride(2),
+                K=kernel_size,
+                HAS_BIAS=ctx.has_bias,
+                BLOCK=512,
+            )
 
         batch_tokens = batch_size * seq_len
         # Hopper benefits from finer-grained long-sequence weight reductions:
@@ -240,23 +243,24 @@ class LigerLfm2ShortConvFunction(torch.autograd.Function):
             if ctx.has_bias
             else weight_partials
         )
-        _short_conv_weight_backward[(hidden_size, n_chunks)](
-            grad_output,
-            bcx,
-            weight_partials,
-            bias_partials,
-            seq_len,
-            hidden_size,
-            batch_tokens,
-            n_chunks,
-            bcx.stride(0),
-            bcx.stride(1),
-            bcx.stride(2),
-            K=kernel_size,
-            HAS_BIAS=ctx.has_bias,
-            BLOCK=weight_block,
-            **({"num_warps": weight_warps, "num_stages": weight_stages} if use_hopper_weight_config else {}),
-        )
+        with device_context(bcx.device):
+            _short_conv_weight_backward[(hidden_size, n_chunks)](
+                grad_output,
+                bcx,
+                weight_partials,
+                bias_partials,
+                seq_len,
+                hidden_size,
+                batch_tokens,
+                n_chunks,
+                bcx.stride(0),
+                bcx.stride(1),
+                bcx.stride(2),
+                K=kernel_size,
+                HAS_BIAS=ctx.has_bias,
+                BLOCK=weight_block,
+                **({"num_warps": weight_warps, "num_stages": weight_stages} if use_hopper_weight_config else {}),
+            )
         grad_weight = weight_partials.sum(1).reshape(hidden_size, 1, kernel_size).to(weight.dtype)
         grad_bias = None
         if ctx.has_bias:

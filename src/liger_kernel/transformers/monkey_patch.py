@@ -18,6 +18,7 @@ from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.geglu import LigerGEGLUMLPForGemma4
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_route_tokens_to_experts
+from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_router_forward
 from liger_kernel.transformers.lfm2_short_conv import liger_lfm2_short_conv_forward
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
@@ -3557,7 +3558,12 @@ def _patch_lfm2_base_model(
             if swiglu and fused_moe:
                 _patch_swiglu_module(feed_forward.experts, LigerLfm2MoeExperts)
             if fused_moe_router:
-                _bind_method_to_module(feed_forward, "route_tokens_to_experts", liger_lfm2_moe_route_tokens_to_experts)
+                if hasattr(feed_forward, "route_tokens_to_experts"):
+                    _bind_method_to_module(
+                        feed_forward, "route_tokens_to_experts", liger_lfm2_moe_route_tokens_to_experts
+                    )
+                elif hasattr(feed_forward, "gate"):
+                    _bind_method_to_module(feed_forward.gate, "forward", liger_lfm2_moe_router_forward)
         elif swiglu:
             _patch_swiglu_module(feed_forward, LigerLfm2SwiGLUMLP)
 
@@ -3570,6 +3576,12 @@ def _patch_lfm2_base_model(
             if hasattr(decoder_layer, "self_attn"):
                 _patch_rms_norm_module(decoder_layer.self_attn.q_layernorm)
                 _patch_rms_norm_module(decoder_layer.self_attn.k_layernorm)
+
+
+def _patch_lfm2_short_conv_class(short_conv_class) -> None:
+    if not hasattr(short_conv_class, "_liger_original_forward"):
+        short_conv_class._liger_original_forward = short_conv_class.forward
+    short_conv_class.forward = liger_lfm2_short_conv_forward
 
 
 def apply_liger_kernel_to_lfm2(
@@ -3603,7 +3615,7 @@ def apply_liger_kernel_to_lfm2(
     if swiglu:
         modeling_lfm2.Lfm2MLP = LigerLfm2SwiGLUMLP
     if short_conv:
-        modeling_lfm2.Lfm2ShortConv.forward = liger_lfm2_short_conv_forward
+        _patch_lfm2_short_conv_class(modeling_lfm2.Lfm2ShortConv)
     if cross_entropy:
         from transformers.loss.loss_utils import nn
 
@@ -3649,9 +3661,12 @@ def apply_liger_kernel_to_lfm2_moe(
     if fused_moe:
         modeling_lfm2_moe.Lfm2MoeExperts = LigerLfm2MoeExperts
     if fused_moe_router:
-        modeling_lfm2_moe.Lfm2MoeSparseMoeBlock.route_tokens_to_experts = liger_lfm2_moe_route_tokens_to_experts
+        if hasattr(modeling_lfm2_moe, "Lfm2MoeTopKRouter"):
+            modeling_lfm2_moe.Lfm2MoeTopKRouter.forward = liger_lfm2_moe_router_forward
+        elif hasattr(modeling_lfm2_moe.Lfm2MoeSparseMoeBlock, "route_tokens_to_experts"):
+            modeling_lfm2_moe.Lfm2MoeSparseMoeBlock.route_tokens_to_experts = liger_lfm2_moe_route_tokens_to_experts
     if short_conv:
-        modeling_lfm2_moe.Lfm2MoeShortConv.forward = liger_lfm2_short_conv_forward
+        _patch_lfm2_short_conv_class(modeling_lfm2_moe.Lfm2MoeShortConv)
     if cross_entropy:
         from transformers.loss.loss_utils import nn
 

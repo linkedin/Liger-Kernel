@@ -6,6 +6,7 @@ import torch
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM
 from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_route_tokens_to_experts
+from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_router_forward
 from liger_kernel.transformers.lfm2_short_conv import liger_lfm2_short_conv_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as lfm2_lce_forward
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
@@ -110,9 +111,14 @@ def test_apply_liger_kernel_to_lfm2_moe_instance():
     assert inspect.getsource(sparse_layer.feed_forward.experts._apply_gate) == inspect.getsource(
         LigerLfm2MoeExperts._apply_gate
     )
-    assert inspect.getsource(sparse_layer.feed_forward.route_tokens_to_experts) == inspect.getsource(
-        liger_lfm2_moe_route_tokens_to_experts
-    )
+    if hasattr(sparse_layer.feed_forward, "route_tokens_to_experts"):
+        assert inspect.getsource(sparse_layer.feed_forward.route_tokens_to_experts) == inspect.getsource(
+            liger_lfm2_moe_route_tokens_to_experts
+        )
+    else:
+        assert inspect.getsource(sparse_layer.feed_forward.gate.forward) == inspect.getsource(
+            liger_lfm2_moe_router_forward
+        )
 
     assert inspect.getsource(dense_layer.conv.forward) == inspect.getsource(liger_lfm2_short_conv_forward)
 
@@ -198,6 +204,35 @@ def test_lfm2_fused_linear_cross_entropy_backend_default(monkeypatch, hip, fused
     assert inspect.getsource(model.forward) == expected_forward
 
 
+@pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")
+def test_lfm2_short_conv_preserves_native_packed_sequence_fallback():
+    from transformers.models.lfm2.modeling_lfm2 import Lfm2ForCausalLM
+
+    from liger_kernel.transformers import monkey_patch
+
+    model = Lfm2ForCausalLM(_lfm2_config())
+    short_conv = model.model.layers[0].conv
+    original_forward = short_conv.forward
+    monkey_patch.apply_liger_kernel_to_lfm2(
+        model=model,
+        rope=False,
+        fused_linear_cross_entropy=False,
+        rms_norm=False,
+        swiglu=False,
+        short_conv=True,
+    )
+
+    hidden_states = torch.randn(1, 8, model.config.hidden_size)
+    seq_idx = torch.arange(hidden_states.shape[1]).unsqueeze(0)
+    expected_kwargs = {}
+    if "seq_idx" in inspect.signature(original_forward).parameters:
+        expected_kwargs["seq_idx"] = seq_idx
+    expected = original_forward(hidden_states, **expected_kwargs)
+    actual = short_conv(hidden_states, seq_idx=seq_idx)
+
+    torch.testing.assert_close(actual, expected)
+
+
 @pytest.mark.skipif(not HAS_LFM2 or device == "cpu", reason="requires LFM2 and an accelerator")
 def test_lfm2_explicit_fused_linear_cross_entropy_forward_backward():
     from transformers.models.lfm2.modeling_lfm2 import Lfm2ForCausalLM
@@ -248,6 +283,11 @@ def test_auto_liger_kernel_for_lfm2_moe_from_config():
     dense_layer, sparse_layer = model.model.layers
     assert isinstance(dense_layer.feed_forward, LigerLfm2SwiGLUMLP)
     assert isinstance(sparse_layer.feed_forward.experts, LigerLfm2MoeExperts)
-    assert inspect.getsource(sparse_layer.feed_forward.route_tokens_to_experts) == inspect.getsource(
-        liger_lfm2_moe_route_tokens_to_experts
-    )
+    if hasattr(sparse_layer.feed_forward, "route_tokens_to_experts"):
+        assert inspect.getsource(sparse_layer.feed_forward.route_tokens_to_experts) == inspect.getsource(
+            liger_lfm2_moe_route_tokens_to_experts
+        )
+    else:
+        assert inspect.getsource(sparse_layer.feed_forward.gate.forward) == inspect.getsource(
+            liger_lfm2_moe_router_forward
+        )

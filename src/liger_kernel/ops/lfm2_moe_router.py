@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
 from liger_kernel.utils import infer_device_arch
 
 
@@ -133,22 +134,23 @@ class LigerLfm2MoeRouterFunction(torch.autograd.Function):
             expert_bias if expert_bias is not None else torch.empty(0, dtype=torch.float32, device=router_logits.device)
         )
         block_k = triton.next_power_of_2(top_k)
-        _lfm2_moe_router_forward[(n_tokens,)](
-            router_logits,
-            saved_bias,
-            selected_experts,
-            routing_weights,
-            n_tokens,
-            n_experts,
-            router_logits.stride(0),
-            routed_scaling_factor=routed_scaling_factor,
-            norm_topk_prob=norm_topk_prob,
-            has_expert_bias=expert_bias is not None,
-            TOP_K=top_k,
-            BLOCK_K=block_k,
-            BLOCK_EXPERTS=triton.next_power_of_2(n_experts),
-            **_lfm2_moe_router_launch_config(),
-        )
+        with device_context(router_logits.device):
+            _lfm2_moe_router_forward[(n_tokens,)](
+                router_logits,
+                saved_bias,
+                selected_experts,
+                routing_weights,
+                n_tokens,
+                n_experts,
+                router_logits.stride(0),
+                routed_scaling_factor=routed_scaling_factor,
+                norm_topk_prob=norm_topk_prob,
+                has_expert_bias=expert_bias is not None,
+                TOP_K=top_k,
+                BLOCK_K=block_k,
+                BLOCK_EXPERTS=triton.next_power_of_2(n_experts),
+                **_lfm2_moe_router_launch_config(),
+            )
         ctx.save_for_backward(router_logits, selected_experts)
         ctx.n_experts = n_experts
         ctx.stride_token = router_logits.stride(0)
@@ -165,19 +167,20 @@ class LigerLfm2MoeRouterFunction(torch.autograd.Function):
         grad_router_logits = torch.empty(
             (n_tokens, ctx.n_experts), dtype=router_logits.dtype, device=router_logits.device
         )
-        _lfm2_moe_router_backward[(n_tokens,)](
-            grad_routing_weights,
-            router_logits,
-            selected_experts,
-            grad_router_logits,
-            n_tokens,
-            ctx.n_experts,
-            ctx.stride_token,
-            routed_scaling_factor=ctx.routed_scaling_factor,
-            norm_topk_prob=ctx.norm_topk_prob,
-            TOP_K=ctx.top_k,
-            BLOCK_K=triton.next_power_of_2(ctx.top_k),
-            BLOCK_EXPERTS=triton.next_power_of_2(ctx.n_experts),
-            **_lfm2_moe_router_launch_config(),
-        )
+        with device_context(router_logits.device):
+            _lfm2_moe_router_backward[(n_tokens,)](
+                grad_routing_weights,
+                router_logits,
+                selected_experts,
+                grad_router_logits,
+                n_tokens,
+                ctx.n_experts,
+                ctx.stride_token,
+                routed_scaling_factor=ctx.routed_scaling_factor,
+                norm_topk_prob=ctx.norm_topk_prob,
+                TOP_K=ctx.top_k,
+                BLOCK_K=triton.next_power_of_2(ctx.top_k),
+                BLOCK_EXPERTS=triton.next_power_of_2(ctx.n_experts),
+                **_lfm2_moe_router_launch_config(),
+            )
         return grad_router_logits, None, None, None, None
