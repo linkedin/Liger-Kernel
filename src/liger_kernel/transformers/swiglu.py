@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from liger_kernel.ops import LigerFusedMoEFunction
 from liger_kernel.ops import LigerSiLUMulFunction
+from liger_kernel.transformers.lfm2_utils import use_lfm2_native_forward
 
 
 class LigerSwiGLUMLP(nn.Module):
@@ -103,6 +104,8 @@ class LigerLfm2SwiGLUMLP(nn.Module):
         self.w2 = nn.Linear(intermediate_size, config.hidden_size, bias=False)
 
     def forward(self, x):
+        if use_lfm2_native_forward(x):
+            return self.w2(torch.nn.functional.silu(self.w1(x)) * self.w3(x))
         return self.w2(LigerSiLUMulFunction.apply(self.w1(x), self.w3(x)))
 
 

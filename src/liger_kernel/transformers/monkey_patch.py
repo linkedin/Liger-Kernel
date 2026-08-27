@@ -35,7 +35,9 @@ from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forwa
 from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.relu_squared import LigerReLUSquared
+from liger_kernel.transformers.rms_norm import LigerLfm2RMSNorm
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
+from liger_kernel.transformers.rope import liger_lfm2_rotary_pos_emb
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
@@ -3549,8 +3551,12 @@ def _patch_lfm2_base_model(
     fused_moe: bool = True,
     fused_moe_router: bool = True,
 ) -> None:
+    def patch_rms_norm(module):
+        _patch_rms_norm_module(module)
+        _bind_method_to_module(module, "forward", LigerLfm2RMSNorm.forward)
+
     if rms_norm:
-        _patch_rms_norm_module(base_model.embedding_norm)
+        patch_rms_norm(base_model.embedding_norm)
 
     for decoder_layer in base_model.layers:
         feed_forward = decoder_layer.feed_forward
@@ -3571,11 +3577,11 @@ def _patch_lfm2_base_model(
             _bind_method_to_module(decoder_layer.conv, "forward", liger_lfm2_short_conv_forward)
 
         if rms_norm:
-            _patch_rms_norm_module(decoder_layer.operator_norm)
-            _patch_rms_norm_module(decoder_layer.ffn_norm)
+            patch_rms_norm(decoder_layer.operator_norm)
+            patch_rms_norm(decoder_layer.ffn_norm)
             if hasattr(decoder_layer, "self_attn"):
-                _patch_rms_norm_module(decoder_layer.self_attn.q_layernorm)
-                _patch_rms_norm_module(decoder_layer.self_attn.k_layernorm)
+                patch_rms_norm(decoder_layer.self_attn.q_layernorm)
+                patch_rms_norm(decoder_layer.self_attn.k_layernorm)
 
 
 def _patch_lfm2_short_conv_class(short_conv_class) -> None:
@@ -3609,9 +3615,9 @@ def apply_liger_kernel_to_lfm2(
     from transformers.models.lfm2.modeling_lfm2 import Lfm2Model
 
     if rope:
-        modeling_lfm2.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_lfm2.apply_rotary_pos_emb = liger_lfm2_rotary_pos_emb
     if rms_norm:
-        modeling_lfm2.Lfm2RMSNorm = LigerRMSNorm
+        modeling_lfm2.Lfm2RMSNorm = LigerLfm2RMSNorm
     if swiglu:
         modeling_lfm2.Lfm2MLP = LigerLfm2SwiGLUMLP
     if short_conv:
@@ -3653,9 +3659,9 @@ def apply_liger_kernel_to_lfm2_moe(
     from transformers.models.lfm2_moe.modeling_lfm2_moe import Lfm2MoeModel
 
     if rope:
-        modeling_lfm2_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_lfm2_moe.apply_rotary_pos_emb = liger_lfm2_rotary_pos_emb
     if rms_norm:
-        modeling_lfm2_moe.Lfm2MoeRMSNorm = LigerRMSNorm
+        modeling_lfm2_moe.Lfm2MoeRMSNorm = LigerLfm2RMSNorm
     if swiglu:
         modeling_lfm2_moe.Lfm2MoeMLP = LigerLfm2SwiGLUMLP
     if fused_moe:

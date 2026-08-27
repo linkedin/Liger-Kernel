@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from liger_kernel.ops import LigerRMSNormFunction
+from liger_kernel.transformers.lfm2_utils import use_lfm2_native_forward
 
 
 class LigerRMSNorm(nn.Module):
@@ -47,6 +48,19 @@ class LigerRMSNorm(nn.Module):
 
     def extra_repr(self):
         return f"weight_shape={tuple(self.weight.shape) if self.weight is not None else None}, eps={self.variance_epsilon}, offset={self.offset}, in_place={self.in_place}, row_mode={self.row_mode}"
+
+
+class LigerLfm2RMSNorm(LigerRMSNorm):
+    """LFM2 RMSNorm with a native path for inference and short Hopper sequences."""
+
+    def forward(self, hidden_states):
+        if use_lfm2_native_forward(hidden_states):
+            input_dtype = hidden_states.dtype
+            normalized = hidden_states.to(torch.float32)
+            variance = normalized.pow(2).mean(-1, keepdim=True)
+            normalized = normalized * torch.rsqrt(variance + self.variance_epsilon)
+            return self.weight * normalized.to(input_dtype)
+        return LigerRMSNorm.forward(self, hidden_states)
 
 
 class LigerRMSNormForGemma(LigerRMSNorm):

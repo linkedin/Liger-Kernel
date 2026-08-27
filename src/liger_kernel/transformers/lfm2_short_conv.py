@@ -3,6 +3,7 @@ import inspect
 import torch
 
 from liger_kernel.ops import LigerLfm2ShortConvFunction
+from liger_kernel.transformers.lfm2_utils import use_lfm2_native_forward
 
 
 def liger_lfm2_short_conv_forward(
@@ -14,7 +15,7 @@ def liger_lfm2_short_conv_forward(
     seq_idx=None,
 ):
     """Fused full-sequence training forward for LFM2 short convolution."""
-    if past_key_values is not None or seq_idx is not None:
+    if use_lfm2_native_forward(hidden_states) or past_key_values is not None or seq_idx is not None:
         original_forward = getattr(self, "_liger_original_forward", None)
         if original_forward is None:
             original_forward = getattr(self, "slow_forward", None)

@@ -3,6 +3,7 @@ from typing import Tuple
 import torch
 
 from liger_kernel.ops import LigerRopeFunction
+from liger_kernel.transformers.lfm2_utils import use_lfm2_native_forward
 
 
 def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -22,6 +23,20 @@ def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
 
     return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+
+
+def liger_lfm2_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    """Use native PyTorch RoPE for inference and short Hopper sequences."""
+    if not use_lfm2_native_forward(q):
+        return liger_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim)
+
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    q_half = q.shape[-1] // 2
+    k_half = k.shape[-1] // 2
+    q_rotated = torch.cat((-q[..., q_half:], q[..., :q_half]), dim=-1)
+    k_rotated = torch.cat((-k[..., k_half:], k[..., :k_half]), dim=-1)
+    return (q * cos) + (q_rotated * sin), (k * cos) + (k_rotated * sin)
 
 
 def liger_rotary_pos_emb_vision(

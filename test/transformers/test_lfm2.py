@@ -10,7 +10,8 @@ from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_router_forw
 from liger_kernel.transformers.lfm2_short_conv import liger_lfm2_short_conv_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as lfm2_lce_forward
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
-from liger_kernel.transformers.rms_norm import LigerRMSNorm
+from liger_kernel.transformers.rms_norm import LigerLfm2RMSNorm
+from liger_kernel.transformers.rope import liger_lfm2_rotary_pos_emb
 from liger_kernel.transformers.swiglu import LigerLfm2MoeExperts
 from liger_kernel.transformers.swiglu import LigerLfm2SwiGLUMLP
 from liger_kernel.utils import infer_device
@@ -53,6 +54,7 @@ def _lfm2_config(**overrides):
 
 @pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")
 def test_apply_liger_kernel_to_lfm2_instance():
+    from transformers.models.lfm2 import modeling_lfm2
     from transformers.models.lfm2.modeling_lfm2 import Lfm2ForCausalLM
 
     model = Lfm2ForCausalLM(_lfm2_config())
@@ -61,16 +63,17 @@ def test_apply_liger_kernel_to_lfm2_instance():
 
     expected_forward = inspect.getsource(lfm2_lce_forward) if is_hip() else original_forward
     assert inspect.getsource(model.forward) == expected_forward
-    assert inspect.getsource(model.model.embedding_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+    assert modeling_lfm2.apply_rotary_pos_emb is liger_lfm2_rotary_pos_emb
+    assert inspect.getsource(model.model.embedding_norm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
     for layer in model.model.layers:
         assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerLfm2SwiGLUMLP.forward)
-        assert inspect.getsource(layer.operator_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
-        assert inspect.getsource(layer.ffn_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        assert inspect.getsource(layer.operator_norm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
+        assert inspect.getsource(layer.ffn_norm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
         if hasattr(layer, "conv"):
             assert inspect.getsource(layer.conv.forward) == inspect.getsource(liger_lfm2_short_conv_forward)
         if hasattr(layer, "self_attn"):
-            assert inspect.getsource(layer.self_attn.q_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.self_attn.k_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.q_layernorm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_layernorm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
 
 
 @pytest.mark.skipif(not HAS_LFM2_MOE, reason="lfm2_moe module not available")
@@ -99,7 +102,7 @@ def test_apply_liger_kernel_to_lfm2_moe_instance():
 
     expected_forward = inspect.getsource(lfm2_lce_forward) if is_hip() else original_forward
     assert inspect.getsource(model.forward) == expected_forward
-    assert inspect.getsource(model.model.embedding_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+    assert inspect.getsource(model.model.embedding_norm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
     dense_layer, sparse_layer = model.model.layers
     assert inspect.getsource(dense_layer.feed_forward.forward) == inspect.getsource(LigerLfm2SwiGLUMLP.forward)
     assert inspect.getsource(sparse_layer.feed_forward.experts.forward) == inspect.getsource(
@@ -164,7 +167,7 @@ def test_apply_liger_kernel_to_lfm2_vl_instance(layer_norm, expected_liger_layer
     expected_forward = inspect.getsource(lfm2_vl_lce_forward) if is_hip() else original_forward
     assert inspect.getsource(model.forward) == expected_forward
     language_model = model.model.language_model
-    assert inspect.getsource(language_model.embedding_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+    assert inspect.getsource(language_model.embedding_norm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
     for layer in language_model.layers:
         assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerLfm2SwiGLUMLP.forward)
 
@@ -205,9 +208,10 @@ def test_lfm2_fused_linear_cross_entropy_backend_default(monkeypatch, hip, fused
 
 
 @pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")
-def test_lfm2_short_conv_preserves_native_packed_sequence_fallback():
+def test_lfm2_short_conv_preserves_native_packed_sequence_fallback(monkeypatch):
     from transformers.models.lfm2.modeling_lfm2 import Lfm2ForCausalLM
 
+    from liger_kernel.transformers import lfm2_short_conv
     from liger_kernel.transformers import monkey_patch
 
     model = Lfm2ForCausalLM(_lfm2_config())
@@ -231,6 +235,14 @@ def test_lfm2_short_conv_preserves_native_packed_sequence_fallback():
     actual = short_conv(hidden_states, seq_idx=seq_idx)
 
     torch.testing.assert_close(actual, expected)
+
+    monkeypatch.setattr(
+        lfm2_short_conv.LigerLfm2ShortConvFunction,
+        "apply",
+        lambda *_args: pytest.fail("no-grad inference used the fused training kernel"),
+    )
+    with torch.no_grad():
+        torch.testing.assert_close(short_conv(hidden_states), original_forward(hidden_states))
 
 
 @pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")
@@ -266,6 +278,61 @@ def test_lfm2_short_conv_caches_native_forward_signature(monkeypatch):
     short_conv(hidden_states, seq_idx=seq_idx)
 
     assert signature_calls == 1
+
+
+@pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")
+def test_lfm2_no_grad_fast_paths_match_native_pytorch():
+    norm = LigerLfm2RMSNorm(32)
+    mlp = LigerLfm2SwiGLUMLP(_lfm2_config())
+    hidden_states = torch.randn(2, 4, 32)
+    q = torch.randn(2, 4, 3, 8)
+    k = torch.randn(2, 2, 3, 8)
+    cos = torch.randn(2, 3, 8)
+    sin = torch.randn(2, 3, 8)
+
+    with torch.no_grad():
+        actual_norm = norm(hidden_states)
+        expected_norm = hidden_states.float()
+        expected_norm *= torch.rsqrt(expected_norm.pow(2).mean(-1, keepdim=True) + norm.variance_epsilon)
+        expected_norm = norm.weight * expected_norm.to(hidden_states.dtype)
+        torch.testing.assert_close(actual_norm, expected_norm)
+
+        actual_mlp = mlp(hidden_states)
+        expected_mlp = mlp.w2(torch.nn.functional.silu(mlp.w1(hidden_states)) * mlp.w3(hidden_states))
+        torch.testing.assert_close(actual_mlp, expected_mlp)
+
+        actual_q, actual_k = liger_lfm2_rotary_pos_emb(q, k, cos, sin)
+        broadcast_cos = cos.unsqueeze(1)
+        broadcast_sin = sin.unsqueeze(1)
+        expected_q_rotated = torch.cat((-q[..., 4:], q[..., :4]), dim=-1)
+        expected_k_rotated = torch.cat((-k[..., 4:], k[..., :4]), dim=-1)
+        expected_q = (q * broadcast_cos) + (expected_q_rotated * broadcast_sin)
+        expected_k = (k * broadcast_cos) + (expected_k_rotated * broadcast_sin)
+        torch.testing.assert_close(actual_q, expected_q)
+        torch.testing.assert_close(actual_k, expected_k)
+
+
+@pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")
+def test_lfm2_rms_norm_training_path_supports_instance_patching(monkeypatch):
+    from transformers.models.lfm2.modeling_lfm2 import Lfm2RMSNorm
+
+    from liger_kernel.transformers import rms_norm
+
+    norm = Lfm2RMSNorm(32)
+    norm.offset = 0.0
+    norm.casting_mode = "llama"
+    norm.in_place = True
+    norm.row_mode = None
+    monkeypatch.setattr(
+        rms_norm.LigerRMSNormFunction,
+        "apply",
+        lambda hidden_states, *_args: hidden_states,
+    )
+
+    hidden_states = torch.randn(2, 4, 32, requires_grad=True)
+    actual = LigerLfm2RMSNorm.forward(norm, hidden_states)
+
+    assert actual is hidden_states
 
 
 @pytest.mark.skipif(not HAS_LFM2 or device == "cpu", reason="requires LFM2 and an accelerator")
