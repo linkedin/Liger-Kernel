@@ -21,7 +21,10 @@ def liger_lfm2_short_conv_forward(
         if original_forward is None:
             raise RuntimeError("The original LFM2 short-convolution forward is unavailable for cached execution.")
 
-        parameters = inspect.signature(original_forward).parameters
+        parameters = getattr(self, "_liger_original_forward_parameters", None)
+        if parameters is None:
+            parameters = frozenset(inspect.signature(original_forward).parameters)
+            self._liger_original_forward_parameters = parameters
         original_kwargs = {
             "past_key_values": past_key_values,
             "attention_mask": attention_mask,

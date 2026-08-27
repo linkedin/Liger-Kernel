@@ -233,6 +233,41 @@ def test_lfm2_short_conv_preserves_native_packed_sequence_fallback():
     torch.testing.assert_close(actual, expected)
 
 
+@pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")
+def test_lfm2_short_conv_caches_native_forward_signature(monkeypatch):
+    from transformers.models.lfm2.modeling_lfm2 import Lfm2ForCausalLM
+
+    from liger_kernel.transformers import lfm2_short_conv
+    from liger_kernel.transformers import monkey_patch
+
+    model = Lfm2ForCausalLM(_lfm2_config())
+    short_conv = model.model.layers[0].conv
+    monkey_patch.apply_liger_kernel_to_lfm2(
+        model=model,
+        rope=False,
+        fused_linear_cross_entropy=False,
+        rms_norm=False,
+        swiglu=False,
+        short_conv=True,
+    )
+
+    signature_calls = 0
+    original_signature = inspect.signature
+
+    def counting_signature(callable):
+        nonlocal signature_calls
+        signature_calls += 1
+        return original_signature(callable)
+
+    monkeypatch.setattr(lfm2_short_conv.inspect, "signature", counting_signature)
+    hidden_states = torch.randn(1, 8, model.config.hidden_size)
+    seq_idx = torch.arange(hidden_states.shape[1]).unsqueeze(0)
+    short_conv(hidden_states, seq_idx=seq_idx)
+    short_conv(hidden_states, seq_idx=seq_idx)
+
+    assert signature_calls == 1
+
+
 @pytest.mark.skipif(not HAS_LFM2 or device == "cpu", reason="requires LFM2 and an accelerator")
 def test_lfm2_explicit_fused_linear_cross_entropy_forward_backward():
     from transformers.models.lfm2.modeling_lfm2 import Lfm2ForCausalLM
