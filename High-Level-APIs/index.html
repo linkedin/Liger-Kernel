@@ -25,7 +25,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -33,7 +33,7 @@
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -1022,10 +1022,10 @@ if applicable.</p>
 <span class="normal"><a href="#__codelineno-0-57">57</a></span>
 <span class="normal"><a href="#__codelineno-0-58">58</a></span>
 <span class="normal"><a href="#__codelineno-0-59">59</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18"></a><span class="k">class</span><span class="w"> </span><span class="nc">AutoLigerKernelForCausalLM</span><span class="p">(</span><span class="n">AutoModelForCausalLM</span><span class="p">):</span>
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20"></a><span class="sd">    This class is a drop-in replacement for AutoModelForCausalLM that applies the Liger Kernel to the model</span>
 </span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21"></a><span class="sd">    if applicable.</span>
-</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22"></a><span class="sd">    """</span>
 </span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23"></a>
 </span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24"></a>    <span class="nd">@classmethod</span>
 </span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">from_pretrained</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">pretrained_model_name_or_path</span><span class="p">,</span> <span class="o">*</span><span class="n">model_args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
@@ -1048,9 +1048,9 @@ if applicable.</p>
 </span><span id="__span-0-42"><a id="__codelineno-0-42" name="__codelineno-0-42"></a>
 </span><span id="__span-0-43"><a id="__codelineno-0-43" name="__codelineno-0-43"></a>    <span class="nd">@classmethod</span>
 </span><span id="__span-0-44"><a id="__codelineno-0-44" name="__codelineno-0-44"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">from_config</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">config</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
-</span><span id="__span-0-45"><a id="__codelineno-0-45" name="__codelineno-0-45"></a>        <span class="n">model_type</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="s2">&quot;model_type&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-0-45"><a id="__codelineno-0-45" name="__codelineno-0-45"></a>        <span class="n">model_type</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="s2">"model_type"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
 </span><span id="__span-0-46"><a id="__codelineno-0-46" name="__codelineno-0-46"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">model_type</span><span class="p">:</span>
-</span><span id="__span-0-47"><a id="__codelineno-0-47" name="__codelineno-0-47"></a>            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Model type could not be determined from model config. No Liger kernels will be applied.&quot;</span><span class="p">)</span>
+</span><span id="__span-0-47"><a id="__codelineno-0-47" name="__codelineno-0-47"></a>            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Model type could not be determined from model config. No Liger kernels will be applied."</span><span class="p">)</span>
 </span><span id="__span-0-48"><a id="__codelineno-0-48" name="__codelineno-0-48"></a>            <span class="k">return</span>
 </span><span id="__span-0-49"><a id="__codelineno-0-49" name="__codelineno-0-49"></a>        <span class="n">model_type</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">model_type</span>
 </span><span id="__span-0-50"><a id="__codelineno-0-50" name="__codelineno-0-50"></a>
@@ -1354,24 +1354,24 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-226"><a id="__codelineno-0-226" name="__codelineno-0-226"></a>    <span class="n">swiglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-227"><a id="__codelineno-0-227" name="__codelineno-0-227"></a>    <span class="n">model</span><span class="p">:</span> <span class="n">PreTrainedModel</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-228"><a id="__codelineno-0-228" name="__codelineno-0-228"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-229"><a id="__codelineno-0-229" name="__codelineno-0-229"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-229"><a id="__codelineno-0-229" name="__codelineno-0-229"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-230"><a id="__codelineno-0-230" name="__codelineno-0-230"></a><span class="sd">    Apply Liger kernels to replace original implementation in HuggingFace Llama models (2 and 3)</span>
 </span><span id="__span-0-231"><a id="__codelineno-0-231" name="__codelineno-0-231"></a>
 </span><span id="__span-0-232"><a id="__codelineno-0-232" name="__codelineno-0-232"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-233"><a id="__codelineno-0-233" name="__codelineno-0-233"></a><span class="sd">        rope (bool): Whether to apply Liger&#39;s rotary position embedding. Default is True.</span>
-</span><span id="__span-0-234"><a id="__codelineno-0-234" name="__codelineno-0-234"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger&#39;s cross entropy loss. Default is False.</span>
+</span><span id="__span-0-233"><a id="__codelineno-0-233" name="__codelineno-0-233"></a><span class="sd">        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.</span>
+</span><span id="__span-0-234"><a id="__codelineno-0-234" name="__codelineno-0-234"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.</span>
 </span><span id="__span-0-235"><a id="__codelineno-0-235" name="__codelineno-0-235"></a><span class="sd">        fused_linear_cross_entropy (bool):</span>
-</span><span id="__span-0-236"><a id="__codelineno-0-236" name="__codelineno-0-236"></a><span class="sd">            Whether to apply Liger&#39;s fused linear cross entropy loss. Default is True.</span>
+</span><span id="__span-0-236"><a id="__codelineno-0-236" name="__codelineno-0-236"></a><span class="sd">            Whether to apply Liger's fused linear cross entropy loss. Default is True.</span>
 </span><span id="__span-0-237"><a id="__codelineno-0-237" name="__codelineno-0-237"></a><span class="sd">            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.</span>
 </span><span id="__span-0-238"><a id="__codelineno-0-238" name="__codelineno-0-238"></a><span class="sd">            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.</span>
-</span><span id="__span-0-239"><a id="__codelineno-0-239" name="__codelineno-0-239"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-240"><a id="__codelineno-0-240" name="__codelineno-0-240"></a><span class="sd">        swiglu (bool): Whether to apply Liger&#39;s SwiGLU MLP. Default is True.</span>
+</span><span id="__span-0-239"><a id="__codelineno-0-239" name="__codelineno-0-239"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-240"><a id="__codelineno-0-240" name="__codelineno-0-240"></a><span class="sd">        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.</span>
 </span><span id="__span-0-241"><a id="__codelineno-0-241" name="__codelineno-0-241"></a><span class="sd">        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been</span>
 </span><span id="__span-0-242"><a id="__codelineno-0-242" name="__codelineno-0-242"></a><span class="sd">        loaded. Default is None.</span>
-</span><span id="__span-0-243"><a id="__codelineno-0-243" name="__codelineno-0-243"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-243"><a id="__codelineno-0-243" name="__codelineno-0-243"></a><span class="sd">    """</span>
 </span><span id="__span-0-244"><a id="__codelineno-0-244" name="__codelineno-0-244"></a>
 </span><span id="__span-0-245"><a id="__codelineno-0-245" name="__codelineno-0-245"></a>    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">cross_entropy</span> <span class="ow">and</span> <span class="n">fused_linear_cross_entropy</span><span class="p">),</span> <span class="p">(</span>
-</span><span id="__span-0-246"><a id="__codelineno-0-246" name="__codelineno-0-246"></a>        <span class="s2">&quot;cross_entropy and fused_linear_cross_entropy cannot both be True.&quot;</span>
+</span><span id="__span-0-246"><a id="__codelineno-0-246" name="__codelineno-0-246"></a>        <span class="s2">"cross_entropy and fused_linear_cross_entropy cannot both be True."</span>
 </span><span id="__span-0-247"><a id="__codelineno-0-247" name="__codelineno-0-247"></a>    <span class="p">)</span>
 </span><span id="__span-0-248"><a id="__codelineno-0-248" name="__codelineno-0-248"></a>
 </span><span id="__span-0-249"><a id="__codelineno-0-249" name="__codelineno-0-249"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">transformers.models.llama</span><span class="w"> </span><span class="kn">import</span> <span class="n">modeling_llama</span>
@@ -1657,25 +1657,25 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-529"><a id="__codelineno-0-529" name="__codelineno-0-529"></a>    <span class="n">swiglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-530"><a id="__codelineno-0-530" name="__codelineno-0-530"></a>    <span class="n">model</span><span class="p">:</span> <span class="n">PreTrainedModel</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-531"><a id="__codelineno-0-531" name="__codelineno-0-531"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-532"><a id="__codelineno-0-532" name="__codelineno-0-532"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-532"><a id="__codelineno-0-532" name="__codelineno-0-532"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-533"><a id="__codelineno-0-533" name="__codelineno-0-533"></a><span class="sd">    Apply Liger kernels to replace original implementation in HuggingFace MLlama models.</span>
 </span><span id="__span-0-534"><a id="__codelineno-0-534" name="__codelineno-0-534"></a><span class="sd">    NOTE: MLlama is not available in transformers&lt;4.45.0</span>
 </span><span id="__span-0-535"><a id="__codelineno-0-535" name="__codelineno-0-535"></a>
 </span><span id="__span-0-536"><a id="__codelineno-0-536" name="__codelineno-0-536"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-537"><a id="__codelineno-0-537" name="__codelineno-0-537"></a><span class="sd">        rope (bool): Whether to apply Liger&#39;s rotary position embedding. Default is True.</span>
-</span><span id="__span-0-538"><a id="__codelineno-0-538" name="__codelineno-0-538"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger&#39;s cross entropy loss. Default is False.</span>
+</span><span id="__span-0-537"><a id="__codelineno-0-537" name="__codelineno-0-537"></a><span class="sd">        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.</span>
+</span><span id="__span-0-538"><a id="__codelineno-0-538" name="__codelineno-0-538"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.</span>
 </span><span id="__span-0-539"><a id="__codelineno-0-539" name="__codelineno-0-539"></a><span class="sd">        fused_linear_cross_entropy (bool):</span>
-</span><span id="__span-0-540"><a id="__codelineno-0-540" name="__codelineno-0-540"></a><span class="sd">            Whether to apply Liger&#39;s fused linear cross entropy loss. Default is True.</span>
+</span><span id="__span-0-540"><a id="__codelineno-0-540" name="__codelineno-0-540"></a><span class="sd">            Whether to apply Liger's fused linear cross entropy loss. Default is True.</span>
 </span><span id="__span-0-541"><a id="__codelineno-0-541" name="__codelineno-0-541"></a><span class="sd">            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.</span>
 </span><span id="__span-0-542"><a id="__codelineno-0-542" name="__codelineno-0-542"></a><span class="sd">            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.</span>
-</span><span id="__span-0-543"><a id="__codelineno-0-543" name="__codelineno-0-543"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-544"><a id="__codelineno-0-544" name="__codelineno-0-544"></a><span class="sd">        swiglu (bool): Whether to apply Liger&#39;s SwiGLU MLP. Default is True.</span>
+</span><span id="__span-0-543"><a id="__codelineno-0-543" name="__codelineno-0-543"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-544"><a id="__codelineno-0-544" name="__codelineno-0-544"></a><span class="sd">        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.</span>
 </span><span id="__span-0-545"><a id="__codelineno-0-545" name="__codelineno-0-545"></a><span class="sd">        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been</span>
 </span><span id="__span-0-546"><a id="__codelineno-0-546" name="__codelineno-0-546"></a><span class="sd">        loaded. Default is None.</span>
-</span><span id="__span-0-547"><a id="__codelineno-0-547" name="__codelineno-0-547"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-547"><a id="__codelineno-0-547" name="__codelineno-0-547"></a><span class="sd">    """</span>
 </span><span id="__span-0-548"><a id="__codelineno-0-548" name="__codelineno-0-548"></a>
 </span><span id="__span-0-549"><a id="__codelineno-0-549" name="__codelineno-0-549"></a>    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">cross_entropy</span> <span class="ow">and</span> <span class="n">fused_linear_cross_entropy</span><span class="p">),</span> <span class="p">(</span>
-</span><span id="__span-0-550"><a id="__codelineno-0-550" name="__codelineno-0-550"></a>        <span class="s2">&quot;cross_entropy and fused_linear_cross_entropy cannot both be True.&quot;</span>
+</span><span id="__span-0-550"><a id="__codelineno-0-550" name="__codelineno-0-550"></a>        <span class="s2">"cross_entropy and fused_linear_cross_entropy cannot both be True."</span>
 </span><span id="__span-0-551"><a id="__codelineno-0-551" name="__codelineno-0-551"></a>    <span class="p">)</span>
 </span><span id="__span-0-552"><a id="__codelineno-0-552" name="__codelineno-0-552"></a>
 </span><span id="__span-0-553"><a id="__codelineno-0-553" name="__codelineno-0-553"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">transformers.models.mllama</span><span class="w"> </span><span class="kn">import</span> <span class="n">modeling_mllama</span>
@@ -1723,7 +1723,7 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-595"><a id="__codelineno-0-595" name="__codelineno-0-595"></a>            <span class="n">vision_model</span> <span class="o">=</span> <span class="kc">None</span>
 </span><span id="__span-0-596"><a id="__codelineno-0-596" name="__codelineno-0-596"></a>
 </span><span id="__span-0-597"><a id="__codelineno-0-597" name="__codelineno-0-597"></a>        <span class="k">else</span><span class="p">:</span>
-</span><span id="__span-0-598"><a id="__codelineno-0-598" name="__codelineno-0-598"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unsupported Mllama model type: </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">model</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-0-598"><a id="__codelineno-0-598" name="__codelineno-0-598"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Unsupported Mllama model type: </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">model</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </span><span id="__span-0-599"><a id="__codelineno-0-599" name="__codelineno-0-599"></a>
 </span><span id="__span-0-600"><a id="__codelineno-0-600" name="__codelineno-0-600"></a>        <span class="k">if</span> <span class="n">text_model</span><span class="p">:</span>
 </span><span id="__span-0-601"><a id="__codelineno-0-601" name="__codelineno-0-601"></a>            <span class="k">if</span> <span class="n">rms_norm</span><span class="p">:</span>
@@ -1970,24 +1970,24 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-693"><a id="__codelineno-0-693" name="__codelineno-0-693"></a>    <span class="n">swiglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-694"><a id="__codelineno-0-694" name="__codelineno-0-694"></a>    <span class="n">model</span><span class="p">:</span> <span class="n">PreTrainedModel</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-695"><a id="__codelineno-0-695" name="__codelineno-0-695"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-696"><a id="__codelineno-0-696" name="__codelineno-0-696"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-696"><a id="__codelineno-0-696" name="__codelineno-0-696"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-697"><a id="__codelineno-0-697" name="__codelineno-0-697"></a><span class="sd">    Apply Liger kernels to replace original implementation in HuggingFace Mistral models</span>
 </span><span id="__span-0-698"><a id="__codelineno-0-698" name="__codelineno-0-698"></a>
 </span><span id="__span-0-699"><a id="__codelineno-0-699" name="__codelineno-0-699"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-700"><a id="__codelineno-0-700" name="__codelineno-0-700"></a><span class="sd">        rope (bool): Whether to apply Liger&#39;s rotary position embedding. Default is False.</span>
-</span><span id="__span-0-701"><a id="__codelineno-0-701" name="__codelineno-0-701"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger&#39;s cross entropy loss. Default is True.</span>
+</span><span id="__span-0-700"><a id="__codelineno-0-700" name="__codelineno-0-700"></a><span class="sd">        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.</span>
+</span><span id="__span-0-701"><a id="__codelineno-0-701" name="__codelineno-0-701"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.</span>
 </span><span id="__span-0-702"><a id="__codelineno-0-702" name="__codelineno-0-702"></a><span class="sd">        fused_linear_cross_entropy (bool):</span>
-</span><span id="__span-0-703"><a id="__codelineno-0-703" name="__codelineno-0-703"></a><span class="sd">            Whether to apply Liger&#39;s fused linear cross entropy loss. Default is True.</span>
+</span><span id="__span-0-703"><a id="__codelineno-0-703" name="__codelineno-0-703"></a><span class="sd">            Whether to apply Liger's fused linear cross entropy loss. Default is True.</span>
 </span><span id="__span-0-704"><a id="__codelineno-0-704" name="__codelineno-0-704"></a><span class="sd">            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.</span>
 </span><span id="__span-0-705"><a id="__codelineno-0-705" name="__codelineno-0-705"></a><span class="sd">            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.</span>
-</span><span id="__span-0-706"><a id="__codelineno-0-706" name="__codelineno-0-706"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-707"><a id="__codelineno-0-707" name="__codelineno-0-707"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-708"><a id="__codelineno-0-708" name="__codelineno-0-708"></a><span class="sd">        swiglu (bool): Whether to apply Liger&#39;s SwiGLU MLP. Default is True.</span>
+</span><span id="__span-0-706"><a id="__codelineno-0-706" name="__codelineno-0-706"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-707"><a id="__codelineno-0-707" name="__codelineno-0-707"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-708"><a id="__codelineno-0-708" name="__codelineno-0-708"></a><span class="sd">        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.</span>
 </span><span id="__span-0-709"><a id="__codelineno-0-709" name="__codelineno-0-709"></a><span class="sd">        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been</span>
 </span><span id="__span-0-710"><a id="__codelineno-0-710" name="__codelineno-0-710"></a><span class="sd">        loaded. Default is None.</span>
-</span><span id="__span-0-711"><a id="__codelineno-0-711" name="__codelineno-0-711"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-711"><a id="__codelineno-0-711" name="__codelineno-0-711"></a><span class="sd">    """</span>
 </span><span id="__span-0-712"><a id="__codelineno-0-712" name="__codelineno-0-712"></a>    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">cross_entropy</span> <span class="ow">and</span> <span class="n">fused_linear_cross_entropy</span><span class="p">),</span> <span class="p">(</span>
-</span><span id="__span-0-713"><a id="__codelineno-0-713" name="__codelineno-0-713"></a>        <span class="s2">&quot;cross_entropy and fused_linear_cross_entropy cannot both be True.&quot;</span>
+</span><span id="__span-0-713"><a id="__codelineno-0-713" name="__codelineno-0-713"></a>        <span class="s2">"cross_entropy and fused_linear_cross_entropy cannot both be True."</span>
 </span><span id="__span-0-714"><a id="__codelineno-0-714" name="__codelineno-0-714"></a>    <span class="p">)</span>
 </span><span id="__span-0-715"><a id="__codelineno-0-715" name="__codelineno-0-715"></a>
 </span><span id="__span-0-716"><a id="__codelineno-0-716" name="__codelineno-0-716"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">transformers.models.mistral</span><span class="w"> </span><span class="kn">import</span> <span class="n">modeling_mistral</span>
@@ -2239,24 +2239,24 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-804"><a id="__codelineno-0-804" name="__codelineno-0-804"></a>    <span class="n">swiglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-805"><a id="__codelineno-0-805" name="__codelineno-0-805"></a>    <span class="n">model</span><span class="p">:</span> <span class="n">PreTrainedModel</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-806"><a id="__codelineno-0-806" name="__codelineno-0-806"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-807"><a id="__codelineno-0-807" name="__codelineno-0-807"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-807"><a id="__codelineno-0-807" name="__codelineno-0-807"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-808"><a id="__codelineno-0-808" name="__codelineno-0-808"></a><span class="sd">    Apply Liger kernels to replace original implementation in HuggingFace Mixtral models</span>
 </span><span id="__span-0-809"><a id="__codelineno-0-809" name="__codelineno-0-809"></a>
 </span><span id="__span-0-810"><a id="__codelineno-0-810" name="__codelineno-0-810"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-811"><a id="__codelineno-0-811" name="__codelineno-0-811"></a><span class="sd">        rope (bool): Whether to apply Liger&#39;s rotary position embedding. Default is True.</span>
-</span><span id="__span-0-812"><a id="__codelineno-0-812" name="__codelineno-0-812"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger&#39;s cross entropy loss. Default is False.</span>
+</span><span id="__span-0-811"><a id="__codelineno-0-811" name="__codelineno-0-811"></a><span class="sd">        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.</span>
+</span><span id="__span-0-812"><a id="__codelineno-0-812" name="__codelineno-0-812"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.</span>
 </span><span id="__span-0-813"><a id="__codelineno-0-813" name="__codelineno-0-813"></a><span class="sd">        fused_linear_cross_entropy (bool):</span>
-</span><span id="__span-0-814"><a id="__codelineno-0-814" name="__codelineno-0-814"></a><span class="sd">            Whether to apply Liger&#39;s fused linear cross entropy loss. Default is True.</span>
+</span><span id="__span-0-814"><a id="__codelineno-0-814" name="__codelineno-0-814"></a><span class="sd">            Whether to apply Liger's fused linear cross entropy loss. Default is True.</span>
 </span><span id="__span-0-815"><a id="__codelineno-0-815" name="__codelineno-0-815"></a><span class="sd">            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.</span>
 </span><span id="__span-0-816"><a id="__codelineno-0-816" name="__codelineno-0-816"></a><span class="sd">            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.</span>
-</span><span id="__span-0-817"><a id="__codelineno-0-817" name="__codelineno-0-817"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-818"><a id="__codelineno-0-818" name="__codelineno-0-818"></a><span class="sd">        swiglu (bool): Whether to apply Liger&#39;s SwiGLU MLP. Default is True.</span>
+</span><span id="__span-0-817"><a id="__codelineno-0-817" name="__codelineno-0-817"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-818"><a id="__codelineno-0-818" name="__codelineno-0-818"></a><span class="sd">        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.</span>
 </span><span id="__span-0-819"><a id="__codelineno-0-819" name="__codelineno-0-819"></a><span class="sd">        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been</span>
 </span><span id="__span-0-820"><a id="__codelineno-0-820" name="__codelineno-0-820"></a><span class="sd">        loaded. Default is None.</span>
-</span><span id="__span-0-821"><a id="__codelineno-0-821" name="__codelineno-0-821"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-821"><a id="__codelineno-0-821" name="__codelineno-0-821"></a><span class="sd">    """</span>
 </span><span id="__span-0-822"><a id="__codelineno-0-822" name="__codelineno-0-822"></a>
 </span><span id="__span-0-823"><a id="__codelineno-0-823" name="__codelineno-0-823"></a>    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">cross_entropy</span> <span class="ow">and</span> <span class="n">fused_linear_cross_entropy</span><span class="p">),</span> <span class="p">(</span>
-</span><span id="__span-0-824"><a id="__codelineno-0-824" name="__codelineno-0-824"></a>        <span class="s2">&quot;cross_entropy and fused_linear_cross_entropy cannot both be True.&quot;</span>
+</span><span id="__span-0-824"><a id="__codelineno-0-824" name="__codelineno-0-824"></a>        <span class="s2">"cross_entropy and fused_linear_cross_entropy cannot both be True."</span>
 </span><span id="__span-0-825"><a id="__codelineno-0-825" name="__codelineno-0-825"></a>    <span class="p">)</span>
 </span><span id="__span-0-826"><a id="__codelineno-0-826" name="__codelineno-0-826"></a>
 </span><span id="__span-0-827"><a id="__codelineno-0-827" name="__codelineno-0-827"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">transformers.models.mixtral</span><span class="w"> </span><span class="kn">import</span> <span class="n">modeling_mixtral</span>
@@ -2514,24 +2514,24 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-926"><a id="__codelineno-0-926" name="__codelineno-0-926"></a>    <span class="n">geglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-927"><a id="__codelineno-0-927" name="__codelineno-0-927"></a>    <span class="n">model</span><span class="p">:</span> <span class="n">PreTrainedModel</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-928"><a id="__codelineno-0-928" name="__codelineno-0-928"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-929"><a id="__codelineno-0-929" name="__codelineno-0-929"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-929"><a id="__codelineno-0-929" name="__codelineno-0-929"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-930"><a id="__codelineno-0-930" name="__codelineno-0-930"></a><span class="sd">    Apply Liger kernels to replace original implementation in HuggingFace Gemma</span>
 </span><span id="__span-0-931"><a id="__codelineno-0-931" name="__codelineno-0-931"></a><span class="sd">    (Gemma 1 and 1.1 supported, for Gemma2 please use `apply_liger_kernel_to_gemma2` ) to make GPU go burrr.</span>
 </span><span id="__span-0-932"><a id="__codelineno-0-932" name="__codelineno-0-932"></a>
 </span><span id="__span-0-933"><a id="__codelineno-0-933" name="__codelineno-0-933"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-934"><a id="__codelineno-0-934" name="__codelineno-0-934"></a><span class="sd">        rope (bool): Whether to apply Liger&#39;s rotary position embedding. Default is True.</span>
-</span><span id="__span-0-935"><a id="__codelineno-0-935" name="__codelineno-0-935"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger&#39;s cross entropy loss. Default is False.</span>
+</span><span id="__span-0-934"><a id="__codelineno-0-934" name="__codelineno-0-934"></a><span class="sd">        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.</span>
+</span><span id="__span-0-935"><a id="__codelineno-0-935" name="__codelineno-0-935"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.</span>
 </span><span id="__span-0-936"><a id="__codelineno-0-936" name="__codelineno-0-936"></a><span class="sd">        fused_linear_cross_entropy (bool):</span>
-</span><span id="__span-0-937"><a id="__codelineno-0-937" name="__codelineno-0-937"></a><span class="sd">            Whether to apply Liger&#39;s fused linear cross entropy loss. Default is True.</span>
+</span><span id="__span-0-937"><a id="__codelineno-0-937" name="__codelineno-0-937"></a><span class="sd">            Whether to apply Liger's fused linear cross entropy loss. Default is True.</span>
 </span><span id="__span-0-938"><a id="__codelineno-0-938" name="__codelineno-0-938"></a><span class="sd">            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.</span>
 </span><span id="__span-0-939"><a id="__codelineno-0-939" name="__codelineno-0-939"></a><span class="sd">            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.</span>
-</span><span id="__span-0-940"><a id="__codelineno-0-940" name="__codelineno-0-940"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-941"><a id="__codelineno-0-941" name="__codelineno-0-941"></a><span class="sd">        geglu (bool): Whether to apply Liger&#39;s GeGLU MLP. Default is True.</span>
+</span><span id="__span-0-940"><a id="__codelineno-0-940" name="__codelineno-0-940"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-941"><a id="__codelineno-0-941" name="__codelineno-0-941"></a><span class="sd">        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.</span>
 </span><span id="__span-0-942"><a id="__codelineno-0-942" name="__codelineno-0-942"></a><span class="sd">        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been</span>
 </span><span id="__span-0-943"><a id="__codelineno-0-943" name="__codelineno-0-943"></a><span class="sd">        loaded. Default is None.</span>
-</span><span id="__span-0-944"><a id="__codelineno-0-944" name="__codelineno-0-944"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-944"><a id="__codelineno-0-944" name="__codelineno-0-944"></a><span class="sd">    """</span>
 </span><span id="__span-0-945"><a id="__codelineno-0-945" name="__codelineno-0-945"></a>    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">cross_entropy</span> <span class="ow">and</span> <span class="n">fused_linear_cross_entropy</span><span class="p">),</span> <span class="p">(</span>
-</span><span id="__span-0-946"><a id="__codelineno-0-946" name="__codelineno-0-946"></a>        <span class="s2">&quot;cross_entropy and fused_linear_cross_entropy cannot both be True.&quot;</span>
+</span><span id="__span-0-946"><a id="__codelineno-0-946" name="__codelineno-0-946"></a>        <span class="s2">"cross_entropy and fused_linear_cross_entropy cannot both be True."</span>
 </span><span id="__span-0-947"><a id="__codelineno-0-947" name="__codelineno-0-947"></a>    <span class="p">)</span>
 </span><span id="__span-0-948"><a id="__codelineno-0-948" name="__codelineno-0-948"></a>
 </span><span id="__span-0-949"><a id="__codelineno-0-949" name="__codelineno-0-949"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">transformers.models.gemma</span><span class="w"> </span><span class="kn">import</span> <span class="n">modeling_gemma</span>
@@ -2539,7 +2539,7 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-951"><a id="__codelineno-0-951" name="__codelineno-0-951"></a>
 </span><span id="__span-0-952"><a id="__codelineno-0-952" name="__codelineno-0-952"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">liger_kernel.transformers.rms_norm</span><span class="w"> </span><span class="kn">import</span> <span class="n">LigerRMSNormForGemma</span>
 </span><span id="__span-0-953"><a id="__codelineno-0-953" name="__codelineno-0-953"></a>
-</span><span id="__span-0-954"><a id="__codelineno-0-954" name="__codelineno-0-954"></a>    <span class="n">_patch_rms_norm_module_for_gemma</span> <span class="o">=</span> <span class="n">partial</span><span class="p">(</span><span class="n">_patch_rms_norm_module</span><span class="p">,</span> <span class="n">casting_mode</span><span class="o">=</span><span class="s2">&quot;gemma&quot;</span><span class="p">,</span> <span class="n">offset</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+</span><span id="__span-0-954"><a id="__codelineno-0-954" name="__codelineno-0-954"></a>    <span class="n">_patch_rms_norm_module_for_gemma</span> <span class="o">=</span> <span class="n">partial</span><span class="p">(</span><span class="n">_patch_rms_norm_module</span><span class="p">,</span> <span class="n">casting_mode</span><span class="o">=</span><span class="s2">"gemma"</span><span class="p">,</span> <span class="n">offset</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
 </span><span id="__span-0-955"><a id="__codelineno-0-955" name="__codelineno-0-955"></a>
 </span><span id="__span-0-956"><a id="__codelineno-0-956" name="__codelineno-0-956"></a>    <span class="k">if</span> <span class="n">rope</span><span class="p">:</span>
 </span><span id="__span-0-957"><a id="__codelineno-0-957" name="__codelineno-0-957"></a>        <span class="n">modeling_gemma</span><span class="o">.</span><span class="n">apply_rotary_pos_emb</span> <span class="o">=</span> <span class="n">liger_rotary_pos_emb</span>
@@ -2790,24 +2790,24 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-995"><a id="__codelineno-0-995" name="__codelineno-0-995"></a>    <span class="n">geglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-996"><a id="__codelineno-0-996" name="__codelineno-0-996"></a>    <span class="n">model</span><span class="p">:</span> <span class="n">PreTrainedModel</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-997"><a id="__codelineno-0-997" name="__codelineno-0-997"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-998"><a id="__codelineno-0-998" name="__codelineno-0-998"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-998"><a id="__codelineno-0-998" name="__codelineno-0-998"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-999"><a id="__codelineno-0-999" name="__codelineno-0-999"></a><span class="sd">    Apply Liger kernels to replace original implementation in HuggingFace Gemma2</span>
 </span><span id="__span-0-1000"><a id="__codelineno-0-1000" name="__codelineno-0-1000"></a><span class="sd">    (for Gemma1 please use `apply_liger_kernel_to_gemma`) to make GPU go burrr.</span>
 </span><span id="__span-0-1001"><a id="__codelineno-0-1001" name="__codelineno-0-1001"></a>
 </span><span id="__span-0-1002"><a id="__codelineno-0-1002" name="__codelineno-0-1002"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-1003"><a id="__codelineno-0-1003" name="__codelineno-0-1003"></a><span class="sd">        rope (bool): Whether to apply Liger&#39;s rotary position embedding. Default is True.</span>
-</span><span id="__span-0-1004"><a id="__codelineno-0-1004" name="__codelineno-0-1004"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger&#39;s cross entropy loss. Default is False.</span>
+</span><span id="__span-0-1003"><a id="__codelineno-0-1003" name="__codelineno-0-1003"></a><span class="sd">        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.</span>
+</span><span id="__span-0-1004"><a id="__codelineno-0-1004" name="__codelineno-0-1004"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.</span>
 </span><span id="__span-0-1005"><a id="__codelineno-0-1005" name="__codelineno-0-1005"></a><span class="sd">        fused_linear_cross_entropy (bool):</span>
-</span><span id="__span-0-1006"><a id="__codelineno-0-1006" name="__codelineno-0-1006"></a><span class="sd">            Whether to apply Liger&#39;s fused linear cross entropy loss. Default is True.</span>
+</span><span id="__span-0-1006"><a id="__codelineno-0-1006" name="__codelineno-0-1006"></a><span class="sd">            Whether to apply Liger's fused linear cross entropy loss. Default is True.</span>
 </span><span id="__span-0-1007"><a id="__codelineno-0-1007" name="__codelineno-0-1007"></a><span class="sd">            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.</span>
 </span><span id="__span-0-1008"><a id="__codelineno-0-1008" name="__codelineno-0-1008"></a><span class="sd">            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.</span>
-</span><span id="__span-0-1009"><a id="__codelineno-0-1009" name="__codelineno-0-1009"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-1010"><a id="__codelineno-0-1010" name="__codelineno-0-1010"></a><span class="sd">        geglu (bool): Whether to apply Liger&#39;s GeGLU MLP. Default is True.</span>
+</span><span id="__span-0-1009"><a id="__codelineno-0-1009" name="__codelineno-0-1009"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-1010"><a id="__codelineno-0-1010" name="__codelineno-0-1010"></a><span class="sd">        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.</span>
 </span><span id="__span-0-1011"><a id="__codelineno-0-1011" name="__codelineno-0-1011"></a><span class="sd">        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been</span>
 </span><span id="__span-0-1012"><a id="__codelineno-0-1012" name="__codelineno-0-1012"></a><span class="sd">        loaded. Default is None.</span>
-</span><span id="__span-0-1013"><a id="__codelineno-0-1013" name="__codelineno-0-1013"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-1013"><a id="__codelineno-0-1013" name="__codelineno-0-1013"></a><span class="sd">    """</span>
 </span><span id="__span-0-1014"><a id="__codelineno-0-1014" name="__codelineno-0-1014"></a>    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">cross_entropy</span> <span class="ow">and</span> <span class="n">fused_linear_cross_entropy</span><span class="p">),</span> <span class="p">(</span>
-</span><span id="__span-0-1015"><a id="__codelineno-0-1015" name="__codelineno-0-1015"></a>        <span class="s2">&quot;cross_entropy and fused_linear_cross_entropy cannot both be True.&quot;</span>
+</span><span id="__span-0-1015"><a id="__codelineno-0-1015" name="__codelineno-0-1015"></a>        <span class="s2">"cross_entropy and fused_linear_cross_entropy cannot both be True."</span>
 </span><span id="__span-0-1016"><a id="__codelineno-0-1016" name="__codelineno-0-1016"></a>    <span class="p">)</span>
 </span><span id="__span-0-1017"><a id="__codelineno-0-1017" name="__codelineno-0-1017"></a>
 </span><span id="__span-0-1018"><a id="__codelineno-0-1018" name="__codelineno-0-1018"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">transformers.models.gemma2</span><span class="w"> </span><span class="kn">import</span> <span class="n">modeling_gemma2</span>
@@ -2816,7 +2816,7 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-1021"><a id="__codelineno-0-1021" name="__codelineno-0-1021"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">liger_kernel.transformers.rms_norm</span><span class="w"> </span><span class="kn">import</span> <span class="n">LigerRMSNormForGemma2</span>
 </span><span id="__span-0-1022"><a id="__codelineno-0-1022" name="__codelineno-0-1022"></a>
 </span><span id="__span-0-1023"><a id="__codelineno-0-1023" name="__codelineno-0-1023"></a>    <span class="n">_patch_rms_norm_module_for_gemma2</span> <span class="o">=</span> <span class="n">partial</span><span class="p">(</span>
-</span><span id="__span-0-1024"><a id="__codelineno-0-1024" name="__codelineno-0-1024"></a>        <span class="n">_patch_rms_norm_module</span><span class="p">,</span> <span class="n">offset</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">casting_mode</span><span class="o">=</span><span class="s2">&quot;gemma&quot;</span><span class="p">,</span> <span class="n">in_place</span><span class="o">=</span><span class="kc">False</span>
+</span><span id="__span-0-1024"><a id="__codelineno-0-1024" name="__codelineno-0-1024"></a>        <span class="n">_patch_rms_norm_module</span><span class="p">,</span> <span class="n">offset</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">casting_mode</span><span class="o">=</span><span class="s2">"gemma"</span><span class="p">,</span> <span class="n">in_place</span><span class="o">=</span><span class="kc">False</span>
 </span><span id="__span-0-1025"><a id="__codelineno-0-1025" name="__codelineno-0-1025"></a>    <span class="p">)</span>
 </span><span id="__span-0-1026"><a id="__codelineno-0-1026" name="__codelineno-0-1026"></a>
 </span><span id="__span-0-1027"><a id="__codelineno-0-1027" name="__codelineno-0-1027"></a>    <span class="k">if</span> <span class="n">rope</span><span class="p">:</span>
@@ -3063,23 +3063,23 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-1603"><a id="__codelineno-0-1603" name="__codelineno-0-1603"></a>    <span class="n">swiglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-1604"><a id="__codelineno-0-1604" name="__codelineno-0-1604"></a>    <span class="n">model</span><span class="p">:</span> <span class="n">PreTrainedModel</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-1605"><a id="__codelineno-0-1605" name="__codelineno-0-1605"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-1606"><a id="__codelineno-0-1606" name="__codelineno-0-1606"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-1606"><a id="__codelineno-0-1606" name="__codelineno-0-1606"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-1607"><a id="__codelineno-0-1607" name="__codelineno-0-1607"></a><span class="sd">    Apply Liger kernels to replace original implementation in HuggingFace Qwen2 models</span>
 </span><span id="__span-0-1608"><a id="__codelineno-0-1608" name="__codelineno-0-1608"></a>
 </span><span id="__span-0-1609"><a id="__codelineno-0-1609" name="__codelineno-0-1609"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-1610"><a id="__codelineno-0-1610" name="__codelineno-0-1610"></a><span class="sd">        rope (bool): Whether to apply Liger&#39;s rotary position embedding. Default is True.</span>
-</span><span id="__span-0-1611"><a id="__codelineno-0-1611" name="__codelineno-0-1611"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger&#39;s cross entropy loss. Default is False.</span>
+</span><span id="__span-0-1610"><a id="__codelineno-0-1610" name="__codelineno-0-1610"></a><span class="sd">        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.</span>
+</span><span id="__span-0-1611"><a id="__codelineno-0-1611" name="__codelineno-0-1611"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.</span>
 </span><span id="__span-0-1612"><a id="__codelineno-0-1612" name="__codelineno-0-1612"></a><span class="sd">        fused_linear_cross_entropy (bool):</span>
-</span><span id="__span-0-1613"><a id="__codelineno-0-1613" name="__codelineno-0-1613"></a><span class="sd">            Whether to apply Liger&#39;s fused linear cross entropy loss. Default is True.</span>
+</span><span id="__span-0-1613"><a id="__codelineno-0-1613" name="__codelineno-0-1613"></a><span class="sd">            Whether to apply Liger's fused linear cross entropy loss. Default is True.</span>
 </span><span id="__span-0-1614"><a id="__codelineno-0-1614" name="__codelineno-0-1614"></a><span class="sd">            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.</span>
 </span><span id="__span-0-1615"><a id="__codelineno-0-1615" name="__codelineno-0-1615"></a><span class="sd">            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.</span>
-</span><span id="__span-0-1616"><a id="__codelineno-0-1616" name="__codelineno-0-1616"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-1617"><a id="__codelineno-0-1617" name="__codelineno-0-1617"></a><span class="sd">        swiglu (bool): Whether to apply Liger&#39;s SwiGLU MLP. Default is True.</span>
+</span><span id="__span-0-1616"><a id="__codelineno-0-1616" name="__codelineno-0-1616"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-1617"><a id="__codelineno-0-1617" name="__codelineno-0-1617"></a><span class="sd">        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.</span>
 </span><span id="__span-0-1618"><a id="__codelineno-0-1618" name="__codelineno-0-1618"></a><span class="sd">        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been</span>
 </span><span id="__span-0-1619"><a id="__codelineno-0-1619" name="__codelineno-0-1619"></a><span class="sd">        loaded. Default is None.</span>
-</span><span id="__span-0-1620"><a id="__codelineno-0-1620" name="__codelineno-0-1620"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-1620"><a id="__codelineno-0-1620" name="__codelineno-0-1620"></a><span class="sd">    """</span>
 </span><span id="__span-0-1621"><a id="__codelineno-0-1621" name="__codelineno-0-1621"></a>    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">cross_entropy</span> <span class="ow">and</span> <span class="n">fused_linear_cross_entropy</span><span class="p">),</span> <span class="p">(</span>
-</span><span id="__span-0-1622"><a id="__codelineno-0-1622" name="__codelineno-0-1622"></a>        <span class="s2">&quot;cross_entropy and fused_linear_cross_entropy cannot both be True.&quot;</span>
+</span><span id="__span-0-1622"><a id="__codelineno-0-1622" name="__codelineno-0-1622"></a>        <span class="s2">"cross_entropy and fused_linear_cross_entropy cannot both be True."</span>
 </span><span id="__span-0-1623"><a id="__codelineno-0-1623" name="__codelineno-0-1623"></a>    <span class="p">)</span>
 </span><span id="__span-0-1624"><a id="__codelineno-0-1624" name="__codelineno-0-1624"></a>
 </span><span id="__span-0-1625"><a id="__codelineno-0-1625" name="__codelineno-0-1625"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">transformers.models.qwen2</span><span class="w"> </span><span class="kn">import</span> <span class="n">modeling_qwen2</span>
@@ -3359,28 +3359,28 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-1866"><a id="__codelineno-0-1866" name="__codelineno-0-1866"></a>    <span class="n">swiglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-1867"><a id="__codelineno-0-1867" name="__codelineno-0-1867"></a>    <span class="n">model</span><span class="p">:</span> <span class="n">PreTrainedModel</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-1868"><a id="__codelineno-0-1868" name="__codelineno-0-1868"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-1869"><a id="__codelineno-0-1869" name="__codelineno-0-1869"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-1869"><a id="__codelineno-0-1869" name="__codelineno-0-1869"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-1870"><a id="__codelineno-0-1870" name="__codelineno-0-1870"></a><span class="sd">    Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.</span>
 </span><span id="__span-0-1871"><a id="__codelineno-0-1871" name="__codelineno-0-1871"></a><span class="sd">    NOTE: Qwen2-VL is not supported in transformers&lt;4.52.4</span>
 </span><span id="__span-0-1872"><a id="__codelineno-0-1872" name="__codelineno-0-1872"></a>
 </span><span id="__span-0-1873"><a id="__codelineno-0-1873" name="__codelineno-0-1873"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-1874"><a id="__codelineno-0-1874" name="__codelineno-0-1874"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger&#39;s cross entropy loss. Default is False.</span>
+</span><span id="__span-0-1874"><a id="__codelineno-0-1874" name="__codelineno-0-1874"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.</span>
 </span><span id="__span-0-1875"><a id="__codelineno-0-1875" name="__codelineno-0-1875"></a><span class="sd">        fused_linear_cross_entropy (bool):</span>
-</span><span id="__span-0-1876"><a id="__codelineno-0-1876" name="__codelineno-0-1876"></a><span class="sd">            Whether to apply Liger&#39;s fused linear cross entropy loss. Default is True.</span>
+</span><span id="__span-0-1876"><a id="__codelineno-0-1876" name="__codelineno-0-1876"></a><span class="sd">            Whether to apply Liger's fused linear cross entropy loss. Default is True.</span>
 </span><span id="__span-0-1877"><a id="__codelineno-0-1877" name="__codelineno-0-1877"></a><span class="sd">            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.</span>
 </span><span id="__span-0-1878"><a id="__codelineno-0-1878" name="__codelineno-0-1878"></a><span class="sd">            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.</span>
-</span><span id="__span-0-1879"><a id="__codelineno-0-1879" name="__codelineno-0-1879"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-1880"><a id="__codelineno-0-1880" name="__codelineno-0-1880"></a><span class="sd">        layer_norm (bool): Whether to apply Liger&#39;s LayerNorm. Default is True.</span>
-</span><span id="__span-0-1881"><a id="__codelineno-0-1881" name="__codelineno-0-1881"></a><span class="sd">        swiglu (bool): Whether to apply Liger&#39;s SwiGLU MLP. Default is True.</span>
+</span><span id="__span-0-1879"><a id="__codelineno-0-1879" name="__codelineno-0-1879"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-1880"><a id="__codelineno-0-1880" name="__codelineno-0-1880"></a><span class="sd">        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.</span>
+</span><span id="__span-0-1881"><a id="__codelineno-0-1881" name="__codelineno-0-1881"></a><span class="sd">        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.</span>
 </span><span id="__span-0-1882"><a id="__codelineno-0-1882" name="__codelineno-0-1882"></a><span class="sd">        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been</span>
 </span><span id="__span-0-1883"><a id="__codelineno-0-1883" name="__codelineno-0-1883"></a><span class="sd">        loaded. Default is None.</span>
-</span><span id="__span-0-1884"><a id="__codelineno-0-1884" name="__codelineno-0-1884"></a><span class="sd">    &quot;&quot;&quot;</span>
-</span><span id="__span-0-1885"><a id="__codelineno-0-1885" name="__codelineno-0-1885"></a>    <span class="k">if</span> <span class="n">transformer_version</span> <span class="o">&lt;</span> <span class="n">version</span><span class="o">.</span><span class="n">parse</span><span class="p">(</span><span class="s2">&quot;4.52.4&quot;</span><span class="p">):</span>
-</span><span id="__span-0-1886"><a id="__codelineno-0-1886" name="__codelineno-0-1886"></a>        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;Qwen2-VL support is only compatible with transformers &gt;= 4.52.4&quot;</span><span class="p">)</span>
+</span><span id="__span-0-1884"><a id="__codelineno-0-1884" name="__codelineno-0-1884"></a><span class="sd">    """</span>
+</span><span id="__span-0-1885"><a id="__codelineno-0-1885" name="__codelineno-0-1885"></a>    <span class="k">if</span> <span class="n">transformer_version</span> <span class="o">&lt;</span> <span class="n">version</span><span class="o">.</span><span class="n">parse</span><span class="p">(</span><span class="s2">"4.52.4"</span><span class="p">):</span>
+</span><span id="__span-0-1886"><a id="__codelineno-0-1886" name="__codelineno-0-1886"></a>        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"Qwen2-VL support is only compatible with transformers &gt;= 4.52.4"</span><span class="p">)</span>
 </span><span id="__span-0-1887"><a id="__codelineno-0-1887" name="__codelineno-0-1887"></a>        <span class="k">return</span>
 </span><span id="__span-0-1888"><a id="__codelineno-0-1888" name="__codelineno-0-1888"></a>
 </span><span id="__span-0-1889"><a id="__codelineno-0-1889" name="__codelineno-0-1889"></a>    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">cross_entropy</span> <span class="ow">and</span> <span class="n">fused_linear_cross_entropy</span><span class="p">),</span> <span class="p">(</span>
-</span><span id="__span-0-1890"><a id="__codelineno-0-1890" name="__codelineno-0-1890"></a>        <span class="s2">&quot;cross_entropy and fused_linear_cross_entropy cannot both be True.&quot;</span>
+</span><span id="__span-0-1890"><a id="__codelineno-0-1890" name="__codelineno-0-1890"></a>        <span class="s2">"cross_entropy and fused_linear_cross_entropy cannot both be True."</span>
 </span><span id="__span-0-1891"><a id="__codelineno-0-1891" name="__codelineno-0-1891"></a>    <span class="p">)</span>
 </span><span id="__span-0-1892"><a id="__codelineno-0-1892" name="__codelineno-0-1892"></a>
 </span><span id="__span-0-1893"><a id="__codelineno-0-1893" name="__codelineno-0-1893"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">transformers.models.qwen2_vl</span><span class="w"> </span><span class="kn">import</span> <span class="n">modeling_qwen2_vl</span>
@@ -3421,9 +3421,9 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-1928"><a id="__codelineno-0-1928" name="__codelineno-0-1928"></a>            <span class="n">text_model</span><span class="p">:</span> <span class="n">Qwen2VLTextModel</span> <span class="o">=</span> <span class="n">model</span>
 </span><span id="__span-0-1929"><a id="__codelineno-0-1929" name="__codelineno-0-1929"></a>            <span class="n">vision_model</span> <span class="o">=</span> <span class="kc">None</span>
 </span><span id="__span-0-1930"><a id="__codelineno-0-1930" name="__codelineno-0-1930"></a>        <span class="k">else</span><span class="p">:</span>
-</span><span id="__span-0-1931"><a id="__codelineno-0-1931" name="__codelineno-0-1931"></a>            <span class="c1"># Note: Currently there&#39;s no support for patching vision model only. Feel free to raise an issue if needed.</span>
+</span><span id="__span-0-1931"><a id="__codelineno-0-1931" name="__codelineno-0-1931"></a>            <span class="c1"># Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.</span>
 </span><span id="__span-0-1932"><a id="__codelineno-0-1932" name="__codelineno-0-1932"></a>            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
-</span><span id="__span-0-1933"><a id="__codelineno-0-1933" name="__codelineno-0-1933"></a>                <span class="sa">f</span><span class="s2">&quot;Unsupported Qwen2VL model type. `model` must be `Qwen2VLForConditionalGeneration`, `Qwen2VLModel` or `Qwen2VLTextModel`. Got: </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">model</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-0-1933"><a id="__codelineno-0-1933" name="__codelineno-0-1933"></a>                <span class="sa">f</span><span class="s2">"Unsupported Qwen2VL model type. `model` must be `Qwen2VLForConditionalGeneration`, `Qwen2VLModel` or `Qwen2VLTextModel`. Got: </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">model</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span>
 </span><span id="__span-0-1934"><a id="__codelineno-0-1934" name="__codelineno-0-1934"></a>            <span class="p">)</span>
 </span><span id="__span-0-1935"><a id="__codelineno-0-1935" name="__codelineno-0-1935"></a>
 </span><span id="__span-0-1936"><a id="__codelineno-0-1936" name="__codelineno-0-1936"></a>        <span class="c1"># Patch Qwen2VisionTransformerPretrainedModel</span>
@@ -3649,23 +3649,23 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-2216"><a id="__codelineno-0-2216" name="__codelineno-0-2216"></a>    <span class="n">swiglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-2217"><a id="__codelineno-0-2217" name="__codelineno-0-2217"></a>    <span class="n">model</span><span class="p">:</span> <span class="n">PreTrainedModel</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-2218"><a id="__codelineno-0-2218" name="__codelineno-0-2218"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-2219"><a id="__codelineno-0-2219" name="__codelineno-0-2219"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-0-2219"><a id="__codelineno-0-2219" name="__codelineno-0-2219"></a><span class="w">    </span><span class="sd">"""</span>
 </span><span id="__span-0-2220"><a id="__codelineno-0-2220" name="__codelineno-0-2220"></a><span class="sd">    Apply Liger kernels to replace original implementation in HuggingFace Phi3 models.</span>
 </span><span id="__span-0-2221"><a id="__codelineno-0-2221" name="__codelineno-0-2221"></a>
 </span><span id="__span-0-2222"><a id="__codelineno-0-2222" name="__codelineno-0-2222"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-2223"><a id="__codelineno-0-2223" name="__codelineno-0-2223"></a><span class="sd">        rope (bool): Whether to apply Liger&#39;s rotary position embedding. Default is True.</span>
-</span><span id="__span-0-2224"><a id="__codelineno-0-2224" name="__codelineno-0-2224"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger&#39;s cross entropy loss. Default is False.</span>
+</span><span id="__span-0-2223"><a id="__codelineno-0-2223" name="__codelineno-0-2223"></a><span class="sd">        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.</span>
+</span><span id="__span-0-2224"><a id="__codelineno-0-2224" name="__codelineno-0-2224"></a><span class="sd">        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.</span>
 </span><span id="__span-0-2225"><a id="__codelineno-0-2225" name="__codelineno-0-2225"></a><span class="sd">        fused_linear_cross_entropy (bool):</span>
-</span><span id="__span-0-2226"><a id="__codelineno-0-2226" name="__codelineno-0-2226"></a><span class="sd">            Whether to apply Liger&#39;s fused linear cross entropy loss. Default is True.</span>
+</span><span id="__span-0-2226"><a id="__codelineno-0-2226" name="__codelineno-0-2226"></a><span class="sd">            Whether to apply Liger's fused linear cross entropy loss. Default is True.</span>
 </span><span id="__span-0-2227"><a id="__codelineno-0-2227" name="__codelineno-0-2227"></a><span class="sd">            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.</span>
 </span><span id="__span-0-2228"><a id="__codelineno-0-2228" name="__codelineno-0-2228"></a><span class="sd">            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.</span>
-</span><span id="__span-0-2229"><a id="__codelineno-0-2229" name="__codelineno-0-2229"></a><span class="sd">        rms_norm (bool): Whether to apply Liger&#39;s RMSNorm. Default is True.</span>
-</span><span id="__span-0-2230"><a id="__codelineno-0-2230" name="__codelineno-0-2230"></a><span class="sd">        swiglu (bool): Whether to apply Liger&#39;s SwiGLU Phi3MLP. Default is True.</span>
+</span><span id="__span-0-2229"><a id="__codelineno-0-2229" name="__codelineno-0-2229"></a><span class="sd">        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.</span>
+</span><span id="__span-0-2230"><a id="__codelineno-0-2230" name="__codelineno-0-2230"></a><span class="sd">        swiglu (bool): Whether to apply Liger's SwiGLU Phi3MLP. Default is True.</span>
 </span><span id="__span-0-2231"><a id="__codelineno-0-2231" name="__codelineno-0-2231"></a><span class="sd">        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been</span>
 </span><span id="__span-0-2232"><a id="__codelineno-0-2232" name="__codelineno-0-2232"></a><span class="sd">        loaded. Default is None.</span>
-</span><span id="__span-0-2233"><a id="__codelineno-0-2233" name="__codelineno-0-2233"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-2233"><a id="__codelineno-0-2233" name="__codelineno-0-2233"></a><span class="sd">    """</span>
 </span><span id="__span-0-2234"><a id="__codelineno-0-2234" name="__codelineno-0-2234"></a>    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">cross_entropy</span> <span class="ow">and</span> <span class="n">fused_linear_cross_entropy</span><span class="p">),</span> <span class="p">(</span>
-</span><span id="__span-0-2235"><a id="__codelineno-0-2235" name="__codelineno-0-2235"></a>        <span class="s2">&quot;cross_entropy and fused_linear_cross_entropy cannot both be True.&quot;</span>
+</span><span id="__span-0-2235"><a id="__codelineno-0-2235" name="__codelineno-0-2235"></a>        <span class="s2">"cross_entropy and fused_linear_cross_entropy cannot both be True."</span>
 </span><span id="__span-0-2236"><a id="__codelineno-0-2236" name="__codelineno-0-2236"></a>    <span class="p">)</span>
 </span><span id="__span-0-2237"><a id="__codelineno-0-2237" name="__codelineno-0-2237"></a>
 </span><span id="__span-0-2238"><a id="__codelineno-0-2238" name="__codelineno-0-2238"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">transformers.models.phi3</span><span class="w"> </span><span class="kn">import</span> <span class="n">modeling_phi3</span>
@@ -3736,8 +3736,8 @@ patch raises a <code>RuntimeError</code> at patch time or call time if TP&gt;1 i
 <p><strong>Usage</strong>:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">liger_kernel.megatron</span><span class="w"> </span><span class="kn">import</span> <span class="n">apply_liger_kernel_to_megatron</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># Call before Megatron&#39;s forward pass reaches compute_language_model_loss.</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Defaults match Megatron&#39;s native CE behavior; no CE-specific config needed.</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># Call before Megatron's forward pass reaches compute_language_model_loss.</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Defaults match Megatron's native CE behavior; no CE-specific config needed.</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">apply_liger_kernel_to_megatron</span><span class="p">(</span><span class="n">rms_norm</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">cross_entropy</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 <p>Both the fused (<code>config.cross_entropy_loss_fusion=True</code>,
@@ -3758,7 +3758,7 @@ call, so Megatron picks up Liger regardless of which path your config selects.</
 
 
 <a href="#liger_kernel.megatron.apply_liger_kernel_to_megatron" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">apply_liger_kernel_to_megatron</span><span class="p">(</span><span class="n">rms_norm</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">cross_entropy</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">apply_liger_kernel_to_megatron</span><span class="p">(</span><span class="n">rms_norm</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">cross_entropy</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">swiglu</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -3815,12 +3815,34 @@ become <code>LigerMegatronRMSNorm</code>.</p>
 (fused path) and
 <code>megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy</code>
 (unfused path) with Liger's Triton cross-entropy. Default
-<code>False</code> because this path currently supports
-<code>tensor_model_parallel_size=1</code> only. The fused wrapper matches
-native's <code>(logits, target, tp_group)</code> signature exactly; the
-unfused wrapper additionally honors a runtime <code>label_smoothing</code>
+<code>False</code> so adopters opt in explicitly. All tensor-parallel sizes
+are supported (TP=1 and TP&gt;1 share the same vocab-parallel
+kernel). The fused wrapper matches native's
+<code>(logits, target, tp_group)</code> signature exactly; the unfused
+wrapper additionally honors a runtime <code>label_smoothing</code>
 argument, matching native's
 <code>(logits, target, label_smoothing=0.0, tp_group=None)</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>swiglu</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>When <code>True</code> replace
+<code>megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction</code> with Liger's
+Triton SiLU-multiply kernel, covering the dense <code>MLP</code> and the MoE
+<code>SharedExpertMLP</code>. Default <code>False</code> so adopters opt in explicitly.
+See <code>_patch_swiglu_function</code> for the configurations this reaches
+and the ones that stay on Megatron.</p>
               </div>
             </td>
             <td>
@@ -3846,30 +3868,6 @@ directly and wire it into your model (Mode 2). The monkey-patch path
 is intentionally a transparent drop-in: it matches Megatron's native
 defaults so callers can flip Liger on without touching loss config.</p>
 </details>
-
-<p><span class="doc-section-title">Raises:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="RuntimeError">RuntimeError</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>When <code>cross_entropy=True</code> and Megatron's parallel
-state already reports <code>tensor_model_parallel_size &gt; 1</code>.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>src/liger_kernel/megatron/monkey_patch.py</code></summary>
@@ -3928,62 +3926,72 @@ state already reports <code>tensor_model_parallel_size &gt; 1</code>.</p>
 <span class="normal"><a href="#__codelineno-0-64">64</a></span>
 <span class="normal"><a href="#__codelineno-0-65">65</a></span>
 <span class="normal"><a href="#__codelineno-0-66">66</a></span>
-<span class="normal"><a href="#__codelineno-0-67">67</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12"></a><span class="k">def</span><span class="w"> </span><span class="nf">apply_liger_kernel_to_megatron</span><span class="p">(</span>
+<span class="normal"><a href="#__codelineno-0-67">67</a></span>
+<span class="normal"><a href="#__codelineno-0-68">68</a></span>
+<span class="normal"><a href="#__codelineno-0-69">69</a></span>
+<span class="normal"><a href="#__codelineno-0-70">70</a></span>
+<span class="normal"><a href="#__codelineno-0-71">71</a></span>
+<span class="normal"><a href="#__codelineno-0-72">72</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12"></a><span class="k">def</span><span class="w"> </span><span class="nf">apply_liger_kernel_to_megatron</span><span class="p">(</span>
 </span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13"></a>    <span class="n">rms_norm</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14"></a>    <span class="n">cross_entropy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Patch Megatron-Core to use Liger Triton kernels.</span>
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17"></a>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18"></a><span class="sd">    Idempotent. Targets Megatron&#39;s ``BackendSpecProvider``,</span>
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19"></a><span class="sd">    ``transformer_block.LayerNormImpl``, and (optionally) both of Megatron&#39;s</span>
-</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20"></a><span class="sd">    vocab-parallel cross-entropy entry points so models that route through</span>
-</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21"></a><span class="sd">    the standard spec system pick up Liger without per-model code.</span>
-</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22"></a>
-</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23"></a><span class="sd">    Args:</span>
-</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24"></a><span class="sd">        rms_norm: When ``True`` (default) replace both</span>
-</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25"></a><span class="sd">            ``LocalSpecProvider.layer_norm`` (per-layer norm slots) and</span>
-</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26"></a><span class="sd">            ``transformer_block.LayerNormImpl`` (the block-level</span>
-</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27"></a><span class="sd">            ``final_layernorm`` slot) so all RMSNorm modules in the model</span>
-</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28"></a><span class="sd">            become ``LigerMegatronRMSNorm``.</span>
-</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29"></a><span class="sd">        cross_entropy: When ``True`` replace both</span>
-</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30"></a><span class="sd">            ``megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy``</span>
-</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31"></a><span class="sd">            (fused path) and</span>
-</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32"></a><span class="sd">            ``megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``</span>
-</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33"></a><span class="sd">            (unfused path) with Liger&#39;s Triton cross-entropy. Default</span>
-</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34"></a><span class="sd">            ``False`` because this path currently supports</span>
-</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35"></a><span class="sd">            ``tensor_model_parallel_size=1`` only. The fused wrapper matches</span>
-</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36"></a><span class="sd">            native&#39;s ``(logits, target, tp_group)`` signature exactly; the</span>
-</span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="sd">            unfused wrapper additionally honors a runtime ``label_smoothing``</span>
-</span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38"></a><span class="sd">            argument, matching native&#39;s</span>
-</span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39"></a><span class="sd">            ``(logits, target, label_smoothing=0.0, tp_group=None)``.</span>
-</span><span id="__span-0-40"><a id="__codelineno-0-40" name="__codelineno-0-40"></a>
-</span><span id="__span-0-41"><a id="__codelineno-0-41" name="__codelineno-0-41"></a><span class="sd">    Notes:</span>
-</span><span id="__span-0-42"><a id="__codelineno-0-42" name="__codelineno-0-42"></a><span class="sd">        Call this BEFORE building your model. Patching after instantiation</span>
-</span><span id="__span-0-43"><a id="__codelineno-0-43" name="__codelineno-0-43"></a><span class="sd">        will not retroactively swap modules already created.</span>
-</span><span id="__span-0-44"><a id="__codelineno-0-44" name="__codelineno-0-44"></a>
-</span><span id="__span-0-45"><a id="__codelineno-0-45" name="__codelineno-0-45"></a><span class="sd">        The RMSNorm patches only affect the local (non-TE) backend. Mixing</span>
-</span><span id="__span-0-46"><a id="__codelineno-0-46" name="__codelineno-0-46"></a><span class="sd">        Liger norms with ``TESpecProvider`` requires a custom</span>
-</span><span id="__span-0-47"><a id="__codelineno-0-47" name="__codelineno-0-47"></a><span class="sd">        ``BackendSpecProvider`` subclass because TE&#39;s</span>
-</span><span id="__span-0-48"><a id="__codelineno-0-48" name="__codelineno-0-48"></a><span class="sd">        ``TELayerNormColumnParallelLinear`` folds the norm into the QKV</span>
-</span><span id="__span-0-49"><a id="__codelineno-0-49" name="__codelineno-0-49"></a><span class="sd">        linear; naive substitution would either double-norm or skip the norm.</span>
-</span><span id="__span-0-50"><a id="__codelineno-0-50" name="__codelineno-0-50"></a>
-</span><span id="__span-0-51"><a id="__codelineno-0-51" name="__codelineno-0-51"></a><span class="sd">        For explicit kernel configuration (custom ``ignore_index``,</span>
-</span><span id="__span-0-52"><a id="__codelineno-0-52" name="__codelineno-0-52"></a><span class="sd">        ``label_smoothing``, etc.) instantiate ``LigerMegatronCrossEntropy``</span>
-</span><span id="__span-0-53"><a id="__codelineno-0-53" name="__codelineno-0-53"></a><span class="sd">        directly and wire it into your model (Mode 2). The monkey-patch path</span>
-</span><span id="__span-0-54"><a id="__codelineno-0-54" name="__codelineno-0-54"></a><span class="sd">        is intentionally a transparent drop-in: it matches Megatron&#39;s native</span>
-</span><span id="__span-0-55"><a id="__codelineno-0-55" name="__codelineno-0-55"></a><span class="sd">        defaults so callers can flip Liger on without touching loss config.</span>
-</span><span id="__span-0-56"><a id="__codelineno-0-56" name="__codelineno-0-56"></a>
-</span><span id="__span-0-57"><a id="__codelineno-0-57" name="__codelineno-0-57"></a><span class="sd">    Raises:</span>
-</span><span id="__span-0-58"><a id="__codelineno-0-58" name="__codelineno-0-58"></a><span class="sd">        RuntimeError: When ``cross_entropy=True`` and Megatron&#39;s parallel</span>
-</span><span id="__span-0-59"><a id="__codelineno-0-59" name="__codelineno-0-59"></a><span class="sd">            state already reports ``tensor_model_parallel_size &gt; 1``.</span>
-</span><span id="__span-0-60"><a id="__codelineno-0-60" name="__codelineno-0-60"></a><span class="sd">    &quot;&quot;&quot;</span>
-</span><span id="__span-0-61"><a id="__codelineno-0-61" name="__codelineno-0-61"></a>    <span class="k">if</span> <span class="n">rms_norm</span><span class="p">:</span>
-</span><span id="__span-0-62"><a id="__codelineno-0-62" name="__codelineno-0-62"></a>        <span class="n">_patch_local_spec_provider_layer_norm</span><span class="p">()</span>
-</span><span id="__span-0-63"><a id="__codelineno-0-63" name="__codelineno-0-63"></a>        <span class="n">_patch_transformer_block_layernorm_impl</span><span class="p">()</span>
-</span><span id="__span-0-64"><a id="__codelineno-0-64" name="__codelineno-0-64"></a>    <span class="k">if</span> <span class="n">cross_entropy</span><span class="p">:</span>
-</span><span id="__span-0-65"><a id="__codelineno-0-65" name="__codelineno-0-65"></a>        <span class="n">_check_tensor_parallel_size_at_patch_time</span><span class="p">()</span>
-</span><span id="__span-0-66"><a id="__codelineno-0-66" name="__codelineno-0-66"></a>        <span class="n">_patch_fused_vocab_parallel_cross_entropy</span><span class="p">()</span>
-</span><span id="__span-0-67"><a id="__codelineno-0-67" name="__codelineno-0-67"></a>        <span class="n">_patch_vocab_parallel_cross_entropy</span><span class="p">()</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15"></a>    <span class="n">swiglu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17"></a><span class="w">    </span><span class="sd">"""Patch Megatron-Core to use Liger Triton kernels.</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18"></a>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19"></a><span class="sd">    Idempotent. Targets Megatron's ``BackendSpecProvider``,</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20"></a><span class="sd">    ``transformer_block.LayerNormImpl``, and (optionally) both of Megatron's</span>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21"></a><span class="sd">    vocab-parallel cross-entropy entry points so models that route through</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22"></a><span class="sd">    the standard spec system pick up Liger without per-model code.</span>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23"></a>
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24"></a><span class="sd">    Args:</span>
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25"></a><span class="sd">        rms_norm: When ``True`` (default) replace both</span>
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26"></a><span class="sd">            ``LocalSpecProvider.layer_norm`` (per-layer norm slots) and</span>
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27"></a><span class="sd">            ``transformer_block.LayerNormImpl`` (the block-level</span>
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28"></a><span class="sd">            ``final_layernorm`` slot) so all RMSNorm modules in the model</span>
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29"></a><span class="sd">            become ``LigerMegatronRMSNorm``.</span>
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30"></a><span class="sd">        cross_entropy: When ``True`` replace both</span>
+</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31"></a><span class="sd">            ``megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy``</span>
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32"></a><span class="sd">            (fused path) and</span>
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33"></a><span class="sd">            ``megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``</span>
+</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34"></a><span class="sd">            (unfused path) with Liger's Triton cross-entropy. Default</span>
+</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35"></a><span class="sd">            ``False`` so adopters opt in explicitly. All tensor-parallel sizes</span>
+</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36"></a><span class="sd">            are supported (TP=1 and TP&gt;1 share the same vocab-parallel</span>
+</span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="sd">            kernel). The fused wrapper matches native's</span>
+</span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38"></a><span class="sd">            ``(logits, target, tp_group)`` signature exactly; the unfused</span>
+</span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39"></a><span class="sd">            wrapper additionally honors a runtime ``label_smoothing``</span>
+</span><span id="__span-0-40"><a id="__codelineno-0-40" name="__codelineno-0-40"></a><span class="sd">            argument, matching native's</span>
+</span><span id="__span-0-41"><a id="__codelineno-0-41" name="__codelineno-0-41"></a><span class="sd">            ``(logits, target, label_smoothing=0.0, tp_group=None)``.</span>
+</span><span id="__span-0-42"><a id="__codelineno-0-42" name="__codelineno-0-42"></a><span class="sd">        swiglu: When ``True`` replace</span>
+</span><span id="__span-0-43"><a id="__codelineno-0-43" name="__codelineno-0-43"></a><span class="sd">            ``megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction`` with Liger's</span>
+</span><span id="__span-0-44"><a id="__codelineno-0-44" name="__codelineno-0-44"></a><span class="sd">            Triton SiLU-multiply kernel, covering the dense ``MLP`` and the MoE</span>
+</span><span id="__span-0-45"><a id="__codelineno-0-45" name="__codelineno-0-45"></a><span class="sd">            ``SharedExpertMLP``. Default ``False`` so adopters opt in explicitly.</span>
+</span><span id="__span-0-46"><a id="__codelineno-0-46" name="__codelineno-0-46"></a><span class="sd">            See ``_patch_swiglu_function`` for the configurations this reaches</span>
+</span><span id="__span-0-47"><a id="__codelineno-0-47" name="__codelineno-0-47"></a><span class="sd">            and the ones that stay on Megatron.</span>
+</span><span id="__span-0-48"><a id="__codelineno-0-48" name="__codelineno-0-48"></a>
+</span><span id="__span-0-49"><a id="__codelineno-0-49" name="__codelineno-0-49"></a><span class="sd">    Notes:</span>
+</span><span id="__span-0-50"><a id="__codelineno-0-50" name="__codelineno-0-50"></a><span class="sd">        Call this BEFORE building your model. Patching after instantiation</span>
+</span><span id="__span-0-51"><a id="__codelineno-0-51" name="__codelineno-0-51"></a><span class="sd">        will not retroactively swap modules already created.</span>
+</span><span id="__span-0-52"><a id="__codelineno-0-52" name="__codelineno-0-52"></a>
+</span><span id="__span-0-53"><a id="__codelineno-0-53" name="__codelineno-0-53"></a><span class="sd">        The RMSNorm patches only affect the local (non-TE) backend. Mixing</span>
+</span><span id="__span-0-54"><a id="__codelineno-0-54" name="__codelineno-0-54"></a><span class="sd">        Liger norms with ``TESpecProvider`` requires a custom</span>
+</span><span id="__span-0-55"><a id="__codelineno-0-55" name="__codelineno-0-55"></a><span class="sd">        ``BackendSpecProvider`` subclass because TE's</span>
+</span><span id="__span-0-56"><a id="__codelineno-0-56" name="__codelineno-0-56"></a><span class="sd">        ``TELayerNormColumnParallelLinear`` folds the norm into the QKV</span>
+</span><span id="__span-0-57"><a id="__codelineno-0-57" name="__codelineno-0-57"></a><span class="sd">        linear; naive substitution would either double-norm or skip the norm.</span>
+</span><span id="__span-0-58"><a id="__codelineno-0-58" name="__codelineno-0-58"></a>
+</span><span id="__span-0-59"><a id="__codelineno-0-59" name="__codelineno-0-59"></a><span class="sd">        For explicit kernel configuration (custom ``ignore_index``,</span>
+</span><span id="__span-0-60"><a id="__codelineno-0-60" name="__codelineno-0-60"></a><span class="sd">        ``label_smoothing``, etc.) instantiate ``LigerMegatronCrossEntropy``</span>
+</span><span id="__span-0-61"><a id="__codelineno-0-61" name="__codelineno-0-61"></a><span class="sd">        directly and wire it into your model (Mode 2). The monkey-patch path</span>
+</span><span id="__span-0-62"><a id="__codelineno-0-62" name="__codelineno-0-62"></a><span class="sd">        is intentionally a transparent drop-in: it matches Megatron's native</span>
+</span><span id="__span-0-63"><a id="__codelineno-0-63" name="__codelineno-0-63"></a><span class="sd">        defaults so callers can flip Liger on without touching loss config.</span>
+</span><span id="__span-0-64"><a id="__codelineno-0-64" name="__codelineno-0-64"></a><span class="sd">    """</span>
+</span><span id="__span-0-65"><a id="__codelineno-0-65" name="__codelineno-0-65"></a>    <span class="k">if</span> <span class="n">rms_norm</span><span class="p">:</span>
+</span><span id="__span-0-66"><a id="__codelineno-0-66" name="__codelineno-0-66"></a>        <span class="n">_patch_local_spec_provider_layer_norm</span><span class="p">()</span>
+</span><span id="__span-0-67"><a id="__codelineno-0-67" name="__codelineno-0-67"></a>        <span class="n">_patch_transformer_block_layernorm_impl</span><span class="p">()</span>
+</span><span id="__span-0-68"><a id="__codelineno-0-68" name="__codelineno-0-68"></a>    <span class="k">if</span> <span class="n">cross_entropy</span><span class="p">:</span>
+</span><span id="__span-0-69"><a id="__codelineno-0-69" name="__codelineno-0-69"></a>        <span class="n">_patch_fused_vocab_parallel_cross_entropy</span><span class="p">()</span>
+</span><span id="__span-0-70"><a id="__codelineno-0-70" name="__codelineno-0-70"></a>        <span class="n">_patch_vocab_parallel_cross_entropy</span><span class="p">()</span>
+</span><span id="__span-0-71"><a id="__codelineno-0-71" name="__codelineno-0-71"></a>    <span class="k">if</span> <span class="n">swiglu</span><span class="p">:</span>
+</span><span id="__span-0-72"><a id="__codelineno-0-72" name="__codelineno-0-72"></a>        <span class="n">_patch_swiglu_function</span><span class="p">()</span>
 </span></code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -4103,7 +4111,7 @@ state already reports <code>tensor_model_parallel_size &gt; 1</code>.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.footer", "toc.follow", "navigation.top", "navigation.sections"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>
