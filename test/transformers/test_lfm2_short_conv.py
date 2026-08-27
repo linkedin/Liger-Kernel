@@ -13,9 +13,9 @@ device = infer_device()
 @pytest.mark.parametrize(
     ("arch", "batch_tokens", "expected"),
     [
-        ("hopper", 16383, (256, None, None)),
-        ("hopper", 16384, (128, 4, 2)),
-        ("hopper", 32767, (128, 4, 2)),
+        ("hopper", 4095, (256, None, None)),
+        ("hopper", 4096, (64, 2, 2)),
+        ("hopper", 16384, (64, 2, 2)),
         ("hopper", 32768, (64, 2, 2)),
         ("cdna3", 65536, (256, None, None)),
         ("ampere_ada", 65536, (256, None, None)),

@@ -1,10 +1,26 @@
 import pytest
 import torch
 
+import liger_kernel.ops.lfm2_moe_router as moe_router_ops
+
 from liger_kernel.ops import LigerLfm2MoeRouterFunction
 from liger_kernel.utils import infer_device
 
 device = infer_device()
+
+
+@pytest.mark.parametrize(
+    ("arch", "expected"),
+    [
+        ("hopper", {"num_warps": 2, "num_stages": 1}),
+        ("cdna3", {}),
+        ("ampere_ada", {}),
+        ("blackwell", {}),
+    ],
+)
+def test_lfm2_moe_router_launch_config(monkeypatch, arch, expected):
+    monkeypatch.setattr(moe_router_ops, "infer_device_arch", lambda: arch)
+    assert moe_router_ops._lfm2_moe_router_launch_config() == expected
 
 
 def _reference(router_logits, expert_bias, top_k, norm_topk_prob, routed_scaling_factor):

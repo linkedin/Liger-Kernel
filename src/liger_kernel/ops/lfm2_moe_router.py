@@ -2,6 +2,17 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.utils import infer_device_arch
+
+
+def _lfm2_moe_router_launch_config():
+    # H100 sweeps found 2 warps / 1 stage valid at both 4K and 64K tokens,
+    # and 30% faster than Triton's default at 64K. Do not alter portable or
+    # ROCm launch selection.
+    if infer_device_arch() == "hopper":
+        return {"num_warps": 2, "num_stages": 1}
+    return {}
+
 
 @triton.jit
 def _lfm2_moe_router_forward(
@@ -136,6 +147,7 @@ class LigerLfm2MoeRouterFunction(torch.autograd.Function):
             TOP_K=top_k,
             BLOCK_K=block_k,
             BLOCK_EXPERTS=triton.next_power_of_2(n_experts),
+            **_lfm2_moe_router_launch_config(),
         )
         ctx.save_for_backward(router_logits, selected_experts)
         ctx.n_experts = n_experts
@@ -166,5 +178,6 @@ class LigerLfm2MoeRouterFunction(torch.autograd.Function):
             TOP_K=ctx.top_k,
             BLOCK_K=triton.next_power_of_2(ctx.top_k),
             BLOCK_EXPERTS=triton.next_power_of_2(ctx.n_experts),
+            **_lfm2_moe_router_launch_config(),
         )
         return grad_router_logits, None, None, None, None

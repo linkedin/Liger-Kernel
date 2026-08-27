@@ -6,11 +6,11 @@ from liger_kernel.utils import infer_device_arch
 
 
 def _short_conv_weight_backward_config(batch_tokens):
-    if infer_device_arch() == "hopper":
-        if batch_tokens >= 32768:
-            return 64, 2, 2
-        if batch_tokens >= 16384:
-            return 128, 4, 2
+    if infer_device_arch() == "hopper" and batch_tokens >= 4096:
+        # H100 sweeps showed 64/2/2 winning at every measured size from
+        # 4K through 64K tokens. The portable 256-token launch remains the
+        # default on ROCm and all non-Hopper architectures.
+        return 64, 2, 2
     return 256, None, None
 
 
