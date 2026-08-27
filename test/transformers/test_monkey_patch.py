@@ -56,6 +56,19 @@ if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
 IS_TRANSFORMERS_V5_OR_LATER = transformer_version >= version.parse("5.0.0")
 
 
+def test_instance_norm_patches_initialize_dispatch_attributes():
+    rms_norm = torch.nn.RMSNorm(16)
+    layer_norm = torch.nn.LayerNorm(16)
+
+    monkey_patch._patch_rms_norm_module(rms_norm)
+    monkey_patch._patch_layer_norm_module(layer_norm)
+
+    assert rms_norm.impl is None
+    assert rms_norm.mode is None
+    assert layer_norm.impl is None
+    assert layer_norm.mode is None
+
+
 # Check if optional modules are available
 def is_mllama_available():
     try:

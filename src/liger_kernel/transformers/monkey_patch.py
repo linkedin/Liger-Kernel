@@ -76,6 +76,8 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         )
         module.modules_to_save.default.in_place = in_place
         module.modules_to_save.default.row_mode = row_mode
+        module.modules_to_save.default.impl = None
+        module.modules_to_save.default.mode = None
         module.original_module.offset = offset
         module.original_module.casting_mode = casting_mode
         module.original_module.variance_epsilon = (
@@ -83,6 +85,8 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         )
         module.original_module.in_place = in_place
         module.original_module.row_mode = row_mode
+        module.original_module.impl = None
+        module.original_module.mode = None
         _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
         _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
@@ -95,6 +99,8 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         module.in_place = in_place
         module.row_mode = row_mode
+        module.impl = None
+        module.mode = None
         _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
         _bind_method_to_module(module, "_get_name", lambda self: LigerRMSNorm.__name__)
@@ -110,12 +116,16 @@ def _patch_layer_norm_module(module, eps=1e-6):
         module.modules_to_save.default.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
+        module.modules_to_save.default.impl = None
+        module.modules_to_save.default.mode = None
         module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
             module, "normalized_shape", None
         )
         module.original_module.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
+        module.original_module.impl = None
+        module.original_module.mode = None
         module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
             module, "normalized_shape", None
         )
@@ -128,6 +138,8 @@ def _patch_layer_norm_module(module, eps=1e-6):
     else:
         module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+        module.impl = None
+        module.mode = None
         _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
         _bind_method_to_module(module, "_get_name", lambda self: LigerLayerNorm.__name__)
