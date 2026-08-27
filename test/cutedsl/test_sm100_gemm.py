@@ -4,9 +4,12 @@ import pytest
 import torch
 
 cutedsl_available = importlib.util.find_spec("cutlass") is not None and torch.cuda.is_available()
-sm100_available = cutedsl_available and torch.cuda.get_device_capability() == (10, 0)
+native_blackwell_available = cutedsl_available and torch.cuda.get_device_capability() in ((10, 0), (10, 3))
 
-pytestmark = pytest.mark.skipif(not sm100_available, reason="SM100 CuTe DSL GEMM requires an NVIDIA SM100 GPU")
+pytestmark = pytest.mark.skipif(
+    not native_blackwell_available,
+    reason="CuTe DSL GEMM requires an NVIDIA SM100 or SM103 GPU",
+)
 
 if cutedsl_available:
     import cutlass
@@ -30,6 +33,26 @@ def test_sm100_gemm_identity_epilogue(output_features):
     actual = torch.empty(tokens, output_features, device="cuda", dtype=torch.bfloat16)
 
     run_epilogue_gemm(x, weight, actual, _identity_epilogue)
+
+    expected = torch.nn.functional.linear(x, weight)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
+
+
+def test_sm100_gemm_dlpack_abi_matches_torch(monkeypatch):
+    import liger_kernel.ops.cutedsl.ops._sm100_gemm as gemm
+
+    torch.manual_seed(1)
+    tokens, hidden, output_features = 33, 128, 97
+    x = torch.randn(tokens, hidden, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(output_features, hidden, device="cuda", dtype=torch.bfloat16) * hidden**-0.5
+    actual = torch.empty(tokens, output_features, device="cuda", dtype=torch.bfloat16)
+
+    gemm._COMPILE_CACHE.clear()
+    monkeypatch.setattr(gemm, "_TVM_FFI_AVAILABLE", False)
+    try:
+        run_epilogue_gemm(x, weight, actual, _identity_epilogue)
+    finally:
+        gemm._COMPILE_CACHE.clear()
 
     expected = torch.nn.functional.linear(x, weight)
     torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
@@ -71,3 +94,39 @@ def test_sm100_gemm_custom_epilogue_guards_noncurrent_device(monkeypatch):
 
     assert entered == [torch.device("cuda", 1)]
     assert len(called) == 1
+
+
+def test_sm100_gemm_compile_cache_key_includes_input_device(monkeypatch):
+    import liger_kernel.ops.cutedsl.ops._sm100_gemm as gemm
+
+    seen_keys = []
+    launches = []
+
+    class RecordingCache(dict):
+        def get(self, key):
+            seen_keys.append(key)
+            return lambda *args: launches.append(args)
+
+    class FakeTensor:
+        device = torch.device("cuda", 7)
+        dtype = torch.bfloat16
+
+        def stride(self, _):
+            return 16
+
+        def element_size(self):
+            return 2
+
+    monkeypatch.setattr(gemm, "_COMPILE_CACHE", RecordingCache())
+    monkeypatch.setattr(gemm, "_TVM_FFI_AVAILABLE", True)
+    monkeypatch.setattr(gemm, "_validate_epilogue_inputs", lambda *_: None)
+    monkeypatch.setattr(gemm, "_validate_epilogue_callback", lambda _: ("module", "epilogue", None))
+    monkeypatch.setattr(gemm, "_current_stream", lambda _: 123)
+    monkeypatch.setattr(gemm, "_select_epilogue_config", lambda _: (6, 1))
+    monkeypatch.setattr(gemm, "_max_active_clusters", lambda _: 8)
+
+    tensor = FakeTensor()
+    gemm._run_epilogue_gemm(tensor, tensor, tensor, object())
+
+    assert seen_keys[0][0] == torch.device("cuda", 7)
+    assert launches == [(tensor, tensor, tensor, 123)]
