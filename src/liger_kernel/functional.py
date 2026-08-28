@@ -36,6 +36,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.rms_norm",
         "liger_kernel.ops.backends._cutedsl.rms_norm",
+        "liger_kernel.ops.backends._cutile.rms_norm",
     ),
 )
 
@@ -44,6 +45,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.layer_norm",
         "liger_kernel.ops.backends._cutedsl.layer_norm",
+        "liger_kernel.ops.backends._cutile.layer_norm",
     ),
 )
 
@@ -55,6 +57,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.jsd",
         "liger_kernel.ops.backends._cutedsl.jsd",
+        "liger_kernel.ops.backends._cutile.jsd",
     ),
 )
 declare_op_locations(
@@ -62,6 +65,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.jsd",
         "liger_kernel.ops.backends._cutedsl.jsd",
+        "liger_kernel.ops.backends._cutile.jsd",
     ),
 )
 
@@ -71,6 +75,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.softmax",
         "liger_kernel.ops.backends._cutedsl.softmax",
+        "liger_kernel.ops.backends._cutile.softmax",
     ),
 )
 
@@ -155,6 +160,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.fused_linear_jsd",
         "liger_kernel.ops.backends._cutedsl.fused_linear_jsd",
+        "liger_kernel.ops.backends._cutile.fused_linear_jsd",
     ),
 )
 
