@@ -7,7 +7,8 @@ import torch.nn.functional as F
 
 _SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE = 4096
 _SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE = 2048
-_FULL_LOGPROB_MAX_ELEMENTS_CUDA = 4 * 1024 * 1024
+# Bound the direct path to at most 128 MiB of fp32 log-probability elements.
+_FULL_LOGPROB_MAX_ELEMENTS_CUDA = 32 * 1024 * 1024
 
 
 def _maybe_mark_dynamic_dim1(tensor):
