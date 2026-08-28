@@ -99,7 +99,10 @@ declare_op_locations(
 # uses an online-softmax reduction adapted from Quack.
 declare_op_locations(
     "cross_entropy",
-    ("liger_kernel.ops.backends._triton.cross_entropy",),
+    (
+        "liger_kernel.ops.backends._triton.cross_entropy",
+        "liger_kernel.ops.backends._cutedsl.cross_entropy",
+    ),
 )
 
 # cross_entropy_loss_and_grad: per-chunk CE primitive used by
@@ -107,7 +110,10 @@ declare_op_locations(
 # and picks up CuTe DSL on Hopper+.
 declare_op_locations(
     "cross_entropy_loss_and_grad",
-    ("liger_kernel.ops.backends._triton.cross_entropy",),
+    (
+        "liger_kernel.ops.backends._triton.cross_entropy",
+        "liger_kernel.ops.backends._cutedsl.cross_entropy",
+    ),
 )
 
 # fused_add_rms_norm: Triton (universal) + opt-in CuTe DSL (Hopper+). The
@@ -146,7 +152,10 @@ declare_op_locations(
 # JSD inputs to fp32, which safely falls back to Triton.
 declare_op_locations(
     "fused_linear_jsd",
-    ("liger_kernel.ops.backends._triton.fused_linear_jsd",),
+    (
+        "liger_kernel.ops.backends._triton.fused_linear_jsd",
+        "liger_kernel.ops.backends._cutedsl.fused_linear_jsd",
+    ),
 )
 
 # fused_linear_cross_entropy: Triton (universal) + CuTe DSL (Hopper+). The
@@ -155,7 +164,10 @@ declare_op_locations(
 # the CuTe DSL kernel on Hopper+).
 declare_op_locations(
     "fused_linear_cross_entropy",
-    ("liger_kernel.ops.backends._triton.fused_linear_cross_entropy",),
+    (
+        "liger_kernel.ops.backends._triton.fused_linear_cross_entropy",
+        "liger_kernel.ops.backends._cutedsl.fused_linear_cross_entropy",
+    ),
 )
 
 
