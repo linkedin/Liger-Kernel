@@ -54,7 +54,7 @@ class LigerLfm2RMSNorm(LigerRMSNorm):
     """LFM2 RMSNorm with a native path for inference and short Hopper sequences."""
 
     def forward(self, hidden_states):
-        if use_lfm2_native_forward(hidden_states):
+        if use_lfm2_native_forward(hidden_states, sequence_dim=1):
             input_dtype = hidden_states.dtype
             normalized = hidden_states.to(torch.float32)
             variance = normalized.pow(2).mean(-1, keepdim=True)

@@ -8,6 +8,7 @@ from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM
 from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_route_tokens_to_experts
 from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_router_forward
 from liger_kernel.transformers.lfm2_short_conv import liger_lfm2_short_conv_forward
+from liger_kernel.transformers.lfm2_utils import _lfm2_training_sequence_length
 from liger_kernel.transformers.model.qwen2 import lce_forward as lfm2_lce_forward
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
 from liger_kernel.transformers.rms_norm import LigerLfm2RMSNorm
@@ -278,6 +279,12 @@ def test_lfm2_short_conv_caches_native_forward_signature(monkeypatch):
     short_conv(hidden_states, seq_idx=seq_idx)
 
     assert signature_calls == 1
+
+
+def test_lfm2_training_sequence_length_handles_attention_layouts():
+    assert _lfm2_training_sequence_length(torch.empty(1, 4096, 32, 64), sequence_dim=1) == 4096
+    assert _lfm2_training_sequence_length(torch.empty(1, 32, 4096, 64), sequence_dim=-2) == 4096
+    assert _lfm2_training_sequence_length(torch.empty(1, 4096, 2048), sequence_dim=-2) == 4096
 
 
 @pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")

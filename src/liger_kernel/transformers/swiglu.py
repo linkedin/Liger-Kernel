@@ -104,7 +104,7 @@ class LigerLfm2SwiGLUMLP(nn.Module):
         self.w2 = nn.Linear(intermediate_size, config.hidden_size, bias=False)
 
     def forward(self, x):
-        if use_lfm2_native_forward(x):
+        if use_lfm2_native_forward(x, sequence_dim=-2):
             return self.w2(torch.nn.functional.silu(self.w1(x)) * self.w3(x))
         return self.w2(LigerSiLUMulFunction.apply(self.w1(x), self.w3(x)))
 

@@ -27,7 +27,7 @@ def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 def liger_lfm2_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """Use native PyTorch RoPE for inference and short Hopper sequences."""
-    if not use_lfm2_native_forward(q):
+    if not use_lfm2_native_forward(q, sequence_dim=-2):
         return liger_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim)
 
     cos = cos.unsqueeze(unsqueeze_dim)
