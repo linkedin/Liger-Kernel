@@ -3,9 +3,11 @@ from functools import partial
 
 import torch
 import torch._dynamo.config
+import torch.nn.functional as F
 
 _SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE = 4096
 _SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE = 2048
+_FULL_LOGPROB_MAX_ELEMENTS_CUDA = 4 * 1024 * 1024
 
 
 def _maybe_mark_dynamic_dim1(tensor):
@@ -534,6 +536,25 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         batch_size, seq_len, hidden_size = input_chunk.shape
         hidden = input_chunk.reshape(batch_size * seq_len, hidden_size).contiguous()
         targets = selected_token_ids.reshape(batch_size * seq_len).contiguous()
+
+        # Small policy-update batches underutilize CUDA when streamed across the
+        # vocabulary: each chunk launches another tiny GEMM, then backward
+        # recomputes all of them. Materializing the logits is both faster and
+        # smaller below this bound because native autograd avoids the streaming
+        # path's fp32 full-size gradient accumulators. Keep ROCm and larger CUDA
+        # workloads on the bounded-memory implementation.
+        use_full_cuda = (
+            hidden.is_cuda
+            and torch.version.hip is None
+            and hidden.shape[0] * weight.shape[0] <= _FULL_LOGPROB_MAX_ELEMENTS_CUDA
+        )
+        if use_full_cuda:
+            logits = hidden @ weight.to(hidden.dtype).t()
+            if bias is not None:
+                logits = logits + bias.to(logits.dtype)
+            per_token_logps = F.log_softmax(logits.float() / temperature, dim=-1).gather(1, targets.unsqueeze(1))[:, 0]
+            return per_token_logps.reshape(batch_size, seq_len)
+
         per_token_logps = _ChunkedSelectiveLogProbFunction.apply(
             hidden,
             weight,

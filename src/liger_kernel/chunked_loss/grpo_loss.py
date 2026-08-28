@@ -4,6 +4,7 @@ from typing import Optional
 
 import torch
 
+from liger_kernel.chunked_loss.fused_linear_ppo import _FULL_LOGPROB_MAX_ELEMENTS_CUDA
 from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
 
 
@@ -501,6 +502,46 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         vllm_is_ratio=None,
         num_items_in_batch=None,
     ):
+        use_direct_cuda = (
+            _input.is_cuda
+            and torch.version.hip is None
+            and _input.shape[0] * _input.shape[1] * lin_weight.shape[0] <= _FULL_LOGPROB_MAX_ELEMENTS_CUDA
+            and (not self.use_ref_model or ref_per_token_logps is not None)
+        )
+        if use_direct_cuda:
+            logits = _input @ lin_weight.to(_input.dtype).t()
+            if bias is not None:
+                logits = logits + bias.to(logits.dtype)
+            per_token_logps = (
+                torch.log_softmax(logits.float() / self.temperature, dim=-1)
+                .gather(-1, selected_token_ids.unsqueeze(-1))
+                .squeeze(-1)
+            )
+            return LigerFusedLinearGRPOFunction.ppo_loss_fn(
+                per_token_logps=per_token_logps,
+                attention_mask=attention_mask,
+                advantages=advantages,
+                full_attention_mask=attention_mask,
+                ref_per_token_logps=ref_per_token_logps,
+                old_per_token_logps=old_per_token_logps,
+                epsilon_low=self.epsilon_low,
+                epsilon_high=self.epsilon_high,
+                beta=self.beta,
+                loss_type=self.loss_type,
+                max_completion_length=self.max_completion_length,
+                importance_sampling_level=self.importance_sampling_level,
+                sapo_temperature_pos=self.sapo_temperature_pos,
+                sapo_temperature_neg=self.sapo_temperature_neg,
+                vllm_is_ratio=vllm_is_ratio,
+                delta=self.delta,
+                use_bias_correction_kl=self.use_bias_correction_kl,
+                vespo_k_pos=self.vespo_k_pos,
+                vespo_lambda_pos=self.vespo_lambda_pos,
+                vespo_k_neg=self.vespo_k_neg,
+                vespo_lambda_neg=self.vespo_lambda_neg,
+                num_items_in_batch=num_items_in_batch,
+            )
+
         return LigerFusedLinearGRPOFunction.apply(
             _input,
             lin_weight,
