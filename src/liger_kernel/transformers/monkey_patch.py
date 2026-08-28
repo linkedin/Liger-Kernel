@@ -3593,7 +3593,7 @@ def _patch_lfm2_short_conv_class(short_conv_class) -> None:
 def apply_liger_kernel_to_lfm2(
     rope: bool = True,
     cross_entropy: bool = False,
-    fused_linear_cross_entropy: Optional[bool] = None,
+    fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
     short_conv: bool = True,
@@ -3601,12 +3601,8 @@ def apply_liger_kernel_to_lfm2(
 ) -> None:
     """Apply Liger kernels to Hugging Face LFM2 models.
 
-    Fused linear cross entropy defaults to enabled on ROCm and disabled on
-    CUDA, where native compiled chunked loss is faster. Pass an explicit bool
-    to override the backend default.
+    Fused linear cross entropy is enabled by default on both CUDA and ROCm.
     """
-    if fused_linear_cross_entropy is None:
-        fused_linear_cross_entropy = is_hip()
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
@@ -3640,7 +3636,7 @@ def apply_liger_kernel_to_lfm2(
 def apply_liger_kernel_to_lfm2_moe(
     rope: bool = True,
     cross_entropy: bool = False,
-    fused_linear_cross_entropy: Optional[bool] = None,
+    fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
     fused_moe: bool = True,
@@ -3649,8 +3645,6 @@ def apply_liger_kernel_to_lfm2_moe(
     model: PreTrainedModel = None,
 ) -> None:
     """Apply Liger kernels to Hugging Face LFM2-MoE models."""
-    if fused_linear_cross_entropy is None:
-        fused_linear_cross_entropy = is_hip()
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
@@ -3698,7 +3692,7 @@ def apply_liger_kernel_to_lfm2_moe(
 def apply_liger_kernel_to_lfm2_vl(
     rope: bool = True,
     cross_entropy: bool = False,
-    fused_linear_cross_entropy: Optional[bool] = None,
+    fused_linear_cross_entropy: bool = True,
     layer_norm: Optional[bool] = None,
     rms_norm: bool = True,
     swiglu: bool = True,
@@ -3711,8 +3705,6 @@ def apply_liger_kernel_to_lfm2_vl(
     for the SigLIP2 shapes on both CUDA and ROCm. Pass ``layer_norm=True`` to
     opt in explicitly.
     """
-    if fused_linear_cross_entropy is None:
-        fused_linear_cross_entropy = is_hip()
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )

@@ -3,7 +3,6 @@ import inspect
 import pytest
 import torch
 
-from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM
 from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_route_tokens_to_experts
 from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_router_forward
@@ -59,10 +58,9 @@ def test_apply_liger_kernel_to_lfm2_instance():
     from transformers.models.lfm2.modeling_lfm2 import Lfm2ForCausalLM
 
     model = Lfm2ForCausalLM(_lfm2_config())
-    original_forward = inspect.getsource(model.forward)
     _apply_liger_kernel_to_instance(model)
 
-    expected_forward = inspect.getsource(lfm2_lce_forward) if is_hip() else original_forward
+    expected_forward = inspect.getsource(lfm2_lce_forward)
     assert inspect.getsource(model.forward) == expected_forward
     assert modeling_lfm2.apply_rotary_pos_emb is liger_lfm2_rotary_pos_emb
     assert inspect.getsource(model.model.embedding_norm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
@@ -98,10 +96,9 @@ def test_apply_liger_kernel_to_lfm2_moe_instance():
         use_cache=False,
     )
     model = Lfm2MoeForCausalLM(config)
-    original_forward = inspect.getsource(model.forward)
     _apply_liger_kernel_to_instance(model)
 
-    expected_forward = inspect.getsource(lfm2_lce_forward) if is_hip() else original_forward
+    expected_forward = inspect.getsource(lfm2_lce_forward)
     assert inspect.getsource(model.forward) == expected_forward
     assert inspect.getsource(model.model.embedding_norm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
     dense_layer, sparse_layer = model.model.layers
@@ -162,10 +159,9 @@ def test_apply_liger_kernel_to_lfm2_vl_instance(layer_norm, expected_liger_layer
         downsample_factor=2,
     )
     model = Lfm2VlForConditionalGeneration(config)
-    original_forward = inspect.getsource(model.forward)
     monkey_patch.apply_liger_kernel_to_lfm2_vl(model=model, layer_norm=layer_norm)
 
-    expected_forward = inspect.getsource(lfm2_vl_lce_forward) if is_hip() else original_forward
+    expected_forward = inspect.getsource(lfm2_vl_lce_forward)
     assert inspect.getsource(model.forward) == expected_forward
     language_model = model.model.language_model
     assert inspect.getsource(language_model.embedding_norm.forward) == inspect.getsource(LigerLfm2RMSNorm.forward)
@@ -182,23 +178,29 @@ def test_apply_liger_kernel_to_lfm2_vl_instance(layer_norm, expected_liger_layer
 
 
 @pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")
+def test_lfm2_fused_linear_cross_entropy_default():
+    from transformers.models.lfm2.modeling_lfm2 import Lfm2ForCausalLM
+
+    from liger_kernel.transformers import monkey_patch
+
+    model = Lfm2ForCausalLM(_lfm2_config())
+    monkey_patch.apply_liger_kernel_to_lfm2(model=model)
+
+    assert inspect.getsource(model.forward) == inspect.getsource(lfm2_lce_forward)
+
+
+@pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")
 @pytest.mark.parametrize(
-    ("hip", "fused_linear_cross_entropy", "expect_liger"),
-    [
-        (False, None, False),
-        (True, None, True),
-        (False, True, True),
-        (True, False, False),
-    ],
+    ("fused_linear_cross_entropy", "expect_liger"),
+    [(True, True), (False, False)],
 )
-def test_lfm2_fused_linear_cross_entropy_backend_default(monkeypatch, hip, fused_linear_cross_entropy, expect_liger):
+def test_lfm2_fused_linear_cross_entropy_override(fused_linear_cross_entropy, expect_liger):
     from transformers.models.lfm2.modeling_lfm2 import Lfm2ForCausalLM
 
     from liger_kernel.transformers import monkey_patch
 
     model = Lfm2ForCausalLM(_lfm2_config())
     original_forward = inspect.getsource(model.forward)
-    monkeypatch.setattr(monkey_patch, "is_hip", lambda: hip)
     monkey_patch.apply_liger_kernel_to_lfm2(
         model=model,
         fused_linear_cross_entropy=fused_linear_cross_entropy,
