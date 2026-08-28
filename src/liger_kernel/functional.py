@@ -33,12 +33,18 @@ from liger_kernel.backends.registry import declare_op_locations
 
 declare_op_locations(
     "rms_norm",
-    ("liger_kernel.ops.backends._triton.rms_norm",),
+    (
+        "liger_kernel.ops.backends._triton.rms_norm",
+        "liger_kernel.ops.backends._cutedsl.rms_norm",
+    ),
 )
 
 declare_op_locations(
     "layer_norm",
-    ("liger_kernel.ops.backends._triton.layer_norm",),
+    (
+        "liger_kernel.ops.backends._triton.layer_norm",
+        "liger_kernel.ops.backends._cutedsl.layer_norm",
+    ),
 )
 
 # JSD ops: Triton (universal) + cuTile (B200; 8x fwd speedup vs Triton). The
@@ -94,7 +100,10 @@ declare_op_locations(
 # remains the convergence-safe automatic default.
 declare_op_locations(
     "fused_add_rms_norm",
-    ("liger_kernel.ops.backends._triton.fused_add_rms_norm",),
+    (
+        "liger_kernel.ops.backends._triton.fused_add_rms_norm",
+        "liger_kernel.ops.backends._cutedsl.fused_add_rms_norm",
+    ),
 )
 
 # GeGLU: Triton (universal) + CuTe DSL (Hopper+). Elementwise GELU-tanh(a)*b;
