@@ -52,17 +52,26 @@ declare_op_locations(
 # route through the dispatcher and pick up cuTile when the user opts in.
 declare_op_locations(
     "jsd",
-    ("liger_kernel.ops.backends._triton.jsd",),
+    (
+        "liger_kernel.ops.backends._triton.jsd",
+        "liger_kernel.ops.backends._cutedsl.jsd",
+    ),
 )
 declare_op_locations(
     "jsd_loss_and_grad",
-    ("liger_kernel.ops.backends._triton.jsd",),
+    (
+        "liger_kernel.ops.backends._triton.jsd",
+        "liger_kernel.ops.backends._cutedsl.jsd",
+    ),
 )
 
 # Softmax: Triton (universal) + cuTile (Blackwell) + CuTe DSL (Hopper+).
 declare_op_locations(
     "softmax",
-    ("liger_kernel.ops.backends._triton.softmax",),
+    (
+        "liger_kernel.ops.backends._triton.softmax",
+        "liger_kernel.ops.backends._cutedsl.softmax",
+    ),
 )
 
 # SwiGLU: Triton (universal) + CuTe DSL (Hopper+). SwiGLU is a purely
@@ -70,14 +79,20 @@ declare_op_locations(
 # overhead and uses native exp2 for the sigmoid.
 declare_op_locations(
     "swiglu",
-    ("liger_kernel.ops.backends._triton.swiglu",),
+    (
+        "liger_kernel.ops.backends._triton.swiglu",
+        "liger_kernel.ops.backends._cutedsl.swiglu",
+    ),
 )
 
 # RoPE: Triton (universal) + CuTe DSL (Hopper+). RoPE is an elementwise
 # rotation; the CuTe DSL kernel shares one rotate primitive for fwd+bwd.
 declare_op_locations(
     "rope",
-    ("liger_kernel.ops.backends._triton.rope",),
+    (
+        "liger_kernel.ops.backends._triton.rope",
+        "liger_kernel.ops.backends._cutedsl.rope",
+    ),
 )
 
 # CrossEntropy: Triton (universal) + CuTe DSL (Hopper+). The CuTe DSL kernel
@@ -110,14 +125,20 @@ declare_op_locations(
 # mirrors the SwiGLU CuTe DSL pattern.
 declare_op_locations(
     "geglu",
-    ("liger_kernel.ops.backends._triton.geglu",),
+    (
+        "liger_kernel.ops.backends._triton.geglu",
+        "liger_kernel.ops.backends._cutedsl.geglu",
+    ),
 )
 
 # KL Divergence: Triton (universal) + CuTe DSL (Hopper+). Forward uses a
 # row-reduction (ReductionBase); backward is elementwise.
 declare_op_locations(
     "kl_div",
-    ("liger_kernel.ops.backends._triton.kl_div",),
+    (
+        "liger_kernel.ops.backends._triton.kl_div",
+        "liger_kernel.ops.backends._cutedsl.kl_div",
+    ),
 )
 
 # fused_linear_jsd: Triton (universal) + cuTile (Blackwell). The CuTe DSL
