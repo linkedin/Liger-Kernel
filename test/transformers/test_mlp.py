@@ -1,3 +1,5 @@
+import importlib.util
+
 import pytest
 import torch
 
@@ -18,6 +20,11 @@ except ImportError:
     FALCON_H1_AVAILABLE = False
 
 device = infer_device()
+
+pytestmark = pytest.mark.skipif(
+    importlib.util.find_spec("triton.tools.tensor_descriptor") is None,
+    reason="LigerMLP requires triton.tools.tensor_descriptor",
+)
 
 DIFF_THRESHOLD = 1e-5
 # Why the FalconH1 tests use a looser tolerance only for bf16.
