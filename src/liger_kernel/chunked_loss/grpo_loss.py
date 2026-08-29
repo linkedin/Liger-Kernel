@@ -4,7 +4,7 @@ from typing import Optional
 
 import torch
 
-from liger_kernel.chunked_loss.fused_linear_ppo import _FULL_LOGPROB_MAX_ELEMENTS_CUDA
+from liger_kernel.chunked_loss.fused_linear_ppo import _FULL_LOGPROB_MAX_ELEMENTS
 from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
 
 
@@ -502,12 +502,12 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         vllm_is_ratio=None,
         num_items_in_batch=None,
     ):
-        use_direct_cuda = (
+        use_direct = (
             _input.is_cuda
-            and _input.shape[0] * _input.shape[1] * lin_weight.shape[0] <= _FULL_LOGPROB_MAX_ELEMENTS_CUDA
+            and _input.shape[0] * _input.shape[1] * lin_weight.shape[0] <= _FULL_LOGPROB_MAX_ELEMENTS
             and (not self.use_ref_model or ref_per_token_logps is not None)
         )
-        if use_direct_cuda:
+        if use_direct:
             logits = _input @ lin_weight.to(_input.dtype).t()
             if bias is not None:
                 logits = logits + bias.to(logits.dtype)
