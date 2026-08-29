@@ -27,6 +27,20 @@ target_include_directories(test_mlp1_fused PRIVATE
     "${CMAKE_SOURCE_DIR}/csrc/core/src/moe")
 gtest_discover_tests(test_mlp1_fused DISCOVERY_MODE PRE_TEST)
 
+add_executable(
+    test_fused_scaled_linear_cross_entropy
+    test_fused_scaled_linear_cross_entropy.cu)
+target_link_libraries(test_fused_scaled_linear_cross_entropy PRIVATE
+    GTest::gtest
+    CUTLASS::CUTLASS
+    CUDA::cudart)
+target_include_directories(test_fused_scaled_linear_cross_entropy PRIVATE
+    "${CMAKE_SOURCE_DIR}/csrc/core/include"
+    "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+gtest_discover_tests(
+    test_fused_scaled_linear_cross_entropy
+    DISCOVERY_MODE PRE_TEST)
+
 # ── Blackwell (SM100a) port targets — pre-staged by the orchestrator so the
 # three parallel port subagents each build ONLY their own already-registered
 # target and never edit this shared file. Each test .cu starts as a minimal stub

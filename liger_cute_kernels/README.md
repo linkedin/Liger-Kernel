@@ -48,6 +48,16 @@ global batch size 512, and sequence length 4,096. Left: cross-entropy loss.
 Right: per-step wall time. The paper excludes the initial CUDA Graph build from
 its aggregate step-time statistics.
 
+## Fused linear scaled cross entropy
+
+The Hopper native core also provides
+`fused_linear_scaled_cross_entropy_forward` and
+`fused_linear_scaled_cross_entropy_backward`. The backward path uses a
+three-stage cluster-2 dZ handoff followed by a four-stage combined dX+dW
+cluster kernel. dX uses split-K=2 only for hidden size 2,048; hidden size 4,096
+uses split-K=1. Direct-peer and hierarchical two-host transports remain
+available when the single-host NVLS path is not selected.
+
 ## Package architecture
 
 Native CUDA build for the MoE port (from `LigerCommKernels`). The lck wheel

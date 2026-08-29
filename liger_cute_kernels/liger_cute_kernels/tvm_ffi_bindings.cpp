@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <exception>
 
+#include "backward_gemm_sm90.cuh"
+#include "workspace.cuh"
 #include "moe_launch.h"
 
 namespace liger {
@@ -384,6 +386,93 @@ void moe_fused_bwd_bf16(
   }
 }
 
+void fused_linear_scaled_cross_entropy_configure_backward(
+    int64_t max_local_vocab, int64_t max_tiles_per_reduce, int64_t team_handle) {
+  TVM_FFI_ICHECK_GT(max_local_vocab, 0);
+  TVM_FFI_ICHECK(
+      max_tiles_per_reduce == 1 || max_tiles_per_reduce == 2 ||
+      max_tiles_per_reduce == 4);
+  try {
+    liger::fused_scaled_linear_cross_entropy::configure_backward_tp_symmetric(
+        static_cast<int>(max_local_vocab), static_cast<int>(max_tiles_per_reduce), 1, team_handle);
+  } catch (const std::exception& e) {
+    ThrowCoreError("fused_linear_scaled_cross_entropy_configure_backward", e);
+  }
+}
+
+void fused_linear_scaled_cross_entropy_backward(
+    ffi::TensorView grad_output, ffi::TensorView entropy_grad, ffi::TensorView x,
+    ffi::TensorView weight, ffi::TensorView target, ffi::TensorView lse,
+    ffi::TensorView entropy, int64_t vocab_start, int64_t ignore_index,
+    double inverse_temperature, int64_t team_handle, int64_t tiles_per_reduce,
+    bool return_entropy, ffi::TensorView grad_input, ffi::TensorView grad_weight) {
+  DLDataType bf16{kDLBfloat, 16, 1};
+  DLDataType f32{kDLFloat, 32, 1};
+  DLDataType i64{kDLInt, 64, 1};
+  RequireCudaTensor(grad_output, 1, f32, "grad_output");
+  RequireCudaTensor(entropy_grad, 1, f32, "entropy_grad");
+  RequireCudaTensor(x, 2, bf16, "x");
+  RequireCudaTensor(weight, 2, bf16, "weight");
+  RequireCudaTensor(target, 1, i64, "target");
+  RequireCudaTensor(lse, 1, f32, "lse");
+  RequireCudaTensor(entropy, 1, f32, "entropy");
+  RequireCudaTensor(grad_input, 2, bf16, "grad_input");
+  RequireCudaTensor(grad_weight, 2, bf16, "grad_weight");
+
+  int64_t tokens = x.size(0);
+  int64_t hidden = x.size(1);
+  int64_t local_vocab = weight.size(0);
+  TVM_FFI_ICHECK_EQ(weight.size(1), hidden);
+  TVM_FFI_ICHECK_EQ(target.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(grad_output.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(entropy_grad.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(lse.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(entropy.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(grad_input.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(grad_input.size(1), hidden);
+  TVM_FFI_ICHECK_EQ(grad_weight.size(0), local_vocab);
+  TVM_FFI_ICHECK_EQ(grad_weight.size(1), hidden);
+  TVM_FFI_ICHECK(
+      tiles_per_reduce == 1 || tiles_per_reduce == 2 || tiles_per_reduce == 4);
+
+  using namespace liger::fused_scaled_linear_cross_entropy;
+  BackwardScratch scratch = reserve_backward_scratch(static_cast<int>(local_vocab));
+  BackwardTpParamsSm90<90> params;
+  params.gemm.x = x.data_ptr();
+  params.gemm.weight = weight.data_ptr();
+  params.gemm.target = static_cast<const int64_t*>(target.data_ptr());
+  params.gemm.grad_output = static_cast<const float*>(grad_output.data_ptr());
+  params.gemm.lse = static_cast<const float*>(lse.data_ptr());
+  params.gemm.entropy = static_cast<const float*>(entropy.data_ptr());
+  params.gemm.entropy_grad = static_cast<const float*>(entropy_grad.data_ptr());
+  params.gemm.grad_input = grad_input.data_ptr();
+  params.gemm.grad_weight = grad_weight.data_ptr();
+  params.gemm.dz_workspace = scratch.dz_workspace;
+  params.gemm.dz_workspace_bytes = scratch.dz_workspace_bytes;
+  params.gemm.grid_barrier = scratch.grid_barrier;
+  params.gemm.tokens = static_cast<int>(tokens);
+  params.gemm.hidden = static_cast<int>(hidden);
+  params.gemm.local_vocab = static_cast<int>(local_vocab);
+  params.gemm.vocab_start = vocab_start;
+  params.gemm.ignore_index = ignore_index;
+  params.gemm.inverse_temperature = static_cast<float>(inverse_temperature);
+  params.tiles_per_reduce = static_cast<int>(tiles_per_reduce);
+  params.num_comm_channels = 1;
+  cudaStream_t stream = reinterpret_cast<cudaStream_t>(
+      TVMFFIEnvGetStream(x.device().device_type, x.device().device_id));
+  try {
+    if (return_entropy) {
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_backward<true, 90>(params, stream);
+    } else {
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_backward<false, 90>(params, stream);
+    }
+  } catch (const std::exception& e) {
+    ThrowCoreError("fused_linear_scaled_cross_entropy_backward", e);
+  }
+}
+
 }  // namespace
 
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(uniqueid_nbytes, uniqueid_nbytes);
@@ -406,3 +495,9 @@ TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_configure_symmetric, moe_configure_symmetric);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_pop_fwd, moe_pop_fwd);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_fused_fwd_bf16, moe_fused_fwd_bf16);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_fused_bwd_bf16, moe_fused_bwd_bf16);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_configure_backward,
+    fused_linear_scaled_cross_entropy_configure_backward);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_backward,
+    fused_linear_scaled_cross_entropy_backward);

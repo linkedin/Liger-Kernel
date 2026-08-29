@@ -50,6 +50,21 @@ option(LIGER_CUTE_TESTS_ONLY
 # ---------- Common CUDA / device dependencies (needed by core AND bindings) --
 find_package(CUDAToolkit REQUIRED)
 
+if(NOT LIGER_CUTE_TESTS_ONLY)
+    if(NOT DEFINED NCCL_HOME AND DEFINED ENV{NCCL_HOME})
+        set(NCCL_HOME "$ENV{NCCL_HOME}")
+    endif()
+    find_path(NCCL_INCLUDE_DIR NAMES nccl.h
+        HINTS "${NCCL_HOME}/include"
+        PATHS /usr/include /usr/local/cuda/include)
+    find_library(NCCL_LIBRARY NAMES nccl
+        HINTS "${NCCL_HOME}/lib" "${NCCL_HOME}/lib64"
+        PATHS /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu)
+    if(NOT NCCL_INCLUDE_DIR OR NOT NCCL_LIBRARY)
+        message(FATAL_ERROR "NCCL not found (set NCCL_HOME=<prefix>)")
+    endif()
+endif()
+
 # The 'a' suffix enables architecture-accelerated features (WGMMA/TMA/multicast
 # on sm_90a; tcgen05/UMMA on sm_100a). Override with -DLIGER_CUTE_CUDA_ARCH=100a
 # for a Blackwell build. Strip any gencode flags a parent/toolchain may have
@@ -71,10 +86,9 @@ endif()
 # Disable device-side assertions to avoid extern __assert_fail calls that cause
 # ptxas to serialize WGMMA instructions.
 add_compile_definitions(NDEBUG)
-# NVSHMEM_ENABLE_ALL_DEVICE_INLINING is REQUIRED globally — see LigerCommKernels
-# root CMakeLists for the full rationale (nvshmem.h device helpers reference
-# device-state symbols gated on __CUDACC_RDC__; inlining makes non-RDC host-only
-# TUs build cleanly).
+# NVSHMEM_ENABLE_ALL_DEVICE_INLINING is the default for non-RDC host-only TUs:
+# nvshmem.h device helpers otherwise reference state gated on __CUDACC_RDC__.
+# RDC collective TUs explicitly undefine it when they need library device code.
 add_compile_definitions(NVSHMEM_ENABLE_ALL_DEVICE_INLINING=ON)
 
 # ── NVSHMEM ──────────────────────────────────────────────────────────────────

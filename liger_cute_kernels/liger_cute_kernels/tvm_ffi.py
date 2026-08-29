@@ -249,3 +249,52 @@ def moe_fused_bwd_bf16(
         dW,
     )
     return dX, dB, dC, dA, dW
+
+
+def fused_linear_scaled_cross_entropy_configure_backward(
+    max_local_vocab: int,
+    max_tiles_per_reduce: int,
+    team_handle: int,
+) -> None:
+    _load_module().fused_linear_scaled_cross_entropy_configure_backward(
+        int(max_local_vocab),
+        int(max_tiles_per_reduce),
+        int(team_handle),
+    )
+
+
+def fused_linear_scaled_cross_entropy_backward(
+    grad_output: torch.Tensor,
+    entropy_grad: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    target: torch.Tensor,
+    lse: torch.Tensor,
+    entropy: torch.Tensor,
+    vocab_start: int,
+    ignore_index: int,
+    inverse_temperature: float,
+    team_handle: int,
+    tiles_per_reduce: int,
+    return_entropy: bool,
+):
+    grad_input = torch.empty_like(x)
+    grad_weight = torch.empty_like(weight)
+    _load_module().fused_linear_scaled_cross_entropy_backward(
+        grad_output,
+        entropy_grad,
+        x,
+        weight,
+        target,
+        lse,
+        entropy,
+        int(vocab_start),
+        int(ignore_index),
+        float(inverse_temperature),
+        int(team_handle),
+        int(tiles_per_reduce),
+        bool(return_entropy),
+        grad_input,
+        grad_weight,
+    )
+    return grad_input, grad_weight
