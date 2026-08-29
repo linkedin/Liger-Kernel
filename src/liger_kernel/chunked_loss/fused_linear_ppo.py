@@ -546,7 +546,6 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         # workloads on the bounded-memory implementation.
         use_full_cuda = (
             hidden.is_cuda
-            and torch.version.hip is None
             and hidden.shape[0] * weight.shape[0] <= _FULL_LOGPROB_MAX_ELEMENTS_CUDA
         )
         if use_full_cuda:

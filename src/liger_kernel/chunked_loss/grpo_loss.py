@@ -504,7 +504,6 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
     ):
         use_direct_cuda = (
             _input.is_cuda
-            and torch.version.hip is None
             and _input.shape[0] * _input.shape[1] * lin_weight.shape[0] <= _FULL_LOGPROB_MAX_ELEMENTS_CUDA
             and (not self.use_ref_model or ref_per_token_logps is not None)
         )
