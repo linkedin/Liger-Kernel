@@ -14,6 +14,12 @@ from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device
 
 MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536 // 2
+# Memory-budget constant for the token-chunk geometry below. The historical
+# formula (inc_factor = cdiv(V, H), i.e. budget C=1) sizes chunks to a memory
+# FLOOR of ~BT x H transient logits, which at LLM vocab shapes forces many tiny
+# chunks and a launch-bound wall. Same constant and rationale as
+# fused_linear_cross_entropy.py; see the measured numbers in its comment.
+_CHUNK_MEM_CONST = 16
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
@@ -103,15 +109,15 @@ def fused_linear_kl_div_forward(
     # materialized activations will have shape: BT x V
     # the increase in memory = BT x V
     # reduction can be achieved by partitioning the number of tokens BT into smaller chunks.
-    # for ex: if we were to achieve the same memory consumption as BT x H, then the chunk size should be:
-    # inc_factor = (V+H-1)//H, chunk_size = (BT + inc_factor - 1)//inc_factor
-    # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = 8, chunk_size = 2048
+    # the transient budget is _CHUNK_MEM_CONST x BT x H (see fused_linear_cross_entropy.py):
+    # inc_factor = (V + _CHUNK_MEM_CONST*H - 1) // (_CHUNK_MEM_CONST*H), chunk_size = (BT + inc_factor - 1) // inc_factor
     BT, H = student_input.shape
     V = student_weight.shape[0]
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-    inc_factor = triton.cdiv(V, H)  # (V + H - 1) // H
-    chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
+    inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
+    chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))
+    chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
     if accum_dtype is None:
@@ -150,7 +156,8 @@ def fused_linear_kl_div_forward(
         # shape: chunk_size x V
         # For anything starting from logits to the final KL loss, we do computation
         # in FP32 to avoid losing numerical stability.
-        logits_chunk = (input_chunk @ student_weight.t()).to(torch.float32) / temperature
+        logits_chunk = (input_chunk @ student_weight.t()).to(torch.float32)
+        logits_chunk.div_(temperature)
         chunk_n_rows = logits_chunk.shape[0]
 
         # log-softmax with temperature
@@ -180,15 +187,16 @@ def fused_linear_kl_div_forward(
         # gradients of log_prob_chunk in place, shape: chunk_size x V
         # backprop through log-softmax:
         # dL/dlogits = g - softmax(logits) * sum(g), then divided by temperature
-        # (log_prob_chunk now holds g = dL/dlog_prob)
-        grad_logits_chunk = (
-            log_prob_chunk
-            - torch.softmax(logits_chunk, dim=-1)
-            * log_prob_chunk.sum(dim=-1, keepdim=True).broadcast_to(log_prob_chunk.shape)
-        ) / temperature
-        # now we traverse back to grad w.r.t. input of `lm_head` and grad
-        # w.r.t. `lm_head` which should be computed in original dtype
-        grad_logits_chunk = grad_logits_chunk.to(dtype)
+        # (log_prob_chunk now holds g = dL/dlog_prob; done in place to avoid
+        # materializing extra chunk_size x V temporaries)
+        softmax_chunk = torch.softmax(logits_chunk, dim=-1)
+        del logits_chunk  # free chunk_size x V fp32 before the GEMMs below
+        row_sum = log_prob_chunk.sum(dim=-1, keepdim=True)
+        torch.mul(softmax_chunk, row_sum, out=softmax_chunk)
+        log_prob_chunk.sub_(softmax_chunk).div_(temperature)
+        del softmax_chunk, row_sum
+        grad_logits_chunk = log_prob_chunk.to(dtype)
+        del log_prob_chunk
         grad_input[start_idx:end_idx] = grad_logits_chunk @ student_weight
 
         if grad_weight is not None:
