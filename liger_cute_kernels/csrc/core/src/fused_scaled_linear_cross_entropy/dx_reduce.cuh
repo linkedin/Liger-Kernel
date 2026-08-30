@@ -141,10 +141,18 @@ struct DxReduceWorkspace {
 	Element* multicast_reduced;
 	std::uint64_t* sync;            // local symmetric signal replicas
 	std::uint64_t* multicast_sync;  // NVLS alias of sync
-	std::uint64_t epoch_base;
+	const std::uint64_t* launch_epoch;  // device-resident graph-safe generation
 	int team_rank;
 	int team_size;
 };
+
+#if defined(__CUDACC__)
+template <typename Element>
+__device__ __forceinline__ std::uint64_t dx_epoch_base(
+		const DxReduceWorkspace<Element>& workspace) {
+	return *workspace.launch_epoch;
+}
+#endif
 
 template <typename Config>
 __host__ __device__ inline std::size_t dx_slot_index(
@@ -232,138 +240,6 @@ __host__ __device__ inline int dx_cta_group_index(
 	return wave * dx_groups_for_cta_per_wave(
 		groups_per_wave, num_ctas, cta) + index_in_wave;
 }
-
-namespace fused_nvshmem {
-
-inline constexpr int kMaxDxCommChannels = 16;
-inline constexpr int kMaxDxCommTeams =
-	kMaxDxCommChannels * kDxCommWarpsPerChannel;
-inline constexpr int kDxRingStages = 4;
-
-struct DxCommTeams {
-	int team[kMaxDxCommTeams];
-	int num_channels;
-};
-
-__host__ __device__ inline int dx_comm_team_slot(
-		int channel, int comm_warp) {
-	return channel * kDxCommWarpsPerChannel + comm_warp;
-}
-
-template <typename Element>
-struct DxReduceWorkspace {
-	Element* partial;
-	Element* reduced;
-	int* ready_tiles;
-	int* done_groups;
-	int num_channels;
-	int num_stages;
-	int tiles_per_reduce;
-	int tile_elements;
-	int tp_rank;
-	int tp_size;
-	DxCommTeams teams;
-};
-
-template <typename Element>
-__host__ __device__ inline std::size_t dx_slot_offset(
-		const DxReduceWorkspace<Element>& workspace, int channel, int stage) {
-	std::size_t slot =
-		static_cast<std::size_t>(channel) * workspace.num_stages + stage;
-	return slot * static_cast<std::size_t>(workspace.tiles_per_reduce) *
-		static_cast<std::size_t>(workspace.tile_elements);
-}
-
-template <typename Element>
-__host__ __device__ inline int dx_tile_row_index(
-		const DxReduceWorkspace<Element>& workspace,
-		int channel,
-		int stage,
-		int tile_in_group) {
-	return (channel * workspace.num_stages + stage) *
-		workspace.tiles_per_reduce + tile_in_group;
-}
-
-template <typename Element>
-__host__ __device__ inline int dx_staging_row_tiles(
-		const DxReduceWorkspace<Element>& workspace) {
-	return workspace.num_channels * workspace.num_stages *
-		workspace.tiles_per_reduce;
-}
-
-struct DxGroupSlot {
-	int channel;
-	int stage;
-	int index_in_channel;
-};
-
-template <typename Config>
-__host__ __device__ inline DxGroupSlot dx_group_slot(
-		int group_id, int num_channels) {
-	DxGroupSlot slot;
-	slot.channel = group_id % num_channels;
-	slot.index_in_channel = group_id / num_channels;
-	slot.stage = slot.index_in_channel % Config::kNumStages;
-	return slot;
-}
-
-template <typename Config>
-__host__ __device__ inline DxTileGroup dx_unit_to_group(
-		int unit, int num_n_tiles, int group_id) {
-	int groups_per_m = dx_groups_per_m_tile<Config>(num_n_tiles);
-	int m_tile = unit / groups_per_m;
-	int group_in_m = unit - m_tile * groups_per_m;
-	return make_dx_tile_group<Config>(
-		m_tile, group_in_m, num_n_tiles, group_id);
-}
-
-template <typename Config>
-struct DxTileGroupPipe {
-	int* ready_tiles;
-	int* done_groups;
-	int num_channels;
-
-#if defined(__CUDACC__)
-	__device__ void init(
-			int* ready_tiles_, int* done_groups_, int num_channels_) {
-		ready_tiles = ready_tiles_;
-		done_groups = done_groups_;
-		num_channels = num_channels_;
-	}
-
-	__device__ int slot_index(int channel, int stage) const {
-		return channel * Config::kNumStages + stage;
-	}
-
-	__device__ void producer_acquire(
-			int channel, int index_in_channel) const {
-		int required = index_in_channel - Config::kNumStages + 1;
-		if (required <= 0) return;
-		const volatile int* counter = done_groups + channel;
-		while (*counter < required) {
-			__nanosleep(64);
-		}
-	}
-
-	__device__ void producer_publish_tile(int channel, int stage) const {
-		atomicAdd(ready_tiles + slot_index(channel, stage), 1);
-	}
-
-	__device__ void consumer_acquire(
-			int channel, int stage, int required) const {
-		const volatile int* counter = ready_tiles + slot_index(channel, stage);
-		while (*counter < required) {
-			__nanosleep(64);
-		}
-	}
-
-	__device__ void consumer_release(int channel) const {
-		atomicAdd(done_groups + channel, 1);
-	}
-#endif
-};
-
-}  // namespace fused_nvshmem
 
 }  // namespace fused_scaled_linear_cross_entropy
 }  // namespace liger

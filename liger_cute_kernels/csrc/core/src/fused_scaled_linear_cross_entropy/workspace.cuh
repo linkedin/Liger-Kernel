@@ -41,6 +41,7 @@
 
 #include "backward_gemm_sm90.cuh"
 #include "dx_reduce.cuh"
+#include "state.h"
 
 namespace liger {
 namespace fused_scaled_linear_cross_entropy {
@@ -73,10 +74,14 @@ struct BackwardSymmetricNames {
 		"fused_scaled_linear_cross_entropy_tp_dx_peer_sync_ptrs";
 	static constexpr const char* kDxPeerWorldPes =
 		"fused_scaled_linear_cross_entropy_tp_dx_peer_world_pes";
+	static constexpr const char* kDxLaunchEpoch =
+		"fused_scaled_linear_cross_entropy_tp_dx_launch_epoch";
 };
 
 // The immutable collective configuration.
 struct BackwardTpCapacity {
+	int max_tokens;
+	int max_hidden;
 	int max_local_vocab;
 	int max_tiles_per_reduce;
 	int max_comm_channels;
@@ -88,8 +93,11 @@ struct BackwardTpCapacity {
 
 // Collective. Must be called on every PE with the same values before the first
 // launch. CTA-owned NVLS staging is sized for full residency;
-// `max_comm_channels` provisions duplicate teams for the accepted fused path.
+// `max_comm_channels` is retained for API compatibility; the CTA-owned
+// production path does not allocate per-channel teams or buffers.
 void configure_backward_tp_symmetric(
+	int max_tokens,
+	int max_hidden,
 	int max_local_vocab,
 	int max_tiles_per_reduce,
 	int max_comm_channels,
@@ -98,7 +106,10 @@ void configure_backward_tp_symmetric(
 // Symmetric footprint at the configured maximum. The fused path reuses the
 // larger CTA-owned staging allocation, so channels add no buffer bytes.
 std::size_t backward_tp_pool_symmetric_bytes(
-	int max_tiles_per_reduce, int max_comm_channels);
+	int max_tokens,
+	int max_hidden,
+	int max_tiles_per_reduce,
+	int max_comm_channels);
 
 // Total device-private pool footprint. CTA ring state is in shared memory.
 std::size_t backward_tp_pool_device_bytes(int max_local_vocab);
@@ -118,22 +129,16 @@ DxReduceWorkspace<float> reserve_dx_reduce_workspace(
 // Bytes in one of the two FP32 staging allocations at configured capacity.
 std::size_t backward_dx_staging_bytes(int max_tiles_per_reduce);
 std::size_t backward_dx_configured_staging_bytes();
+std::size_t backward_dx_configured_durable_bytes();
+
+void validate_backward_tp_shape(
+	int tokens, int hidden, int local_vocab);
 
 // Full resident CTA capacity used by symmetric staging on the current device.
 int backward_dx_resident_cta_capacity();
 
 int backward_dx_team_size();
-
-namespace fused_nvshmem {
-
-DxReduceWorkspace<__nv_bfloat16> reserve_dx_reduce_workspace(
-	int tiles_per_reduce, int num_stages, int num_comm_channels);
-
-void reset_dx_reduce_signals(
-	const DxReduceWorkspace<__nv_bfloat16>& workspace,
-	cudaStream_t stream);
-
-}  // namespace fused_nvshmem
+std::int64_t backward_dx_team_handle();
 
 // The pooled dZ wave workspace and grid-barrier counter for this shape.
 struct BackwardScratch {

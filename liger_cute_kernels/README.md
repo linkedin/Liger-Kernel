@@ -58,6 +58,23 @@ cluster kernel. dX uses split-K=2 only for hidden size 2,048; hidden size 4,096
 uses split-K=1. Direct-peer and hierarchical two-host transports remain
 available when the single-host NVLS path is not selected.
 
+The `liger_cute_kernels.tvm_ffi` facade exposes configuration plus forward and
+backward entry points. Forward accepts the caller's tensor-parallel
+`ncclComm_t` as an integer handle; backward accepts the NVSHMEM team configured
+for the same tensor-parallel ranks. Both calls take inverse temperature.
+Capacities for tokens, hidden size, local vocabulary, and reduction grouping
+must be configured before capture or execution.
+
+The facade owns NCCL communicator bootstrap helpers:
+`nccl_get_unique_id`, `nccl_comm_init_rank`, and `nccl_comm_destroy`. Broadcast
+the returned CPU `uint8` unique-ID tensor to the tensor-parallel ranks, create
+one communicator per rank, and pass its integer handle to forward.
+
+Hierarchical NVLS+remote backward currently requires the configured
+tensor-parallel team to cover the full NVSHMEM world. Single-host NVLS
+subgroups remain supported; a multi-host subgroup that is only part of a
+larger world fails explicitly rather than communicating with nonmembers.
+
 ## Package architecture
 
 Native CUDA build for the MoE port (from `LigerCommKernels`). The lck wheel

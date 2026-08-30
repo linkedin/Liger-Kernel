@@ -126,7 +126,9 @@ __device__ void fallback_communicate(
 			kDxCompletePhase,
 			mapping.team_size);
 		std::uint64_t epoch =
-			comm.epoch_base | static_cast<std::uint64_t>(slot.pass + 1);
+			dx_epoch_base(comm) |
+			(static_cast<std::uint64_t>(wave + 1) << 16) |
+			static_cast<std::uint64_t>(slot.pass + 1);
 
 		constexpr std::size_t kValuesPerVector = 4;
 		std::size_t segment_vectors =
@@ -255,7 +257,8 @@ __device__ void hierarchical_communicate(
 			kDxCompletePhase,
 			comm.team_size);
 		std::uint64_t epoch =
-			comm.epoch_base | 0x10000u |
+			dx_epoch_base(comm) | 0x10000u |
+			(static_cast<std::uint64_t>(wave + 1) << 20) |
 			static_cast<std::uint64_t>(slot.pass + 1);
 
 		liger_cute::detail::nvls_barrier_warp(
@@ -516,8 +519,7 @@ __global__ void hierarchical_local_allgather_scatter_kernel(
 		int grid_ctas,
 		int wave,
 		int groups_per_wave,
-		int num_n_tiles,
-		std::uint64_t local_gather_epoch_base) {
+		int num_n_tiles) {
 	using Traits = BackwardGemmTraitsSm90<Compute>;
 	using Config = typename Traits::Config;
 
@@ -535,7 +537,6 @@ __global__ void hierarchical_local_allgather_scatter_kernel(
 		wave,
 		groups_per_wave,
 		num_n_tiles,
-		local_gather_epoch_base,
 		unit,
 		comm_warp,
 		lane);
@@ -549,8 +550,7 @@ __global__ void cluster_local_allgather_scatter_kernel(
 		int grid_ctas,
 		int wave,
 		int tiles_per_wave,
-		int num_n_tiles,
-		std::uint64_t local_gather_epoch_base) {
+		int num_n_tiles) {
 	using Traits = BackwardGemmTraitsSm90<Compute>;
 	using Config = typename Traits::Config;
 	using CommConfig = DxCommConfig<Config, kDxRingStages, 1, Compute>;
@@ -591,7 +591,7 @@ __global__ void cluster_local_allgather_scatter_kernel(
 			kDxCompletePhase,
 			comm.team_size);
 		std::uint64_t epoch =
-			local_gather_epoch_base | 0x20000000u |
+			dx_epoch_base(comm) | 0x20000000u |
 			(static_cast<std::uint64_t>(wave) << 16) |
 			static_cast<std::uint64_t>(slot.pass + 1);
 		liger_cute::detail::nvls_barrier_warp(
@@ -676,7 +676,7 @@ void finalize_cluster_typed(
 		full_elements / static_cast<std::size_t>(mapping.local_size);
 	LIGER_CHECK(
 		full_elements * sizeof(float) <=
-			backward_dx_configured_staging_bytes(),
+			backward_dx_configured_durable_bytes(),
 		"fused_scaled_linear_cross_entropy backward: cluster dX durable "
 		"workspace capacity exceeded");
 	if (hierarchical) {
@@ -687,13 +687,13 @@ void finalize_cluster_typed(
 			packed_elements,
 			mapping.signals,
 			mapping.signals + 1,
-			comm.epoch_base | 0x30000000u,
+			comm.launch_epoch,
+			0x30000000u,
 			mapping.interhost_peer_world,
 			stream);
 	}
 
 	auto* kernel = &cluster_local_allgather_scatter_kernel<90>;
-	std::uint64_t local_gather_epoch_base = comm.epoch_base;
 	for (int wave = 0; wave < num_waves; ++wave) {
 		void* args[] = {
 			const_cast<BackwardGemmParamsSm90<90>*>(&params),
@@ -702,8 +702,7 @@ void finalize_cluster_typed(
 			&grid,
 			&wave,
 			&tiles_per_wave,
-			&num_n_tiles,
-			&local_gather_epoch_base};
+			&num_n_tiles};
 		int status = nvshmemx_collective_launch(
 			reinterpret_cast<const void*>(kernel),
 			dim3(static_cast<unsigned>(tiles_per_wave), 1, 1),
@@ -848,13 +847,13 @@ void finalize_hierarchical_typed(
 		packed_elements,
 		mapping.signals,
 		mapping.signals + 1,
-		comm.epoch_base | 0x30000000u,
+		comm.launch_epoch,
+		0x30000000u,
 		mapping.interhost_peer_world,
 		stream);
 
 	auto* allgather =
 		&hierarchical_local_allgather_scatter_kernel<CommConfig, 90>;
-	std::uint64_t local_gather_epoch_base = comm.epoch_base;
 	for (int wave = 0; wave < num_waves; ++wave) {
 		void* allgather_args[] = {
 			const_cast<BackwardGemmParamsSm90<90>*>(&params),
@@ -863,8 +862,7 @@ void finalize_hierarchical_typed(
 			&grid,
 			&wave,
 			&groups_per_wave,
-			&num_n_tiles,
-			&local_gather_epoch_base};
+			&num_n_tiles};
 		int status = nvshmemx_collective_launch(
 			reinterpret_cast<const void*>(allgather),
 			dim3(static_cast<unsigned>(groups_per_wave), 1, 1),

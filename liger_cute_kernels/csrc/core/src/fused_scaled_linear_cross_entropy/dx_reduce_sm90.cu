@@ -76,6 +76,12 @@ __global__ void query_dx_nvls_mapping(
 		nvshmem_team_n_pes(NVSHMEMX_TEAM_SAME_MYPE_NODE);
 }
 
+__global__ void advance_dx_launch_epoch(std::uint64_t* launch_epoch) {
+	if (blockIdx.x == 0 && threadIdx.x == 0) {
+		*launch_epoch += std::uint64_t{1} << 32;
+	}
+}
+
 }  // namespace
 
 void configure_dx_nvls_mapping(
@@ -161,17 +167,14 @@ void configure_dx_nvls_mapping(
 		(g_mapping.multicast_partial != nullptr &&
 			g_mapping.multicast_reduced != nullptr &&
 			g_mapping.multicast_sync != nullptr);
-	g_hierarchical_available =
-		!g_nvls_available && g_mapping.local_size > 1 &&
-		g_mapping.interhost_size == 2 &&
-		g_mapping.local_multicast_partial != nullptr &&
-		g_mapping.local_multicast_reduced != nullptr &&
-		g_mapping.local_multicast_sync != nullptr;
 
 	std::vector<float*> peer_partial(team_size);
 	std::vector<std::uint64_t*> peer_sync(team_size);
 	std::vector<int> world_pes(team_size);
+	std::vector<unsigned char> world_members(
+		static_cast<std::size_t>(nvshmem_n_pes()), 0);
 	bool all_peers_direct = true;
+	bool parent_covers_world = team_size == nvshmem_n_pes();
 	int my_world_pe = nvshmem_my_pe();
 	for (int rank = 0; rank < team_size; ++rank) {
 		int world_pe = nvshmem_team_translate_pe(
@@ -182,6 +185,12 @@ void configure_dx_nvls_mapping(
 			"team rank ",
 			rank,
 			" to NVSHMEM_TEAM_WORLD");
+		if (world_pe >= static_cast<int>(world_members.size()) ||
+			world_members[world_pe] != 0) {
+			parent_covers_world = false;
+		} else {
+			world_members[world_pe] = 1;
+		}
 		world_pes[rank] = world_pe;
 		peer_partial[rank] = world_pe == my_world_pe
 			? partial
@@ -193,6 +202,14 @@ void configure_dx_nvls_mapping(
 			all_peers_direct && peer_partial[rank] != nullptr &&
 			peer_sync[rank] != nullptr;
 	}
+	g_hierarchical_available =
+		!g_nvls_available && parent_covers_world &&
+		g_mapping.local_size > 1 &&
+		g_mapping.interhost_size == 2 &&
+		g_mapping.local_size * g_mapping.interhost_size == team_size &&
+		g_mapping.local_multicast_partial != nullptr &&
+		g_mapping.local_multicast_reduced != nullptr &&
+		g_mapping.local_multicast_sync != nullptr;
 	check_cuda(
 		cudaMemcpy(
 			peer_partial_storage,
@@ -235,7 +252,7 @@ void configure_dx_nvls_mapping(
 	g_hierarchical_mapping.local_size = g_mapping.local_size;
 	g_hierarchical_mapping.interhost_rank = g_mapping.interhost_rank;
 	g_hierarchical_mapping.interhost_size = g_mapping.interhost_size;
-	if (g_mapping.interhost_size == 2) {
+	if (g_hierarchical_available) {
 		int peer_rank = 1 - g_mapping.interhost_rank;
 		g_hierarchical_mapping.interhost_peer_world =
 			nvshmem_team_translate_pe(
@@ -267,6 +284,31 @@ void configure_dx_nvls_mapping(
 	g_peer_sync_storage = peer_sync_storage;
 	g_world_pe_storage = world_pe_storage;
 	g_configured = true;
+}
+
+void prepare_dx_reduce_launch(
+		const DxReduceWorkspace<float>& workspace,
+		cudaStream_t stream) {
+	LIGER_CHECK(
+		g_configured,
+		"fused_scaled_linear_cross_entropy backward: call "
+		"configure_backward_tp_symmetric() before the first launch");
+	LIGER_CHECK(
+		workspace.launch_epoch != nullptr,
+		"fused_scaled_linear_cross_entropy backward: launch epoch is null");
+	advance_dx_launch_epoch<<<1, 1, 0, stream>>>(
+		const_cast<std::uint64_t*>(workspace.launch_epoch));
+	check_cuda(cudaGetLastError(), "advance_dx_launch_epoch launch");
+}
+
+void complete_dx_reduce_launch(cudaStream_t stream) {
+	if (g_mapping.team_size > 1) {
+		// One tail barrier keeps the staging and signal generations from being
+		// reused until every peer has completed the current launch. It is
+		// stream ordered and captured into CUDA Graphs.
+		nvshmemx_barrier_on_stream(
+			static_cast<nvshmem_team_t>(g_parent_team), stream);
+	}
 }
 
 DxNvlsMapping dx_nvls_mapping() {
@@ -342,82 +384,25 @@ bool dx_hierarchical_available() {
 	return g_hierarchical_available;
 }
 
-namespace fused_nvshmem {
-namespace {
-
-DxCommTeams g_teams = {};
-int g_configured_channels = 0;
-std::int64_t g_parent_team = 0;
-int g_team_rank = 0;
-int g_team_size = 0;
-
-}  // namespace
-
-void configure_dx_comm_channels(
-		int num_channels, std::int64_t parent_team) {
-	LIGER_CHECK(num_channels >= 1, "num_comm_channels must be positive");
-	LIGER_CHECK(
-		num_channels <= kMaxDxCommChannels,
-		"fused_scaled_linear_cross_entropy backward: num_comm_channels ",
-		num_channels,
-		" exceeds ",
-		kMaxDxCommChannels);
-
-	if (g_configured_channels != 0) {
-		LIGER_CHECK(
-			parent_team == g_parent_team &&
-				num_channels <= g_configured_channels,
-			"fused backward communication-team configuration is immutable");
-		return;
-	}
-
-	nvshmem_team_t parent = static_cast<nvshmem_team_t>(parent_team);
-	int team_size = nvshmem_team_n_pes(parent);
-	LIGER_CHECK(team_size >= 1, "invalid tensor-parallel team handle");
-
-	int needed = num_channels * kDxCommWarpsPerChannel;
-	for (int index = 0; index < needed; ++index) {
-		nvshmem_team_config_t config;
-		std::memset(&config, 0, sizeof(config));
-		nvshmem_team_t duplicate = NVSHMEM_TEAM_INVALID;
-		int status = nvshmem_team_split_strided(
-			parent, 0, 1, team_size, &config, 0, &duplicate);
-		LIGER_CHECK(
-			status == 0 && duplicate != NVSHMEM_TEAM_INVALID,
-			"failed to create fused backward duplicate NVSHMEM team ",
-			index,
-			" (status ",
-			status,
-			")");
-		g_teams.team[index] = static_cast<int>(duplicate);
-	}
-	for (int index = needed; index < kMaxDxCommTeams; ++index) {
-		g_teams.team[index] = static_cast<int>(NVSHMEM_TEAM_INVALID);
-	}
-
-	g_teams.num_channels = num_channels;
-	g_configured_channels = num_channels;
-	g_parent_team = parent_team;
-	g_team_rank = nvshmem_team_my_pe(parent);
-	g_team_size = team_size;
+void reset_dx_nvls_mapping() {
+	g_mapping = {};
+	g_fallback_mapping = {};
+	g_hierarchical_mapping = {};
+	g_nvls_available = false;
+	g_hierarchical_available = false;
+	g_configured = false;
+	g_parent_team = 0;
+	g_partial = nullptr;
+	g_reduced = nullptr;
+	g_hierarchical = nullptr;
+	g_hierarchical_inbox = nullptr;
+	g_hierarchical_signals = nullptr;
+	g_sync = nullptr;
+	g_sync_bytes = 0;
+	g_peer_partial_storage = nullptr;
+	g_peer_sync_storage = nullptr;
+	g_world_pe_storage = nullptr;
 }
-
-DxCommTeams dx_comm_teams(int num_channels) {
-	LIGER_CHECK(
-		g_configured_channels != 0 &&
-			num_channels >= 1 &&
-			num_channels <= g_configured_channels,
-		"fused backward communication teams are not configured");
-	DxCommTeams teams = g_teams;
-	teams.num_channels = num_channels;
-	return teams;
-}
-
-int dx_comm_team_rank() { return g_team_rank; }
-
-int dx_comm_team_size() { return g_team_size; }
-
-}  // namespace fused_nvshmem
 
 }  // namespace fused_scaled_linear_cross_entropy
 }  // namespace liger

@@ -19,8 +19,10 @@ __global__ void remote_put(
 
 __global__ void remote_handshake(
 		std::uint64_t* signal,
-		std::uint64_t epoch,
+		const std::uint64_t* launch_epoch,
+		std::uint64_t epoch_suffix,
 		int peer) {
+	std::uint64_t epoch = *launch_epoch | epoch_suffix;
 	nvshmemx_signal_op(
 		signal, epoch, NVSHMEM_SIGNAL_SET, peer);
 	nvshmem_quiet();
@@ -49,24 +51,28 @@ void launch_remote_pair_all_reduce(
 		std::size_t count,
 		std::uint64_t* ready,
 		std::uint64_t* consumed,
-		std::uint64_t epoch,
+		const std::uint64_t* launch_epoch,
+		std::uint64_t epoch_suffix,
 		int peer,
 		cudaStream_t stream) {
 	LIGER_CHECK(
 		destination != nullptr && inbox != nullptr && source != nullptr &&
-			ready != nullptr && consumed != nullptr,
+			ready != nullptr && consumed != nullptr &&
+			launch_epoch != nullptr,
 		"remote all-reduce buffers must be non-null");
 	LIGER_CHECK(count > 0, "remote all-reduce count must be positive");
 	LIGER_CHECK(peer >= 0, "remote all-reduce peer must be non-negative");
 
 	remote_put<<<1, 256, 0, stream>>>(inbox, source, count, peer);
 	nvshmemx_quiet_on_stream(stream);
-	remote_handshake<<<1, 1, 0, stream>>>(ready, epoch, peer);
+	remote_handshake<<<1, 1, 0, stream>>>(
+		ready, launch_epoch, epoch_suffix, peer);
 	int blocks = static_cast<int>(
 		(count + 255) / 256 < 1024 ? (count + 255) / 256 : 1024);
 	remote_sum<<<blocks, 256, 0, stream>>>(
 		destination, source, inbox, count);
-	remote_handshake<<<1, 1, 0, stream>>>(consumed, epoch, peer);
+	remote_handshake<<<1, 1, 0, stream>>>(
+		consumed, launch_epoch, epoch_suffix, peer);
 	cudaError_t error = cudaGetLastError();
 	LIGER_CHECK(
 		error == cudaSuccess,

@@ -358,8 +358,12 @@ struct BackwardTpParamsSm90 {
 	int num_comm_channels = 4;
 };
 
-__host__ __device__ constexpr int backward_dx_split_k(int hidden) {
-	return hidden == 2048 ? 2 : 1;
+__host__ __device__ constexpr int backward_dx_split_k(
+		int hidden, int local_vocab) {
+	// Split-K2 requires an even number of K64 vocabulary tiles. Ragged odd
+	// tile counts use split-K1 so the final tile is never dropped.
+	int k_tiles = (local_vocab + 63) / 64;
+	return hidden == 2048 && k_tiles % 2 == 0 ? 2 : 1;
 }
 
 template <bool ReturnEntropy, int Compute = 90>

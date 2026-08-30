@@ -418,6 +418,7 @@ int main() {
 			host_total == 0 ? "OK" : "FAILED", host_total, g_n_pes);
 	}
 	NCCL_OK(ncclCommDestroy(g_nccl_comm));
+	fslce::reset_forward_tp_workspace_configuration();
 	liger::global_buffer_pool().clear();
 	nvshmem_finalize();
 	return host_total == 0 ? 0 : 1;

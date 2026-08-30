@@ -15,7 +15,8 @@ void launch_remote_pair_all_reduce(
 	std::size_t count,
 	std::uint64_t* ready,
 	std::uint64_t* consumed,
-	std::uint64_t epoch,
+	const std::uint64_t* launch_epoch,
+	std::uint64_t epoch_suffix,
 	int peer,
 	cudaStream_t stream);
 

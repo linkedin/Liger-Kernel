@@ -159,6 +159,8 @@ void validate(const BackwardTpParamsSm90<90>& params) {
 	LIGER_CHECK(
 		(static_cast<std::size_t>(gemm.hidden) * sizeof(HostElement)) % 16 == 0,
 		"hidden * sizeof(bfloat16) must be a multiple of 16 B for TMA");
+	validate_backward_tp_shape(
+		gemm.tokens, gemm.hidden, gemm.local_vocab);
 
 	std::size_t needed = HostLaunch::dz_workspace_bytes(gemm.local_vocab);
 	LIGER_CHECK(
@@ -199,8 +201,12 @@ void launch_instance(
 	auto* dw_out = static_cast<HostElement*>(gemm.grad_weight);
 	DxReduceWorkspace<float> comm = {};
 
+	int resident_ctas = backward_dx_resident_cta_capacity();
 	constexpr int kClusterStoreRows =
 		kMaxDxResidentCtas * kDxCommWarpsPerChannel *
+		kDxRingStages * TilesPerReduce * HostDxClusterTraits::kTileM;
+	int cluster_store_rows =
+		resident_ctas * kDxCommWarpsPerChannel *
 		kDxRingStages * TilesPerReduce * HostDxClusterTraits::kTileM;
 	using ClusterStoreTma = decltype(
 		make_row_major_store<
@@ -217,12 +223,12 @@ void launch_instance(
 		comm = reserve_dx_reduce_workspace(
 			TilesPerReduce,
 			kDxRingStages,
-			kMaxDxResidentCtas);
+			resident_ctas);
 		cluster_tma_store =
 			make_row_major_store<
 				typename HostDxClusterTraits::SmemStore::Single>(
 					comm.partial,
-					kClusterStoreRows,
+					cluster_store_rows,
 					HostDxClusterTraits::kTileN);
 	}
 	auto cluster_tma_dz =
@@ -273,7 +279,8 @@ void launch_instance(
 		cluster_tma_xt,
 		cluster_tma_dw_store,
 		cluster_tma_dw_add};
-	const bool use_split_k2 = backward_dx_split_k(gemm.hidden) == 2;
+	const bool use_split_k2 =
+		backward_dx_split_k(gemm.hidden, gemm.local_vocab) == 2;
 	auto* cluster_kernel = use_split_k2
 		? &backward_dx_cluster2_gemm_wave_kernel_sm90<
 			2, 90, CommConfig, ClusterBundle>
@@ -395,6 +402,11 @@ void launch_instance(
 			combined_tiles < max_active_clusters
 				? combined_tiles
 				: max_active_clusters;
+		LIGER_CHECK(
+			dx_cluster_count * HostDxClusterTraits::kClusterM <=
+				resident_ctas,
+			"fused_scaled_linear_cross_entropy backward: dX cluster grid "
+			"exceeds the configured resident CTA capacity");
 	}
 
 	BackwardGemmParamsSm90<90> device_params = gemm;
@@ -449,12 +461,19 @@ void launch_instance(
 	}
 
 	int num_waves = HostLaunch::num_waves(gemm.tokens);
+	if constexpr (!kUseCluster) {
+		comm = reserve_dx_reduce_workspace(
+			TilesPerReduce, kDxRingStages, grid);
+	}
+	prepare_dx_reduce_launch(comm, stream);
 	if constexpr (kUseCluster) {
 		if (use_split_k2) {
 			std::size_t durable_elements =
 				static_cast<std::size_t>(num_waves) *
 				HostConfig::kWaveRows *
-				static_cast<std::size_t>(gemm.hidden) /
+				static_cast<std::size_t>(
+					HostLaunch::num_dx_n_tiles(gemm.hidden)) *
+				HostDxClusterTraits::kTileN /
 				static_cast<std::size_t>(
 					hierarchical_mapping.local_size);
 			check_cuda(
@@ -484,12 +503,6 @@ void launch_instance(
 				device_params,
 				wave),
 			"cudaLaunchKernelEx(backward_dz_handoff_wave_kernel_sm90)");
-
-
-		if constexpr (!kUseCluster) {
-			comm = reserve_dx_reduce_workspace(
-				TilesPerReduce, kDxRingStages, grid);
-		}
 		if constexpr (kUseCluster) {
 			check_cuda(
 				DxCluster::launch(
@@ -542,6 +555,7 @@ void launch_instance(
 				stream);
 		}
 	}
+	complete_dx_reduce_launch(stream);
 }
 
 }  // namespace

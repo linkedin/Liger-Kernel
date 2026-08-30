@@ -67,6 +67,8 @@ int g_pe = 0;
 int g_n_pes = 1;
 int g_failures = 0;
 constexpr int kDefaultAttempts = 2;
+constexpr int kMaxTokens = 1280;
+constexpr int kMaxHidden = 8448;
 constexpr int kMaxLocalVocab = 1024;
 constexpr int kMaxTilesPerReduce = 4;
 constexpr int kLegacyMaxCommChannels = 4;
@@ -230,6 +232,7 @@ Reference reference(
 					(scale + (lse - out.entropy[m] - scaled[v]) * escale);
 			}
 			if (!ignored && v == static_cast<int>(target[m])) value -= scale;
+			value *= inverse_temperature;
 			// dZ is materialised in BF16 by the kernel.
 			dz[v] = __bfloat162float(__float2bfloat16(value));
 		}
@@ -608,13 +611,15 @@ int main(int argc, char** argv) {
 	// configure for the largest shape and the widest knobs used below.
 	// Collective.
 	fslce::configure_backward_tp_symmetric(
-		kMaxLocalVocab, kMaxTilesPerReduce, kLegacyMaxCommChannels,
+		kMaxTokens, kMaxHidden, kMaxLocalVocab,
+		kMaxTilesPerReduce, kLegacyMaxCommChannels,
 		static_cast<std::int64_t>(NVSHMEM_TEAM_WORLD));
 	if (g_pe == 0) {
 		std::printf(
 			"symmetric staging %.2f MiB, device scratch %.2f MiB, "
 			"resident_ctas=%d nvls_team_size=%d\n",
 			fslce::backward_tp_pool_symmetric_bytes(
+				kMaxTokens, kMaxHidden,
 				kMaxTilesPerReduce, kLegacyMaxCommChannels) /
 				(1024.0 * 1024.0),
 			fslce::backward_tp_pool_device_bytes(kMaxLocalVocab) /
@@ -630,6 +635,9 @@ int main(int argc, char** argv) {
 	const CaseShape ragged{200, 648, 333, 0.8f, 103};
 	// Two waves: exercises the dW TMA reduce-add path and a ring that wraps.
 	const CaseShape two_waves{1280, 512, 512, 1.0f, 105};
+	// Five K64 vocabulary tiles: H2048 must fall back to split-K1 rather than
+	// dropping the final odd tile. Non-unit temperature checks the chain rule.
+	const CaseShape odd_k_tiles{128, 2048, 320, 0.8f, 106};
 	// 136 dX groups with TPR=1 on a 132-SM H100: launches the full resident
 	// grid and makes four CTAs wrap to a second CTA-owned group.
 	const CaseShape full_grid{1, 4352, 64, 1.0f, 107};
@@ -646,12 +654,18 @@ int main(int argc, char** argv) {
 		run_case<true>("dX/dW ragged, legacy channel arg=1", ragged, 2, 1);
 		run_case<true>("dX/dW ragged, legacy channel arg=4", ragged, 2, 4);
 		run_case<false>("dX/dW two waves, TilesPerReduce=2", two_waves, 2, 4);
+		run_case<true>(
+			"dX/dW H2048 odd K tiles and temperature",
+			odd_k_tiles,
+			1,
+			2);
 		run_case<false>("dX/dW full resident CTA grid", full_grid, 1, 2);
 		run_case<false>(
 			"dX/dW full grid, alternating two-tile chunks",
 			full_grid_grouped, 2, 2);
 	} catch (const std::exception& error) {
 		std::printf("[pe %d] exception: %s\n", g_pe, error.what());
+		fslce::reset_fslce_tp_configuration();
 		liger::global_buffer_pool().clear();
 		nvshmem_finalize();
 		return 1;
@@ -679,6 +693,7 @@ int main(int argc, char** argv) {
 	// Release the pooled allocations while NVSHMEM is still up: the pool is a
 	// function-local static whose destructor would otherwise run after
 	// nvshmem_finalize().
+	fslce::reset_fslce_tp_configuration();
 	liger::global_buffer_pool().clear();
 	nvshmem_finalize();
 	return host_total == 0 ? 0 : 1;

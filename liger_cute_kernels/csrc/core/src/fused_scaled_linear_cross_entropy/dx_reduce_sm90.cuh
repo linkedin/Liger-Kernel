@@ -98,6 +98,12 @@ void configure_dx_nvls_mapping(
 	std::uint64_t** peer_sync_storage,
 	int* world_pe_storage);
 
+void prepare_dx_reduce_launch(
+	const DxReduceWorkspace<float>& workspace,
+	cudaStream_t stream);
+void complete_dx_reduce_launch(cudaStream_t stream);
+void reset_dx_nvls_mapping();
+
 DxNvlsMapping dx_nvls_mapping();
 DxFallbackMapping dx_fallback_mapping();
 DxHierarchicalMapping dx_local_mapping();
@@ -123,12 +129,6 @@ __device__ __forceinline__ void dx_publish_fence() {
 __device__ __forceinline__ void dx_acquire_fence() {
 	__threadfence_system();
 }
-
-void configure_dx_comm_channels(
-	int num_channels, std::int64_t parent_team);
-DxCommTeams dx_comm_teams(int num_channels);
-int dx_comm_team_rank();
-int dx_comm_team_size();
 
 }  // namespace fused_nvshmem
 

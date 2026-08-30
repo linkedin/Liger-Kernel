@@ -88,6 +88,11 @@ std::size_t forward_tp_workspace_device_bytes(
 		split_partials_bytes_at(max_tokens, max_local_vocab);
 }
 
+void reset_forward_tp_workspace_configuration() {
+	g_capacity_tokens = 0;
+	g_capacity_split_partials_bytes = 0;
+}
+
 template <bool ReturnEntropy>
 ForwardTpWorkspace reserve_forward_tp_workspace(int tokens) {
 	ensure_capacity(tokens);

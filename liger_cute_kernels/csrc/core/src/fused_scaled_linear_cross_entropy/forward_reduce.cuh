@@ -67,6 +67,9 @@ std::size_t forward_tp_workspace_device_bytes(
 	int max_tokens,
 	int max_local_vocab);
 
+// Invalidates cached capacities after the shared BufferPool is cleared.
+void reset_forward_tp_workspace_configuration();
+
 template <bool ReturnEntropy>
 ForwardTpWorkspace reserve_forward_tp_workspace(int tokens);
 

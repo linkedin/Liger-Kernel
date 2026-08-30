@@ -853,6 +853,7 @@ struct DzPhaseSm90 {
 						ReturnEntropy ? smem.row_entropy_scale[row] : 0.0f,
 						params.inverse_temperature);
 					if (column == smem.row_target[row]) value -= scale;
+					value *= params.inverse_temperature;
 				}
 				accum(i) = value;
 			}
@@ -1142,7 +1143,8 @@ struct DxPhaseSm90 {
 				comm.partial + base + segment_begin;
 			if (comm.team_size > 1) {
 				std::uint64_t epoch =
-					comm.epoch_base |
+					dx_epoch_base(comm) |
+					(static_cast<std::uint64_t>(wave + 1) << 16) |
 					static_cast<std::uint64_t>(slot.pass + 1);
 				std::size_t ready_offset = dx_sync_offset<CommConfig>(
 					cta,
@@ -1237,7 +1239,6 @@ CUTE_DEVICE void hierarchical_local_allgather_scatter_unit_sm90(
 		int wave,
 		int groups_per_wave,
 		int num_n_tiles,
-		std::uint64_t local_gather_epoch_base,
 		int unit,
 		int comm_warp,
 		int lane) {
@@ -1288,7 +1289,7 @@ CUTE_DEVICE void hierarchical_local_allgather_scatter_unit_sm90(
 		kDxCompletePhase,
 		comm.team_size);
 	std::uint64_t epoch =
-		local_gather_epoch_base | 0x20000000u |
+		dx_epoch_base(comm) | 0x20000000u |
 		(static_cast<std::uint64_t>(wave) << 16) |
 		static_cast<std::uint64_t>(slot.pass + 1);
 	liger_cute::detail::nvls_barrier_warp(
@@ -1960,6 +1961,7 @@ CUTE_DEVICE void backward_consumer_role_collapsed_sm90(
 								: 0.0f,
 							params.inverse_temperature);
 						if (column == smem.row_target[row]) value -= scale;
+						value *= params.inverse_temperature;
 					}
 					accum(i) = value;
 				}
@@ -2559,6 +2561,7 @@ void backward_dz_handoff_wave_kernel_sm90(
 										scale;
 								}
 								if (column == target) value -= scale;
+								value *= params.inverse_temperature;
 							}
 							sStore(row, j, sub) =
 								static_cast<typename Traits::Element>(value);
@@ -2964,7 +2967,7 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 							kDxCompletePhase,
 							comm.team_size);
 					std::uint64_t epoch =
-						comm.epoch_base |
+						dx_epoch_base(comm) |
 						(static_cast<std::uint64_t>(wave + 1) << 16) |
 						static_cast<std::uint64_t>(pass + 1);
 					liger_cute::detail::nvls_barrier_warp(
