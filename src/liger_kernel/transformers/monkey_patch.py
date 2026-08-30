@@ -104,13 +104,10 @@ def _patch_layer_norm_module(module, eps=1e-6):
     # Check if the module is a PEFT ModulesToSaveWrapper
     # If it is, we need to patch the modules_to_save.default and original_modules
     if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
-        module.hidden_size = module.normalized_shape
-        _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
-        _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
         module.modules_to_save.default.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
-        module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
+        module.modules_to_save.default.hidden_size = getattr(module, "hidden_size", None) or getattr(
             module, "normalized_shape", None
         )
         module.original_module.variance_epsilon = (
