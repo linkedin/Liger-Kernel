@@ -282,6 +282,15 @@ def is_nemotron_available():
         return False
 
 
+def is_peft_available():
+    try:
+        import peft  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def test_import_from_root():
     try:
         from liger_kernel.transformers import AutoLigerKernelForCausalLM  # noqa: F401
@@ -3719,3 +3728,28 @@ def test_apply_liger_kernel_to_instance_for_nemotron():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_peft_available(), reason="peft module not available")
+def test_patch_layer_norm_module_with_peft_modules_to_save():
+    from peft.utils.other import ModulesToSaveWrapper
+
+    layer_norm = torch.nn.LayerNorm(8, eps=1e-5)
+    wrapper = ModulesToSaveWrapper(layer_norm, "default")
+
+    monkey_patch._patch_layer_norm_module(wrapper)
+
+    for patched_module in (wrapper.modules_to_save.default, wrapper.original_module):
+        assert patched_module.variance_epsilon == layer_norm.eps
+        assert patched_module.hidden_size == layer_norm.normalized_shape
+        assert patched_module.forward.__func__ is LigerLayerNorm.forward
+        assert patched_module._get_name() == LigerLayerNorm.__name__
+
+    # The wrapper itself must keep PEFT's forward so adapter dispatch stays intact
+    assert "forward" not in wrapper.__dict__
+
+    # extra_repr is bound to the patched copies; printing the module must not raise
+    try:
+        print(wrapper)
+    except Exception as e:
+        pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
