@@ -3,10 +3,10 @@ import torch.nn.functional as F
 
 from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
 
-# Native autograd wins without a peak-memory penalty through 67M logits on both MI325X and H100.
-# Dispatch by materialized-logits size rather than model or backend so batch, sequence, and vocabulary
+# BF16/FP16 row-selective autograd wins in time and memory through 268M logits on MI325X and H100.
+# Dispatch by logical-logits size rather than model or backend so batch, sequence, and vocabulary
 # changes move automatically to the memory-efficient chunked path.
-_NATIVE_DPO_MAX_LOGIT_ELEMENTS = 67_108_864
+_NATIVE_DPO_MAX_LOGIT_ELEMENTS = 268_435_456
 
 
 def _should_use_native_dpo(_input, weight):
@@ -343,6 +343,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
                 chosen_nll_target_chunk=None,
                 average_log_prob=self.average_log_prob,
                 detach_logits_mean=True,
+                selective_log_softmax=True,
                 loss_type=self.loss_type,
                 label_smoothing=self.label_smoothing,
                 discopop_tau=self.discopop_tau,

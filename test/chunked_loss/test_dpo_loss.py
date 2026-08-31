@@ -1455,16 +1455,23 @@ def test_label_smoothing_validation():
 
 
 def test_shape_aware_dispatch_boundary():
-    """Dispatch uses total logits elements and includes the measured 67M boundary."""
+    """Dispatch uses total logits elements and includes the measured 268M boundary."""
     weight = torch.empty((65536, 1), device="meta", dtype=torch.bfloat16)
 
-    assert dpo_loss_module._should_use_native_dpo(torch.empty((2, 512, 1), device="meta", dtype=torch.bfloat16), weight)
-    assert not dpo_loss_module._should_use_native_dpo(
-        torch.empty((2, 513, 1), device="meta", dtype=torch.bfloat16), weight
+    assert dpo_loss_module._should_use_native_dpo(
+        torch.empty((2, 2048, 1), device="meta", dtype=torch.bfloat16), weight
     )
-    assert dpo_loss_module._should_use_native_dpo(torch.empty((4, 256, 1), device="meta", dtype=torch.bfloat16), weight)
     assert not dpo_loss_module._should_use_native_dpo(
-        torch.empty((4, 257, 1), device="meta", dtype=torch.bfloat16), weight
+        torch.empty((2, 2049, 1), device="meta", dtype=torch.bfloat16), weight
+    )
+    assert dpo_loss_module._should_use_native_dpo(
+        torch.empty((4, 1024, 1), device="meta", dtype=torch.bfloat16), weight
+    )
+    assert not dpo_loss_module._should_use_native_dpo(
+        torch.empty((4, 1025, 1), device="meta", dtype=torch.bfloat16), weight
+    )
+    assert not dpo_loss_module._should_use_native_dpo(
+        torch.empty((2, 128, 1), device="meta", dtype=torch.float32), weight.float()
     )
 
 
