@@ -257,8 +257,8 @@ void run_case(
 		host_target.size() * sizeof(std::int64_t), cudaMemcpyHostToDevice));
 
 	float* device_stats = nullptr;
-	CUDA_OK(cudaMalloc(&device_stats, 5 * tokens * sizeof(float)));
-	CUDA_OK(cudaMemset(device_stats, 0xff, 5 * tokens * sizeof(float)));
+	CUDA_OK(cudaMalloc(&device_stats, 4 * tokens * sizeof(float)));
+	CUDA_OK(cudaMemset(device_stats, 0xff, 4 * tokens * sizeof(float)));
 
 	using Launch = fslce::ForwardGemmLaunchSm90<90>;
 	std::size_t workspace_bytes = Launch::workspace_bytes(
@@ -272,9 +272,8 @@ void run_case(
 	params.target = device_target;
 	params.output.local_max = device_stats + 0 * tokens;
 	params.output.local_sum = device_stats + 1 * tokens;
-	params.output.local_lse = device_stats + 2 * tokens;
-	params.output.local_target = device_stats + 3 * tokens;
-	params.output.local_weighted_sum = device_stats + 4 * tokens;
+	params.output.local_target = device_stats + 2 * tokens;
+	params.output.local_weighted_sum = device_stats + 3 * tokens;
 	params.workspace = device_workspace;
 	params.workspace_bytes = workspace_bytes;
 	params.tokens = tokens;
@@ -289,7 +288,7 @@ void run_case(
 	CUDA_OK(cudaGetLastError());
 	CUDA_OK(cudaDeviceSynchronize());
 
-	std::vector<float> host_stats(5 * tokens);
+	std::vector<float> host_stats(4 * tokens);
 	CUDA_OK(cudaMemcpy(host_stats.data(), device_stats,
 		host_stats.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
@@ -303,12 +302,10 @@ void run_case(
 			expected[m].max_value, 2.0e-3f, 1.0e-3f);
 		expect_near("local_sum", m, host_stats[1 * tokens + m],
 			expected[m].exp_sum, 1.0e-3f, 5.0e-3f);
-		expect_near("local_lse", m, host_stats[2 * tokens + m],
-			expected[m].lse, 2.0e-3f, 1.0e-3f);
-		expect_near("local_target", m, host_stats[3 * tokens + m],
+		expect_near("local_target", m, host_stats[2 * tokens + m],
 			expected[m].target_logit, 2.0e-3f, 1.0e-3f);
 		if constexpr (ReturnEntropy) {
-			expect_near("local_weighted", m, host_stats[4 * tokens + m],
+			expect_near("local_weighted", m, host_stats[3 * tokens + m],
 				expected[m].weighted_sum, 5.0e-3f, 5.0e-3f);
 		}
 		if (g_failures > before + 20) break;

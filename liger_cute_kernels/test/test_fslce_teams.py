@@ -45,6 +45,29 @@ def test_fslce_forward_binding_is_exposed():
         assert hasattr(module, name), f"missing native TVM FFI export: {name}"
 
 
+def test_forward_returns_zero_entropy_when_disabled(monkeypatch):
+    class FakeModule:
+        @staticmethod
+        def fused_linear_scaled_cross_entropy_forward(*args):
+            del args
+
+    monkeypatch.setattr(tvm_ffi, "_load_module", lambda: FakeModule())
+    x = torch.empty((2, 8), dtype=torch.bfloat16)
+    weight = torch.empty((4, 8), dtype=torch.bfloat16)
+    target = torch.zeros(2, dtype=torch.int64)
+    _, _, entropy = tvm_ffi.fused_linear_scaled_cross_entropy_forward(
+        x,
+        weight,
+        target,
+        vocab_start=0,
+        ignore_index=-100,
+        inverse_temperature=1.0,
+        nccl_comm_handle=1,
+        return_entropy=False,
+    )
+    torch.testing.assert_close(entropy, torch.zeros_like(entropy))
+
+
 def _reference(x, weights, target, grad_output, temperature):
     logits = (x.float() @ weights.float().T) / temperature
     lse = torch.logsumexp(logits, dim=-1)

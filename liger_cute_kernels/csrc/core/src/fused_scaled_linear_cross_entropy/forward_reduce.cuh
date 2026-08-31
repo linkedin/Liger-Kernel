@@ -33,8 +33,6 @@ struct ForwardBufferNames {
 		"fused_scaled_linear_cross_entropy_tp_forward_split_partials";
 	static constexpr const char* kLocalSum =
 		"fused_scaled_linear_cross_entropy_tp_forward_local_sum";
-	static constexpr const char* kLocalLse =
-		"fused_scaled_linear_cross_entropy_tp_forward_local_lse";
 	static constexpr const char* kLocalTarget =
 		"fused_scaled_linear_cross_entropy_tp_forward_local_target";
 	static constexpr const char* kLocalWeighted =

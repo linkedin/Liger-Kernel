@@ -44,9 +44,6 @@ struct OnlineSoftmaxState {
 		}
 	}
 
-	__host__ __device__ float local_lse() const {
-		return max_value + logf(exp_sum);
-	}
 };
 
 template <bool ReturnEntropy>

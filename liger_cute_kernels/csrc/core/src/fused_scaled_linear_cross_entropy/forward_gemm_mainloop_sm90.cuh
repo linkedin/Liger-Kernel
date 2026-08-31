@@ -749,6 +749,8 @@ void forward_split_reduce_kernel_sm90(
 	int tid = static_cast<int>(threadIdx.x);
 	int pid_m = static_cast<int>(blockIdx.x);
 	int row = pid_m * Config::kTileM + tid;
+	if (row >= params.tokens) return;
+
 	int split_count = split.split_count_for_pair(pid_m / Config::kClusterM);
 
 	float row_max = kForwardNegInf;
@@ -770,8 +772,6 @@ void forward_split_reduce_kernel_sm90(
 			row_weighted += partials.partial_weighted[index] * split_scale;
 		}
 	}
-
-	if (row >= params.tokens) return;
 
 	OnlineSoftmaxState state;
 	state.max_value = row_max;

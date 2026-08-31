@@ -53,7 +53,6 @@ namespace fused_scaled_linear_cross_entropy {
 struct ForwardLocalStatsBuffers {
 	float* local_max;
 	float* local_sum;
-	float* local_lse;
 	float* local_target;
 	float* local_weighted_sum;
 };
@@ -359,7 +358,6 @@ struct ForwardGemmEpilogueSm90 {
 			int row) {
 		output.local_max[row] = state.max_value;
 		output.local_sum[row] = state.exp_sum;
-		output.local_lse[row] = state.local_lse();
 		output.local_target[row] = state.has_target ? state.target_logit : 0.0f;
 		if constexpr (ReturnEntropy) {
 			output.local_weighted_sum[row] = state.exp_weighted_sum;

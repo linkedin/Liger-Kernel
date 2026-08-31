@@ -173,7 +173,6 @@ void fused_linear_scaled_cross_entropy_forward(
 	LIGER_CHECK(
 		gemm_params.output.local_max != nullptr &&
 			gemm_params.output.local_sum != nullptr &&
-			gemm_params.output.local_lse != nullptr &&
 			gemm_params.output.local_target != nullptr,
 		"forward GEMM local statistics buffers must be non-null");
 	if constexpr (ReturnEntropy) {

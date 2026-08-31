@@ -71,7 +71,6 @@ void configure_forward_tp_workspace(int max_tokens, int max_local_vocab) {
 	pool.get_device(Names::kReduced, packed_bytes);
 	pool.get_device(Names::kGemmSplitPartials, split_bytes);
 	pool.get_device(Names::kLocalSum, token_bytes);
-	pool.get_device(Names::kLocalLse, token_bytes);
 	pool.get_device(Names::kLocalTarget, token_bytes);
 	pool.get_device(Names::kLocalWeighted, token_bytes);
 
@@ -83,7 +82,7 @@ std::size_t forward_tp_workspace_device_bytes(
 		int max_tokens, int max_local_vocab) {
 	LIGER_CHECK(max_tokens > 0, "max_tokens must be positive");
 	LIGER_CHECK(max_local_vocab > 0, "max_local_vocab must be positive");
-	return 6 * token_bytes_at(max_tokens) +
+	return 5 * token_bytes_at(max_tokens) +
 		2 * packed_bytes_at(max_tokens) +
 		split_partials_bytes_at(max_tokens, max_local_vocab);
 }
@@ -117,8 +116,6 @@ ForwardTpWorkspace reserve_forward_tp_workspace(int tokens) {
 		g_capacity_split_partials_bytes;
 	workspace.local.local_sum = static_cast<float*>(
 		pool.get_device(Names::kLocalSum, token_bytes));
-	workspace.local.local_lse = static_cast<float*>(
-		pool.get_device(Names::kLocalLse, token_bytes));
 	workspace.local.local_target = static_cast<float*>(
 		pool.get_device(Names::kLocalTarget, token_bytes));
 	workspace.local.local_weighted_sum = static_cast<float*>(

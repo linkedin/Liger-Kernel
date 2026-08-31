@@ -313,7 +313,11 @@ def fused_linear_scaled_cross_entropy_forward(
     tokens = x.shape[0]
     nll = torch.empty(tokens, dtype=torch.float32, device=x.device)
     lse = torch.empty(tokens, dtype=torch.float32, device=x.device)
-    entropy = torch.empty(tokens, dtype=torch.float32, device=x.device)
+    entropy = (
+        torch.empty(tokens, dtype=torch.float32, device=x.device)
+        if return_entropy
+        else torch.zeros(tokens, dtype=torch.float32, device=x.device)
+    )
     _load_module().fused_linear_scaled_cross_entropy_forward(
         x,
         weight,
