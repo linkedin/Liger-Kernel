@@ -2,6 +2,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+import liger_kernel.chunked_loss.dpo_loss as dpo_loss_module
+
 from liger_kernel.chunked_loss import LigerFusedLinearDPOLoss
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 from liger_kernel.chunked_loss.functional import liger_fused_linear_dpo
@@ -1450,3 +1452,77 @@ def test_label_smoothing_validation():
 
     with pytest.raises(ValueError, match=r"label_smoothing must lie in \[0\.0, 0\.5\) for loss_type='robust'"):
         LigerFusedLinearDPOLoss(loss_type="robust", label_smoothing=-0.1)
+
+
+def test_shape_aware_dispatch_boundary():
+    """Dispatch uses total logits elements and includes the measured 67M boundary."""
+    weight = torch.empty((65536, 1), device="meta", dtype=torch.bfloat16)
+
+    assert dpo_loss_module._should_use_native_dpo(torch.empty((2, 512, 1), device="meta", dtype=torch.bfloat16), weight)
+    assert not dpo_loss_module._should_use_native_dpo(
+        torch.empty((2, 513, 1), device="meta", dtype=torch.bfloat16), weight
+    )
+    assert dpo_loss_module._should_use_native_dpo(torch.empty((4, 256, 1), device="meta", dtype=torch.bfloat16), weight)
+    assert not dpo_loss_module._should_use_native_dpo(
+        torch.empty((4, 257, 1), device="meta", dtype=torch.bfloat16), weight
+    )
+
+
+def test_shape_aware_native_and_chunked_paths_match(monkeypatch):
+    """Forced native and chunked paths preserve loss, metrics, and gradients."""
+    B, T, H, V = 4, 7, 16, 31
+    target = torch.randint(0, V, (B, T), device=device, dtype=torch.long)
+    target[0, :2] = -100
+    base_input = torch.randn(B, T, H, device=device, dtype=torch.float32)
+    base_weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    base_bias = torch.randn(V, device=device, dtype=torch.float32)
+    ref_input = torch.randn(B, T, H, device=device, dtype=torch.float32)
+    ref_weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    ref_bias = torch.randn(V, device=device, dtype=torch.float32)
+
+    def run(use_native):
+        monkeypatch.setattr(
+            dpo_loss_module,
+            "_should_use_native_dpo",
+            lambda _input, weight: use_native,
+        )
+        _input = base_input.detach().clone().requires_grad_(True)
+        weight = base_weight.detach().clone().requires_grad_(True)
+        bias = base_bias.detach().clone().requires_grad_(True)
+        loss_module = LigerFusedLinearDPOLoss(
+            alpha=0.7,
+            beta=0.1,
+            compute_nll_loss=True,
+            compiled=False,
+            use_ref_model=True,
+            average_log_prob=False,
+            chunk_size=1,
+        )
+        loss, outputs = loss_module(
+            weight,
+            _input,
+            target,
+            bias,
+            ref_input,
+            ref_weight,
+            ref_bias,
+        )
+        loss.backward()
+        return (
+            loss.detach(),
+            tuple(output.detach() for output in outputs),
+            _input.grad.detach(),
+            weight.grad.detach(),
+            bias.grad.detach(),
+        )
+
+    native = run(True)
+    chunked = run(False)
+
+    assert_verbose_allclose(native[0], chunked[0], atol=1e-5, rtol=1e-4)
+    assert len(native[1]) == len(chunked[1])
+    for native_output, chunked_output in zip(native[1], chunked[1]):
+        assert_verbose_allclose(native_output, chunked_output, atol=1e-5, rtol=1e-4)
+    assert_verbose_allclose(native[2], chunked[2], atol=1e-5, rtol=1e-4)
+    assert_verbose_allclose(native[3], chunked[3], atol=1e-5, rtol=1e-4)
+    assert_verbose_allclose(native[4], chunked[4], atol=1e-5, rtol=1e-4)

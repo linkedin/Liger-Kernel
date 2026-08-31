@@ -11,7 +11,6 @@ import transformers
 from packaging import version
 from transformers import PreTrainedModel
 
-from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP

@@ -344,6 +344,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         full_nll_target=None,
         chosen_nll_target_chunk=None,
         average_log_prob=True,
+        detach_logits_mean=False,
         **loss_kwargs,
     ):
         """
@@ -365,6 +366,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             full_nll_target (torch.Tensor, optional): Full target tensor for NLL loss. Shape: (batch_size, sequence_length).
             chosen_nll_target_chunk (torch.Tensor, optional): Target tensor for NLL loss. Shape: (chunk_size, sequence_length) If not provided the target_chunk is used.
             average_log_prob (bool): Whether to average log probabilities or the sum.
+            detach_logits_mean (bool): Whether logging-only logit means should be detached and their logits freed early.
             loss_kwargs (dict): Additional arguments for the loss function.
         """
         (
@@ -391,10 +393,24 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             else:
                 chosen_nll_loss = chosen_nll_loss / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
 
-        chosen_logits_mean = chosen_logits.sum() / (full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0])
-        rejected_logits_mean = rejected_logits.sum() / (
-            full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
-        )
+        if detach_logits_mean:
+            # DPO's native-autograd dispatch materializes full logits. These means are logging-only, so
+            # detaching them lets the logits be released before reference evaluation without changing the loss.
+            with torch.no_grad():
+                chosen_logits_mean = chosen_logits.sum() / (
+                    full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
+                )
+                rejected_logits_mean = rejected_logits.sum() / (
+                    full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
+                )
+            del chosen_logits, rejected_logits
+        else:
+            chosen_logits_mean = chosen_logits.sum() / (
+                full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
+            )
+            rejected_logits_mean = rejected_logits.sum() / (
+                full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
+            )
 
         if use_ref_model:
             with torch.no_grad():
