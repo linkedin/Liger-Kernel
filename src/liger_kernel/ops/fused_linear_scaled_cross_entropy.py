@@ -9,7 +9,6 @@ import torch.distributed as dist
 # Apache-2.0 FusedLinearForPPOFunction:
 # https://github.com/verl-project/verl/blob/main/verl/utils/experimental/torch_functional.py
 _FALLBACK_CHUNK_SIZE = 512
-_VERL_TP_HIDDEN_ALIGNMENT = 128
 
 
 def _load_sm90_function():
@@ -25,17 +24,6 @@ def _load_lck_tp_function():
     from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import is_available
 
     return LigerFusedLinearScaledCrossEntropyLckTPFunction if is_available() else None
-
-
-def _load_verl_tp_function():
-    try:
-        from verl.utils.kernel.linear_cross_entropy import linear_cross_entropy
-    except ImportError as exc:
-        raise ImportError(
-            "tensor-parallel fused linear scaled cross entropy requires Verl when the LCK Hopper backend "
-            "is unavailable; install Verl or install a matching liger_cute_kernels wheel"
-        ) from exc
-    return linear_cross_entropy
 
 
 def _validate_temperature(temperature):
@@ -104,52 +92,129 @@ def _is_hopper(device):
     return torch.cuda.get_device_capability(device) == (9, 0)
 
 
-class _AllReduceInputGradient(torch.autograd.Function):
-    """Match LCK's globally reduced dX around Verl's rank-local backward."""
+class _TensorParallelFusedLinearPPOFallbackFunction(torch.autograd.Function):
+    """Chunked TP fallback adapted from Verl's fused linear PPO formulas."""
 
     @staticmethod
-    def forward(ctx, _input, process_group):
+    def forward(ctx, hidden_states, vocab_weights, input_ids, temperature, ignore_index, return_entropy, process_group):
+        ctx.set_materialize_grads(False)
+        rank = dist.get_rank(process_group)
+        world_size = dist.get_world_size(process_group)
+        local_vocab = vocab_weights.shape[0]
+        vocab_start = rank * local_vocab
+        valid = input_ids != ignore_index
+        safe_input_ids = input_ids.masked_fill(~valid, 0)
+        token_count = hidden_states.shape[0]
+
+        nll = torch.empty(token_count, dtype=torch.float32, device=hidden_states.device)
+        lse = torch.empty_like(nll)
+        entropy = torch.empty_like(nll) if return_entropy else torch.zeros_like(nll)
+
+        for start in range(0, token_count, _FALLBACK_CHUNK_SIZE):
+            end = min(start + _FALLBACK_CHUNK_SIZE, token_count)
+            logits = (hidden_states[start:end] @ vocab_weights.t()).float() / temperature
+            global_max = logits.amax(dim=-1)
+            if world_size > 1:
+                dist.all_reduce(global_max, op=dist.ReduceOp.MAX, group=process_group)
+
+            exp_logits = torch.exp(logits - global_max[:, None])
+            local_sum = exp_logits.sum(dim=-1)
+            local_target = safe_input_ids[start:end] - vocab_start
+            owns_target = valid[start:end] & (local_target >= 0) & (local_target < local_vocab)
+            target_index = local_target.clamp(0, local_vocab - 1)
+            target_logit = torch.where(
+                owns_target,
+                logits.gather(-1, target_index[:, None]).squeeze(-1),
+                torch.zeros_like(local_sum),
+            )
+
+            if return_entropy:
+                local_weighted_sum = (exp_logits * logits).sum(dim=-1)
+                reduced = torch.stack((local_sum, local_weighted_sum, target_logit))
+            else:
+                reduced = torch.stack((local_sum, target_logit))
+            if world_size > 1:
+                dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=process_group)
+
+            global_lse = global_max + torch.log(reduced[0])
+            chunk_nll = global_lse - reduced[-1]
+            nll[start:end] = torch.where(valid[start:end], chunk_nll, torch.zeros_like(chunk_nll))
+            lse[start:end] = global_lse
+            if return_entropy:
+                chunk_entropy = global_lse - reduced[1] / reduced[0]
+                entropy[start:end] = torch.where(
+                    valid[start:end],
+                    chunk_entropy,
+                    torch.zeros_like(chunk_entropy),
+                )
+
+        ctx.save_for_backward(hidden_states, vocab_weights, safe_input_ids, valid, lse, entropy)
+        ctx.temperature = temperature
+        ctx.vocab_start = vocab_start
+        ctx.local_vocab = local_vocab
+        ctx.return_entropy = return_entropy
         ctx.process_group = process_group
-        return _input
+        ctx.world_size = world_size
+        return (nll, entropy) if return_entropy else nll
 
     @staticmethod
-    def backward(ctx, grad_input):
-        if grad_input is None:
-            return None, None
-        grad_input = grad_input.clone()
-        dist.all_reduce(grad_input, op=dist.ReduceOp.SUM, group=ctx.process_group)
-        return grad_input, None
+    def backward(ctx, grad_nll, grad_entropy=None):
+        hidden_states, vocab_weights, input_ids, valid, lse, entropy = ctx.saved_tensors
+        token_count = hidden_states.shape[0]
+        if grad_nll is None:
+            grad_nll = torch.zeros(token_count, dtype=torch.float32, device=hidden_states.device)
+        else:
+            grad_nll = grad_nll.to(torch.float32)
+        if grad_entropy is None:
+            grad_entropy = torch.zeros_like(grad_nll)
+        else:
+            grad_entropy = grad_entropy.to(torch.float32)
+
+        grad_hidden_states = torch.zeros_like(hidden_states) if ctx.needs_input_grad[0] else None
+        grad_vocab_weights = torch.zeros_like(vocab_weights) if ctx.needs_input_grad[1] else None
+        inverse_temperature = 1.0 / ctx.temperature
+
+        for start in range(0, token_count, _FALLBACK_CHUNK_SIZE):
+            end = min(start + _FALLBACK_CHUNK_SIZE, token_count)
+            hidden_chunk = hidden_states[start:end]
+            logits = (hidden_chunk @ vocab_weights.t()).float() * inverse_temperature
+            probabilities = torch.exp(logits - lse[start:end, None])
+            nll_scale = grad_nll[start:end] * valid[start:end]
+            grad_logits = probabilities * nll_scale[:, None]
+
+            local_target = input_ids[start:end] - ctx.vocab_start
+            owns_target = valid[start:end] & (local_target >= 0) & (local_target < ctx.local_vocab)
+            target_index = local_target.clamp(0, ctx.local_vocab - 1)
+            rows = torch.arange(end - start, device=hidden_states.device)
+            grad_logits[rows, target_index] -= nll_scale * owns_target
+
+            if ctx.return_entropy:
+                entropy_scale = grad_entropy[start:end] * valid[start:end]
+                grad_logits += (
+                    probabilities * (lse[start:end, None] - entropy[start:end, None] - logits) * entropy_scale[:, None]
+                )
+
+            grad_logits = (grad_logits * inverse_temperature).to(hidden_states.dtype)
+            if grad_hidden_states is not None:
+                grad_hidden_states[start:end] = grad_logits @ vocab_weights
+            if grad_vocab_weights is not None:
+                grad_vocab_weights.add_(grad_logits.t() @ hidden_chunk)
+
+        if grad_hidden_states is not None and ctx.world_size > 1:
+            dist.all_reduce(grad_hidden_states, op=dist.ReduceOp.SUM, group=ctx.process_group)
+        return grad_hidden_states, grad_vocab_weights, None, None, None, None, None
 
 
-def _apply_verl_tp_fallback(
-    _input,
-    weight,
-    target,
-    temperature,
-    ignore_index,
-    return_entropy,
-    process_group,
-):
-    valid = target != ignore_index
-    safe_target = target.masked_fill(~valid, 0).contiguous()
-    hidden_padding = (-_input.shape[1]) % _VERL_TP_HIDDEN_ALIGNMENT
-    if hidden_padding:
-        _input = torch.nn.functional.pad(_input.contiguous(), (0, hidden_padding))
-        weight = torch.nn.functional.pad(weight.contiguous(), (0, hidden_padding))
-    reduced_input = _AllReduceInputGradient.apply(_input.contiguous(), process_group)
-    log_probs, entropy = _load_verl_tp_function()(
-        reduced_input,
+def _apply_tp_fallback(_input, weight, target, temperature, ignore_index, return_entropy, process_group):
+    return _TensorParallelFusedLinearPPOFallbackFunction.apply(
+        _input.contiguous(),
         weight.contiguous(),
-        safe_target,
-        float(temperature),
-        "none",
+        target.contiguous(),
+        temperature,
+        ignore_index,
+        return_entropy,
         process_group,
     )
-    nll = torch.where(valid, -log_probs, torch.zeros_like(log_probs))
-    if not return_entropy:
-        return nll
-    entropy = torch.where(valid, entropy, torch.zeros_like(entropy))
-    return nll, entropy
 
 
 def _fallback_forward_chunk(hidden_states, vocab_weights, input_ids, valid, temperature):
@@ -305,7 +370,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
 
 
 class LigerFusedLinearScaledCrossEntropyTPFunction:
-    """Tensor-parallel frontend using LCK on Hopper and Verl otherwise.
+    """Tensor-parallel frontend using LCK on Hopper and a Liger fallback otherwise.
 
     ``weight`` is the calling rank's equally sized contiguous vocabulary shard,
     while ``target`` contains global vocabulary indices.
@@ -353,7 +418,7 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
                 process_group,
             )
 
-        return _apply_verl_tp_fallback(
+        return _apply_tp_fallback(
             _input,
             weight,
             target,

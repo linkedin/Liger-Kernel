@@ -262,10 +262,11 @@ nll, entropy = LigerFusedLinearScaledCrossEntropyTPFunction.apply(
 ```
 
 The TP frontend derives `vocab_start` from the process-group rank. BF16 inputs on Hopper use the optional
-`liger_cute_kernels` (LCK) implementation when its native core is available; other configurations call Verl's
-tensor-parallel linear cross entropy. Both paths return globally correct per-token outputs and sum the input gradient
-across the TP group. The first LCK call initializes its NVSHMEM/NCCL runtime and fixes workspace capacity, so warm it
-up with the largest expected token, hidden, local-vocabulary, and `tiles_per_reduce` settings before CUDA Graph capture.
+`liger_cute_kernels` (LCK) implementation when its native core is available; other configurations use Liger's chunked
+tensor-parallel fallback adapted from Verl's fused PPO formulas. Both paths return globally correct per-token outputs
+and sum the input gradient across the TP group. The first LCK call initializes its NVSHMEM/NCCL runtime and fixes
+workspace capacity, so warm it up with the largest expected token, hidden, local-vocabulary, and `tiles_per_reduce`
+settings before CUDA Graph capture.
 LCK shares the process-wide NVSHMEM bootstrap used by `LigerExpertParallelFusedMoe`; TP and EP use separate cached teams
 and separately named workspaces. Initialize NVSHMEM from a common parent group (normally `WORLD`) when both are used.
 

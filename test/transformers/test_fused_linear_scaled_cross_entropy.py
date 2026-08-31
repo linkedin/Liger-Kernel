@@ -218,8 +218,8 @@ def test_tp_frontend_dispatches_hopper_bf16_to_lck(monkeypatch):
     monkeypatch.setattr(_FRONTEND, "_load_lck_tp_function", lambda: StubLckFunction)
     monkeypatch.setattr(
         _FRONTEND,
-        "_apply_verl_tp_fallback",
-        lambda *args: pytest.fail("Verl fallback must not run when LCK is available"),
+        "_apply_tp_fallback",
+        lambda *args: pytest.fail("the Liger fallback must not run when LCK is available"),
     )
 
     result = _FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply(
@@ -244,7 +244,7 @@ def test_tp_group_is_a_call_argument():
 
 
 @pytest.mark.parametrize("lck_result", [None, ImportError("lck unavailable")])
-def test_tp_frontend_uses_verl_when_lck_is_unavailable(monkeypatch, lck_result):
+def test_tp_frontend_uses_liger_fallback_when_lck_is_unavailable(monkeypatch, lck_result):
     process_group = object()
     device = torch.device("cuda:0")
     _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
@@ -264,8 +264,8 @@ def test_tp_frontend_uses_verl_when_lck_is_unavailable(monkeypatch, lck_result):
     monkeypatch.setattr(_FRONTEND, "_load_lck_tp_function", load_lck)
     monkeypatch.setattr(
         _FRONTEND,
-        "_apply_verl_tp_fallback",
-        lambda *args: calls.append(args) or "verl-result",
+        "_apply_tp_fallback",
+        lambda *args: calls.append(args) or "fallback-result",
     )
 
     result = _FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply(
@@ -275,51 +275,58 @@ def test_tp_frontend_uses_verl_when_lck_is_unavailable(monkeypatch, lck_result):
         process_group,
     )
 
-    assert result == "verl-result"
+    assert result == "fallback-result"
     assert calls == [(_input, weight, target, 1.0, -100, False, process_group)]
 
 
-def test_tp_verl_fallback_masks_ignored_rows_and_reduces_input_gradient(monkeypatch):
+def test_tp_fallback_matches_torch_with_entropy_and_ignored_rows(monkeypatch):
     process_group = object()
-    _input = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], requires_grad=True)
-    weight = torch.tensor([[1.0, 2.0], [4.0, 8.0]], requires_grad=True)
-    target = torch.tensor([0, -100, 1], dtype=torch.int64)
-    seen = {}
+    token_count, hidden_size, vocab_size = 521, 7, 13
+    temperature = 0.7
+    target = torch.randint(vocab_size, (token_count,), dtype=torch.int64)
+    target[::5] = -100
+    grad_nll = torch.rand(token_count)
+    grad_entropy = torch.rand(token_count) - 0.5
 
-    def fake_verl(hidden, local_weight, labels, temperature, reduction, group):
-        seen["labels"] = labels.clone()
-        seen["temperature"] = temperature
-        seen["reduction"] = reduction
-        seen["group"] = group
-        logits = hidden @ local_weight.t()
-        return logits[:, 0], logits[:, 1]
+    monkeypatch.setattr(_FRONTEND.dist, "get_rank", lambda group: 0)
+    monkeypatch.setattr(_FRONTEND.dist, "get_world_size", lambda group: 1)
 
-    def fake_all_reduce(tensor, op, group):
-        seen["all_reduce"] = (op, group)
-        tensor.mul_(2)
-
-    monkeypatch.setattr(_FRONTEND, "_load_verl_tp_function", lambda: fake_verl)
-    monkeypatch.setattr(_FRONTEND.dist, "all_reduce", fake_all_reduce)
-
-    nll, entropy = _FRONTEND._apply_verl_tp_fallback(
-        _input,
-        weight,
+    actual_input = torch.randn(token_count, hidden_size, requires_grad=True)
+    actual_weight = torch.randn(vocab_size, hidden_size, requires_grad=True)
+    actual_nll, actual_entropy = _FRONTEND._apply_tp_fallback(
+        actual_input,
+        actual_weight,
         target,
-        0.5,
+        temperature,
         -100,
         True,
         process_group,
     )
-    (nll + entropy).sum().backward()
+    torch.autograd.backward((actual_nll, actual_entropy), (grad_nll, grad_entropy))
 
-    torch.testing.assert_close(nll, torch.tensor([-5.0, 0.0, -17.0]))
-    torch.testing.assert_close(entropy, torch.tensor([20.0, 0.0, 68.0]))
-    torch.testing.assert_close(_input.grad, torch.tensor([[6.0, 12.0], [0.0, 0.0], [6.0, 12.0]]))
-    assert seen["labels"].tolist() == [0, 0, 1]
-    assert seen["temperature"] == 0.5
-    assert seen["reduction"] == "none"
-    assert seen["group"] is process_group
-    assert seen["all_reduce"] == (torch.distributed.ReduceOp.SUM, process_group)
+    expected_input = actual_input.detach().clone().requires_grad_(True)
+    expected_weight = actual_weight.detach().clone().requires_grad_(True)
+    logits = (expected_input @ expected_weight.t()).float() / temperature
+    log_probs = logits.log_softmax(dim=-1)
+    probabilities = log_probs.exp()
+    valid = target != -100
+    safe_target = target.masked_fill(~valid, 0)
+    expected_nll = torch.where(
+        valid,
+        -log_probs.gather(-1, safe_target[:, None]).squeeze(-1),
+        torch.zeros(token_count),
+    )
+    expected_entropy = torch.where(
+        valid,
+        -(probabilities * log_probs).sum(dim=-1),
+        torch.zeros(token_count),
+    )
+    torch.autograd.backward((expected_nll, expected_entropy), (grad_nll, grad_entropy))
+
+    torch.testing.assert_close(actual_nll, expected_nll)
+    torch.testing.assert_close(actual_entropy, expected_entropy)
+    torch.testing.assert_close(actual_input.grad, expected_input.grad, atol=2e-5, rtol=2e-5)
+    torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=2e-5, rtol=2e-5)
 
 
 def test_lck_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):

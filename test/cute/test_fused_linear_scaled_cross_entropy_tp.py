@@ -28,7 +28,7 @@ except ImportError:
     _LCK_AVAILABLE = False
 
 _NDEV = torch.cuda.device_count() if torch is not None and torch.cuda.is_available() else 0
-_TOKENS = 128
+_TOKENS = 521
 _HIDDEN = 2048
 _LOCAL_VOCAB = 320
 _TEMPERATURE = 0.8
@@ -87,8 +87,14 @@ def _reference(x, global_weight, target, grad_nll, grad_entropy):
     return nll, entropy, dz @ global_weight.float(), dz
 
 
-def _worker(rank: int, world_size: int, init_file: str, layout: str):
-    from liger_cute_kernels import nvshmem
+def _worker(rank: int, world_size: int, init_file: str, layout: str, implementation: str):
+    if implementation == "fallback":
+        import liger_kernel.ops.fused_linear_scaled_cross_entropy as frontend
+
+        frontend._load_lck_tp_function = lambda: None
+        nvshmem = None
+    else:
+        from liger_cute_kernels import nvshmem
 
     torch.cuda.set_device(rank)
     dist.init_process_group(
@@ -161,30 +167,32 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str):
         torch.testing.assert_close(x.grad.float(), expected_dx, atol=8e-3, rtol=4e-2)
         torch.testing.assert_close(weight.grad.float(), expected_dw, atol=8e-3, rtol=4e-2)
 
-        runtime = lck_frontend._RUNTIME
-        assert runtime is not None
-        assert runtime.group_ranks == tuple(tp_ranks)
-        team_handle = runtime.team_handle
-
         torch.cuda.synchronize()
-        lck_frontend._release_runtime()
-        nvshmem.pool_clear_all()
-        if team_handle != nvshmem.team_world():
-            nvshmem.team_destroy(team_handle)
-            team_handle = None
+        if implementation == "lck":
+            runtime = lck_frontend._RUNTIME
+            assert runtime is not None
+            assert runtime.group_ranks == tuple(tp_ranks)
+            team_handle = runtime.team_handle
+            lck_frontend._release_runtime()
+            nvshmem.pool_clear_all()
+            if team_handle != nvshmem.team_world():
+                nvshmem.team_destroy(team_handle)
+                team_handle = None
         dist.barrier()
-        nvshmem.finalize()
+        if implementation == "lck":
+            nvshmem.finalize()
         dist.destroy_process_group()
     except BaseException:
-        try:
-            lck_frontend._release_runtime()
-        except Exception:
-            pass
-        try:
-            if nvshmem.is_initialized():
-                nvshmem.finalize()
-        except Exception:
-            pass
+        if implementation == "lck":
+            try:
+                lck_frontend._release_runtime()
+            except Exception:
+                pass
+            try:
+                if nvshmem.is_initialized():
+                    nvshmem.finalize()
+            except Exception:
+                pass
         try:
             dist.destroy_process_group()
         except Exception:
@@ -192,7 +200,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str):
         raise
 
 
-def _run(world_size: int, layout: str):
+def _run(world_size: int, layout: str, implementation: str):
     rendezvous = tempfile.mkdtemp(prefix=f"liger_fslce_tp_{layout}_")
     init_file = os.path.join(rendezvous, "store")
     env = {
@@ -205,7 +213,7 @@ def _run(world_size: int, layout: str):
     try:
         mp.spawn(
             _worker,
-            args=(world_size, init_file, layout),
+            args=(world_size, init_file, layout, implementation),
             nprocs=world_size,
             join=True,
         )
@@ -224,7 +232,7 @@ def test_tp_frontend_world_process_group(world_size):
         pytest.skip("requires a matching liger_cute_kernels wheel")
     if _NDEV < world_size:
         pytest.skip(f"requires at least {world_size} CUDA devices")
-    _run(world_size, "world")
+    _run(world_size, "world", "lck")
 
 
 @pytest.mark.parametrize("layout", ["contiguous", "strided"])
@@ -233,4 +241,17 @@ def test_tp_frontend_subgroups(layout):
         pytest.skip("requires a matching liger_cute_kernels wheel")
     if _NDEV < 4:
         pytest.skip("requires at least four CUDA devices")
-    _run(4, layout)
+    _run(4, layout, "lck")
+
+
+@pytest.mark.parametrize(
+    ("world_size", "layout"),
+    [
+        (2, "world"),
+        (4, "strided"),
+    ],
+)
+def test_tp_frontend_liger_fallback(world_size, layout):
+    if torch is None or _NDEV < world_size:
+        pytest.skip(f"requires at least {world_size} CUDA devices")
+    _run(world_size, layout, "fallback")
