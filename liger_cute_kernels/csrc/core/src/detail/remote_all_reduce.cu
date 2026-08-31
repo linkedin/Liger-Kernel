@@ -1,4 +1,4 @@
-#include "liger_cute/detail/remote_all_reduce.cuh"
+#include "remote_all_reduce.cuh"
 
 #include <nvshmem.h>
 #include <nvshmemx.h>

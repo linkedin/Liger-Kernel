@@ -16,7 +16,6 @@
 //   kDxReduced          pool       yes   FP32 NVLS SUM destination
 //   kDxSync             pool       yes   per-slot ready/completion epochs
 //   kDzWorkspace        pool       no    one wave of dZ, BF16
-//   kGridBarrier        pool       no    persistent-kernel phase counter
 //
 // liger::global_symmetric_stack() is deliberately NOT used. Nothing produced by
 // the forward has to be carried to the backward as symmetric state: the
@@ -54,26 +53,22 @@ struct BackwardSymmetricNames {
 		"fused_scaled_linear_cross_entropy_tp_dx_partial";
 	static constexpr const char* kDxReduced =
 		"fused_scaled_linear_cross_entropy_tp_dx_reduced";
-	static constexpr const char* kDxHierarchical =
-		"fused_scaled_linear_cross_entropy_tp_dx_hierarchical";
-	static constexpr const char* kDxHierarchicalInbox =
-		"fused_scaled_linear_cross_entropy_tp_dx_hierarchical_inbox";
-	static constexpr const char* kDxHierarchicalSignals =
-		"fused_scaled_linear_cross_entropy_tp_dx_hierarchical_signals";
+	static constexpr const char* kDxReducedShard =
+		"fused_scaled_linear_cross_entropy_tp_dx_reduced_shard";
+	static constexpr const char* kDxRemoteInbox =
+		"fused_scaled_linear_cross_entropy_tp_dx_remote_inbox";
+	static constexpr const char* kDxRemoteSignals =
+		"fused_scaled_linear_cross_entropy_tp_dx_remote_signals";
 	static constexpr const char* kDxSync =
 		"fused_scaled_linear_cross_entropy_tp_dx_sync";
 
 	// global_buffer_pool() — device private (never remotely addressed).
 	static constexpr const char* kDzWorkspace =
 		"fused_scaled_linear_cross_entropy_tp_dz_workspace";
-	static constexpr const char* kGridBarrier =
-		"fused_scaled_linear_cross_entropy_tp_grid_barrier";
 	static constexpr const char* kDxPeerPartialPointers =
 		"fused_scaled_linear_cross_entropy_tp_dx_peer_partial_ptrs";
 	static constexpr const char* kDxPeerSyncPointers =
 		"fused_scaled_linear_cross_entropy_tp_dx_peer_sync_ptrs";
-	static constexpr const char* kDxPeerWorldPes =
-		"fused_scaled_linear_cross_entropy_tp_dx_peer_world_pes";
 	static constexpr const char* kDxLaunchEpoch =
 		"fused_scaled_linear_cross_entropy_tp_dx_launch_epoch";
 };
@@ -140,18 +135,13 @@ int backward_dx_resident_cta_capacity();
 int backward_dx_team_size();
 std::int64_t backward_dx_team_handle();
 
-// The pooled dZ wave workspace and grid-barrier counter for this shape.
+// The pooled dZ wave workspace for this shape.
 struct BackwardScratch {
 	void* dz_workspace;
 	std::size_t dz_workspace_bytes;
-	int* grid_barrier;
 };
 
 BackwardScratch reserve_backward_scratch(int local_vocab);
-
-// Zeroes the grid-barrier counter. Must be enqueued before every launch.
-void reset_backward_scratch(
-	const BackwardScratch& scratch, cudaStream_t stream);
 
 }  // namespace fused_scaled_linear_cross_entropy
 }  // namespace liger

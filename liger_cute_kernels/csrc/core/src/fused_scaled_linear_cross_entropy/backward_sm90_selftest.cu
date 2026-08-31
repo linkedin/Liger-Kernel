@@ -463,7 +463,6 @@ void run_case(
 	params.gemm.grad_weight = device_dw;
 	params.gemm.dz_workspace = scratch.dz_workspace;
 	params.gemm.dz_workspace_bytes = scratch.dz_workspace_bytes;
-	params.gemm.grid_barrier = scratch.grid_barrier;
 	params.gemm.tokens = tokens;
 	params.gemm.hidden = hidden;
 	params.gemm.local_vocab = local_vocab;

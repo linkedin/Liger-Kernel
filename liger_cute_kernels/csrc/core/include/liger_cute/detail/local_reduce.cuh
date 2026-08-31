@@ -1,5 +1,7 @@
 #pragma once
 
+// Device-side local reduction algorithms for TpReducePlan backends.
+
 #include <cuda_runtime.h>
 
 #include <cstddef>
@@ -7,21 +9,16 @@
 #include <type_traits>
 
 #include "liger_cute/detail/nvls.cuh"
+#include "liger_cute/detail/tp_reduce.cuh"
 
 namespace liger_cute {
 namespace detail {
 
-enum class AllReduceBackend : std::uint8_t {
-	kNvlsTwoShot,
-	kDirectPeer,
-	kHierarchicalNvlsRemote,
-};
-
-template <AllReduceBackend Backend, typename Element>
-struct AllReduceContext;
+template <LocalReduceBackend Backend, typename Element>
+struct LocalReduceContext;
 
 template <typename Element>
-struct AllReduceContext<AllReduceBackend::kNvlsTwoShot, Element> {
+struct LocalReduceContext<LocalReduceBackend::kNvls, Element> {
 	std::uint64_t* local_ready;
 	std::uint64_t* multicast_ready;
 	std::uint64_t* local_complete;
@@ -31,7 +28,7 @@ struct AllReduceContext<AllReduceBackend::kNvlsTwoShot, Element> {
 };
 
 template <typename Element>
-struct AllReduceContext<AllReduceBackend::kDirectPeer, Element> {
+struct LocalReduceContext<LocalReduceBackend::kDirectPeer, Element> {
 	const Element* const* peer_sources;
 	std::size_t source_offset;
 	std::uint64_t* local_ready;
@@ -41,11 +38,6 @@ struct AllReduceContext<AllReduceBackend::kDirectPeer, Element> {
 	std::size_t complete_offset;
 	int rank;
 	int size;
-};
-
-template <typename Element>
-struct AllReduceContext<AllReduceBackend::kHierarchicalNvlsRemote, Element> {
-	void* implementation;
 };
 
 __device__ __forceinline__ void direct_peer_barrier_warp(
@@ -78,14 +70,14 @@ __device__ __forceinline__ void direct_peer_barrier_warp(
 	__syncwarp();
 }
 
-template <AllReduceBackend Backend, typename Element>
-__device__ __forceinline__ void all_reduce(
-		const AllReduceContext<Backend, Element>& context,
+template <LocalReduceBackend Backend, typename Element>
+__device__ __forceinline__ void local_all_reduce(
+		const LocalReduceContext<Backend, Element>& context,
 		Element* destination,
 		const Element* source,
 		std::size_t count,
 		std::uint64_t epoch) {
-	if constexpr (Backend == AllReduceBackend::kNvlsTwoShot) {
+	if constexpr (Backend == LocalReduceBackend::kNvls) {
 		static_assert(
 			std::is_same_v<Element, float>,
 			"NVLS two-shot currently supports FP32 SUM");
@@ -107,7 +99,7 @@ __device__ __forceinline__ void all_reduce(
 			context.rank,
 			context.size,
 			epoch);
-	} else if constexpr (Backend == AllReduceBackend::kDirectPeer) {
+	} else {
 		static_assert(
 			std::is_same_v<Element, float>,
 			"direct-peer all-reduce currently supports FP32 SUM");
@@ -155,10 +147,6 @@ __device__ __forceinline__ void all_reduce(
 			context.rank,
 			context.size,
 			epoch);
-	} else {
-		static_assert(
-			Backend != AllReduceBackend::kHierarchicalNvlsRemote,
-			"hierarchical NVLS+remote backend is not implemented");
 	}
 }
 

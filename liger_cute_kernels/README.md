@@ -75,6 +75,14 @@ tensor-parallel team to cover the full NVSHMEM world. Single-host NVLS
 subgroups remain supported; a multi-host subgroup that is only part of a
 larger world fails explicitly rather than communicating with nonmembers.
 
+Tensor-parallel reduction transport is implemented in
+`liger_cute::detail`. Host setup selects either the NVLS or DirectPeer local
+backend and passes only that backend's compact device view to the kernel.
+Two-host execution is composed as local NVLS reduce-scatter, an explicit
+RDC-compiled remote reduction follow-up, and the same local all-gather/scatter
+used by single-host execution. Whether the remote follow-up is required is a
+launcher template parameter, not a runtime kernel argument.
+
 ## Package architecture
 
 Native CUDA build for the MoE port (from `LigerCommKernels`). The lck wheel

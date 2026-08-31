@@ -29,13 +29,13 @@ set(LIGER_CUTE_FSLCE_FORWARD_REDUCE_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/forward_reduce.cu")
 set(LIGER_CUTE_FSLCE_BACKWARD_SM90_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/fused_linear_scaled_cross_entropy_backward.cu")
-set(LIGER_CUTE_FSLCE_BACKWARD_FALLBACK_SM90_SOURCE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/backward_fallback_sm90.cu")
+set(LIGER_CUTE_FSLCE_BACKWARD_REDUCE_SM90_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/backward_reduce_sm90.cu")
 list(REMOVE_ITEM LIGER_CUTE_CORE_SOURCES
     "${LIGER_CUTE_FSLCE_FORWARD_SM90_SOURCE}"
     "${LIGER_CUTE_FSLCE_FORWARD_REDUCE_SOURCE}"
     "${LIGER_CUTE_FSLCE_BACKWARD_SM90_SOURCE}"
-    "${LIGER_CUTE_FSLCE_BACKWARD_FALLBACK_SM90_SOURCE}")
+    "${LIGER_CUTE_FSLCE_BACKWARD_REDUCE_SM90_SOURCE}")
 
 file(GLOB_RECURSE LIGER_CUTE_CORE_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
@@ -103,23 +103,23 @@ target_link_libraries(liger_cute_fslce_backward_sm90 PRIVATE
     CUDA::cudart
     CUDA::cuda_driver)
 
-add_library(liger_cute_fslce_backward_fallback_sm90 OBJECT
-    "${LIGER_CUTE_FSLCE_BACKWARD_FALLBACK_SM90_SOURCE}")
-set_target_properties(liger_cute_fslce_backward_fallback_sm90 PROPERTIES
+add_library(liger_cute_fslce_backward_reduce_sm90 OBJECT
+    "${LIGER_CUTE_FSLCE_BACKWARD_REDUCE_SM90_SOURCE}")
+set_target_properties(liger_cute_fslce_backward_reduce_sm90 PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     CXX_VISIBILITY_PRESET hidden
     CUDA_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
 target_compile_definitions(
-    liger_cute_fslce_backward_fallback_sm90 PRIVATE
+    liger_cute_fslce_backward_reduce_sm90 PRIVATE
     LIGER_CUTE_BUILDING=1)
 target_include_directories(
-    liger_cute_fslce_backward_fallback_sm90 PRIVATE
+    liger_cute_fslce_backward_reduce_sm90 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/moe
     ${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy)
 target_link_libraries(
-    liger_cute_fslce_backward_fallback_sm90 PRIVATE
+    liger_cute_fslce_backward_reduce_sm90 PRIVATE
     CUTLASS::CUTLASS
     NVSHMEM::nvshmem_host
     CUDA::cudart
@@ -131,7 +131,7 @@ add_library(liger_cute_kernels SHARED
     $<TARGET_OBJECTS:liger_cute_fslce_forward_sm90>
     $<TARGET_OBJECTS:liger_cute_fslce_forward_reduce>
     $<TARGET_OBJECTS:liger_cute_fslce_backward_sm90>
-    $<TARGET_OBJECTS:liger_cute_fslce_backward_fallback_sm90>
+    $<TARGET_OBJECTS:liger_cute_fslce_backward_reduce_sm90>
     "${CMAKE_CURRENT_SOURCE_DIR}/../../liger_cute_kernels/tvm_ffi_bindings.cpp"
 )
 

@@ -1,17 +1,15 @@
 #include "workspace.cuh"
 
 #include <cuda_runtime.h>
-#include <nvshmem.h>
-#include <nvshmemx.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 
 #include "buffer_pool.cuh"
-#include "dx_reduce_sm90.cuh"
 #include "forward_reduce.cuh"
 #include "liger_cute/check.h"
+#include "liger_cute/detail/tp_reduce.cuh"
 
 namespace liger {
 namespace fused_scaled_linear_cross_entropy {
@@ -151,13 +149,9 @@ void configure_backward_tp_symmetric(
 		"max_comm_channels must be positive");
 
 	int max_resident_ctas = resident_cta_capacity();
-	nvshmem_team_t team = static_cast<nvshmem_team_t>(team_handle);
-	int team_size = nvshmem_team_n_pes(team);
-	LIGER_CHECK(
-		team_size >= 1 && team_size <= kMaxDxTeamSize,
-		"fused_scaled_linear_cross_entropy backward: invalid tensor-parallel "
-		"team size ",
-		team_size);
+	liger_cute::detail::TpReduceTopology topology =
+		liger_cute::detail::query_tp_reduce_topology(team_handle);
+	int team_size = topology.team_size;
 
 	if (g_configured) {
 		LIGER_CHECK(
@@ -193,9 +187,7 @@ void configure_backward_tp_symmetric(
 	g_staging_bytes = staging_bytes_at(
 		max_tiles_per_reduce, max_resident_ctas);
 	g_durable_bytes = durable_bytes_at(max_tokens, max_hidden);
-	int node_size = nvshmem_team_n_pes(NVSHMEMX_TEAM_NODE);
-	LIGER_CHECK(node_size >= 1, "invalid NVSHMEM node-team size");
-	int local_partition_size = team_size < node_size ? team_size : node_size;
+	int local_partition_size = topology.local_size;
 	g_packed_durable_bytes =
 		(g_durable_bytes + static_cast<std::size_t>(local_partition_size) - 1) /
 		static_cast<std::size_t>(local_partition_size);
@@ -208,15 +200,15 @@ void configure_backward_tp_symmetric(
 		pool.get_symmetric(Names::kDxPartial, g_staging_bytes));
 	auto* reduced = static_cast<float*>(
 		pool.get_symmetric(Names::kDxReduced, g_reduced_bytes));
-	auto* hierarchical = static_cast<float*>(
+	auto* reduced_shard = static_cast<float*>(
 		pool.get_symmetric(
-			Names::kDxHierarchical, g_packed_durable_bytes));
-	auto* hierarchical_inbox = static_cast<float*>(
+			Names::kDxReducedShard, g_packed_durable_bytes));
+	auto* remote_inbox = static_cast<float*>(
 		pool.get_symmetric(
-			Names::kDxHierarchicalInbox, g_packed_durable_bytes));
-	auto* hierarchical_signals = static_cast<std::uint64_t*>(
+			Names::kDxRemoteInbox, g_packed_durable_bytes));
+	auto* remote_signals = static_cast<std::uint64_t*>(
 		pool.get_symmetric(
-			Names::kDxHierarchicalSignals,
+			Names::kDxRemoteSignals,
 			2 * sizeof(std::uint64_t)));
 	std::size_t sync_bytes = sync_bytes_at(max_resident_ctas, team_size);
 	auto* sync = static_cast<std::uint64_t*>(
@@ -230,32 +222,27 @@ void configure_backward_tp_symmetric(
 			Names::kDxPeerSyncPointers,
 			static_cast<std::size_t>(team_size) *
 				sizeof(std::uint64_t*)));
-	auto* world_pe_storage = static_cast<int*>(
-		pool.get_device(
-			Names::kDxPeerWorldPes,
-			static_cast<std::size_t>(team_size) * sizeof(int)));
-
 	pool.get_device(
 		Names::kDzWorkspace, Launch::dz_workspace_bytes(max_local_vocab));
-	pool.get_device(Names::kGridBarrier, sizeof(int));
 	auto* launch_epoch = static_cast<std::uint64_t*>(
 		pool.get_device(Names::kDxLaunchEpoch, sizeof(std::uint64_t)));
 	check_cuda(
 		cudaMemset(launch_epoch, 0, sizeof(std::uint64_t)),
 		"cudaMemset(dX launch epoch)");
 
-	configure_dx_nvls_mapping(
+	liger_cute::detail::configure_tp_reduce(
 		team_handle,
-		partial,
-		reduced,
-		hierarchical,
-		hierarchical_inbox,
-		hierarchical_signals,
-		sync,
-		sync_bytes,
-		peer_partial_storage,
-		peer_sync_storage,
-		world_pe_storage);
+		{
+			partial,
+			reduced,
+			reduced_shard,
+			remote_inbox,
+			remote_signals,
+			sync,
+			sync_bytes,
+			peer_partial_storage,
+			peer_sync_storage,
+		});
 	g_capacity.max_tokens = max_tokens;
 	g_capacity.max_hidden = max_hidden;
 	g_capacity.max_local_vocab = max_local_vocab;
@@ -278,7 +265,9 @@ std::size_t backward_tp_pool_symmetric_bytes(
 		"max_comm_channels must be positive");
 	int max_ctas =
 		g_configured ? g_capacity.max_resident_ctas : resident_cta_capacity();
-	int team_size = g_configured ? g_capacity.team_size : kMaxDxTeamSize;
+	int team_size = g_configured
+		? g_capacity.team_size
+		: liger_cute::detail::kMaxTpReduceTeamSize;
 	if (g_configured) {
 		return g_staging_bytes + g_reduced_bytes +
 			2u * g_packed_durable_bytes +
@@ -294,11 +283,13 @@ std::size_t backward_tp_pool_symmetric_bytes(
 }
 
 std::size_t backward_tp_pool_device_bytes(int max_local_vocab) {
-	int team_size = g_configured ? g_capacity.team_size : kMaxDxTeamSize;
+	int team_size = g_configured
+		? g_capacity.team_size
+		: liger_cute::detail::kMaxTpReduceTeamSize;
 	std::size_t peer_mapping =
 		static_cast<std::size_t>(team_size) *
-		(2 * sizeof(void*) + sizeof(int));
-	return Launch::dz_workspace_bytes(max_local_vocab) + sizeof(int) +
+		(2 * sizeof(void*));
+	return Launch::dz_workspace_bytes(max_local_vocab) +
 		sizeof(std::uint64_t) + peer_mapping;
 }
 
@@ -332,22 +323,15 @@ DxReduceWorkspace<float> reserve_dx_reduce_workspace(
 	// Always the configured capacity, never the per-call size.
 	std::size_t sync_bytes = sync_bytes_at(
 		g_capacity.max_resident_ctas, g_capacity.team_size);
-	DxNvlsMapping mapping = dx_nvls_mapping();
-
 	DxReduceWorkspace<float> workspace = {};
 	workspace.partial = static_cast<float*>(
 		pool.get_symmetric(Names::kDxPartial, g_staging_bytes));
 	workspace.reduced = static_cast<float*>(
 		pool.get_symmetric(Names::kDxReduced, g_reduced_bytes));
-	workspace.multicast_partial = mapping.multicast_partial;
-	workspace.multicast_reduced = mapping.multicast_reduced;
 	workspace.sync = static_cast<std::uint64_t*>(
 		pool.get_symmetric(Names::kDxSync, sync_bytes));
-	workspace.multicast_sync = mapping.multicast_sync;
 	workspace.launch_epoch = static_cast<const std::uint64_t*>(
 		pool.get_device(Names::kDxLaunchEpoch, sizeof(std::uint64_t)));
-	workspace.team_rank = mapping.team_rank;
-	workspace.team_size = mapping.team_size;
 	return workspace;
 }
 
@@ -411,7 +395,7 @@ std::int64_t backward_dx_team_handle() {
 }
 
 void reset_fslce_tp_configuration() {
-	reset_dx_nvls_mapping();
+	liger_cute::detail::reset_tp_reduce();
 	g_capacity = {};
 	g_configured = false;
 	g_staging_bytes = 0;
@@ -438,19 +422,7 @@ BackwardScratch reserve_backward_scratch(int local_vocab) {
 	BackwardScratch scratch = {};
 	scratch.dz_workspace = pool.get_device(Names::kDzWorkspace, dz_bytes);
 	scratch.dz_workspace_bytes = dz_bytes;
-	scratch.grid_barrier =
-		static_cast<int*>(pool.get_device(Names::kGridBarrier, sizeof(int)));
 	return scratch;
-}
-
-void reset_backward_scratch(
-		const BackwardScratch& scratch, cudaStream_t stream) {
-	LIGER_CHECK(
-		scratch.grid_barrier != nullptr,
-		"the grid barrier counter must be allocated before reset");
-	check_cuda(
-		cudaMemsetAsync(scratch.grid_barrier, 0, sizeof(int), stream),
-		"cudaMemsetAsync(grid barrier)");
 }
 
 }  // namespace fused_scaled_linear_cross_entropy

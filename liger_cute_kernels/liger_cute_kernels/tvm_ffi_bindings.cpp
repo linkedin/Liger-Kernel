@@ -599,7 +599,6 @@ void fused_linear_scaled_cross_entropy_backward(
     TVM_FFI_ICHECK_EQ(team_handle, backward_dx_team_handle())
         << "team_handle must match the configured tensor-parallel team";
     BackwardScratch scratch = reserve_backward_scratch(static_cast<int>(local_vocab));
-    reset_backward_scratch(scratch, stream);
     BackwardTpParamsSm90<90> params;
     params.gemm.x = x.data_ptr();
     params.gemm.weight = weight.data_ptr();
@@ -612,7 +611,6 @@ void fused_linear_scaled_cross_entropy_backward(
     params.gemm.grad_weight = grad_weight.data_ptr();
     params.gemm.dz_workspace = scratch.dz_workspace;
     params.gemm.dz_workspace_bytes = scratch.dz_workspace_bytes;
-    params.gemm.grid_barrier = scratch.grid_barrier;
     params.gemm.tokens = static_cast<int>(tokens);
     params.gemm.hidden = static_cast<int>(hidden);
     params.gemm.local_vocab = static_cast<int>(local_vocab);

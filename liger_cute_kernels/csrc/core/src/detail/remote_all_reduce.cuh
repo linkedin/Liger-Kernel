@@ -1,5 +1,7 @@
 #pragma once
 
+// Internal implementation detail behind launch_remote_reduce().
+
 #include <cuda_runtime.h>
 
 #include <cstddef>

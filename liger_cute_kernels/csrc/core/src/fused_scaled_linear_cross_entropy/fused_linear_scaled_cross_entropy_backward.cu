@@ -8,14 +8,11 @@
 // extended SM90 MMA shapes.
 #include "backward_gemm_mainloop_sm90.cuh"
 
-#include <device/nvshmemx_collective_launch_apis.h>
-
-#include "backward_fallback_sm90.cuh"
 #include "backward_gemm_sm90.cuh"
-#include "dx_reduce_sm90.cuh"
+#include "backward_reduce_sm90.cuh"
 #include "gemm_sm90.cuh"
 #include "liger_cute/check.h"
-#include "liger_cute/detail/remote_all_reduce.cuh"
+#include "liger_cute/detail/tp_reduce.cuh"
 #include "workspace.cuh"
 
 #include <cstddef>
@@ -33,7 +30,6 @@ using HostTraits = BackwardGemmTraitsSm90<90>;
 using HostCombinedDwTraits = BackwardGemmTraitsSm90<90, 4, 64, 2>;
 using HostDxClusterTraits = BackwardDxCluster2TraitsSm90<90>;
 using HostDzHandoffTraits = BackwardDzHandoffTraitsSm90<90>;
-inline constexpr int kHostDxDwThreads = HostConfig::kNumThreads;
 using HostElement = HostTraits::Element;
 
 // The staging ring depth comes from dx_reduce.cuh so the kernel template,
@@ -133,8 +129,8 @@ void validate(const BackwardTpParamsSm90<90>& params) {
 		gemm.grad_input != nullptr && gemm.grad_weight != nullptr,
 		"backward outputs grad_input and grad_weight must be non-null");
 	LIGER_CHECK(
-		gemm.dz_workspace != nullptr && gemm.grid_barrier != nullptr,
-		"the dZ wave workspace and the grid barrier counter must be reserved");
+		gemm.dz_workspace != nullptr,
+		"the dZ wave workspace must be reserved");
 	LIGER_CHECK(
 		params.tiles_per_reduce == 1 || params.tiles_per_reduce == 2 ||
 			params.tiles_per_reduce == 4,
@@ -171,26 +167,24 @@ void validate(const BackwardTpParamsSm90<90>& params) {
 		gemm.dz_workspace_bytes);
 }
 
-enum class DxReduceBackend {
-	kNvls,
-	kDirectPeer,
-	kHierarchical,
-};
-
 template <
 	int TilesPerReduce,
 	bool ReturnEntropy,
-	DxReduceBackend Backend>
+	liger_cute::detail::LocalReduceBackend Backend,
+	bool RequiresRemote>
 void launch_instance(
-		const BackwardTpParamsSm90<90>& params, cudaStream_t stream) {
-	static constexpr bool kUseNvls = Backend == DxReduceBackend::kNvls;
-	static constexpr bool kUseHierarchical =
-		Backend == DxReduceBackend::kHierarchical;
+		const BackwardTpParamsSm90<90>& params,
+		const liger_cute::detail::TpReducePlan& reduce,
+		cudaStream_t stream) {
+	static constexpr bool kUseNvls =
+		Backend == liger_cute::detail::LocalReduceBackend::kNvls;
+	static_assert(
+		!RequiresRemote || kUseNvls,
+		"the remote follow-up requires a local NVLS reduce-scatter");
 	using CommConfig =
 		DxCommConfig<HostConfig, kDxRingStages, TilesPerReduce, 90>;
-	using DxDwSmem = BackwardDxDwSmemSm90<90>;
 	using DzSmem = BackwardDzHandoffSmemSm90<90, ReturnEntropy>;
-	static constexpr bool kUseCluster = kUseNvls || kUseHierarchical;
+	static constexpr bool kUseCluster = kUseNvls;
 
 	const auto& gemm = params.gemm;
 	int padded_vocab = HostLaunch::padded_vocab(gemm.local_vocab);
@@ -217,9 +211,14 @@ void launch_instance(
 	ClusterStoreTma cluster_tma_store = {};
 	if constexpr (kUseCluster) {
 		LIGER_CHECK(
-			kUseHierarchical ? dx_hierarchical_available() : dx_nvls_available(),
+			reduce.backend ==
+				liger_cute::detail::LocalReduceBackend::kNvls,
 			"fused_scaled_linear_cross_entropy backward: clustered dX "
 			"requires a node-local NVLS team");
+		LIGER_CHECK(
+			reduce.remote.enabled() == RequiresRemote,
+			"fused_scaled_linear_cross_entropy backward: remote reduction "
+			"dispatch does not match the configured plan");
 		comm = reserve_dx_reduce_workspace(
 			TilesPerReduce,
 			kDxRingStages,
@@ -305,65 +304,20 @@ void launch_instance(
 			HostDzHandoffTraits::kTileM,
 			HostDzHandoffTraits::kStoreTileN>(
 				dz, HostConfig::kWaveRows, padded_vocab);
-	auto tma_dz_load =
-		make_row_major_load<typename HostTraits::SmemAKMajor::Single>(
-			dz, HostConfig::kWaveRows, padded_vocab);
-	// W^T: the [hidden, vocab] view of the row-major weight matrix.
-	auto tma_wt = make_col_major_load<
-		typename HostTraits::SmemBMnMajor::Single>(
-			w, gemm.hidden, gemm.local_vocab, gemm.hidden);
-	// dZ^T: the [vocab, wave_rows] view of the row-major dZ workspace.
-	auto tma_dzt = make_col_major_load<
-		typename HostTraits::SmemAMnMajor::Single>(
-			dz, padded_vocab, HostConfig::kWaveRows, padded_vocab);
-	// X^T: the [hidden, tokens] view of the row-major X.
-	auto tma_xt = make_col_major_load<
-		typename HostTraits::SmemBMnMajor::Single>(
-			x, gemm.hidden, gemm.tokens, gemm.hidden);
-	auto tma_dw_store =
-		make_row_major_store<typename HostTraits::DwSmemStore1::Single>(
-			dw_out, gemm.local_vocab, gemm.hidden);
-	auto tma_dw_add =
-		make_row_major_reduce_add<typename HostTraits::DwSmemStore1::Single>(
-			dw_out, gemm.local_vocab, gemm.hidden);
-	using DxDwBundle = BackwardDxDwTmaBundleSm90<
-		decltype(tma_dz_load),
-		decltype(tma_wt),
-		decltype(tma_dzt),
-		decltype(tma_xt),
-		decltype(tma_dw_store),
-		decltype(tma_dw_add)>;
-	DxDwBundle dx_dw_bundle{
-		tma_dz_load, tma_wt, tma_dzt, tma_xt, tma_dw_store, tma_dw_add};
-
 	auto* dz_kernel_fn = &backward_dz_handoff_wave_kernel_sm90<
 		ReturnEntropy,
 		90,
 		decltype(tma_x),
 		decltype(tma_w),
 		decltype(tma_dz_store)>;
-	auto* dx_dw_kernel_fn =
-		&backward_dx_dw_wave_kernel_sm90<
-			ReturnEntropy, true, 90, CommConfig, DxDwBundle>;
-
 	constexpr int kDzSmemBytes = static_cast<int>(sizeof(DzSmem));
-	constexpr int kDxDwSmemBytes = static_cast<int>(sizeof(DxDwSmem));
 	static_assert(kDzSmemBytes <= kBackwardMaxSmemBytes,
 		"SM90 backward dZ shared-memory footprint exceeds the Hopper limit");
-	static_assert(kDxDwSmemBytes <= kBackwardMaxSmemBytes,
-		"SM90 backward dX+dW shared-memory footprint exceeds the Hopper limit");
 	using DzCluster = sm90::ClusterLaunchSm90<90>;
 	check_cuda(
 		DzCluster::prepare(dz_kernel_fn, kDzSmemBytes),
 		"cudaFuncSetAttribute(dZ MaxDynamicSharedMemorySize / "
 		"NonPortableClusterSizeAllowed)");
-	check_cuda(
-		cudaFuncSetAttribute(
-			dx_dw_kernel_fn,
-			cudaFuncAttributeMaxDynamicSharedMemorySize,
-			kDxDwSmemBytes),
-		"cudaFuncSetAttribute(dX+dW MaxDynamicSharedMemorySize)");
-
 	using DxCluster = sm90::ClusterLaunchSm90<90>;
 	constexpr int kClusterSmemBytes =
 		static_cast<int>(sizeof(BackwardDxCluster2SmemSm90<90>));
@@ -427,45 +381,19 @@ void launch_instance(
 	int dz_clusters =
 		dz_work < max_dz_clusters ? dz_work : max_dz_clusters;
 
-	// The collective query does not inspect argument contents.
-	int query_wave = 0;
-	void* args[] = {&dx_dw_bundle, &device_params, &comm, &query_wave};
-	int gridsize = 0;
-	int query = nvshmemx_collective_launch_query_gridsize(
-		reinterpret_cast<const void*>(dx_dw_kernel_fn),
-		dim3(kHostDxDwThreads, 1, 1),
-		args,
-		static_cast<std::size_t>(kDxDwSmemBytes),
-		&gridsize);
-	LIGER_CHECK(
-		query == 0 && gridsize > 0,
-		"fused_scaled_linear_cross_entropy backward: "
-		"nvshmemx_collective_launch_query_gridsize failed (status ",
-		query,
-		", gridsize ",
-		gridsize,
-		")");
 	int dx_groups_per_wave = HostConfig::kMTilesPerWave *
 		ceil_div(HostLaunch::num_dx_n_tiles(gemm.hidden), TilesPerReduce);
 	int dw_total = HostLaunch::num_dw_m_tiles(gemm.local_vocab) *
 		HostLaunch::num_dw_n_tiles(gemm.hidden);
 	int work = dx_groups_per_wave;
 	if (dw_total > work) work = dw_total;
-	int grid = work < gridsize ? work : gridsize;
-	DxFallbackMapping fallback_mapping = {};
-	DxHierarchicalMapping hierarchical_mapping = {};
-	if constexpr (Backend == DxReduceBackend::kDirectPeer) {
-		fallback_mapping = dx_fallback_mapping();
-	} else if constexpr (kUseCluster) {
-		hierarchical_mapping = dx_local_mapping();
-	}
-
+	int grid = work < resident_ctas ? work : resident_ctas;
 	int num_waves = HostLaunch::num_waves(gemm.tokens);
 	if constexpr (!kUseCluster) {
 		comm = reserve_dx_reduce_workspace(
 			TilesPerReduce, kDxRingStages, grid);
 	}
-	prepare_dx_reduce_launch(comm, stream);
+	liger_cute::detail::begin_tp_reduce(comm.launch_epoch, stream);
 	if constexpr (kUseCluster) {
 		if (use_split_k2) {
 			std::size_t durable_elements =
@@ -475,10 +403,10 @@ void launch_instance(
 					HostLaunch::num_dx_n_tiles(gemm.hidden)) *
 				HostDxClusterTraits::kTileN /
 				static_cast<std::size_t>(
-					hierarchical_mapping.local_size);
+					reduce.nvls.size);
 			check_cuda(
 				cudaMemsetAsync(
-					hierarchical_mapping.interhost,
+					reduce.nvls.reduced_shard,
 					0,
 					durable_elements * sizeof(float),
 					stream),
@@ -517,18 +445,18 @@ void launch_instance(
 					stream,
 					cluster_bundle,
 					comm,
-					hierarchical_mapping,
+					reduce.nvls,
 					device_params,
 					wave),
 				"cudaLaunchKernelEx("
 				"backward_dx_cluster2_gemm_wave_kernel_sm90)");
-		} else if constexpr (Backend == DxReduceBackend::kDirectPeer) {
-			launch_backward_dx_dw_fallback_wave_sm90(
+		} else {
+			launch_backward_dx_dw_direct_peer_wave_sm90(
 				ReturnEntropy,
 				TilesPerReduce,
 				device_params,
 				comm,
-				fallback_mapping,
+				reduce.direct,
 				grid,
 				stream,
 				wave);
@@ -537,25 +465,45 @@ void launch_instance(
 	if constexpr (kUseCluster) {
 		int cluster_grid =
 			dx_cluster_count * HostDxClusterTraits::kClusterM;
-		if constexpr (kUseHierarchical) {
-			finalize_backward_dx_cluster_hierarchical_sm90(
-				device_params,
-				comm,
-				hierarchical_mapping,
-				cluster_grid,
-				num_waves,
-				stream);
-		} else {
-			finalize_backward_dx_cluster_local_sm90(
-				device_params,
-				comm,
-				hierarchical_mapping,
-				cluster_grid,
-				num_waves,
-				stream);
-		}
+		finalize_backward_dx_cluster_sm90<RequiresRemote>(
+			device_params,
+			comm,
+			reduce.nvls,
+			reduce.remote,
+			cluster_grid,
+			num_waves,
+			stream);
 	}
-	complete_dx_reduce_launch(stream);
+	liger_cute::detail::end_tp_reduce(stream);
+}
+
+template <int TilesPerReduce, bool ReturnEntropy>
+void dispatch_instance(
+		const BackwardTpParamsSm90<90>& params,
+		const liger_cute::detail::TpReducePlan& reduce,
+		cudaStream_t stream) {
+	if (reduce.backend ==
+		liger_cute::detail::LocalReduceBackend::kNvls) {
+		if (reduce.remote.enabled()) {
+			launch_instance<
+				TilesPerReduce,
+				ReturnEntropy,
+				liger_cute::detail::LocalReduceBackend::kNvls,
+				true>(params, reduce, stream);
+		} else {
+			launch_instance<
+				TilesPerReduce,
+				ReturnEntropy,
+				liger_cute::detail::LocalReduceBackend::kNvls,
+				false>(params, reduce, stream);
+		}
+	} else {
+		launch_instance<
+			TilesPerReduce,
+			ReturnEntropy,
+			liger_cute::detail::LocalReduceBackend::kDirectPeer,
+			false>(params, reduce, stream);
+	}
 }
 
 }  // namespace
@@ -568,53 +516,17 @@ void fused_linear_scaled_cross_entropy_backward(
 	if (params.gemm.tokens == 0) return;
 	validate(params);
 
-	bool use_nvls = dx_nvls_available();
-	bool use_hierarchical = dx_hierarchical_available();
+	liger_cute::detail::TpReducePlan reduce =
+		liger_cute::detail::tp_reduce_plan();
 	switch (params.tiles_per_reduce) {
 		case 1:
-			if (use_nvls) {
-				launch_instance<
-					1, ReturnEntropy, DxReduceBackend::kNvls>(
-						params, stream);
-			} else if (use_hierarchical) {
-				launch_instance<
-					1, ReturnEntropy, DxReduceBackend::kHierarchical>(
-						params, stream);
-			} else {
-				launch_instance<
-					1, ReturnEntropy, DxReduceBackend::kDirectPeer>(
-						params, stream);
-			}
+			dispatch_instance<1, ReturnEntropy>(params, reduce, stream);
 			break;
 		case 2:
-			if (use_nvls) {
-				launch_instance<
-					2, ReturnEntropy, DxReduceBackend::kNvls>(
-						params, stream);
-			} else if (use_hierarchical) {
-				launch_instance<
-					2, ReturnEntropy, DxReduceBackend::kHierarchical>(
-						params, stream);
-			} else {
-				launch_instance<
-					2, ReturnEntropy, DxReduceBackend::kDirectPeer>(
-						params, stream);
-			}
+			dispatch_instance<2, ReturnEntropy>(params, reduce, stream);
 			break;
 		default:
-			if (use_nvls) {
-				launch_instance<
-					4, ReturnEntropy, DxReduceBackend::kNvls>(
-						params, stream);
-			} else if (use_hierarchical) {
-				launch_instance<
-					4, ReturnEntropy, DxReduceBackend::kHierarchical>(
-						params, stream);
-			} else {
-				launch_instance<
-					4, ReturnEntropy, DxReduceBackend::kDirectPeer>(
-						params, stream);
-			}
+			dispatch_instance<4, ReturnEntropy>(params, reduce, stream);
 			break;
 	}
 }

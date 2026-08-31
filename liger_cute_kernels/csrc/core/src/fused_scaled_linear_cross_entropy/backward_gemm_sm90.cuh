@@ -257,7 +257,6 @@ struct BackwardGemmParamsSm90 {
 	// Internal scratch, launcher owned (see BackwardSymmetricNames).
 	void* dz_workspace = nullptr;  // BF16 [kWaveRows, padded_local_vocab]
 	std::size_t dz_workspace_bytes = 0;
-	int* grid_barrier = nullptr;   // int32 [1], zeroed before the launch
 
 	int tokens = 0;
 	int hidden = 0;

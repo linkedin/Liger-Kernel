@@ -20,6 +20,10 @@ static_assert(fslce::BackwardDzHandoffTraitsSm90<90>::kStages == 3);
 static_assert(fslce::BackwardDxCluster2TraitsSm90<90>::kStages == 4);
 static_assert(fslce::BackwardDxCluster2TraitsSm90<90>::kStoreTileN == 32);
 static_assert(sizeof(fslce::BackwardDxCluster2SmemSm90<90>) == 230400);
+static_assert(sizeof(fslce::DxReduceWorkspace<float>) == 4 * sizeof(void*));
+static_assert(sizeof(liger_cute::detail::NvlsReduceView) <= 5 * sizeof(void*));
+static_assert(
+	sizeof(liger_cute::detail::DirectPeerReduceView) <= 4 * sizeof(void*));
 static_assert(fslce::backward_dx_split_k(2048, 256) == 2);
 static_assert(fslce::backward_dx_split_k(2048, 320) == 1);
 static_assert(fslce::backward_dx_split_k(4096, 256) == 1);

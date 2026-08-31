@@ -18,8 +18,8 @@
 #include "backward.cuh"
 #include "backward_gemm_sm90.cuh"
 #include "dx_reduce.cuh"
-#include "dx_reduce_sm90.cuh"
-#include "liger_cute/detail/all_reduce.cuh"
+#include "tma_store_sm90.cuh"
+#include "liger_cute/detail/local_reduce.cuh"
 
 #include <cuda/atomic>
 #include <cuda_bf16.h>
@@ -140,28 +140,17 @@ struct BackwardGemmTraitsSm90 {
 	static_assert(kSmemBElements == SmemBMnMajor::kStagedElements,
 		"the K-major and MN-major B arenas must be interchangeable");
 
-	// dZ and dW reinterpret the same raw epilogue arena with independent
-	// layouts. dX stores accumulator fragments directly to FP32 global staging.
-	using DzSmemStore1 = sm90::SmemLayoutKMajorSm90<
-		Element, kTileM, Config::kDzStoreTileN, 1, Compute>;
-	template <int Stages>
-	using DzSmemStore = sm90::SmemLayoutKMajorSm90<
-		Element, kTileM, Config::kDzStoreTileN, Stages, Compute>;
+	// dX stores accumulator fragments directly to FP32 global staging; dW
+	// uses this shared-memory TMA epilogue.
 	using DwSmemStore1 = sm90::SmemLayoutKMajorSm90<
 		Element, kTileM, kDwStoreTileN, 1, Compute>;
 	template <int Stages>
 	using DwSmemStore = sm90::SmemLayoutKMajorSm90<
 		Element, kTileM, kDwStoreTileN, Stages, Compute>;
 
-	// Store staging is aliased between dZ and dW; the compute barrier hands it
-	// over after dX. Size the raw arena for the larger complete phase layout.
-	static constexpr int kDzStoreElements =
-		DzSmemStore<Config::kDzStoreStages>::kStagedElements;
 	static constexpr int kDwStoreElements =
 		DwSmemStore<kDwStoreStages>::kStagedElements;
-	static constexpr int kStoreElements =
-		kDzStoreElements > kDwStoreElements
-			? kDzStoreElements : kDwStoreElements;
+	static constexpr int kStoreElements = kDwStoreElements;
 
 	// WGMMA. Two warp groups split the M128 tile; one N256 atom per group.
 	template <GMMA::Major MajorA, GMMA::Major MajorB>
@@ -169,7 +158,6 @@ struct BackwardGemmTraitsSm90 {
 		Element, Element, ElementAccum, kTileN, kNumMmaWarpGroups,
 		MajorA, MajorB, Compute>;
 
-	using DzMmaTraits = TiledMmaTraits<GMMA::Major::K, GMMA::Major::K>;
 	using DxMmaTraits = TiledMmaTraits<GMMA::Major::K, GMMA::Major::MN>;
 	using DwMmaTraits = TiledMmaTraits<GMMA::Major::MN, GMMA::Major::MN>;
 	using DwStoreMmaTraits = sm90::TiledMmaMSplitSm90<
@@ -181,9 +169,6 @@ struct BackwardGemmTraitsSm90 {
 		GMMA::Major::MN,
 		GMMA::Major::MN,
 		Compute>;
-	static_assert(DzMmaTraits::kTileM == kTileM);
-	static_assert(DzMmaTraits::kTileN == kTileN);
-
 	using AccumShape = Shape<Int<kTileM>, Int<kTileN>>;
 
 	using PipelineTraits = sm90::MainloopPipelineSm90<kStages, Compute>;
@@ -339,41 +324,6 @@ struct BackwardDzHandoffTraitsSm90 {
 // Shared memory
 // ───────────────────────────────────────────────────────────────────────────
 
-template <int Compute, bool ReturnEntropy>
-struct BackwardGemmSmemSm90 {
-	using Traits = BackwardGemmTraitsSm90<Compute>;
-	using Config = typename Traits::Config;
-	using Element = typename Traits::Element;
-
-	// All phases have identical pipeline geometry and are strictly serial.
-	alignas(16) typename Traits::MainloopPipeline::SharedStorage mainloop_pipeline;
-	// CTA-local dX ring lifecycle. Ready epochs use release/acquire ordering;
-	// consumed mbarriers prevent overwrite while a comm warp owns the stage.
-	alignas(8) std::uint64_t
-		dx_ready_epoch[kDxCommWarpsPerChannel][kDxRingStages];
-	alignas(8) std::uint64_t
-		dx_consumed_barrier[kDxCommWarpsPerChannel][kDxRingStages];
-	// Per-row dZ epilogue parameters for the tile being folded, filled once by
-	// the consumer warp groups and then broadcast-read by every thread.
-	alignas(16) float row_scale[Traits::kTileM];
-	alignas(16) float row_lse[Traits::kTileM];
-	alignas(16) float row_entropy[ReturnEntropy ? Traits::kTileM : 1];
-	alignas(16) float row_entropy_scale[ReturnEntropy ? Traits::kTileM : 1];
-	alignas(16) int row_target[Traits::kTileM];
-
-	// Phase-shared arenas. The three phases are separated by a CTA or grid
-	// barrier, so A/B is one arena re-interpreted with the phase's layout.
-	alignas(1024) Element smem_a[Traits::kSmemAElements];
-	alignas(1024) Element smem_b[Traits::kSmemBElements];
-	// Epilogue store staging, aliased across dZ / dW and handed over by the
-	// compute barrier. Only the consumer warp groups ever touch it.
-	alignas(1024) Element smem_store[Traits::kStoreElements];
-
-	CUTE_DEVICE Element* a_data() { return &smem_a[0]; }
-	CUTE_DEVICE Element* b_data() { return &smem_b[0]; }
-	CUTE_DEVICE Element* store_data() { return &smem_store[0]; }
-};
-
 template <int Compute>
 struct BackwardDxDwSmemSm90 {
 	using Traits = BackwardGemmTraitsSm90<Compute>;
@@ -494,94 +444,6 @@ CUTE_DEVICE void dx_ready_wait_acquire(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Grid barrier — port of the reference's _grid_barrier.
-// ───────────────────────────────────────────────────────────────────────────
-
-template <int Compute = 90>
-CUTE_DEVICE void backward_grid_barrier_sm90(int* counter, int target) {
-	// Async-proxy stores (every TMA store issued in the phase) have to be
-	// visible through the generic proxy to every other CTA after the barrier.
-	asm volatile("fence.proxy.async.global;" ::: "memory");
-	__syncthreads();
-	if (threadIdx.x == 0) {
-		__threadfence();
-		atomicAdd(counter, 1);
-		const volatile int* observed = counter;
-		while (*observed < target) {
-			__nanosleep(64);
-		}
-		__threadfence();
-	}
-	__syncthreads();
-	asm volatile("fence.proxy.async.global;" ::: "memory");
-}
-
-// ───────────────────────────────────────────────────────────────────────────
-// Shared epilogue: FP32 accumulator -> BF16 SMEM staging -> TMA store.
-//
-// The GMMA C fragment for a 64xN atom has value layout (2, 2, N/8) with the
-// column advancing in the outer mode, so sub-tile `sub` of width StoreTileN is
-// exactly the contiguous fragment range [sub * kSubElements, ...). That is the
-// same mapping the reference spells out arithmetically in `_sub_src`.
-// ───────────────────────────────────────────────────────────────────────────
-
-template <
-	int StoreTileN,
-	int NumSubTiles,
-	int StoreStages,
-	int BarrierId,
-	int Compute,
-	class SmemTensor,
-	class Accum,
-	class CoordC,
-	class Issue>
-CUTE_DEVICE void backward_epilogue_store_sm90(
-		SmemTensor& store,
-		Accum const& accum,
-		CoordC const& coord_c,
-		bool issuer,
-		Issue&& issue) {
-	using Element = typename SmemTensor::value_type;
-	constexpr int kAccumElements = decltype(cute::size(accum))::value;
-	static_assert(kAccumElements % NumSubTiles == 0,
-		"the accumulator must split evenly across epilogue sub-tiles");
-	constexpr int kSubElements = kAccumElements / NumSubTiles;
-	static_assert(kSubElements == 4 * (StoreTileN / 8),
-		"the GMMA C fragment does not match the epilogue sub-tile width");
-
-	CUTE_UNROLL
-	for (int sub = 0; sub < NumSubTiles; ++sub) {
-		int stage = sub % StoreStages;
-		if (sub >= StoreStages) {
-			// The staging slot is still feeding an in-flight TMA store. This
-			// is the full wait, not the `.read` form: `.read` would retire the
-			// group and void the completion wait that publishes the tile.
-			if (issuer) dx_wait_tma_store<StoreStages - 1>();
-			backward_consumer_barrier_sm90<BarrierId, Compute>();
-		}
-
-		CUTE_UNROLL
-		for (int j = 0; j < kSubElements; ++j) {
-			int index = sub * kSubElements + j;
-			int row = get<0>(coord_c(index));
-			int column = get<1>(coord_c(index)) - sub * StoreTileN;
-			store(row, column, stage) = static_cast<Element>(accum(index));
-		}
-
-		// SMEM writes visible to the async proxy, then every consumer thread
-		// must have finished before the issuer reads the slot.
-		tma_store_fence();
-		backward_consumer_barrier_sm90<BarrierId, Compute>();
-		if (issuer) {
-			if (cute::elect_one_sync()) {
-				issue(stage, sub);
-				tma_store_arrive();
-			}
-		}
-	}
-}
-
-// ───────────────────────────────────────────────────────────────────────────
 // dZ phase
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -596,13 +458,6 @@ __host__ __device__ inline BackwardTileCoord backward_raster_tile(
 	BackwardTileCoord coord;
 	coord.m_tile = index / num_n_tiles;
 	coord.n_tile = index - coord.m_tile * num_n_tiles;
-	return coord;
-}
-
-__host__ __device__ inline BackwardTileCoord backward_cluster_m_tile(
-		int index, int num_n_tiles, int cluster_rank) {
-	BackwardTileCoord coord = backward_raster_tile(index, num_n_tiles);
-	coord.m_tile = 2 * coord.m_tile + cluster_rank;
 	return coord;
 }
 
@@ -635,247 +490,6 @@ __host__ __device__ inline BackwardTileCoord backward_cluster_n_m_fast_tile(
 }
 
 template <int Compute = 90>
-struct DzPhaseSm90 {
-	using Traits = BackwardGemmTraitsSm90<Compute>;
-	using Config = typename Traits::Config;
-	static constexpr int kCompute = Compute;
-
-	template <bool ReturnEntropy, class Pipeline, class TmaX, class TmaW>
-	CUTE_DEVICE static void produce(
-			Pipeline& pipe,
-			typename Traits::PipelineState& state,
-			BackwardGemmSmemSm90<Compute, ReturnEntropy>& smem,
-			TmaX const& tma_x,
-			TmaW const& tma_w,
-			BackwardGemmParamsSm90<Compute> const& params,
-			int wave,
-			int num_n_tiles,
-			int num_k_tiles,
-			int num_tiles,
-			int first_index,
-			int stride_index) {
-		if (cute::elect_one_sync() == 0) return;
-
-		auto sA = make_tensor(make_smem_ptr(smem.a_data()),
-			typename Traits::SmemAKMajor::Staged{});
-		auto sB = make_tensor(make_smem_ptr(smem.b_data()),
-			typename Traits::SmemBKMajor::Staged{});
-
-		auto mX = tma_x.get_tma_tensor(make_shape(
-			static_cast<int64_t>(params.tokens),
-			static_cast<int64_t>(params.hidden)));
-		auto mW = tma_w.get_tma_tensor(make_shape(
-			static_cast<int64_t>(params.local_vocab),
-			static_cast<int64_t>(params.hidden)));
-
-		auto cta_x = tma_x.get_slice(Int<0>{});
-		auto cta_w = tma_w.get_slice(Int<0>{});
-		auto tAsA = cta_x.partition_D(sA);
-		auto tBsB = cta_w.partition_D(sB);
-
-		int m_base = wave * Config::kMTilesPerWave;
-		for (int t = 0; t < num_tiles; ++t) {
-			BackwardTileCoord tile = backward_raster_tile(
-				first_index + t * stride_index, num_n_tiles);
-			auto gX = local_tile(
-				mX,
-				make_tile(Int<Traits::kTileM>{}, Int<Traits::kTileK>{}),
-				make_coord(m_base + tile.m_tile, _));
-			auto gW = local_tile(
-				mW,
-				make_tile(Int<Traits::kTileN>{}, Int<Traits::kTileK>{}),
-				make_coord(tile.n_tile, _));
-			auto tAgA = cta_x.partition_S(gX);
-			auto tBgB = cta_w.partition_S(gW);
-
-			sm90::MainloopKLoopSm90<Compute>::produce(
-				pipe, state, num_k_tiles,
-				[&](auto* barrier, int stage, int k_tile) {
-					copy(tma_x.with(*barrier, 0),
-						tAgA(_, _, _, k_tile), tAsA(_, _, _, stage));
-					copy(tma_w.with(*barrier, 0),
-						tBgB(_, _, _, k_tile), tBsB(_, _, _, stage));
-				});
-		}
-	}
-
-	// The reference's _dz_epilogue, run in the consumer warp groups straight
-	// out of the FP32 accumulator. `logit` reproduces the reference's FP16
-	// logit staging round so the numerics are unchanged.
-	template <bool ReturnEntropy>
-	CUTE_DEVICE static float dlogit(
-			float logit,
-			float scale,
-			float lse,
-			float entropy,
-			float entropy_scale,
-			float inverse_temperature) {
-		float value = 0.0f;
-		if constexpr (ReturnEntropy) {
-			if (scale != 0.0f || entropy_scale != 0.0f) {
-				float scaled_logit = logit * inverse_temperature;
-				float probability = backward_exp2_sm90(
-					(scaled_logit - lse) * kBackwardLog2E);
-				value = probability *
-					(scale + (lse - entropy - scaled_logit) * entropy_scale);
-			}
-		} else {
-			if (scale != 0.0f) {
-				float scaled_logit = logit * inverse_temperature;
-				value = backward_exp2_sm90(
-					(scaled_logit - lse) * kBackwardLog2E) * scale;
-			}
-		}
-		return value;
-	}
-
-	template <bool ReturnEntropy, class Pipeline, class TmaDzStore>
-	CUTE_DEVICE static void consume(
-			Pipeline& pipe,
-			typename Traits::PipelineState& read_state,
-			typename Traits::PipelineState& release_state,
-			BackwardGemmSmemSm90<Compute, ReturnEntropy>& smem,
-			TmaDzStore const& tma_dz,
-			BackwardGemmParamsSm90<Compute> const& params,
-			int wave,
-			int padded_vocab,
-			int num_n_tiles,
-			int num_k_tiles,
-			int num_tiles,
-			int first_index,
-			int stride_index) {
-		constexpr int kBarrierId = Config::kDzEpilogueBarrierId;
-		constexpr int kStoreTileN = Config::kDzStoreTileN;
-		constexpr int kNumSubTiles = Traits::kTileN / kStoreTileN;
-
-		typename Traits::DzMmaTraits::Type tiled_mma;
-		int tid_in_mma =
-			static_cast<int>(threadIdx.x) - Config::kFirstConsumerThread;
-		int warp_in_mma = tid_in_mma / Traits::kWarpSize;
-		bool issuer = warp_in_mma == 0;
-		auto thr_mma = tiled_mma.get_slice(tid_in_mma);
-
-		auto sA = make_tensor(make_smem_ptr(smem.a_data()),
-			typename Traits::SmemAKMajor::Staged{});
-		auto sB = make_tensor(make_smem_ptr(smem.b_data()),
-			typename Traits::SmemBKMajor::Staged{});
-		auto tCsA = thr_mma.partition_A(sA);
-		auto tCsB = thr_mma.partition_B(sB);
-
-		auto accum = partition_fragment_C(
-			tiled_mma, typename Traits::AccumShape{});
-		auto coord_c = thr_mma.partition_C(
-			make_identity_tensor(typename Traits::AccumShape{}));
-
-		auto sStore = make_tensor(make_smem_ptr(smem.store_data()),
-			typename Traits::template DzSmemStore<
-				Config::kDzStoreStages>::Staged{});
-		auto mDz = tma_dz.get_tma_tensor(make_shape(
-			static_cast<int64_t>(Config::kWaveRows),
-			static_cast<int64_t>(padded_vocab)));
-		auto cta_dz = tma_dz.get_slice(Int<0>{});
-		auto tDsD = cta_dz.partition_S(sStore);
-		auto gDz = local_tile(
-			mDz,
-			make_tile(Int<Traits::kTileM>{}, Int<kStoreTileN>{}),
-			make_coord(_, _));
-		auto tDgD = cta_dz.partition_D(gDz);
-
-		int m_base = wave * Config::kMTilesPerWave;
-		for (int t = 0; t < num_tiles; ++t) {
-			BackwardTileCoord tile = backward_raster_tile(
-				first_index + t * stride_index, num_n_tiles);
-			clear(accum);
-
-			sm90::MainloopKLoopSm90<Compute>::consume(
-				pipe, read_state, release_state, num_k_tiles,
-				[&](int stage) {
-					warpgroup_fence_operand(accum);
-					warpgroup_arrive();
-					gemm(tiled_mma, tCsA(_, _, _, stage),
-						tCsB(_, _, _, stage), accum);
-					warpgroup_commit_batch();
-				},
-				[&]() { warpgroup_fence_operand(accum); });
-
-			// Per-row softmax parameters for this M tile.
-			if (tid_in_mma < Traits::kTileM) {
-				int row = tid_in_mma;
-				int token = (m_base + tile.m_tile) * Traits::kTileM + row;
-				float scale = 0.0f;
-				float lse = 0.0f;
-				float entropy = 0.0f;
-				float entropy_scale = 0.0f;
-				int target_local = -1;
-				if (token < params.tokens) {
-					std::int64_t target_id = params.target[token];
-					if (target_id != params.ignore_index) {
-						lse = params.lse[token];
-						scale = params.grad_output[token];
-						if constexpr (ReturnEntropy) {
-							entropy = params.entropy[token];
-							entropy_scale = params.entropy_grad[token];
-						}
-						std::int64_t local = target_id - params.vocab_start;
-						if (local >= 0 &&
-							local < static_cast<std::int64_t>(
-								params.local_vocab)) {
-							target_local = static_cast<int>(local);
-						}
-					}
-				}
-				smem.row_scale[row] = scale;
-				smem.row_lse[row] = lse;
-				smem.row_target[row] = target_local;
-				if constexpr (ReturnEntropy) {
-					smem.row_entropy[row] = entropy;
-					smem.row_entropy_scale[row] = entropy_scale;
-				}
-			}
-			backward_consumer_barrier_sm90<kBarrierId, Compute>();
-
-			int vocab_base = tile.n_tile * Traits::kTileN;
-			CUTE_UNROLL
-			for (int i = 0; i < size(accum); ++i) {
-				int row = get<0>(coord_c(i));
-				int column = vocab_base + get<1>(coord_c(i));
-				float scale = smem.row_scale[row];
-				float value = 0.0f;
-				if (column < params.local_vocab) {
-					// float -> half -> float: the reference stages logits in an
-					// FP16 SMEM buffer before the softmax fold.
-					float logit = __half2float(__float2half(accum(i)));
-					value = dlogit<ReturnEntropy>(
-						logit,
-						scale,
-						smem.row_lse[row],
-						ReturnEntropy ? smem.row_entropy[row] : 0.0f,
-						ReturnEntropy ? smem.row_entropy_scale[row] : 0.0f,
-						params.inverse_temperature);
-					if (column == smem.row_target[row]) value -= scale;
-					value *= params.inverse_temperature;
-				}
-				accum(i) = value;
-			}
-
-			backward_epilogue_store_sm90<
-				kStoreTileN, kNumSubTiles, Config::kDzStoreStages,
-				kBarrierId, Compute>(
-				sStore, accum, coord_c, issuer,
-				[&](int stage, int sub) {
-					copy(tma_dz,
-						tDsD(_, _, _, stage),
-						tDgD(_, _, _, tile.m_tile,
-							tile.n_tile * kNumSubTiles + sub));
-				});
-
-			// Drain before the staging slots are re-used by the next tile.
-			if (issuer) dx_wait_tma_store_complete();
-			backward_consumer_barrier_sm90<kBarrierId, Compute>();
-		}
-	}
-};
-
 // ───────────────────────────────────────────────────────────────────────────
 // dX phase
 // ───────────────────────────────────────────────────────────────────────────
@@ -1082,278 +696,7 @@ struct DxPhaseSm90 {
 		__nv_bfloat162 high;
 	};
 
-	// Communication warps 1..2 reduce only groups produced by this CTA.
-	//
-	// CTA-local chunks alternate between the two comm warps. Every ring slot is
-	// a disjoint NVLS region, so adjacent chunks can run concurrently through
-	// one TP team's multicast mapping without shared collective state.
-	template <bool ReturnEntropy, class Smem>
-	CUTE_DEVICE static int communicate(
-			Smem& smem,
-			BackwardGemmParamsSm90<Compute> const& params,
-			DxReduceWorkspace<float> const& comm,
-			int num_n_tiles,
-			int cta,
-			int num_ctas,
-			int wave,
-			int groups_per_wave,
-			int next_index) {
-		int comm_warp =
-			static_cast<int>(threadIdx.x) / Traits::kWarpSize -
-			CommConfig::kFirstCommWarp;
-		int lane = static_cast<int>(threadIdx.x) % Traits::kWarpSize;
-		auto* grad_input = static_cast<__nv_bfloat16*>(params.grad_input);
-		for (int unit = cta; unit < groups_per_wave; unit += num_ctas) {
-			int group_id = wave * groups_per_wave + unit;
-			DxTileGroup group =
-				dx_unit_to_group<CommConfig>(unit, num_n_tiles, group_id);
-			DxCtaGroupSlot slot =
-				dx_cta_group_slot<CommConfig>(next_index);
-			if (comm_warp == params.dx_comm_delay_warp) {
-				for (int delay = 0;
-						delay < params.dx_comm_delay_iterations;
-						++delay) {
-					__nanosleep(64);
-				}
-			}
-
-			std::uint64_t ready_epoch =
-				static_cast<std::uint64_t>(group_id) + 1;
-			if (lane == 0) {
-				dx_ready_wait_acquire(
-					&smem.dx_ready_epoch[comm_warp][slot.stage],
-					ready_epoch);
-				__threadfence_system();
-			}
-			__syncwarp();
-
-			// The CTA acquire imports every producer store. One lane publishes
-			// them to system scope before the warp enters the NVLS protocol.
-			std::size_t message_elements =
-				static_cast<std::size_t>(group.num_tiles) *
-				static_cast<std::size_t>(CommConfig::kTileElements);
-			std::size_t segment_elements =
-				message_elements / kDxCommWarpsPerChannel;
-			std::size_t segment_begin =
-				static_cast<std::size_t>(comm_warp) * segment_elements;
-			std::size_t base =
-				dx_slot_offset<CommConfig>(
-					cta, slot.comm_warp, slot.stage);
-			const float* reduced_values =
-				comm.partial + base + segment_begin;
-			if (comm.team_size > 1) {
-				std::uint64_t epoch =
-					dx_epoch_base(comm) |
-					(static_cast<std::uint64_t>(wave + 1) << 16) |
-					static_cast<std::uint64_t>(slot.pass + 1);
-				std::size_t ready_offset = dx_sync_offset<CommConfig>(
-					cta,
-					comm_warp,
-					slot.stage,
-					kDxReadyPhase,
-					comm.team_size);
-				std::size_t complete_offset = dx_sync_offset<CommConfig>(
-					cta,
-					comm_warp,
-					slot.stage,
-					kDxCompletePhase,
-					comm.team_size);
-				liger_cute::detail::AllReduceContext<
-					liger_cute::detail::AllReduceBackend::kNvlsTwoShot,
-					float> context{
-					comm.sync + ready_offset,
-					comm.multicast_sync + ready_offset,
-					comm.sync + complete_offset,
-					comm.multicast_sync + complete_offset,
-					comm.team_rank,
-					comm.team_size};
-				liger_cute::detail::all_reduce<
-					liger_cute::detail::AllReduceBackend::kNvlsTwoShot>(
-					context,
-					comm.multicast_reduced + base + segment_begin,
-					comm.multicast_partial + base + segment_begin,
-					segment_elements,
-					epoch);
-				reduced_values =
-					comm.reduced + base + segment_begin;
-			}
-
-			constexpr std::size_t kVectorsPerTile =
-				Traits::kTileM * Traits::kTileN / 4;
-			std::size_t segment_vector_begin = segment_begin / 4;
-			std::size_t segment_vectors = segment_elements / 4;
-			for (std::size_t segment_vector = lane;
-					segment_vector < segment_vectors;
-					segment_vector += Traits::kWarpSize) {
-				std::size_t message_vector =
-					segment_vector_begin + segment_vector;
-				int tile = static_cast<int>(
-					message_vector / kVectorsPerTile);
-				int vector_in_tile = static_cast<int>(
-					message_vector % kVectorsPerTile);
-				int row = vector_in_tile / (Traits::kTileN / 4);
-				int column =
-					(vector_in_tile % (Traits::kTileN / 4)) * 4;
-				int output_row = wave * Config::kWaveRows +
-					group.m_tile * Traits::kTileM + row;
-				int output_column =
-					(group.first_n_tile + tile) * Traits::kTileN + column;
-				if (output_row < params.tokens &&
-					output_column < params.hidden) {
-					const float* source =
-						reduced_values + segment_vector * 4;
-					float4 values =
-						*reinterpret_cast<const float4*>(source);
-					Bfloat16x4 packed{
-						__floats2bfloat162_rn(values.x, values.y),
-						__floats2bfloat162_rn(values.z, values.w)};
-					auto* output = reinterpret_cast<Bfloat16x4*>(
-						grad_input +
-						static_cast<std::size_t>(output_row) * params.hidden +
-						output_column);
-					*output = packed;
-				}
-			}
-			__syncwarp();
-			if (lane == 0) {
-				cute::arrive_barrier(
-					smem.dx_consumed_barrier[comm_warp][slot.stage]);
-			}
-			++next_index;
-		}
-		return next_index;
-	}
 };
-
-// Final hierarchical local phase. mapping.interhost already contains this
-// GPU's final FP32 chunk after the separate bulk inter-host reduction. This
-// helper performs only a node-local NVLS allgather/broadcast into comm.reduced,
-// followed by vector FP32->BF16 scatter to grad_input. There is no IB wait,
-// remote operation, or reduction here.
-template <class CommConfig, int Compute>
-CUTE_DEVICE void hierarchical_local_allgather_scatter_unit_sm90(
-		const BackwardGemmParamsSm90<Compute>& params,
-		const DxReduceWorkspace<float>& comm,
-		const DxHierarchicalMapping& mapping,
-		int grid_ctas,
-		int wave,
-		int groups_per_wave,
-		int num_n_tiles,
-		int unit,
-		int comm_warp,
-		int lane) {
-	using Traits = BackwardGemmTraitsSm90<Compute>;
-	using Config = typename Traits::Config;
-
-	int group_id = wave * groups_per_wave + unit;
-	DxTileGroup group =
-		dx_unit_to_group<CommConfig>(unit, num_n_tiles, group_id);
-	int cta = unit % grid_ctas;
-	int next_index = unit / grid_ctas;
-	DxCtaGroupSlot slot = dx_cta_group_slot<CommConfig>(next_index);
-
-	std::size_t message_elements =
-		static_cast<std::size_t>(group.num_tiles) *
-		CommConfig::kTileElements;
-	std::size_t segment_elements =
-		message_elements / kDxCommWarpsPerChannel;
-	std::size_t segment_begin =
-		static_cast<std::size_t>(comm_warp) * segment_elements;
-	std::size_t base =
-		dx_slot_offset<CommConfig>(cta, slot.comm_warp, slot.stage);
-	constexpr std::size_t kGroupStride = CommConfig::kGroupElements;
-	std::size_t packed_group_stride =
-		kGroupStride / mapping.local_size;
-	std::size_t packed_warp_stride =
-		(kGroupStride / kDxCommWarpsPerChannel) /
-		mapping.local_size;
-	std::size_t packed_wave_stride =
-		static_cast<std::size_t>(groups_per_wave) *
-		packed_group_stride;
-	const float* packed_source =
-		mapping.interhost +
-		static_cast<std::size_t>(wave) * packed_wave_stride +
-		static_cast<std::size_t>(unit) * packed_group_stride +
-		static_cast<std::size_t>(comm_warp) * packed_warp_stride;
-
-	std::size_t ready_offset = dx_sync_offset<CommConfig>(
-		cta,
-		comm_warp,
-		slot.stage,
-		kDxReadyPhase,
-		comm.team_size);
-	std::size_t complete_offset = dx_sync_offset<CommConfig>(
-		cta,
-		comm_warp,
-		slot.stage,
-		kDxCompletePhase,
-		comm.team_size);
-	std::uint64_t epoch =
-		dx_epoch_base(comm) | 0x20000000u |
-		(static_cast<std::uint64_t>(wave) << 16) |
-		static_cast<std::uint64_t>(slot.pass + 1);
-	liger_cute::detail::nvls_barrier_warp(
-		comm.sync + ready_offset,
-		mapping.local_multicast_sync + ready_offset,
-		mapping.local_rank,
-		mapping.local_size,
-		epoch);
-	float* local_broadcast_destination =
-		mapping.local_multicast_reduced + base + segment_begin;
-	liger_cute::detail::nvls_allgather_warp(
-		local_broadcast_destination,
-		packed_source,
-		segment_elements,
-		mapping.local_rank,
-		mapping.local_size);
-	liger_cute::detail::nvls_barrier_warp(
-		comm.sync + complete_offset,
-		mapping.local_multicast_sync + complete_offset,
-		mapping.local_rank,
-		mapping.local_size,
-		epoch);
-
-	auto* grad_input = static_cast<__nv_bfloat16*>(params.grad_input);
-	const float* broadcast_values = comm.reduced + base + segment_begin;
-	constexpr std::size_t kVectorsPerTile =
-		Traits::kTileM * Traits::kTileN / 4;
-	std::size_t segment_vector_begin = segment_begin / 4;
-	std::size_t segment_vectors = segment_elements / 4;
-	for (std::size_t segment_vector = lane;
-			segment_vector < segment_vectors;
-			segment_vector += Traits::kWarpSize) {
-		std::size_t message_vector =
-			segment_vector_begin + segment_vector;
-		int tile = static_cast<int>(
-			message_vector / kVectorsPerTile);
-		int vector_in_tile = static_cast<int>(
-			message_vector % kVectorsPerTile);
-		int row = vector_in_tile / (Traits::kTileN / 4);
-		int column =
-			(vector_in_tile % (Traits::kTileN / 4)) * 4;
-		int output_row = wave * Config::kWaveRows +
-			group.m_tile * Traits::kTileM + row;
-		int output_column =
-			(group.first_n_tile + tile) * Traits::kTileN + column;
-		if (output_row < params.tokens &&
-			output_column < params.hidden) {
-			float4 values =
-				reinterpret_cast<const float4*>(
-					broadcast_values)[segment_vector];
-			typename DxPhaseSm90<
-				CommConfig, Compute>::Bfloat16x4 packed{
-				__floats2bfloat162_rn(values.x, values.y),
-				__floats2bfloat162_rn(values.z, values.w)};
-			auto* output = reinterpret_cast<
-				typename DxPhaseSm90<
-					CommConfig, Compute>::Bfloat16x4*>(
-				grad_input +
-					static_cast<std::size_t>(output_row) * params.hidden +
-					output_column);
-			*output = packed;
-		}
-	}
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // dW phase — rank local, unchanged from the single-GPU reference.
@@ -1550,7 +893,7 @@ struct DwPhaseSm90 {
 				int stage = sub % kStoreStages;
 				if (sub >= kStoreStages) {
 					if (issuer) {
-						dx_wait_tma_store<
+						wait_tma_store<
 							kStoreStages - 1>();
 					}
 					backward_consumer_barrier_sm90<kBarrierId, Compute>();
@@ -1581,7 +924,7 @@ struct DwPhaseSm90 {
 			}
 
 			if (issuer) {
-				dx_wait_tma_store_complete();
+				wait_tma_store_complete();
 				asm volatile("fence.proxy.async.global;" ::: "memory");
 			}
 			backward_consumer_barrier_sm90<kBarrierId, Compute>();
@@ -1631,33 +974,6 @@ struct DwPhaseSm90 {
 	}
 };
 
-
-
-// ───────────────────────────────────────────────────────────────────────────
-// TMA descriptor bundle
-// ───────────────────────────────────────────────────────────────────────────
-
-template <
-	class TmaX, class TmaW, class TmaDzStore, class TmaDzLoad, class TmaWt,
-	class TmaDzt, class TmaXt, class TmaDwStore>
-struct BackwardTmaBundleSm90 {
-	TmaX x;                     // dZ A : X               [tokens, hidden]
-	TmaW w;                     // dZ B : W               [vocab, hidden]
-	TmaDzStore dz_store;        // dZ C : dZ workspace    [wave_rows, vocab_p]
-	TmaDzLoad dz_load;          // dX A : dZ workspace
-	TmaWt wt;                   // dX B : W^T             [hidden, vocab]
-	TmaDzt dzt;                 // dW A : dZ^T            [vocab_p, wave_rows]
-	TmaXt xt;                   // dW B : X^T             [hidden, tokens]
-	TmaDwStore dw_store;        // dW C : grad_weight, overwrite
-};
-
-template <class TmaX, class TmaW, class TmaDzStore>
-struct BackwardDzTmaBundleSm90 {
-	TmaX x;
-	TmaW w;
-	TmaDzStore dz_store;
-};
-
 template <
 	class TmaDzLoad,
 	class TmaWt,
@@ -1673,638 +989,6 @@ struct BackwardDxDwTmaBundleSm90 {
 	TmaDwStore dw_store;
 	TmaDwAdd dw_add;
 };
-
-template <bool ReturnEntropy, int Compute, class CommConfig, class Bundle>
-CUTE_DEVICE void backward_producer_role_sm90(
-		BackwardGemmSmemSm90<Compute, ReturnEntropy>& smem,
-		Bundle const& tma,
-		BackwardGemmParamsSm90<Compute> const& params) {
-	using Traits = BackwardGemmTraitsSm90<Compute>;
-	using Config = typename Traits::Config;
-	using Launch = BackwardGemmLaunchSm90<Compute>;
-	using PipelineTraits = typename Traits::PipelineTraits;
-	using ClusterShape = typename Traits::ClusterShape;
-
-	int num_ctas = static_cast<int>(gridDim.x);
-	int cta = static_cast<int>(blockIdx.x);
-	int num_waves = Launch::num_waves(params.tokens);
-
-	typename Traits::PipelineState mainloop_state =
-		PipelineTraits::producer_start_state();
-	auto mainloop_pipe = PipelineTraits::make_producer(
-		smem.mainloop_pipeline, Traits::kTmaTransBytes,
-		Traits::kConsumerThreads, threadIdx.x == 0, ClusterShape{});
-
-	for (int wave = 0; wave < num_waves; ++wave) {
-		{
-			int n_tiles = Launch::num_dz_n_tiles(params.local_vocab);
-			int k_tiles = Launch::num_dz_k_tiles(params.hidden);
-			int total = Config::kMTilesPerWave * n_tiles;
-			int tiles =
-				total > cta ? ceil_div(total - cta, num_ctas) : 0;
-			DzPhaseSm90<Compute>::template produce<ReturnEntropy>(
-				mainloop_pipe, mainloop_state, smem, tma.x, tma.w, params,
-				wave, n_tiles, k_tiles, tiles, cta, num_ctas);
-		}
-
-		backward_grid_barrier_sm90<Compute>(
-			params.grid_barrier, (2 * wave + 1) * num_ctas);
-
-		{
-			int padded_vocab = Launch::padded_vocab(params.local_vocab);
-			int n_tiles = Launch::num_dx_n_tiles(params.hidden);
-			int k_tiles = Launch::num_dx_k_tiles(params.local_vocab);
-			int groups_per_wave = Config::kMTilesPerWave *
-				dx_groups_per_m_tile<CommConfig>(n_tiles);
-			DxPhaseSm90<CommConfig, Compute>::template produce<ReturnEntropy>(
-				mainloop_pipe, mainloop_state, smem, tma.dz_load, tma.wt,
-				params, padded_vocab, n_tiles, k_tiles, groups_per_wave, cta,
-				num_ctas);
-		}
-
-		backward_compute_barrier_sm90<Compute>();
-
-		{
-			int padded_vocab = Launch::padded_vocab(params.local_vocab);
-			int n_tiles = Launch::num_dw_n_tiles(params.hidden);
-			constexpr int kTiles = Launch::num_dw_k_tiles();
-			int total =
-				Launch::num_dw_m_tiles(params.local_vocab) * n_tiles;
-			int tiles =
-				total > cta ? ceil_div(total - cta, num_ctas) : 0;
-			DwPhaseSm90<Compute>::template produce<ReturnEntropy>(
-				mainloop_pipe, mainloop_state, smem, tma.dzt, tma.xt, params,
-				padded_vocab, wave, n_tiles, kTiles, tiles, cta, num_ctas);
-		}
-
-		if (wave + 1 < num_waves) {
-			backward_grid_barrier_sm90<Compute>(
-				params.grid_barrier, (2 * wave + 2) * num_ctas);
-		}
-	}
-}
-
-template <bool ReturnEntropy, int Compute, class CommConfig, class Bundle>
-CUTE_DEVICE void backward_consumer_role_sm90(
-		BackwardGemmSmemSm90<Compute, ReturnEntropy>& smem,
-		Bundle const& tma,
-		BackwardGemmParamsSm90<Compute> const& params,
-		DxReduceWorkspace<float> const& comm) {
-	using Traits = BackwardGemmTraitsSm90<Compute>;
-	using Config = typename Traits::Config;
-	using Launch = BackwardGemmLaunchSm90<Compute>;
-	using PipelineTraits = typename Traits::PipelineTraits;
-	using ClusterShape = typename Traits::ClusterShape;
-
-	int num_ctas = static_cast<int>(gridDim.x);
-	int cta = static_cast<int>(blockIdx.x);
-	int padded_vocab = Launch::padded_vocab(params.local_vocab);
-	int num_waves = Launch::num_waves(params.tokens);
-	int dz_n_tiles = Launch::num_dz_n_tiles(params.local_vocab);
-	int dz_k_tiles = Launch::num_dz_k_tiles(params.hidden);
-	int dz_total = Config::kMTilesPerWave * dz_n_tiles;
-	int dz_tiles = dz_total > cta ? ceil_div(dz_total - cta, num_ctas) : 0;
-	int dx_n_tiles = Launch::num_dx_n_tiles(params.hidden);
-	int dx_k_tiles = Launch::num_dx_k_tiles(params.local_vocab);
-	int dx_groups_per_wave = Config::kMTilesPerWave *
-		dx_groups_per_m_tile<CommConfig>(dx_n_tiles);
-	int dw_n_tiles = Launch::num_dw_n_tiles(params.hidden);
-	int dw_k_tiles = Launch::num_dw_k_tiles();
-	int dw_total = Launch::num_dw_m_tiles(params.local_vocab) * dw_n_tiles;
-	int dw_tiles = dw_total > cta ? ceil_div(dw_total - cta, num_ctas) : 0;
-
-	typename Traits::PipelineState mainloop_read;
-	typename Traits::PipelineState mainloop_release;
-	auto mainloop_pipe = PipelineTraits::make_consumer(
-		smem.mainloop_pipeline, Traits::kTmaTransBytes,
-		Traits::kConsumerThreads, ClusterShape{});
-	int consumer_next_index = 0;
-	int barrier_epoch = 0;
-
-	for (int wave = 0; wave < num_waves; ++wave) {
-		DzPhaseSm90<Compute>::template consume<ReturnEntropy>(
-			mainloop_pipe, mainloop_read, mainloop_release, smem, tma.dz_store, params,
-			wave, padded_vocab, dz_n_tiles, dz_k_tiles, dz_tiles, cta, num_ctas);
-
-		++barrier_epoch;
-		backward_grid_barrier_sm90<Compute>(
-			params.grid_barrier, barrier_epoch * num_ctas);
-
-		consumer_next_index =
-			DxPhaseSm90<CommConfig, Compute>::template consume<ReturnEntropy>(
-			mainloop_pipe, mainloop_read, mainloop_release, smem, comm, dx_n_tiles,
-			dx_k_tiles, wave, dx_groups_per_wave, cta, num_ctas, consumer_next_index);
-
-		backward_compute_barrier_sm90<Compute>();
-
-		DwPhaseSm90<Compute>::template consume<ReturnEntropy>(
-			mainloop_pipe, mainloop_read, mainloop_release, smem, tma.dw_store,
-			tma.dw_store, params, wave, dw_n_tiles, dw_k_tiles, dw_tiles, cta,
-			num_ctas);
-
-		if (wave + 1 < num_waves) {
-			++barrier_epoch;
-			backward_grid_barrier_sm90<Compute>(
-				params.grid_barrier, barrier_epoch * num_ctas);
-		}
-	}
-}
-
-template <bool ReturnEntropy, int Compute, class CommConfig, class Bundle>
-CUTE_DEVICE void backward_consumer_role_collapsed_sm90(
-		BackwardGemmSmemSm90<Compute, ReturnEntropy>& smem,
-		Bundle const& tma,
-		BackwardGemmParamsSm90<Compute> const& params,
-		DxReduceWorkspace<float> const& comm) {
-	using Traits = BackwardGemmTraitsSm90<Compute>;
-	using Config = typename Traits::Config;
-	using Launch = BackwardGemmLaunchSm90<Compute>;
-	using PipelineTraits = typename Traits::PipelineTraits;
-	using ClusterShape = typename Traits::ClusterShape;
-
-	int num_ctas = static_cast<int>(gridDim.x);
-	int cta = static_cast<int>(blockIdx.x);
-	int tid_in_mma =
-		static_cast<int>(threadIdx.x) - Config::kFirstConsumerThread;
-	bool issuer = (tid_in_mma / Traits::kWarpSize) == 0;
-	int num_waves = Launch::num_waves(params.tokens);
-
-	typename Traits::PipelineState mainloop_read;
-	typename Traits::PipelineState mainloop_release;
-	auto mainloop_pipe = PipelineTraits::make_consumer(
-		smem.mainloop_pipeline, Traits::kTmaTransBytes,
-		Traits::kConsumerThreads, ClusterShape{});
-
-	for (int wave = 0; wave < num_waves; ++wave) {
-		// dZ = X @ W^T, followed by the softmax-gradient epilogue.
-		{
-			int padded_vocab = Launch::padded_vocab(params.local_vocab);
-			int n_tiles = Launch::num_dz_n_tiles(params.local_vocab);
-			int k_tiles = Launch::num_dz_k_tiles(params.hidden);
-			int total = Config::kMTilesPerWave * n_tiles;
-			int tiles =
-				total > cta ? ceil_div(total - cta, num_ctas) : 0;
-			typename Traits::DzMmaTraits::Type dz_mma;
-			auto dz_thread = dz_mma.get_slice(tid_in_mma);
-			auto accum = partition_fragment_C(
-				dz_mma, typename Traits::AccumShape{});
-			auto coord_c = dz_thread.partition_C(
-				make_identity_tensor(typename Traits::AccumShape{}));
-			constexpr int kBarrierId = Config::kDzEpilogueBarrierId;
-			constexpr int kStoreTileN = Config::kDzStoreTileN;
-			constexpr int kNumSubTiles = Traits::kTileN / kStoreTileN;
-
-			auto sA = make_tensor(make_smem_ptr(smem.a_data()),
-				typename Traits::SmemAKMajor::Staged{});
-			auto sB = make_tensor(make_smem_ptr(smem.b_data()),
-				typename Traits::SmemBKMajor::Staged{});
-			auto tCsA = dz_thread.partition_A(sA);
-			auto tCsB = dz_thread.partition_B(sB);
-			auto sStore = make_tensor(make_smem_ptr(smem.store_data()),
-				typename Traits::template DzSmemStore<
-					Config::kDzStoreStages>::Staged{});
-			auto mDz = tma.dz_store.get_tma_tensor(make_shape(
-				static_cast<int64_t>(Config::kWaveRows),
-				static_cast<int64_t>(padded_vocab)));
-			auto cta_dz = tma.dz_store.get_slice(Int<0>{});
-			auto tDsD = cta_dz.partition_S(sStore);
-			auto tDgD = cta_dz.partition_D(local_tile(
-				mDz,
-				make_tile(Int<Traits::kTileM>{}, Int<kStoreTileN>{}),
-				make_coord(_, _)));
-			for (int t = 0; t < tiles; ++t) {
-				BackwardTileCoord tile =
-					backward_raster_tile(cta + t * num_ctas, n_tiles);
-				clear(accum);
-				mainloop_pipe.consumer_wait(mainloop_read);
-				warpgroup_fence_operand(accum);
-				warpgroup_arrive();
-				gemm(dz_mma, tCsA(_, _, _, mainloop_read.index()),
-					tCsB(_, _, _, mainloop_read.index()), accum);
-				warpgroup_commit_batch();
-				++mainloop_read;
-				for (int k_tile = 1; k_tile < k_tiles; ++k_tile) {
-					mainloop_pipe.consumer_wait(mainloop_read);
-					warpgroup_fence_operand(accum);
-					warpgroup_arrive();
-					gemm(dz_mma, tCsA(_, _, _, mainloop_read.index()),
-						tCsB(_, _, _, mainloop_read.index()), accum);
-					warpgroup_commit_batch();
-					warpgroup_wait<1>();
-					warpgroup_fence_operand(accum);
-					mainloop_pipe.consumer_release(mainloop_release);
-					++mainloop_release;
-					++mainloop_read;
-				}
-				warpgroup_wait<0>();
-				warpgroup_fence_operand(accum);
-				mainloop_pipe.consumer_release(mainloop_release);
-				++mainloop_release;
-
-				if (tid_in_mma < Traits::kTileM) {
-					int row = tid_in_mma;
-					int token =
-						(wave * Config::kMTilesPerWave + tile.m_tile) *
-							Traits::kTileM +
-						row;
-					float scale = 0.0f;
-					float lse = 0.0f;
-					float entropy = 0.0f;
-					float entropy_scale = 0.0f;
-					int target_local = -1;
-					if (token < params.tokens) {
-						std::int64_t target_id = params.target[token];
-						if (target_id != params.ignore_index) {
-							lse = params.lse[token];
-							scale = params.grad_output[token];
-							if constexpr (ReturnEntropy) {
-								entropy = params.entropy[token];
-								entropy_scale = params.entropy_grad[token];
-							}
-							std::int64_t local =
-								target_id - params.vocab_start;
-							if (local >= 0 &&
-								local < static_cast<std::int64_t>(
-									params.local_vocab)) {
-								target_local = static_cast<int>(local);
-							}
-						}
-					}
-					smem.row_scale[row] = scale;
-					smem.row_lse[row] = lse;
-					smem.row_target[row] = target_local;
-					if constexpr (ReturnEntropy) {
-						smem.row_entropy[row] = entropy;
-						smem.row_entropy_scale[row] = entropy_scale;
-					}
-				}
-				backward_consumer_barrier_sm90<kBarrierId, Compute>();
-
-				int vocab_base = tile.n_tile * Traits::kTileN;
-				CUTE_UNROLL
-				for (int i = 0; i < size(accum); ++i) {
-					int row = get<0>(coord_c(i));
-					int column = vocab_base + get<1>(coord_c(i));
-					float scale = smem.row_scale[row];
-					float value = 0.0f;
-					if (column < params.local_vocab) {
-						float logit =
-							__half2float(__float2half(accum(i)));
-						value = DzPhaseSm90<Compute>::template dlogit<
-							ReturnEntropy>(
-							logit,
-							scale,
-							smem.row_lse[row],
-							ReturnEntropy ? smem.row_entropy[row] : 0.0f,
-							ReturnEntropy
-								? smem.row_entropy_scale[row]
-								: 0.0f,
-							params.inverse_temperature);
-						if (column == smem.row_target[row]) value -= scale;
-						value *= params.inverse_temperature;
-					}
-					accum(i) = value;
-				}
-
-				constexpr int kAccumElements =
-					decltype(cute::size(accum))::value;
-				constexpr int kSubElements =
-					kAccumElements / kNumSubTiles;
-				CUTE_UNROLL
-				for (int sub = 0; sub < kNumSubTiles; ++sub) {
-					int stage = sub % Config::kDzStoreStages;
-					if (sub >= Config::kDzStoreStages) {
-						if (issuer) {
-							dx_wait_tma_store<
-								Config::kDzStoreStages - 1>();
-						}
-						backward_consumer_barrier_sm90<
-							kBarrierId, Compute>();
-					}
-					CUTE_UNROLL
-					for (int j = 0; j < kSubElements; ++j) {
-						int index = sub * kSubElements + j;
-						int row = get<0>(coord_c(index));
-						int column =
-							get<1>(coord_c(index)) - sub * kStoreTileN;
-						sStore(row, column, stage) =
-							static_cast<typename Traits::Element>(
-								accum(index));
-					}
-					tma_store_fence();
-					backward_consumer_barrier_sm90<kBarrierId, Compute>();
-					if (issuer && cute::elect_one_sync()) {
-						copy(tma.dz_store,
-							tDsD(_, _, _, stage),
-							tDgD(_, _, _, tile.m_tile,
-								tile.n_tile * kNumSubTiles + sub));
-						tma_store_arrive();
-					}
-				}
-				if (issuer) dx_wait_tma_store_complete();
-				backward_consumer_barrier_sm90<kBarrierId, Compute>();
-			}
-		}
-
-		backward_grid_barrier_sm90<Compute>(
-			params.grid_barrier, (2 * wave + 1) * num_ctas);
-
-		// dX partial = dZ @ W, stored into this CTA's symmetric ring.
-		{
-			int n_tiles = Launch::num_dx_n_tiles(params.hidden);
-			int k_tiles = Launch::num_dx_k_tiles(params.local_vocab);
-			int groups_per_wave = Config::kMTilesPerWave *
-				dx_groups_per_m_tile<CommConfig>(n_tiles);
-			int next_index = wave * dx_groups_for_cta_per_wave(
-				groups_per_wave, num_ctas, cta);
-			constexpr int kBarrierId = Config::kDxEpilogueBarrierId;
-			typename Traits::DxMmaTraits::Type dx_mma;
-			auto dx_thread = dx_mma.get_slice(tid_in_mma);
-			auto accum = partition_fragment_C(
-				dx_mma, typename Traits::AccumShape{});
-			auto coord_c = dx_thread.partition_C(
-				make_identity_tensor(typename Traits::AccumShape{}));
-			auto sA = make_tensor(make_smem_ptr(smem.a_data()),
-				typename Traits::SmemAKMajor::Staged{});
-			auto sB = make_tensor(make_smem_ptr(smem.b_data()),
-				typename Traits::SmemBMnMajor::Staged{});
-			auto tCsA = dx_thread.partition_A(sA);
-			auto tCsB = dx_thread.partition_B(sB);
-			for (int unit = cta; unit < groups_per_wave;
-					unit += num_ctas) {
-				int group_id = wave * groups_per_wave + unit;
-				DxTileGroup group = dx_unit_to_group<CommConfig>(
-					unit, n_tiles, group_id);
-				DxCtaGroupSlot slot =
-					dx_cta_group_slot<CommConfig>(next_index);
-				if (slot.pass > 0) {
-					if (tid_in_mma == 0) {
-						CUTE_UNROLL
-						for (int comm_warp = 0;
-								comm_warp < kDxCommWarpsPerChannel;
-								++comm_warp) {
-							cute::wait_barrier(
-								smem.dx_consumed_barrier[
-									comm_warp][slot.stage],
-								(slot.pass - 1) & 1);
-						}
-					}
-					backward_consumer_barrier_sm90<kBarrierId, Compute>();
-				}
-
-				for (int tile = 0; tile < group.num_tiles; ++tile) {
-					clear(accum);
-					mainloop_pipe.consumer_wait(mainloop_read);
-					warpgroup_fence_operand(accum);
-					warpgroup_arrive();
-					gemm(dx_mma, tCsA(_, _, _, mainloop_read.index()),
-						tCsB(_, _, _, mainloop_read.index()), accum);
-					warpgroup_commit_batch();
-					++mainloop_read;
-					for (int k_tile = 1; k_tile < k_tiles; ++k_tile) {
-						mainloop_pipe.consumer_wait(mainloop_read);
-						warpgroup_fence_operand(accum);
-						warpgroup_arrive();
-						gemm(dx_mma, tCsA(_, _, _, mainloop_read.index()),
-							tCsB(_, _, _, mainloop_read.index()), accum);
-						warpgroup_commit_batch();
-						warpgroup_wait<1>();
-						warpgroup_fence_operand(accum);
-						mainloop_pipe.consumer_release(mainloop_release);
-						++mainloop_release;
-						++mainloop_read;
-					}
-					warpgroup_wait<0>();
-					warpgroup_fence_operand(accum);
-					mainloop_pipe.consumer_release(mainloop_release);
-					++mainloop_release;
-
-					std::size_t tile_base =
-						dx_slot_offset<CommConfig>(
-							cta, slot.comm_warp, slot.stage) +
-						static_cast<std::size_t>(tile) *
-							CommConfig::kTileElements;
-					CUTE_UNROLL
-					for (int i = 0;
-							i < decltype(cute::size(accum))::value;
-							++i) {
-						int row = get<0>(coord_c(i));
-						int column = get<1>(coord_c(i));
-						comm.partial[
-							tile_base +
-							static_cast<std::size_t>(row) *
-								Traits::kTileN +
-							column] = accum(i);
-					}
-				}
-				backward_consumer_barrier_sm90<kBarrierId, Compute>();
-				if (tid_in_mma == 0) {
-					std::uint64_t ready_epoch =
-						static_cast<std::uint64_t>(group_id) + 1;
-					CUTE_UNROLL
-					for (int comm_warp = 0;
-							comm_warp < kDxCommWarpsPerChannel;
-							++comm_warp) {
-						dx_ready_store_release(
-							&smem.dx_ready_epoch[
-								comm_warp][slot.stage],
-							ready_epoch);
-					}
-				}
-				++next_index;
-			}
-		}
-
-		backward_compute_barrier_sm90<Compute>();
-
-		// dW wave contribution, accumulated through a BF16 load and overwrite.
-		{
-			int n_tiles = Launch::num_dw_n_tiles(params.hidden);
-			constexpr int kTiles = Launch::num_dw_k_tiles();
-			int total =
-				Launch::num_dw_m_tiles(params.local_vocab) * n_tiles;
-			int tiles =
-				total > cta ? ceil_div(total - cta, num_ctas) : 0;
-			constexpr int kStoreTileN = Config::kDwStoreTileN;
-			constexpr int kNumSubTiles =
-				Traits::kTileN / kStoreTileN;
-			constexpr int kBarrierId = Config::kDwStoreBarrierId;
-			typename Traits::DwMmaTraits::Type dw_mma;
-			auto dw_thread = dw_mma.get_slice(tid_in_mma);
-			auto accum = partition_fragment_C(
-				dw_mma, typename Traits::AccumShape{});
-			auto coord_c = dw_thread.partition_C(
-				make_identity_tensor(typename Traits::AccumShape{}));
-			auto sA = make_tensor(make_smem_ptr(smem.a_data()),
-				typename Traits::SmemAMnMajor::Staged{});
-			auto sB = make_tensor(make_smem_ptr(smem.b_data()),
-				typename Traits::SmemBMnMajor::Staged{});
-			auto tCsA = dw_thread.partition_A(sA);
-			auto tCsB = dw_thread.partition_B(sB);
-			auto sStore = make_tensor(make_smem_ptr(smem.store_data()),
-				typename Traits::template DwSmemStore<
-					Config::kDwStoreStages>::Staged{});
-			auto shape_dw = make_shape(
-				static_cast<int64_t>(params.local_vocab),
-				static_cast<int64_t>(params.hidden));
-			auto mStore = tma.dw_store.get_tma_tensor(shape_dw);
-			auto cta_store = tma.dw_store.get_slice(Int<0>{});
-			auto tSsS = cta_store.partition_S(sStore);
-			auto tSgS = cta_store.partition_D(local_tile(
-				mStore,
-				make_tile(Int<Traits::kTileM>{}, Int<kStoreTileN>{}),
-				make_coord(_, _)));
-			for (int t = 0; t < tiles; ++t) {
-				BackwardTileCoord tile =
-					backward_raster_tile(cta + t * num_ctas, n_tiles);
-				clear(accum);
-				mainloop_pipe.consumer_wait(mainloop_read);
-				warpgroup_fence_operand(accum);
-				warpgroup_arrive();
-				gemm(dw_mma, tCsA(_, _, _, mainloop_read.index()),
-					tCsB(_, _, _, mainloop_read.index()), accum);
-				warpgroup_commit_batch();
-				++mainloop_read;
-				for (int k_tile = 1; k_tile < kTiles; ++k_tile) {
-					mainloop_pipe.consumer_wait(mainloop_read);
-					warpgroup_fence_operand(accum);
-					warpgroup_arrive();
-					gemm(dw_mma, tCsA(_, _, _, mainloop_read.index()),
-						tCsB(_, _, _, mainloop_read.index()), accum);
-					warpgroup_commit_batch();
-					warpgroup_wait<1>();
-					warpgroup_fence_operand(accum);
-					mainloop_pipe.consumer_release(mainloop_release);
-					++mainloop_release;
-					++mainloop_read;
-				}
-				warpgroup_wait<0>();
-				warpgroup_fence_operand(accum);
-				mainloop_pipe.consumer_release(mainloop_release);
-				++mainloop_release;
-
-				if (wave > 0) {
-					const auto* prior = static_cast<const __nv_bfloat16*>(
-						params.grad_weight);
-					CUTE_UNROLL
-					for (int i = 0;
-							i < decltype(cute::size(accum))::value;
-							++i) {
-						int row = tile.m_tile * Traits::kTileM +
-							get<0>(coord_c(i));
-						int column = tile.n_tile * Traits::kTileN +
-							get<1>(coord_c(i));
-						if (row < params.local_vocab &&
-							column < params.hidden) {
-							accum(i) += __bfloat162float(
-								prior[
-									static_cast<std::size_t>(row) *
-										params.hidden +
-									column]);
-						}
-					}
-				}
-
-				constexpr int kAccumElements =
-					decltype(cute::size(accum))::value;
-				constexpr int kSubElements =
-					kAccumElements / kNumSubTiles;
-				CUTE_UNROLL
-				for (int sub = 0; sub < kNumSubTiles; ++sub) {
-					int stage = sub % Config::kDwStoreStages;
-					if (sub >= Config::kDwStoreStages) {
-						if (issuer) {
-							dx_wait_tma_store<
-								Config::kDwStoreStages - 1>();
-						}
-						backward_consumer_barrier_sm90<
-							kBarrierId, Compute>();
-					}
-					CUTE_UNROLL
-					for (int j = 0; j < kSubElements; ++j) {
-						int index = sub * kSubElements + j;
-						int row = get<0>(coord_c(index));
-						int column =
-							get<1>(coord_c(index)) - sub * kStoreTileN;
-						sStore(row, column, stage) =
-							static_cast<typename Traits::Element>(
-								accum(index));
-					}
-					tma_store_fence();
-					backward_consumer_barrier_sm90<kBarrierId, Compute>();
-					if (issuer && cute::elect_one_sync()) {
-						int n = tile.n_tile * kNumSubTiles + sub;
-						copy(tma.dw_store,
-							tSsS(_, _, _, stage),
-							tSgS(_, _, _, tile.m_tile, n));
-						tma_store_arrive();
-					}
-				}
-				if (issuer) {
-					dx_wait_tma_store_complete();
-					asm volatile(
-						"fence.proxy.async.global;" ::: "memory");
-				}
-				backward_consumer_barrier_sm90<kBarrierId, Compute>();
-			}
-		}
-
-		if (wave + 1 < num_waves) {
-			backward_grid_barrier_sm90<Compute>(
-				params.grid_barrier, (2 * wave + 2) * num_ctas);
-		}
-	}
-}
-
-template <bool ReturnEntropy, int Compute, class CommConfig>
-CUTE_DEVICE void backward_communication_role_sm90(
-		BackwardGemmSmemSm90<Compute, ReturnEntropy>& smem,
-		BackwardGemmParamsSm90<Compute> const& params,
-		DxReduceWorkspace<float> const& comm) {
-	using Config = BackwardGemmConfigSm90<Compute>;
-	using Launch = BackwardGemmLaunchSm90<Compute>;
-
-	int num_ctas = static_cast<int>(gridDim.x);
-	int cta = static_cast<int>(blockIdx.x);
-	int num_waves = Launch::num_waves(params.tokens);
-
-	for (int wave = 0; wave < num_waves; ++wave) {
-		backward_grid_barrier_sm90<Compute>(
-			params.grid_barrier, (2 * wave + 1) * num_ctas);
-
-		int n_tiles = Launch::num_dx_n_tiles(params.hidden);
-		int groups_per_wave = Config::kMTilesPerWave *
-			dx_groups_per_m_tile<CommConfig>(n_tiles);
-		int next_index = wave * dx_groups_for_cta_per_wave(
-			groups_per_wave, num_ctas, cta);
-		next_index =
-			DxPhaseSm90<CommConfig, Compute>::template communicate<ReturnEntropy>(
-			smem, params, comm, n_tiles, cta, num_ctas, wave,
-			groups_per_wave, next_index);
-
-		if (wave + 1 < num_waves) {
-			backward_grid_barrier_sm90<Compute>(
-				params.grid_barrier, (2 * wave + 2) * num_ctas);
-		}
-	}
-}
-
-template <int Compute>
-CUTE_DEVICE void backward_reserved_role_sm90(
-		BackwardGemmParamsSm90<Compute> const& params) {
-	using Launch = BackwardGemmLaunchSm90<Compute>;
-
-	int num_ctas = static_cast<int>(gridDim.x);
-	int num_waves = Launch::num_waves(params.tokens);
-	for (int wave = 0; wave < num_waves; ++wave) {
-		backward_grid_barrier_sm90<Compute>(
-			params.grid_barrier, (2 * wave + 1) * num_ctas);
-		if (wave + 1 < num_waves) {
-			backward_grid_barrier_sm90<Compute>(
-				params.grid_barrier, (2 * wave + 2) * num_ctas);
-		}
-	}
-}
 
 template <
 	bool ReturnEntropy,
@@ -2589,7 +1273,7 @@ void backward_dz_handoff_wave_kernel_sm90(
 					Traits::kEpilogueThreads,
 					Compute>();
 				if (warp == 0) {
-					dx_wait_tma_store_complete();
+					wait_tma_store_complete();
 				}
 				sm90::named_barrier_sync_sm90<
 					Traits::kEpilogueBarrierId,
@@ -2711,7 +1395,7 @@ __global__ __launch_bounds__(
 void backward_dx_cluster2_gemm_wave_kernel_sm90(
 		__grid_constant__ const Bundle tma,
 		__grid_constant__ const DxReduceWorkspace<float> comm,
-		__grid_constant__ const DxHierarchicalMapping mapping,
+		__grid_constant__ const liger_cute::detail::NvlsReduceView mapping,
 		__grid_constant__ const BackwardGemmParamsSm90<Compute> params,
 		int wave) {
 	static_assert(DxSplitK == 1 || DxSplitK == 2);
@@ -2920,16 +1604,16 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 					static_cast<std::size_t>(Config::kMTilesPerWave) *
 					num_n_tiles;
 				std::size_t packed_tile_elements =
-					kMessageElements / mapping.local_size;
+					kMessageElements / mapping.size;
 				std::size_t packed_segment_elements =
-					kSegmentElements / mapping.local_size;
-				float* durable = mapping.interhost +
+					kSegmentElements / mapping.size;
+				float* durable = mapping.reduced_shard +
 					(static_cast<std::size_t>(wave) * tiles_per_wave +
 					 durable_tile) * packed_tile_elements +
 					static_cast<std::size_t>(comm_warp) *
 						packed_segment_elements;
 
-				if (mapping.local_size == 1) {
+				if (mapping.size == 1) {
 					constexpr std::size_t kSegmentVectors =
 						kSegmentElements / 4;
 					for (std::size_t vector =
@@ -2958,41 +1642,41 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 							comm_warp,
 							stage,
 							kDxReadyPhase,
-							comm.team_size);
+							mapping.size);
 					std::size_t complete_offset =
 						dx_sync_offset<CommConfig>(
 							cta,
 							comm_warp,
 							stage,
 							kDxCompletePhase,
-							comm.team_size);
+							mapping.size);
 					std::uint64_t epoch =
 						dx_epoch_base(comm) |
 						(static_cast<std::uint64_t>(wave + 1) << 16) |
 						static_cast<std::uint64_t>(pass + 1);
 					liger_cute::detail::nvls_barrier_warp(
 						comm.sync + ready_offset,
-						mapping.local_multicast_sync + ready_offset,
-						mapping.local_rank,
-						mapping.local_size,
+						mapping.multicast_sync + ready_offset,
+						mapping.rank,
+						mapping.size,
 						epoch);
 					if constexpr (DxSplitK == 1) {
 						liger_cute::detail::nvls_sum_reduce_scatter_warp(
 							durable,
-							mapping.local_multicast_partial +
+							mapping.multicast_partial +
 								base + segment_begin,
 							kSegmentElements,
-							mapping.local_rank,
-							mapping.local_size);
+							mapping.rank,
+							mapping.size);
 					} else {
 						liger_cute::detail::nvls_sum_reduce_scatter_warp(
-							mapping.local_multicast_reduced +
+							mapping.multicast_reduced +
 								base + segment_begin,
-							mapping.local_multicast_partial +
+							mapping.multicast_partial +
 								base + segment_begin,
 							kSegmentElements,
-							mapping.local_rank,
-							mapping.local_size);
+							mapping.rank,
+							mapping.size);
 						// Re-read the lane and accumulate one scalar at a time
 						// so no vector or lane value lives across the atomics.
 						for (std::size_t element =
@@ -3002,16 +1686,16 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 								element += Traits::kWarpSize) {
 							atomicAdd(
 								durable + element,
-								mapping.local_multicast_reduced[
+								mapping.multicast_reduced[
 									base + segment_begin + element]);
 						}
 						__syncwarp();
 					}
 					liger_cute::detail::nvls_barrier_warp(
 						comm.sync + complete_offset,
-						mapping.local_multicast_sync + complete_offset,
-						mapping.local_rank,
-						mapping.local_size,
+						mapping.multicast_sync + complete_offset,
+						mapping.rank,
+						mapping.size,
 						epoch);
 				}
 				__syncwarp();
@@ -3145,7 +1829,7 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 					++slice) {
 				if (slice > 0) {
 					if (issuer) {
-						dx_wait_tma_store_complete();
+						wait_tma_store_complete();
 					}
 					backward_consumer_barrier_sm90<
 						Config::kDxEpilogueBarrierId, Compute>();
@@ -3172,8 +1856,8 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 			}
 			// Publish the completed FP32 tile before waking communication.
 			if (issuer) {
-				dx_wait_tma_store_complete();
-				fused_nvshmem::dx_publish_fence();
+				wait_tma_store_complete();
+				liger_cute::detail::publish_local_reduce_source();
 			}
 			backward_consumer_barrier_sm90<
 				Config::kDxEpilogueBarrierId, Compute>();
@@ -3219,142 +1903,6 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 	sm90::cluster_exit_sm90<Compute>();
 }
 
-
-template <
-	bool ReturnEntropy,
-	bool RunDx,
-	int Compute,
-	class CommConfig,
-	class Bundle>
-__global__ __launch_bounds__(BackwardGemmTraitsSm90<Compute>::kNumThreads, 1)
-void backward_dx_dw_wave_kernel_sm90(
-		__grid_constant__ const Bundle tma,
-		__grid_constant__ const BackwardGemmParamsSm90<Compute> params,
-		__grid_constant__ const DxReduceWorkspace<float> comm,
-		int wave) {
-	using Traits = BackwardGemmTraitsSm90<Compute>;
-	using Smem = BackwardDxDwSmemSm90<Compute>;
-	using Config = typename Traits::Config;
-	using Launch = BackwardGemmLaunchSm90<Compute>;
-	using PipelineTraits = typename Traits::PipelineTraits;
-	using ClusterShape = typename Traits::ClusterShape;
-	using Registers = sm90::WarpSpecializedRegistersSm90<
-		Config::kProducerRegisters, Config::kMmaRegisters, Compute>;
-
-	extern __shared__ char raw_smem[];
-	Smem& smem = *reinterpret_cast<Smem*>(raw_smem);
-	int warp_group = cutlass::canonical_warp_group_idx();
-	int warp = cutlass::canonical_warp_idx_sync();
-
-	PipelineTraits::init_barriers(
-		smem.mainloop_pipeline, Traits::kTmaTransBytes,
-		Traits::kConsumerThreads, ClusterShape{});
-	if constexpr (RunDx) {
-		if (threadIdx.x == 0) {
-			CUTE_UNROLL
-			for (int comm_warp = 0;
-					comm_warp < kDxCommWarpsPerChannel;
-					++comm_warp) {
-				CUTE_UNROLL
-				for (int stage = 0; stage < kDxRingStages; ++stage) {
-					smem.dx_ready_epoch[comm_warp][stage] = 0;
-					cute::initialize_barrier(
-						smem.dx_consumed_barrier[comm_warp][stage], 1);
-				}
-			}
-		}
-	}
-	sm90::cluster_pipeline_init_sm90<Compute>();
-
-	if (warp_group == 0) {
-		Registers::producer();
-		int num_ctas = static_cast<int>(gridDim.x);
-		int cta = static_cast<int>(blockIdx.x);
-		if (warp == 0) {
-			int padded_vocab = Launch::padded_vocab(params.local_vocab);
-			auto state = PipelineTraits::producer_start_state();
-			auto pipe = PipelineTraits::make_producer(
-				smem.mainloop_pipeline, Traits::kTmaTransBytes,
-				Traits::kConsumerThreads, threadIdx.x == 0, ClusterShape{});
-			if constexpr (RunDx) {
-				int dx_n_tiles = Launch::num_dx_n_tiles(params.hidden);
-				int dx_k_tiles =
-					Launch::num_dx_k_tiles(params.local_vocab);
-				int dx_groups_per_wave = Config::kMTilesPerWave *
-					dx_groups_per_m_tile<CommConfig>(dx_n_tiles);
-				DxPhaseSm90<CommConfig, Compute>::
-					template produce<ReturnEntropy>(
-						pipe, state, smem, tma.dz_load, tma.wt, params,
-						padded_vocab, dx_n_tiles, dx_k_tiles,
-						dx_groups_per_wave, cta, num_ctas);
-				backward_compute_barrier_sm90<Compute>();
-			}
-			{
-				int dw_n_tiles = Launch::num_dw_n_tiles(params.hidden);
-				constexpr int kDwKTiles = Launch::num_dw_k_tiles();
-				int dw_total = Launch::num_dw_m_tiles(params.local_vocab) *
-					dw_n_tiles;
-				int dw_tiles = dw_total > cta
-					? ceil_div(dw_total - cta, num_ctas)
-					: 0;
-				DwPhaseSm90<Compute>::template produce<ReturnEntropy>(
-					pipe, state, smem, tma.dzt, tma.xt, params,
-					padded_vocab, wave, dw_n_tiles, kDwKTiles, dw_tiles,
-					cta, num_ctas);
-			}
-		} else if (warp <= CommConfig::kLastCommWarp) {
-			if constexpr (RunDx) {
-				int dx_n_tiles = Launch::num_dx_n_tiles(params.hidden);
-				int dx_groups_per_wave = Config::kMTilesPerWave *
-					dx_groups_per_m_tile<CommConfig>(dx_n_tiles);
-				int next_index = 0;
-				DxPhaseSm90<CommConfig, Compute>::
-					template communicate<ReturnEntropy>(
-						smem, params, comm, dx_n_tiles, cta, num_ctas,
-						wave, dx_groups_per_wave, next_index);
-			}
-		}
-	} else {
-		Registers::consumer();
-		int num_ctas = static_cast<int>(gridDim.x);
-		int cta = static_cast<int>(blockIdx.x);
-		typename Traits::PipelineState read_state;
-		typename Traits::PipelineState release_state;
-		auto pipe = PipelineTraits::make_consumer(
-			smem.mainloop_pipeline, Traits::kTmaTransBytes,
-			Traits::kConsumerThreads, ClusterShape{});
-		if constexpr (RunDx) {
-			int dx_n_tiles = Launch::num_dx_n_tiles(params.hidden);
-			int dx_k_tiles =
-				Launch::num_dx_k_tiles(params.local_vocab);
-			int dx_groups_per_wave = Config::kMTilesPerWave *
-				dx_groups_per_m_tile<CommConfig>(dx_n_tiles);
-			int next_index = 0;
-			DxPhaseSm90<CommConfig, Compute>::
-				template consume<ReturnEntropy>(
-					pipe, read_state, release_state, smem, comm,
-					dx_n_tiles, dx_k_tiles, wave, dx_groups_per_wave, cta,
-					num_ctas, next_index);
-			backward_compute_barrier_sm90<Compute>();
-		}
-		{
-			int dw_n_tiles = Launch::num_dw_n_tiles(params.hidden);
-			constexpr int kDwKTiles = Launch::num_dw_k_tiles();
-			int dw_total = Launch::num_dw_m_tiles(params.local_vocab) *
-				dw_n_tiles;
-			int dw_tiles = dw_total > cta
-				? ceil_div(dw_total - cta, num_ctas)
-				: 0;
-			DwPhaseSm90<Compute>::template consume<ReturnEntropy>(
-				pipe, read_state, release_state, smem, tma.dw_store,
-				tma.dw_add, params, wave, dw_n_tiles, kDwKTiles, dw_tiles,
-				cta, num_ctas);
-		}
-	}
-
-	__syncthreads();
-	sm90::cluster_exit_sm90<Compute>();
-}
 
 }  // namespace fused_scaled_linear_cross_entropy
 }  // namespace liger

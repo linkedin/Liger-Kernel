@@ -60,7 +60,6 @@ namespace fused_scaled_linear_cross_entropy {
 // Hopper has at most 132 resident SMs/CTAs for this 1-CTA/SM kernel.
 inline constexpr int kMaxDxResidentCtas = 132;
 inline constexpr int kDxCommWarpsPerChannel = 2;
-inline constexpr int kMaxDxTeamSize = 512;
 inline constexpr int kDxSyncPhases = 2;
 inline constexpr int kDxReadyPhase = 0;
 inline constexpr int kDxCompletePhase = 1;
@@ -122,7 +121,8 @@ struct DxCommConfig {
 		BackwardWarpRole::kReserved);
 };
 
-// Symmetric staging and the cached multicast aliases for one TP team.
+// FSLCE-specific symmetric ring storage. Backend mappings are supplied through
+// the minimal views in liger_cute/detail/tp_reduce.cuh.
 //
 // partial / reduced are symmetric (NVSHMEM) and laid out identically on every
 // PE as
@@ -135,15 +135,10 @@ struct DxCommConfig {
 //
 template <typename Element>
 struct DxReduceWorkspace {
-	Element* partial;    // symmetric, SUM source
-	Element* reduced;    // symmetric, SUM destination
-	Element* multicast_partial;
-	Element* multicast_reduced;
-	std::uint64_t* sync;            // local symmetric signal replicas
-	std::uint64_t* multicast_sync;  // NVLS alias of sync
+	Element* partial;                 // symmetric, SUM source
+	Element* reduced;                 // symmetric, SUM destination
+	std::uint64_t* sync;              // local symmetric signal replicas
 	const std::uint64_t* launch_epoch;  // device-resident graph-safe generation
-	int team_rank;
-	int team_size;
 };
 
 #if defined(__CUDACC__)

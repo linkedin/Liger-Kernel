@@ -1,4 +1,4 @@
-#include "backward_fallback_sm90.cuh"
+#include "backward_reduce_sm90.cuh"
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -8,8 +8,8 @@
 #include <cstdint>
 
 #include "backward_gemm_mainloop_sm90.cuh"
-#include "liger_cute/detail/remote_all_reduce.cuh"
 #include "liger_cute/check.h"
+#include "liger_cute/detail/local_reduce.cuh"
 #include "workspace.cuh"
 
 namespace liger {
@@ -24,7 +24,7 @@ using HostElement = HostTraits::Element;
 void check_cuda(cudaError_t error, const char* what) {
 	LIGER_CHECK(
 		error == cudaSuccess,
-		"fused_scaled_linear_cross_entropy backward fallback: ",
+		"fused_scaled_linear_cross_entropy backward reduction: ",
 		what,
 		" failed: ",
 		cudaGetErrorString(error));
@@ -64,11 +64,11 @@ auto make_col_major_load(
 }
 
 template <class CommConfig, int Compute>
-__device__ void fallback_communicate(
+__device__ void direct_peer_communicate(
 		BackwardDxDwSmemSm90<Compute>& smem,
 		const BackwardGemmParamsSm90<Compute>& params,
 		const DxReduceWorkspace<float>& comm,
-		const DxFallbackMapping& mapping,
+		const liger_cute::detail::DirectPeerReduceView& mapping,
 		int num_n_tiles,
 		int cta,
 		int num_ctas,
@@ -118,13 +118,13 @@ __device__ void fallback_communicate(
 			comm_warp,
 			slot.stage,
 			kDxReadyPhase,
-			mapping.team_size);
+			mapping.size);
 		std::size_t complete_offset = dx_sync_offset<CommConfig>(
 			cta,
 			comm_warp,
 			slot.stage,
 			kDxCompletePhase,
-			mapping.team_size);
+			mapping.size);
 		std::uint64_t epoch =
 			dx_epoch_base(comm) |
 			(static_cast<std::uint64_t>(wave + 1) << 16) |
@@ -134,8 +134,8 @@ __device__ void fallback_communicate(
 		std::size_t segment_vectors =
 			segment_elements / kValuesPerVector;
 		float* local_reduced = comm.reduced + base + segment_begin;
-		liger_cute::detail::AllReduceContext<
-			liger_cute::detail::AllReduceBackend::kDirectPeer,
+		liger_cute::detail::LocalReduceContext<
+			liger_cute::detail::LocalReduceBackend::kDirectPeer,
 			float> context{
 			mapping.peer_partial,
 			base + segment_begin,
@@ -144,10 +144,10 @@ __device__ void fallback_communicate(
 			ready_offset,
 			comm.sync + complete_offset,
 			complete_offset,
-			mapping.team_rank,
-			mapping.team_size};
-		liger_cute::detail::all_reduce<
-			liger_cute::detail::AllReduceBackend::kDirectPeer>(
+			mapping.rank,
+			mapping.size};
+		liger_cute::detail::local_all_reduce<
+			liger_cute::detail::LocalReduceBackend::kDirectPeer>(
 			context,
 			local_reduced,
 			comm.partial + base + segment_begin,
@@ -202,122 +202,19 @@ __device__ void fallback_communicate(
 	}
 }
 
-template <class CommConfig, int Compute>
-__device__ void hierarchical_communicate(
-		BackwardDxDwSmemSm90<Compute>& smem,
-		const DxReduceWorkspace<float>& comm,
-		const DxHierarchicalMapping& mapping,
-		int num_n_tiles,
-		int cta,
-		int num_ctas,
-		int wave,
-		int groups_per_wave) {
-	using Traits = BackwardGemmTraitsSm90<Compute>;
-
-	int comm_warp =
-		static_cast<int>(threadIdx.x) / Traits::kWarpSize -
-		CommConfig::kFirstCommWarp;
-	int lane = static_cast<int>(threadIdx.x) % Traits::kWarpSize;
-	int next_index = 0;
-
-	for (int unit = cta; unit < groups_per_wave; unit += num_ctas) {
-		int group_id = wave * groups_per_wave + unit;
-		DxTileGroup group =
-			dx_unit_to_group<CommConfig>(unit, num_n_tiles, group_id);
-		DxCtaGroupSlot slot =
-			dx_cta_group_slot<CommConfig>(next_index);
-		std::uint64_t ready_epoch =
-			static_cast<std::uint64_t>(group_id) + 1;
-		if (lane == 0) {
-			dx_ready_wait_acquire(
-				&smem.dx_ready_epoch[comm_warp][slot.stage],
-				ready_epoch);
-		}
-		__syncwarp();
-
-		std::size_t message_elements =
-			static_cast<std::size_t>(group.num_tiles) *
-			CommConfig::kTileElements;
-		std::size_t segment_elements =
-			message_elements / kDxCommWarpsPerChannel;
-		std::size_t segment_begin =
-			static_cast<std::size_t>(comm_warp) * segment_elements;
-		std::size_t base =
-			dx_slot_offset<CommConfig>(cta, slot.comm_warp, slot.stage);
-		std::size_t ready_offset = dx_sync_offset<CommConfig>(
-			cta,
-			comm_warp,
-			slot.stage,
-			kDxReadyPhase,
-			comm.team_size);
-		std::size_t complete_offset = dx_sync_offset<CommConfig>(
-			cta,
-			comm_warp,
-			slot.stage,
-			kDxCompletePhase,
-			comm.team_size);
-		std::uint64_t epoch =
-			dx_epoch_base(comm) | 0x10000u |
-			(static_cast<std::uint64_t>(wave + 1) << 20) |
-			static_cast<std::uint64_t>(slot.pass + 1);
-
-		liger_cute::detail::nvls_barrier_warp(
-			comm.sync + ready_offset,
-			mapping.local_multicast_sync + ready_offset,
-			mapping.local_rank,
-			mapping.local_size,
-			epoch);
-		constexpr std::size_t kGroupStride =
-			CommConfig::kGroupElements;
-		std::size_t packed_group_stride =
-			kGroupStride / mapping.local_size;
-		std::size_t packed_warp_stride =
-			(kGroupStride / kDxCommWarpsPerChannel) /
-			mapping.local_size;
-		std::size_t packed_wave_stride =
-			static_cast<std::size_t>(groups_per_wave) *
-			packed_group_stride;
-		float* packed_destination =
-			mapping.interhost +
-			static_cast<std::size_t>(wave) * packed_wave_stride +
-			static_cast<std::size_t>(unit) * packed_group_stride +
-			static_cast<std::size_t>(comm_warp) * packed_warp_stride;
-		liger_cute::detail::nvls_sum_reduce_scatter_warp(
-			packed_destination,
-			mapping.local_multicast_partial + base + segment_begin,
-			segment_elements,
-			mapping.local_rank,
-			mapping.local_size);
-		liger_cute::detail::nvls_barrier_warp(
-			comm.sync + complete_offset,
-			mapping.local_multicast_sync + complete_offset,
-			mapping.local_rank,
-			mapping.local_size,
-			epoch);
-
-		if (lane == 0) {
-			cute::arrive_barrier(
-				smem.dx_consumed_barrier[comm_warp][slot.stage]);
-		}
-		++next_index;
-	}
-}
-
 template <
-	bool Hierarchical,
 	bool RunDx,
 	bool RunDw,
 	bool ReturnEntropy,
 	int Compute,
 	class CommConfig,
-	class Bundle,
-	class Mapping>
+	class Bundle>
 __global__ __launch_bounds__(BackwardGemmTraitsSm90<Compute>::kNumThreads, 1)
-void backward_dx_dw_fallback_wave_kernel_sm90(
+void backward_dx_dw_direct_peer_wave_kernel_sm90(
 		__grid_constant__ const Bundle tma,
 		__grid_constant__ const BackwardGemmParamsSm90<Compute> params,
 		__grid_constant__ const DxReduceWorkspace<float> comm,
-		__grid_constant__ const Mapping mapping,
+		__grid_constant__ const liger_cute::detail::DirectPeerReduceView mapping,
 		int wave) {
 	using Traits = BackwardGemmTraitsSm90<Compute>;
 	using Config = typename Traits::Config;
@@ -422,28 +319,16 @@ void backward_dx_dw_fallback_wave_kernel_sm90(
 			int dx_n_tiles = Launch::num_dx_n_tiles(params.hidden);
 			int dx_groups_per_wave = Config::kMTilesPerWave *
 				dx_groups_per_m_tile<CommConfig>(dx_n_tiles);
-			if constexpr (Hierarchical) {
-				hierarchical_communicate<CommConfig, Compute>(
-					smem,
-					comm,
-					mapping,
-					dx_n_tiles,
-					cta,
-					num_ctas,
-					wave,
-					dx_groups_per_wave);
-			} else {
-				fallback_communicate<CommConfig, Compute>(
-					smem,
-					params,
-					comm,
-					mapping,
-					dx_n_tiles,
-					cta,
-					num_ctas,
-					wave,
-					dx_groups_per_wave);
-			}
+			direct_peer_communicate<CommConfig, Compute>(
+				smem,
+				params,
+				comm,
+				mapping,
+				dx_n_tiles,
+				cta,
+				num_ctas,
+				wave,
+				dx_groups_per_wave);
 			}
 		}
 	} else {
@@ -511,42 +396,11 @@ void backward_dx_dw_fallback_wave_kernel_sm90(
 	sm90::cluster_exit_sm90<Compute>();
 }
 
-template <class CommConfig, int Compute>
-__global__ void hierarchical_local_allgather_scatter_kernel(
-		__grid_constant__ const BackwardGemmParamsSm90<Compute> params,
-		__grid_constant__ const DxReduceWorkspace<float> comm,
-		__grid_constant__ const DxHierarchicalMapping mapping,
-		int grid_ctas,
-		int wave,
-		int groups_per_wave,
-		int num_n_tiles) {
-	using Traits = BackwardGemmTraitsSm90<Compute>;
-	using Config = typename Traits::Config;
-
-	int unit = static_cast<int>(blockIdx.x);
-	if (unit >= groups_per_wave) return;
-	int comm_warp = static_cast<int>(threadIdx.x) / Traits::kWarpSize;
-	int lane = static_cast<int>(threadIdx.x) % Traits::kWarpSize;
-	if (comm_warp >= kDxCommWarpsPerChannel) return;
-
-	hierarchical_local_allgather_scatter_unit_sm90<CommConfig, Compute>(
-		params,
-		comm,
-		mapping,
-		grid_ctas,
-		wave,
-		groups_per_wave,
-		num_n_tiles,
-		unit,
-		comm_warp,
-		lane);
-}
-
 template <int Compute>
 __global__ void cluster_local_allgather_scatter_kernel(
 		__grid_constant__ const BackwardGemmParamsSm90<Compute> params,
 		__grid_constant__ const DxReduceWorkspace<float> comm,
-		__grid_constant__ const DxHierarchicalMapping mapping,
+		__grid_constant__ const liger_cute::detail::NvlsReduceView mapping,
 		int grid_ctas,
 		int wave,
 		int tiles_per_wave,
@@ -565,10 +419,10 @@ __global__ void cluster_local_allgather_scatter_kernel(
 	constexpr std::size_t kSegmentElements =
 		kTileElements / kDxCommWarpsPerChannel;
 	std::size_t packed_tile_elements =
-		kTileElements / mapping.local_size;
+		kTileElements / mapping.size;
 	std::size_t packed_segment_elements =
-		kSegmentElements / mapping.local_size;
-	const float* packed_source = mapping.interhost +
+		kSegmentElements / mapping.size;
+	const float* packed_source = mapping.reduced_shard +
 		(static_cast<std::size_t>(wave) * tiles_per_wave + unit) *
 			packed_tile_elements +
 		static_cast<std::size_t>(comm_warp) * packed_segment_elements;
@@ -577,28 +431,28 @@ __global__ void cluster_local_allgather_scatter_kernel(
 	int next_index = unit / grid_ctas;
 	DxCtaGroupSlot slot = dx_cta_group_slot<CommConfig>(next_index);
 	const float* values = packed_source;
-	if (mapping.local_size > 1) {
+	if (mapping.size > 1) {
 		std::size_t ready_offset = dx_sync_offset<CommConfig>(
 			cta,
 			comm_warp,
 			slot.stage,
 			kDxReadyPhase,
-			comm.team_size);
+			mapping.size);
 		std::size_t complete_offset = dx_sync_offset<CommConfig>(
 			cta,
 			comm_warp,
 			slot.stage,
 			kDxCompletePhase,
-			comm.team_size);
+			mapping.size);
 		std::uint64_t epoch =
 			dx_epoch_base(comm) | 0x20000000u |
 			(static_cast<std::uint64_t>(wave) << 16) |
 			static_cast<std::uint64_t>(slot.pass + 1);
 		liger_cute::detail::nvls_barrier_warp(
 			comm.sync + ready_offset,
-			mapping.local_multicast_sync + ready_offset,
-			mapping.local_rank,
-			mapping.local_size,
+			mapping.multicast_sync + ready_offset,
+			mapping.rank,
+			mapping.size,
 			epoch);
 		std::size_t full_tile_offset =
 			(static_cast<std::size_t>(wave) * tiles_per_wave + unit) *
@@ -606,17 +460,17 @@ __global__ void cluster_local_allgather_scatter_kernel(
 		std::size_t segment_begin =
 			static_cast<std::size_t>(comm_warp) * kSegmentElements;
 		liger_cute::detail::nvls_allgather_warp(
-			mapping.local_multicast_reduced +
+			mapping.multicast_reduced +
 				full_tile_offset + segment_begin,
 			packed_source,
 			kSegmentElements,
-			mapping.local_rank,
-			mapping.local_size);
+			mapping.rank,
+			mapping.size);
 		liger_cute::detail::nvls_barrier_warp(
 			comm.sync + complete_offset,
-			mapping.local_multicast_sync + complete_offset,
-			mapping.local_rank,
-			mapping.local_size,
+			mapping.multicast_sync + complete_offset,
+			mapping.rank,
+			mapping.size,
 			epoch);
 		values = comm.reduced + full_tile_offset + segment_begin;
 	}
@@ -657,11 +511,12 @@ __global__ void cluster_local_allgather_scatter_kernel(
 	}
 }
 
+template <bool RequiresRemote>
 void finalize_cluster_typed(
-		bool hierarchical,
 		const BackwardGemmParamsSm90<90>& params,
 		const DxReduceWorkspace<float>& comm,
-		const DxHierarchicalMapping& mapping,
+		const liger_cute::detail::NvlsReduceView& mapping,
+		const liger_cute::detail::RemoteReduceView& remote,
 		int grid,
 		int num_waves,
 		cudaStream_t stream) {
@@ -673,23 +528,17 @@ void finalize_cluster_typed(
 		static_cast<std::size_t>(tiles_per_wave) *
 		CommConfig::kTileElements;
 	std::size_t packed_elements =
-		full_elements / static_cast<std::size_t>(mapping.local_size);
+		full_elements / static_cast<std::size_t>(mapping.size);
 	LIGER_CHECK(
 		full_elements * sizeof(float) <=
 			backward_dx_configured_durable_bytes(),
 		"fused_scaled_linear_cross_entropy backward: cluster dX durable "
 		"workspace capacity exceeded");
-	if (hierarchical) {
-		liger_cute::detail::launch_remote_pair_all_reduce(
-			mapping.interhost,
-			mapping.inbox,
-			mapping.interhost,
-			packed_elements,
-			mapping.signals,
-			mapping.signals + 1,
+	if constexpr (RequiresRemote) {
+		liger_cute::detail::launch_remote_reduce(
+			remote,
 			comm.launch_epoch,
-			0x30000000u,
-			mapping.interhost_peer_world,
+			packed_elements,
 			stream);
 	}
 
@@ -698,7 +547,7 @@ void finalize_cluster_typed(
 		void* args[] = {
 			const_cast<BackwardGemmParamsSm90<90>*>(&params),
 			const_cast<DxReduceWorkspace<float>*>(&comm),
-			const_cast<DxHierarchicalMapping*>(&mapping),
+			const_cast<liger_cute::detail::NvlsReduceView*>(&mapping),
 			&grid,
 			&wave,
 			&tiles_per_wave,
@@ -724,14 +573,12 @@ void finalize_cluster_typed(
 template <
 	int TilesPerReduce,
 	bool ReturnEntropy,
-	bool Hierarchical,
-	class Mapping,
 	bool RunDx = true,
 	bool RunDw = true>
 void launch_typed(
 		const BackwardGemmParamsSm90<90>& params,
 		const DxReduceWorkspace<float>& comm,
-		const Mapping& mapping,
+		const liger_cute::detail::DirectPeerReduceView& mapping,
 		int grid,
 		cudaStream_t stream,
 		int wave) {
@@ -780,16 +627,17 @@ void launch_typed(
 		tma_dw_store,
 		tma_dw_add};
 	constexpr int kSmemBytes = static_cast<int>(sizeof(Smem));
+	static_assert(
+		2 * kSmemBytes > kBackwardMaxSmemBytes,
+		"the direct-peer grid assumes at most one resident CTA per SM");
 	auto* kernel =
-		&backward_dx_dw_fallback_wave_kernel_sm90<
-			Hierarchical,
+		&backward_dx_dw_direct_peer_wave_kernel_sm90<
 			RunDx,
 			RunDw,
 			ReturnEntropy,
 			90,
 			CommConfig,
-			Bundle,
-			Mapping>;
+			Bundle>;
 	check_cuda(
 		cudaFuncSetAttribute(
 			kernel,
@@ -800,7 +648,7 @@ void launch_typed(
 		&bundle,
 		const_cast<BackwardGemmParamsSm90<90>*>(&params),
 		const_cast<DxReduceWorkspace<float>*>(&comm),
-		const_cast<Mapping*>(&mapping),
+		const_cast<liger_cute::detail::DirectPeerReduceView*>(&mapping),
 		&wave};
 	int status = nvshmemx_collective_launch(
 		reinterpret_cast<const void*>(kernel),
@@ -816,214 +664,90 @@ void launch_typed(
 		status);
 	check_cuda(
 		cudaGetLastError(),
-		"backward_dx_dw_fallback_wave_kernel_sm90 launch");
-}
-
-template <int TilesPerReduce>
-void finalize_hierarchical_typed(
-		const BackwardGemmParamsSm90<90>& params,
-		const DxReduceWorkspace<float>& comm,
-		const DxHierarchicalMapping& mapping,
-		int grid,
-		int num_waves,
-		cudaStream_t stream) {
-	using CommConfig =
-		DxCommConfig<HostConfig, kDxRingStages, TilesPerReduce, 90>;
-	int num_n_tiles = HostLaunch::num_dx_n_tiles(params.hidden);
-	int groups_per_wave = HostConfig::kMTilesPerWave *
-		dx_groups_per_m_tile<CommConfig>(num_n_tiles);
-	std::size_t packed_elements =
-		static_cast<std::size_t>(num_waves) *
-		static_cast<std::size_t>(groups_per_wave) *
-		CommConfig::kGroupElements /
-		static_cast<std::size_t>(mapping.local_size);
-	// mapping.interhost holds the node-local reduce-scatter chunks. This host
-	// call launches the separate RDC cross-host reduction and completes first
-	// on the stream; the following kernel performs only local broadcast.
-	liger_cute::detail::launch_remote_pair_all_reduce(
-		mapping.interhost,
-		mapping.inbox,
-		mapping.interhost,
-		packed_elements,
-		mapping.signals,
-		mapping.signals + 1,
-		comm.launch_epoch,
-		0x30000000u,
-		mapping.interhost_peer_world,
-		stream);
-
-	auto* allgather =
-		&hierarchical_local_allgather_scatter_kernel<CommConfig, 90>;
-	for (int wave = 0; wave < num_waves; ++wave) {
-		void* allgather_args[] = {
-			const_cast<BackwardGemmParamsSm90<90>*>(&params),
-			const_cast<DxReduceWorkspace<float>*>(&comm),
-			const_cast<DxHierarchicalMapping*>(&mapping),
-			&grid,
-			&wave,
-			&groups_per_wave,
-			&num_n_tiles};
-		int status = nvshmemx_collective_launch(
-			reinterpret_cast<const void*>(allgather),
-			dim3(static_cast<unsigned>(groups_per_wave), 1, 1),
-			dim3(kDxCommWarpsPerChannel * kWarpSize, 1, 1),
-			allgather_args,
-			0,
-			stream);
-		LIGER_CHECK(
-			status == 0,
-			"fused_scaled_linear_cross_entropy backward: "
-			"hierarchical all-gather launch failed with status ",
-			status);
-		check_cuda(
-			cudaGetLastError(),
-			"hierarchical_local_allgather_scatter_kernel launch");
-	}
+		"backward_dx_dw_direct_peer_wave_kernel_sm90 launch");
 }
 
 }  // namespace
 
-void launch_backward_dx_dw_fallback_wave_sm90(
+void launch_backward_dx_dw_direct_peer_wave_sm90(
 		bool return_entropy,
 		int tiles_per_reduce,
 		const BackwardGemmParamsSm90<90>& params,
 		const DxReduceWorkspace<float>& comm,
-		const DxFallbackMapping& mapping,
+		const liger_cute::detail::DirectPeerReduceView& mapping,
 		int grid,
 		cudaStream_t stream,
 		int wave) {
 	LIGER_CHECK(
-		mapping.team_size == comm.team_size && mapping.team_size > 1,
-		"fused_scaled_linear_cross_entropy backward: invalid fallback team "
+			mapping.size > 1,
+			"fused_scaled_linear_cross_entropy backward: invalid direct-peer team "
 		"metadata");
 	LIGER_CHECK(
-		mapping.all_peers_direct != 0,
+			mapping.available != 0,
 		"fused_scaled_linear_cross_entropy backward: NVLS is unavailable and "
 		"one or more tensor-parallel peers do not have a direct symmetric "
 		"mapping");
 	if (return_entropy) {
 		switch (tiles_per_reduce) {
 			case 1:
-				launch_typed<1, true, false>(
+				launch_typed<1, true>(
 					params, comm, mapping, grid, stream, wave);
 				return;
 			case 2:
-				launch_typed<2, true, false>(
+				launch_typed<2, true>(
 					params, comm, mapping, grid, stream, wave);
 				return;
 			default:
-				launch_typed<4, true, false>(
+				launch_typed<4, true>(
 					params, comm, mapping, grid, stream, wave);
 				return;
 		}
 	}
 	switch (tiles_per_reduce) {
 		case 1:
-			launch_typed<1, false, false>(
+			launch_typed<1, false>(
 				params, comm, mapping, grid, stream, wave);
 			return;
 		case 2:
-			launch_typed<2, false, false>(
+			launch_typed<2, false>(
 				params, comm, mapping, grid, stream, wave);
 			return;
 		default:
-			launch_typed<4, false, false>(
+			launch_typed<4, false>(
 				params, comm, mapping, grid, stream, wave);
 			return;
 	}
 }
 
-void launch_backward_dx_dw_hierarchical_wave_sm90(
-		bool return_entropy,
-		int tiles_per_reduce,
+template <bool RequiresRemote>
+void finalize_backward_dx_cluster_sm90(
 		const BackwardGemmParamsSm90<90>& params,
 		const DxReduceWorkspace<float>& comm,
-		const DxHierarchicalMapping& mapping,
-		int grid,
-		cudaStream_t stream,
-		int wave) {
-	LIGER_CHECK(
-		mapping.local_size > 1 && mapping.interhost_size == 2 &&
-			mapping.interhost_peer_world >= 0,
-		"fused_scaled_linear_cross_entropy backward: invalid hierarchical "
-		"team metadata");
-	if (return_entropy) {
-		switch (tiles_per_reduce) {
-			case 1:
-				launch_typed<1, true, true>(
-					params, comm, mapping, grid, stream, wave);
-				return;
-			case 2:
-				launch_typed<2, true, true>(
-					params, comm, mapping, grid, stream, wave);
-				return;
-			default:
-				launch_typed<4, true, true>(
-					params, comm, mapping, grid, stream, wave);
-				return;
-		}
-	}
-	switch (tiles_per_reduce) {
-		case 1:
-			launch_typed<1, false, true>(
-				params, comm, mapping, grid, stream, wave);
-			return;
-		case 2:
-			launch_typed<2, false, true>(
-				params, comm, mapping, grid, stream, wave);
-			return;
-		default:
-			launch_typed<4, false, true>(
-				params, comm, mapping, grid, stream, wave);
-			return;
-	}
-}
-
-void finalize_backward_dx_cluster_local_sm90(
-		const BackwardGemmParamsSm90<90>& params,
-		const DxReduceWorkspace<float>& comm,
-		const DxHierarchicalMapping& mapping,
+		const liger_cute::detail::NvlsReduceView& mapping,
+		const liger_cute::detail::RemoteReduceView& remote,
 		int grid,
 		int num_waves,
 		cudaStream_t stream) {
-	finalize_cluster_typed(
-		false, params, comm, mapping, grid, num_waves, stream);
+	finalize_cluster_typed<RequiresRemote>(
+		params, comm, mapping, remote, grid, num_waves, stream);
 }
 
-void finalize_backward_dx_cluster_hierarchical_sm90(
+template void finalize_backward_dx_cluster_sm90<false>(
 		const BackwardGemmParamsSm90<90>& params,
 		const DxReduceWorkspace<float>& comm,
-		const DxHierarchicalMapping& mapping,
+		const liger_cute::detail::NvlsReduceView& mapping,
+		const liger_cute::detail::RemoteReduceView& remote,
 		int grid,
 		int num_waves,
-		cudaStream_t stream) {
-	finalize_cluster_typed(
-		true, params, comm, mapping, grid, num_waves, stream);
-}
-
-void finalize_backward_dx_hierarchical_sm90(
-		int tiles_per_reduce,
+		cudaStream_t stream);
+template void finalize_backward_dx_cluster_sm90<true>(
 		const BackwardGemmParamsSm90<90>& params,
 		const DxReduceWorkspace<float>& comm,
-		const DxHierarchicalMapping& mapping,
+		const liger_cute::detail::NvlsReduceView& mapping,
+		const liger_cute::detail::RemoteReduceView& remote,
 		int grid,
 		int num_waves,
-		cudaStream_t stream) {
-	switch (tiles_per_reduce) {
-		case 1:
-			finalize_hierarchical_typed<1>(
-				params, comm, mapping, grid, num_waves, stream);
-			return;
-		case 2:
-			finalize_hierarchical_typed<2>(
-				params, comm, mapping, grid, num_waves, stream);
-			return;
-		default:
-			finalize_hierarchical_typed<4>(
-				params, comm, mapping, grid, num_waves, stream);
-			return;
-	}
-}
+		cudaStream_t stream);
 
 }  // namespace fused_scaled_linear_cross_entropy
 }  // namespace liger
