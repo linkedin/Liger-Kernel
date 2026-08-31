@@ -9,6 +9,7 @@ from liger_kernel.ops import LigerDyTFunction
 from liger_kernel.ops import LigerFusedAddRMSNormFunction
 from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops import LigerFusedLinearJSDFunction
+from liger_kernel.ops import LigerFusedLinearKLDivFunction
 from liger_kernel.ops import LigerFusedNeighborhoodAttentionFunction
 from liger_kernel.ops import LigerGELUMulFunction
 from liger_kernel.ops import LigerGroupNormFunction
@@ -147,6 +148,30 @@ def liger_fused_linear_jsd(
         accum_dtype,
         None,
         None,
+    )
+
+
+def liger_fused_linear_kl_div(
+    student_input,
+    student_weight,
+    target,
+    shift_labels=None,
+    reduction: str = "batchmean",
+    ignore_index: int = -100,
+    temperature: float = 1.0,
+    eps: float = 1e-10,
+    accum_dtype: Optional[torch.dtype] = None,
+):
+    return LigerFusedLinearKLDivFunction.apply(
+        student_input,
+        student_weight,
+        target,
+        shift_labels,
+        reduction,
+        ignore_index,
+        temperature,
+        eps,
+        accum_dtype,
     )
 
 
