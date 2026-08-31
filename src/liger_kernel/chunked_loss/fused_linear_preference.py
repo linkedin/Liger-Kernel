@@ -5,6 +5,8 @@ import torch
 
 from torch.nn import functional as F
 
+from liger_kernel.ops.selective_log_softmax import liger_selective_log_softmax
+
 
 class LigerFusedLinearPreferenceBase(torch.autograd.Function):
     @abstractmethod
@@ -293,14 +295,9 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         loss_mask = target_chunk != ignore_index
         label_chunk = torch.where(loss_mask, target_chunk, 0)
         if selective_log_softmax:
-            # Match TRL's BF16/FP16 baseline: compute only target-token log probabilities one
-            # batch row at a time, avoiding an additional full-size FP32 log-probability tensor.
-            per_token_logps = torch.stack(
-                [
-                    F.log_softmax(row_logits, dim=-1).gather(-1, row_labels.unsqueeze(-1)).squeeze(-1)
-                    for row_logits, row_labels in zip(logits_chunk, label_chunk, strict=True)
-                ]
-            )
+            # Match TRL's FP32 log-probability semantics without materializing an additional
+            # full-size FP32 vocabulary tensor.
+            per_token_logps = liger_selective_log_softmax(logits_chunk, label_chunk)
         else:
             log_probs_chunk = F.log_softmax(logits_chunk.float(), dim=-1)
             per_token_logps = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
@@ -313,11 +310,8 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             if selective_log_softmax and chosen_nll_target_chunk is not None:
                 nll_mask = nll_labels != ignore_index
                 safe_nll_labels = torch.where(nll_mask, nll_labels, 0)
-                chosen_nll_logps = torch.stack(
-                    [
-                        F.log_softmax(row_logits, dim=-1).gather(-1, row_labels.unsqueeze(-1)).squeeze(-1)
-                        for row_logits, row_labels in zip(logits_chunk[:len_chosen_chunk], safe_nll_labels, strict=True)
-                    ]
+                chosen_nll_logps = liger_selective_log_softmax(
+                    logits_chunk[:len_chosen_chunk].contiguous(), safe_nll_labels
                 )
                 chosen_nll_loss = -(chosen_nll_logps * nll_mask).sum()
             elif selective_log_softmax:
