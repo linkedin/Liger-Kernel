@@ -489,7 +489,6 @@ __host__ __device__ inline BackwardTileCoord backward_cluster_n_m_fast_tile(
 	return coord;
 }
 
-template <int Compute = 90>
 // ───────────────────────────────────────────────────────────────────────────
 // dX phase
 // ───────────────────────────────────────────────────────────────────────────
