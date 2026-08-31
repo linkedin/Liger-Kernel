@@ -264,11 +264,16 @@ nll, entropy = LigerFusedLinearScaledCrossEntropyTPFunction.apply(
 The TP frontend derives `vocab_start` from the process-group rank. BF16 inputs on Hopper use the optional
 `liger_cute_kernels` (LCK) implementation when its native core is available; other configurations use Liger's chunked
 tensor-parallel fallback adapted from Verl's fused PPO formulas. Both paths return globally correct per-token outputs
-and sum the input gradient across the TP group. The first LCK call initializes its NVSHMEM/NCCL runtime and fixes
-workspace capacity, so warm it up with the largest expected token, hidden, local-vocabulary, and `tiles_per_reduce`
-settings before CUDA Graph capture.
-LCK shares the process-wide NVSHMEM bootstrap used by `LigerExpertParallelFusedMoe`; TP and EP use separate cached teams
-and separately named workspaces. Initialize NVSHMEM from a common parent group (normally `WORLD`) when both are used.
+and sum the input gradient across the TP group. LCK borrows the caller-owned PyTorch NCCL communicator only when the
+PyTorch and LCK NCCL runtime versions match; the TVM-FFI core remains independent of the Torch C++ ABI and never owns or
+destroys that communicator. Calls remain collectives on `tp_group`, so they must have the same ordering on every member
+and must not be reordered around other collectives on that group.
+
+LCK shares the process-wide NVSHMEM bootstrap used by `LigerExpertParallelFusedMoe`, while TP and EP use separate cached
+teams and separately named workspaces. Application setup must initialize NVSHMEM from a common parent group (normally
+`WORLD`) and resolve both process groups before invoking either kernel. The first FSLCE call fixes its workspace
+capacity, so warm it up with the largest expected token, hidden, local-vocabulary, and `tiles_per_reduce` settings
+before CUDA Graph capture.
 
 H100 BF16 forward medians from 60 interleaved samples per provider at
 `H=4096`, `V=131072`. Effective TFLOPS count the common projection work,

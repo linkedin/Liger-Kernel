@@ -17,13 +17,16 @@ def _load_sm90_function():
     return LigerFusedScaledCrossEntropySM90Function
 
 
-def _load_lck_tp_function():
+def _load_lck_tp_function(process_group, device):
     from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import (
         LigerFusedLinearScaledCrossEntropyLckTPFunction,
     )
     from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import is_available
+    from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import supports_process_group
 
-    return LigerFusedLinearScaledCrossEntropyLckTPFunction if is_available() else None
+    if not is_available() or not supports_process_group(process_group, device):
+        return None
+    return LigerFusedLinearScaledCrossEntropyLckTPFunction
 
 
 def _validate_temperature(temperature):
@@ -402,7 +405,7 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
         lck_function = None
         if _input.dtype == torch.bfloat16 and _is_hopper(_input.device):
             try:
-                lck_function = _load_lck_tp_function()
+                lck_function = _load_lck_tp_function(process_group, _input.device)
             except ImportError:
                 lck_function = None
         if lck_function is not None:

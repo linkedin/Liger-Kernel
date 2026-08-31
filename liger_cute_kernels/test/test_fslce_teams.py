@@ -39,6 +39,7 @@ def test_fslce_forward_binding_is_exposed():
     for name in (
         "nccl_get_unique_id",
         "nccl_comm_init_rank",
+        "nccl_runtime_version",
         "fused_linear_scaled_cross_entropy_configure_forward",
         "fused_linear_scaled_cross_entropy_forward",
     ):

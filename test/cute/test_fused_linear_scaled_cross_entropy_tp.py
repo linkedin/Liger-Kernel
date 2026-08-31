@@ -33,6 +33,11 @@ _HIDDEN = 2048
 _LOCAL_VOCAB = 320
 _TEMPERATURE = 0.8
 _IGNORE_INDEX = -100
+_MOE_TOKENS = 512
+_MOE_HIDDEN = 4096
+_MOE_INTERMEDIATE = 2048
+_MOE_EXPERTS = 16
+_MOE_TOP_K = 2
 
 
 def _group_layout(layout: str, world_size: int):
@@ -87,11 +92,72 @@ def _reference(x, global_weight, target, grad_nll, grad_entropy):
     return nll, entropy, dz @ global_weight.float(), dz
 
 
-def _worker(rank: int, world_size: int, init_file: str, layout: str, implementation: str):
+def _run_moe(rank: int, world_size: int):
+    from liger_cute_kernels import tvm_ffi
+
+    from liger_kernel.ops.cute.ops.moe import moe_fused
+
+    tvm_ffi.moe_configure_symmetric(
+        max_tokens=_MOE_TOKENS,
+        hidden_dim=_MOE_HIDDEN,
+        max_num_experts=_MOE_EXPERTS,
+        max_top_k=_MOE_TOP_K,
+        num_pes=world_size,
+        num_hosts=1,
+        gpus_per_host=world_size,
+    )
+    experts_per_rank = _MOE_EXPERTS // world_size
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(4100 + rank)
+    x = torch.randn(_MOE_TOKENS, _MOE_HIDDEN, generator=generator).to(device="cuda", dtype=torch.bfloat16)
+    all_b = torch.randn(
+        experts_per_rank,
+        _MOE_INTERMEDIATE,
+        _MOE_HIDDEN,
+        generator=generator,
+    ).to(device="cuda", dtype=torch.bfloat16)
+    all_c = torch.randn(
+        experts_per_rank,
+        _MOE_INTERMEDIATE,
+        _MOE_HIDDEN,
+        generator=generator,
+    ).to(device="cuda", dtype=torch.bfloat16)
+    all_a = torch.randn(
+        experts_per_rank,
+        _MOE_HIDDEN,
+        _MOE_INTERMEDIATE,
+        generator=generator,
+    ).to(device="cuda", dtype=torch.bfloat16)
+    rows = torch.arange(_MOE_TOKENS, device="cuda", dtype=torch.int32)
+    expert_indices = torch.stack((rows % _MOE_EXPERTS, (rows + 1) % _MOE_EXPERTS), dim=-1)
+    expert_weights = torch.full(
+        (_MOE_TOKENS, _MOE_TOP_K),
+        1.0 / _MOE_TOP_K,
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+    with torch.no_grad():
+        output = moe_fused(
+            x,
+            expert_indices,
+            expert_weights,
+            all_b,
+            all_c,
+            all_a,
+            _MOE_EXPERTS,
+            _MOE_TOP_K,
+            dist.group.WORLD,
+        )
+    torch.cuda.synchronize()
+    assert output.shape == x.shape
+    assert torch.isfinite(output).all()
+
+
+def _worker(rank: int, world_size: int, init_file: str, layout: str, implementation: str, run_moe: bool):
     if implementation == "fallback":
         import liger_kernel.ops.fused_linear_scaled_cross_entropy as frontend
 
-        frontend._load_lck_tp_function = lambda: None
+        frontend._load_lck_tp_function = lambda group, device: None
         nvshmem = None
     else:
         from liger_cute_kernels import nvshmem
@@ -105,12 +171,19 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         timeout=timedelta(seconds=180),
     )
 
+    nvshmem_initialized = False
     team_handle = None
     try:
         tp_group, tp_ranks, _created_groups = _create_tp_group(rank, world_size, layout)
         tp_rank = tp_ranks.index(rank)
         tp_size = len(tp_ranks)
         group_index = _group_layout(layout, world_size).index(tp_ranks)
+        if implementation == "lck":
+            nvshmem.init_from_pg()
+            nvshmem_initialized = True
+            team_handle = nvshmem.resolve_team(tp_group)
+            if run_moe:
+                _run_moe(rank, world_size)
 
         x_generator = torch.Generator(device="cpu")
         x_generator.manual_seed(2027 + group_index)
@@ -169,11 +242,6 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
 
         torch.cuda.synchronize()
         if implementation == "lck":
-            runtime = lck_frontend._RUNTIME
-            assert runtime is not None
-            assert runtime.group_ranks == tuple(tp_ranks)
-            team_handle = runtime.team_handle
-            lck_frontend._release_runtime()
             nvshmem.pool_clear_all()
             if team_handle != nvshmem.team_world():
                 nvshmem.team_destroy(team_handle)
@@ -185,11 +253,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
     except BaseException:
         if implementation == "lck":
             try:
-                lck_frontend._release_runtime()
-            except Exception:
-                pass
-            try:
-                if nvshmem.is_initialized():
+                if nvshmem_initialized:
                     nvshmem.finalize()
             except Exception:
                 pass
@@ -200,7 +264,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         raise
 
 
-def _run(world_size: int, layout: str, implementation: str):
+def _run(world_size: int, layout: str, implementation: str, run_moe: bool = False):
     rendezvous = tempfile.mkdtemp(prefix=f"liger_fslce_tp_{layout}_")
     init_file = os.path.join(rendezvous, "store")
     env = {
@@ -213,7 +277,7 @@ def _run(world_size: int, layout: str, implementation: str):
     try:
         mp.spawn(
             _worker,
-            args=(world_size, init_file, layout, implementation),
+            args=(world_size, init_file, layout, implementation, run_moe),
             nprocs=world_size,
             join=True,
         )
@@ -255,3 +319,11 @@ def test_tp_frontend_liger_fallback(world_size, layout):
     if torch is None or _NDEV < world_size:
         pytest.skip(f"requires at least {world_size} CUDA devices")
     _run(world_size, layout, "fallback")
+
+
+def test_lck_moe_and_tp_frontend_use_different_process_groups():
+    if not _LCK_AVAILABLE:
+        pytest.skip("requires a matching liger_cute_kernels wheel")
+    if _NDEV < 4:
+        pytest.skip("requires at least four CUDA devices")
+    _run(4, "strided", "lck", run_moe=True)

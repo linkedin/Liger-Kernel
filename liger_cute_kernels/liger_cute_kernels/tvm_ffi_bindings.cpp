@@ -232,6 +232,16 @@ void nccl_comm_destroy(int64_t comm_handle) {
       "ncclCommDestroy");
 }
 
+void nccl_runtime_version(ffi::TensorView out) {
+  RequireCpuInt32(out, 3);
+  int version = 0;
+  CheckNccl(ncclGetVersion(&version), "ncclGetVersion");
+  auto* values = static_cast<int32_t*>(out.data_ptr());
+  values[0] = version / 10000;
+  values[1] = (version % 10000) / 100;
+  values[2] = version % 100;
+}
+
 void my_pe(ffi::TensorView out) {
   RequireCpuInt32(out, 1);
   CheckStatus(liger_cute_nvshmem_my_pe(static_cast<int*>(out.data_ptr())), "my_pe");
@@ -642,6 +652,7 @@ TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_unique_id_nbytes, nccl_unique_id_nbytes);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_get_unique_id, nccl_get_unique_id);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_comm_init_rank, nccl_comm_init_rank);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_comm_destroy, nccl_comm_destroy);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_runtime_version, nccl_runtime_version);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(my_pe, my_pe);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(n_pes, n_pes);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(team_world, team_world);

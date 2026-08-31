@@ -14,7 +14,6 @@ import torch
 
 _MOD = None
 _NVSHMEM_LIBS_LOADED = False
-_POOL_GENERATION = 0
 
 
 def is_available() -> bool:
@@ -101,10 +100,14 @@ def nccl_comm_destroy(comm_handle: int) -> None:
     _load_module().nccl_comm_destroy(int(comm_handle))
 
 
+def nccl_runtime_version() -> tuple[int, int, int]:
+    out = torch.empty(3, dtype=torch.int32, device="cpu")
+    _load_module().nccl_runtime_version(out)
+    return tuple(int(value) for value in out.tolist())
+
+
 def finalize() -> None:
-    global _POOL_GENERATION
     _load_module().finalize()
-    _POOL_GENERATION += 1
 
 
 def my_pe() -> int:
@@ -154,19 +157,11 @@ def team_translate_pe(src_team: int, src_pe: int, dst_team: int) -> int:
 
 
 def pool_clear_all() -> None:
-    global _POOL_GENERATION
     _load_module().pool_clear_all()
-    _POOL_GENERATION += 1
 
 
 def pool_clear_buffers() -> None:
-    global _POOL_GENERATION
     _load_module().pool_clear_buffers()
-    _POOL_GENERATION += 1
-
-
-def pool_generation() -> int:
-    return _POOL_GENERATION
 
 
 def moe_configure_symmetric(

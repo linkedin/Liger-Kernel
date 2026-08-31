@@ -5,30 +5,14 @@ from __future__ import annotations
 import math
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
-import torch.distributed as dist
 
 if TYPE_CHECKING:
     from torch.distributed import ProcessGroup
 
 _HIDDEN_ALIGNMENT = 8
-_RUNTIME = None
-
-
-@dataclass
-class _Runtime:
-    group_ranks: tuple[int, ...]
-    device_index: int
-    team_handle: int
-    nccl_comm_handle: int
-    pool_generation: int
-    max_tokens: int = 0
-    max_hidden: int = 0
-    max_local_vocab: int = 0
-    max_tiles_per_reduce: int = 0
 
 
 def _get_tvm_ffi():
@@ -47,24 +31,34 @@ def is_available() -> bool:
     try:
         tvm_ffi = _get_tvm_ffi()
         nvshmem = _get_nvshmem()
+        native_module = tvm_ffi._load_module()
     except ImportError:
         return False
-    required_tvm_ffi = (
+    required_native = (
         "fused_linear_scaled_cross_entropy_configure_backward",
         "fused_linear_scaled_cross_entropy_configure_forward",
         "fused_linear_scaled_cross_entropy_backward",
         "fused_linear_scaled_cross_entropy_forward",
-        "nccl_comm_destroy",
-        "nccl_comm_init_rank",
-        "nccl_get_unique_id",
-        "nccl_unique_id_nbytes",
-        "pool_generation",
+        "nccl_runtime_version",
     )
-    if not all(callable(getattr(tvm_ffi, name, None)) for name in required_tvm_ffi):
+    if not all(hasattr(native_module, name) for name in required_native):
         return False
-    return all(
-        callable(getattr(nvshmem, name, None)) for name in ("ensure_initialized", "is_initialized", "resolve_team")
+    return callable(getattr(nvshmem, "resolve_team", None))
+
+
+def supports_process_group(process_group: "ProcessGroup", device: torch.device) -> bool:
+    try:
+        backend = process_group._get_backend(device)
+    except (AttributeError, RuntimeError):
+        return False
+    required = (
+        "_comm_ptr",
+        "eager_connect_single_device",
+        "get_runtime_nccl_version",
     )
+    if not all(callable(getattr(backend, name, None)) for name in required):
+        return False
+    return tuple(backend.get_runtime_nccl_version()) == _get_tvm_ffi().nccl_runtime_version()
 
 
 def _validate_temperature(temperature) -> None:
@@ -124,98 +118,41 @@ def _cuda_device_context(tensor):
         yield
 
 
-def _group_ranks(process_group: "ProcessGroup") -> tuple[int, ...]:
-    return tuple(dist.get_global_rank(process_group, rank) for rank in range(dist.get_world_size(process_group)))
-
-
-def _create_nccl_communicator(process_group: "ProcessGroup", device: torch.device) -> int:
-    tvm_ffi = _get_tvm_ffi()
-    rank = dist.get_rank(process_group)
-    group_ranks = _group_ranks(process_group)
-    unique_id = torch.empty(tvm_ffi.nccl_unique_id_nbytes(), dtype=torch.uint8, device=device)
-    if rank == 0:
-        unique_id.copy_(tvm_ffi.nccl_get_unique_id(), non_blocking=False)
-    dist.broadcast(unique_id, src=group_ranks[0], group=process_group)
-    return tvm_ffi.nccl_comm_init_rank(rank, len(group_ranks), unique_id.cpu().contiguous())
-
-
-def _configure_runtime(runtime: _Runtime, tokens: int, hidden: int, local_vocab: int, tiles_per_reduce: int) -> None:
-    if (
-        tokens <= runtime.max_tokens
-        and hidden <= runtime.max_hidden
-        and local_vocab <= runtime.max_local_vocab
-        and tiles_per_reduce <= runtime.max_tiles_per_reduce
-    ):
-        return
-
-    tvm_ffi = _get_tvm_ffi()
-    tvm_ffi.fused_linear_scaled_cross_entropy_configure_backward(
-        max(tokens, runtime.max_tokens),
-        max(hidden, runtime.max_hidden),
-        max(local_vocab, runtime.max_local_vocab),
-        max(tiles_per_reduce, runtime.max_tiles_per_reduce),
-        runtime.team_handle,
-    )
-    tvm_ffi.fused_linear_scaled_cross_entropy_configure_forward(
-        max(tokens, runtime.max_tokens),
-        max(local_vocab, runtime.max_local_vocab),
-    )
-    runtime.max_tokens = max(tokens, runtime.max_tokens)
-    runtime.max_hidden = max(hidden, runtime.max_hidden)
-    runtime.max_local_vocab = max(local_vocab, runtime.max_local_vocab)
-    runtime.max_tiles_per_reduce = max(tiles_per_reduce, runtime.max_tiles_per_reduce)
-
-
-def _prepare_runtime(process_group: "ProcessGroup", device, tokens, hidden, local_vocab, tiles_per_reduce) -> _Runtime:
-    global _RUNTIME
-
-    nvshmem = _get_nvshmem()
-    tvm_ffi = _get_tvm_ffi()
-    if _RUNTIME is not None and not nvshmem.is_initialized():
-        tvm_ffi.nccl_comm_destroy(_RUNTIME.nccl_comm_handle)
-        _RUNTIME = None
-
-    ranks = _group_ranks(process_group)
-    device_index = device.index if device.index is not None else torch.cuda.current_device()
-    if _RUNTIME is not None:
-        if _RUNTIME.group_ranks != ranks or _RUNTIME.device_index != device_index:
-            raise RuntimeError(
-                "the LCK tensor-parallel runtime is already bound to another process group or CUDA device"
-            )
-        pool_generation = tvm_ffi.pool_generation()
-        if _RUNTIME.pool_generation != pool_generation:
-            _RUNTIME.pool_generation = pool_generation
-            _RUNTIME.max_tokens = 0
-            _RUNTIME.max_hidden = 0
-            _RUNTIME.max_local_vocab = 0
-            _RUNTIME.max_tiles_per_reduce = 0
-        _configure_runtime(_RUNTIME, tokens, hidden, local_vocab, tiles_per_reduce)
-        return _RUNTIME
-
-    with torch.cuda.device(device):
-        # Share one WORLD bootstrap with LigerMoE; EP and TP remain separate
-        # cached NVSHMEM teams underneath that process-wide runtime.
-        nvshmem.ensure_initialized()
-        team_handle = nvshmem.resolve_team(process_group)
-        runtime = _Runtime(
-            group_ranks=ranks,
-            device_index=device_index,
-            team_handle=team_handle,
-            nccl_comm_handle=0,
-            pool_generation=tvm_ffi.pool_generation(),
+def _borrow_nccl_communicator(process_group: "ProcessGroup", device: torch.device) -> int:
+    """Borrow the current-device communicator without storing or owning it."""
+    backend = process_group._get_backend(device)
+    torch_nccl_version = tuple(backend.get_runtime_nccl_version())
+    lck_nccl_version = _get_tvm_ffi().nccl_runtime_version()
+    if torch_nccl_version != lck_nccl_version:
+        raise RuntimeError(
+            "the PyTorch and LCK NCCL runtime versions must match before sharing a communicator: "
+            f"torch={torch_nccl_version}, lck={lck_nccl_version}"
         )
-        _configure_runtime(runtime, tokens, hidden, local_vocab, tiles_per_reduce)
-        runtime.nccl_comm_handle = _create_nccl_communicator(process_group, device)
-    _RUNTIME = runtime
-    return runtime
+    comm_handle = int(backend._comm_ptr())
+    if comm_handle == 0:
+        backend.eager_connect_single_device(device)
+        comm_handle = int(backend._comm_ptr())
+    if comm_handle == 0:
+        raise RuntimeError("PyTorch did not expose a ready NCCL communicator for the tensor-parallel process group")
+    return comm_handle
 
 
-def _release_runtime() -> None:
-    global _RUNTIME
-    if _RUNTIME is None:
-        return
-    _get_tvm_ffi().nccl_comm_destroy(_RUNTIME.nccl_comm_handle)
-    _RUNTIME = None
+def _prepare_lck_call(process_group: "ProcessGroup", device, tokens, hidden, local_vocab, tiles_per_reduce) -> int:
+    tvm_ffi = _get_tvm_ffi()
+    with torch.cuda.device(device):
+        team_handle = _get_nvshmem().resolve_team(process_group, create=False)
+        tvm_ffi.fused_linear_scaled_cross_entropy_configure_backward(
+            tokens,
+            hidden,
+            local_vocab,
+            tiles_per_reduce,
+            team_handle,
+        )
+        tvm_ffi.fused_linear_scaled_cross_entropy_configure_forward(
+            tokens,
+            local_vocab,
+        )
+    return team_handle
 
 
 class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
@@ -238,7 +175,7 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
 
         x_padded, weight_padded, hidden = _pad_hidden(x, weight)
         target = target.contiguous()
-        runtime = _prepare_runtime(
+        team_handle = _prepare_lck_call(
             tp_group,
             x.device,
             target.shape[0],
@@ -247,6 +184,7 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
             tiles_per_reduce,
         )
         with _cuda_device_context(x_padded):
+            nccl_comm_handle = _borrow_nccl_communicator(tp_group, x_padded.device)
             nll, lse, entropy = _get_tvm_ffi().fused_linear_scaled_cross_entropy_forward(
                 x_padded,
                 weight_padded,
@@ -254,7 +192,7 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
                 vocab_start,
                 ignore_index,
                 1.0 / temperature,
-                runtime.nccl_comm_handle,
+                nccl_comm_handle,
                 return_entropy,
             )
 
@@ -263,7 +201,7 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
         ctx.vocab_start = vocab_start
         ctx.ignore_index = ignore_index
         ctx.inverse_temperature = 1.0 / temperature
-        ctx.team_handle = runtime.team_handle
+        ctx.team_handle = team_handle
         ctx.tiles_per_reduce = tiles_per_reduce
         ctx.return_entropy = return_entropy
         return (nll, entropy) if return_entropy else nll
