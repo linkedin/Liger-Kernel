@@ -477,32 +477,41 @@ loss.backward()
 
 ## CI status
 
-<table style="width: 100%; text-align: center; border-collapse: collapse;">
+<table>
     <tr>
-        <th style="padding: 10px;">Build</th>
+        <th>Platform</th>
+        <th>Build</th>
     </tr>
     <tr>
-        <td style="padding: 10px;">
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/Ascend/Ascend-CI/actions/workflows/liger_kernel.yml">
-                    <img src="https://img.shields.io/github/actions/workflow/status/Ascend/Ascend-CI/liger_kernel.yml?branch=main&label=Ascend%20NPU" alt="Ascend NPU">
-                </a>
-            </div>
+        <td>NVIDIA GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/nvi-ci.yml?branch=main&event=push&label=" alt="NVIDIA GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>AMD GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/amd-ci.yml?branch=main&event=push&label=" alt="AMD GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>Intel GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/intel-ci.yml?branch=main&event=push&label=" alt="Intel GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>Ascend NPU</td>
+        <td>
+            <a href="https://github.com/Ascend/Ascend-CI/actions/workflows/liger_kernel.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/Ascend/Ascend-CI/liger_kernel.yml?branch=main&label=" alt="Ascend NPU Build">
+            </a>
         </td>
     </tr>
 </table>
