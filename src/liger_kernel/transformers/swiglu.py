@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from liger_kernel.ops import LigerFusedMoEFunction
 from liger_kernel.ops import LigerSiLUMulFunction
+from liger_kernel.transformers.lfm2_utils import use_lfm2_native_forward
 
 
 class LigerSwiGLUMLP(nn.Module):
@@ -75,6 +76,83 @@ class LigerExperts(nn.Module):
 
         out = LigerFusedMoEFunction.apply(x, self.gate_up_proj, self.down_proj, top_k_index_2d, top_k_weights_2d)
         return out.view(orig_shape)
+
+
+class LigerLfm2SwiGLUMLP(nn.Module):
+    """LFM2 SwiGLU MLP using the fused SiLU-multiply kernel.
+
+    LFM2 names its projections w1, w3, and w2 and computes
+    w2(silu(w1(x)) * w3(x)). Its configuration also adjusts the dense
+    intermediate size before module construction, so that calculation must be
+    preserved when the class is patched before model initialization.
+    """
+
+    def __init__(self, config, intermediate_size=None):
+        super().__init__()
+        if intermediate_size is None:
+            intermediate_size = config.intermediate_size
+            if getattr(config, "block_auto_adjust_ff_dim", False):
+                intermediate_size = int(2 * intermediate_size / 3)
+                if config.block_ffn_dim_multiplier is not None:
+                    intermediate_size = int(config.block_ffn_dim_multiplier * intermediate_size)
+                    intermediate_size = config.block_multiple_of * (
+                        (intermediate_size + config.block_multiple_of - 1) // config.block_multiple_of
+                    )
+
+        self.w1 = nn.Linear(config.hidden_size, intermediate_size, bias=False)
+        self.w3 = nn.Linear(config.hidden_size, intermediate_size, bias=False)
+        self.w2 = nn.Linear(intermediate_size, config.hidden_size, bias=False)
+
+    def forward(self, x):
+        if use_lfm2_native_forward(x, sequence_dim=-2):
+            return self.w2(torch.nn.functional.silu(self.w1(x)) * self.w3(x))
+        return self.w2(LigerSiLUMulFunction.apply(self.w1(x), self.w3(x)))
+
+
+# MI325X and H100 sweeps of the 8B-A1B and 24B-A2B shapes put the
+# large-workload crossover near 256 routed rows per expert. Below it,
+# preserve the portable fused Triton path to avoid small-batch regressions.
+_GROUPED_MM_MIN_ROWS_PER_EXPERT = 256
+
+
+class LigerLfm2MoeExperts(LigerExperts):
+    """LFM2-MoE experts with workload-aware grouped-MM dispatch."""
+
+    def __init__(self, config):
+        nn.Module.__init__(self)
+        self.num_experts = config.num_experts
+        self.hidden_dim = config.hidden_size
+        self.intermediate_dim = config.moe_intermediate_size
+        self.has_gate = True
+        self.has_bias = False
+        self.is_transposed = False
+        self.act_fn = torch.nn.functional.silu
+        self.gate_up_proj = nn.Parameter(torch.empty(self.num_experts, 2 * self.intermediate_dim, self.hidden_dim))
+        self.down_proj = nn.Parameter(torch.empty(self.num_experts, self.hidden_dim, self.intermediate_dim))
+
+    def _apply_gate(self, gate_up_out):
+        gate, up = gate_up_out.chunk(2, dim=-1)
+        return self.act_fn(gate) * up
+
+    def forward(self, hidden_states, top_k_index, top_k_weights):
+        grouped_mm_available = hasattr(torch.nn.functional, "grouped_mm") or hasattr(torch, "_grouped_mm")
+        if grouped_mm_available:
+            tokens = hidden_states.numel() // self.hidden_dim
+            top_k = top_k_index.shape[-1]
+            enough_work_per_expert = tokens * top_k >= self.num_experts * _GROUPED_MM_MIN_ROWS_PER_EXPERT
+            if enough_work_per_expert:
+                try:
+                    from transformers.integrations.moe import grouped_mm_experts_forward
+                except ImportError:
+                    pass
+                else:
+                    orig_shape = hidden_states.shape
+                    x = hidden_states.view(-1, self.hidden_dim)
+                    out = grouped_mm_experts_forward(
+                        self, x, top_k_index.view(x.shape[0], -1), top_k_weights.view(x.shape[0], -1)
+                    )
+                    return out.view(orig_shape)
+        return LigerExperts.forward(self, hidden_states, top_k_index, top_k_weights)
 
 
 class LigerPhi3SwiGLUMLP(nn.Module):

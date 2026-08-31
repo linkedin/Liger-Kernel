@@ -3,6 +3,18 @@ import torch.nn.functional as F
 
 from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
 
+# BF16/FP16 row-selective autograd wins in time and memory through 268M logits on MI325X and H100.
+# Dispatch by logical-logits size rather than model or backend so batch, sequence, and vocabulary
+# changes move automatically to the memory-efficient chunked path.
+_NATIVE_DPO_MAX_LOGIT_ELEMENTS = 268_435_456
+
+
+def _should_use_native_dpo(_input, weight):
+    if _input.dtype not in (torch.float16, torch.bfloat16):
+        return False
+    total_logit_elements = (_input.numel() // _input.shape[-1]) * weight.shape[0]
+    return total_logit_elements <= _NATIVE_DPO_MAX_LOGIT_ELEMENTS
+
 
 class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
     @staticmethod
@@ -309,6 +321,44 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         ref_weight=None,
         ref_bias=None,
     ):
+        # Optimization: native autograd has lower fixed overhead and no memory disadvantage for small
+        # logits workloads. Large workloads retain chunking so the full logits graph is never materialized.
+        if self.loss_type == "sigmoid" and _should_use_native_dpo(_input, lin_weight):
+            loss, outputs = LigerFusedLinearPreferenceBase._compute_loss(
+                _input,
+                lin_weight,
+                target,
+                bias,
+                preference_loss_fn=LigerFusedLinearDPOFunction.preference_loss_fn,
+                full_target=target,
+                ignore_index=self.ignore_index,
+                alpha=self.alpha,
+                beta=self.beta,
+                compute_nll_loss=self.compute_nll_loss,
+                use_ref_model=self.use_ref_model,
+                ref_input_chunk=ref_input,
+                ref_weight=ref_weight,
+                ref_bias=ref_bias,
+                full_nll_target=None,
+                chosen_nll_target_chunk=None,
+                average_log_prob=self.average_log_prob,
+                detach_logits_mean=True,
+                selective_log_softmax=True,
+                loss_type=self.loss_type,
+                label_smoothing=self.label_smoothing,
+                discopop_tau=self.discopop_tau,
+            )
+            # Match the established native/reference contract: mean-logit metrics are logging-only and
+            # must not retain the full logits graph, while loss-relevant logps, NLL, and rewards remain live.
+            outputs = (
+                outputs[0],
+                outputs[1],
+                outputs[2].detach(),
+                outputs[3].detach(),
+                *outputs[4:],
+            )
+            return loss, outputs
+
         return LigerFusedLinearDPOFunction.apply(
             _input,
             lin_weight,

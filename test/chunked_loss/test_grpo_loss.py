@@ -18,6 +18,43 @@ device = infer_device()
 set_seed()
 
 
+def test_small_direct_path_supports_rocm(monkeypatch):
+    """A HIP build must use the same bounded direct path as CUDA."""
+    monkeypatch.setattr(torch.version, "hip", "test-hip")
+
+    def fail_chunked_path(*args, **kwargs):
+        pytest.fail("small HIP workload unexpectedly selected the chunked path")
+
+    monkeypatch.setattr(LigerFusedLinearGRPOFunction, "apply", fail_chunked_path)
+
+    batch_size, seq_len, hidden_size, vocab_size = 1, 2, 4, 8
+    loss_fn = LigerFusedLinearGRPOLoss(use_ref_model=False, compiled=False)
+    hidden = torch.randn(
+        batch_size,
+        seq_len,
+        hidden_size,
+        device=device,
+        requires_grad=True,
+    )
+    weight = torch.randn(vocab_size, hidden_size, device=device, requires_grad=True)
+    selected_token_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
+    attention_mask = torch.ones(batch_size, seq_len, device=device)
+    advantages = torch.ones(batch_size, device=device)
+
+    loss, _ = loss_fn(
+        hidden,
+        weight,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert hidden.grad is not None
+    assert weight.grad is not None
+
+
 def sapo_loss_fn(importance_ratio: torch.Tensor, temperature: float) -> torch.Tensor:
     """SAPO (Soft Adaptive Policy Optimization) loss function for torch reference.
 
