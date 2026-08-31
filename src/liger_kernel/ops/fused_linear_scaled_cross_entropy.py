@@ -3,17 +3,39 @@
 import math
 
 import torch
+import torch.distributed as dist
 
 # The fallback formulas and 512-token chunking are adapted from Verl's
 # Apache-2.0 FusedLinearForPPOFunction:
 # https://github.com/verl-project/verl/blob/main/verl/utils/experimental/torch_functional.py
 _FALLBACK_CHUNK_SIZE = 512
+_VERL_TP_HIDDEN_ALIGNMENT = 128
 
 
 def _load_sm90_function():
     from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import LigerFusedScaledCrossEntropySM90Function
 
     return LigerFusedScaledCrossEntropySM90Function
+
+
+def _load_lck_tp_function():
+    from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import (
+        LigerFusedLinearScaledCrossEntropyLckTPFunction,
+    )
+    from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import is_available
+
+    return LigerFusedLinearScaledCrossEntropyLckTPFunction if is_available() else None
+
+
+def _load_verl_tp_function():
+    try:
+        from verl.utils.kernel.linear_cross_entropy import linear_cross_entropy
+    except ImportError as exc:
+        raise ImportError(
+            "tensor-parallel fused linear scaled cross entropy requires Verl when the LCK Hopper backend "
+            "is unavailable; install Verl or install a matching liger_cute_kernels wheel"
+        ) from exc
+    return linear_cross_entropy
 
 
 def _validate_temperature(temperature):
@@ -45,6 +67,89 @@ def _validate_fallback_inputs(_input, weight, target, ignore_index):
         raise ValueError(
             f"target contains values outside [0, {weight.shape[0]}) that are not ignore_index={ignore_index}"
         )
+
+
+def _tp_group_info(process_group):
+    if not dist.is_available() or not dist.is_initialized():
+        raise RuntimeError("torch.distributed must be initialized before using tensor-parallel scaled cross entropy")
+    process_group = process_group if process_group is not None else dist.group.WORLD
+    if str(dist.get_backend(process_group)).lower() != "nccl":
+        raise RuntimeError("tensor-parallel fused linear scaled cross entropy requires an NCCL process group")
+    return process_group, dist.get_rank(process_group)
+
+
+def _validate_tp_inputs(_input, weight, target):
+    if _input.ndim != 2 or weight.ndim != 2 or target.ndim != 1:
+        raise ValueError("expected input[M,H], weight[V_local,H], and target[M]")
+    if _input.shape[0] != target.shape[0] or _input.shape[1] != weight.shape[1]:
+        raise ValueError(
+            f"input {tuple(_input.shape)}, weight {tuple(weight.shape)}, and target {tuple(target.shape)} "
+            "shapes are incompatible"
+        )
+    if _input.shape[0] == 0 or _input.shape[1] == 0 or weight.shape[0] == 0:
+        raise ValueError("token, hidden, and local vocabulary dimensions must be non-empty")
+    if _input.device != weight.device or _input.device != target.device:
+        raise ValueError("input, weight, and target must be on the same device")
+    if not _input.is_cuda:
+        raise RuntimeError("tensor-parallel fused linear scaled cross entropy requires CUDA tensors")
+    if _input.dtype != weight.dtype or not torch.is_floating_point(_input):
+        raise TypeError("input and weight must have the same floating-point dtype")
+    if target.dtype != torch.int64:
+        raise TypeError("target must be an int64 tensor")
+
+
+def _is_hopper(device):
+    if device.type != "cuda" or not torch.cuda.is_available() or torch.version.hip is not None:
+        return False
+    return torch.cuda.get_device_capability(device) == (9, 0)
+
+
+class _AllReduceInputGradient(torch.autograd.Function):
+    """Match LCK's globally reduced dX around Verl's rank-local backward."""
+
+    @staticmethod
+    def forward(ctx, _input, process_group):
+        ctx.process_group = process_group
+        return _input
+
+    @staticmethod
+    def backward(ctx, grad_input):
+        if grad_input is None:
+            return None, None
+        grad_input = grad_input.clone()
+        dist.all_reduce(grad_input, op=dist.ReduceOp.SUM, group=ctx.process_group)
+        return grad_input, None
+
+
+def _apply_verl_tp_fallback(
+    _input,
+    weight,
+    target,
+    temperature,
+    ignore_index,
+    return_entropy,
+    process_group,
+):
+    valid = target != ignore_index
+    safe_target = target.masked_fill(~valid, 0).contiguous()
+    hidden_padding = (-_input.shape[1]) % _VERL_TP_HIDDEN_ALIGNMENT
+    if hidden_padding:
+        _input = torch.nn.functional.pad(_input.contiguous(), (0, hidden_padding))
+        weight = torch.nn.functional.pad(weight.contiguous(), (0, hidden_padding))
+    reduced_input = _AllReduceInputGradient.apply(_input.contiguous(), process_group)
+    log_probs, entropy = _load_verl_tp_function()(
+        reduced_input,
+        weight.contiguous(),
+        safe_target,
+        float(temperature),
+        "none",
+        process_group,
+    )
+    nll = torch.where(valid, -log_probs, torch.zeros_like(log_probs))
+    if not return_entropy:
+        return nll
+    entropy = torch.where(valid, entropy, torch.zeros_like(entropy))
+    return nll, entropy
 
 
 def _fallback_forward_chunk(hidden_states, vocab_weights, input_ids, valid, temperature):
@@ -199,4 +304,67 @@ class LigerFusedLinearScaledCrossEntropyFunction:
         )
 
 
-__all__ = ["LigerFusedLinearScaledCrossEntropyFunction"]
+class LigerFusedLinearScaledCrossEntropyTPFunction:
+    """Tensor-parallel frontend using LCK on Hopper and Verl otherwise.
+
+    ``weight`` is the calling rank's equally sized contiguous vocabulary shard,
+    while ``target`` contains global vocabulary indices.
+    """
+
+    @staticmethod
+    def apply(
+        _input,
+        weight,
+        target,
+        tp_group,
+        temperature=1.0,
+        ignore_index=-100,
+        tiles_per_reduce=1,
+        return_entropy=False,
+    ):
+        _validate_temperature(temperature)
+        if not isinstance(tiles_per_reduce, int) or isinstance(tiles_per_reduce, bool):
+            raise TypeError("tiles_per_reduce must be an int")
+        if tiles_per_reduce not in (1, 2, 4):
+            raise ValueError("tiles_per_reduce must be one of 1, 2, or 4")
+        if not isinstance(return_entropy, bool):
+            raise TypeError("return_entropy must be a bool")
+
+        process_group, rank = _tp_group_info(tp_group)
+        _validate_tp_inputs(_input, weight, target)
+        vocab_start = rank * weight.shape[0]
+
+        lck_function = None
+        if _input.dtype == torch.bfloat16 and _is_hopper(_input.device):
+            try:
+                lck_function = _load_lck_tp_function()
+            except ImportError:
+                lck_function = None
+        if lck_function is not None:
+            return lck_function.apply(
+                _input,
+                weight,
+                target,
+                vocab_start,
+                temperature,
+                ignore_index,
+                tiles_per_reduce,
+                return_entropy,
+                process_group,
+            )
+
+        return _apply_verl_tp_fallback(
+            _input,
+            weight,
+            target,
+            temperature,
+            ignore_index,
+            return_entropy,
+            process_group,
+        )
+
+
+__all__ = [
+    "LigerFusedLinearScaledCrossEntropyFunction",
+    "LigerFusedLinearScaledCrossEntropyTPFunction",
+]

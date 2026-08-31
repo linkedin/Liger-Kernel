@@ -109,8 +109,10 @@ def test_ranks_to_strided_rejects(bad):
 @pytest.fixture
 def isolated_team_state():
     nvshmem._reset_team_state()
+    nvshmem._INITIALIZED = False
     yield
     nvshmem._reset_team_state()
+    nvshmem._INITIALIZED = False
 
 
 def test_team_from_pg_uses_bootstrap_pe_numbering(monkeypatch, isolated_team_state):
@@ -186,6 +188,7 @@ def test_init_pmi_records_aligned_torch_world(monkeypatch, isolated_team_state):
 
     assert nvshmem._BOOTSTRAP_PG is world_pg
     assert nvshmem._BOOTSTRAP_GLOBAL_RANKS == (0, 1, 2, 3)
+    assert nvshmem.is_initialized()
 
 
 def test_init_pmi_without_matching_world_keeps_world_only_mode(monkeypatch, isolated_team_state):
@@ -198,6 +201,23 @@ def test_init_pmi_without_matching_world_keeps_world_only_mode(monkeypatch, isol
 
     assert nvshmem._BOOTSTRAP_PG is None
     assert nvshmem._BOOTSTRAP_GLOBAL_RANKS is None
+    assert nvshmem.is_initialized()
+
+
+def test_ensure_initialized_bootstraps_only_once(monkeypatch, isolated_team_state):
+    pg = object()
+    calls = []
+
+    def fake_init(actual_pg):
+        calls.append(actual_pg)
+        nvshmem._INITIALIZED = True
+
+    monkeypatch.setattr(nvshmem, "init_from_pg", fake_init)
+
+    nvshmem.ensure_initialized(pg)
+    nvshmem.ensure_initialized(pg)
+
+    assert calls == [pg]
 
 
 # ── Distributed harness ──────────────────────────────────────────────────────

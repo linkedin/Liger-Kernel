@@ -1,6 +1,9 @@
 import importlib.util
+import inspect
 import os
+import sys
 
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +17,28 @@ _SPEC = importlib.util.spec_from_file_location("_fused_linear_scaled_cross_entro
 assert _SPEC is not None and _SPEC.loader is not None
 _FRONTEND = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_FRONTEND)
+
+_LCK_FRONTEND_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "liger_kernel"
+    / "ops"
+    / "cute"
+    / "fused_linear_scaled_cross_entropy_tp.py"
+)
+_LCK_SPEC = importlib.util.spec_from_file_location(
+    "_fused_linear_scaled_cross_entropy_lck_frontend", _LCK_FRONTEND_PATH
+)
+assert _LCK_SPEC is not None and _LCK_SPEC.loader is not None
+_LCK_FRONTEND = importlib.util.module_from_spec(_LCK_SPEC)
+sys.modules[_LCK_SPEC.name] = _LCK_FRONTEND
+_LCK_SPEC.loader.exec_module(_LCK_FRONTEND)
+
+_TVM_FFI_PATH = Path(__file__).resolve().parents[2] / "liger_cute_kernels" / "liger_cute_kernels" / "tvm_ffi.py"
+_TVM_FFI_SPEC = importlib.util.spec_from_file_location("_fused_linear_scaled_cross_entropy_tvm_ffi", _TVM_FFI_PATH)
+assert _TVM_FFI_SPEC is not None and _TVM_FFI_SPEC.loader is not None
+_TVM_FFI = importlib.util.module_from_spec(_TVM_FFI_SPEC)
+_TVM_FFI_SPEC.loader.exec_module(_TVM_FFI)
 
 _CUTILE_ENABLED = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower() == "cutile"
 
@@ -173,6 +198,290 @@ def test_frontend_fallback_supports_entropy_only_backward():
     assert weight.grad is not None
 
 
+def test_tp_frontend_dispatches_hopper_bf16_to_lck(monkeypatch):
+    process_group = object()
+    device = torch.device("cuda:3")
+    _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
+    weight = SimpleNamespace(shape=(16, 32))
+    target = object()
+    calls = []
+
+    class StubLckFunction:
+        @staticmethod
+        def apply(*args):
+            calls.append(args)
+            return "lck-result"
+
+    monkeypatch.setattr(_FRONTEND, "_tp_group_info", lambda actual: (actual, 2))
+    monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
+    monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: actual == device)
+    monkeypatch.setattr(_FRONTEND, "_load_lck_tp_function", lambda: StubLckFunction)
+    monkeypatch.setattr(
+        _FRONTEND,
+        "_apply_verl_tp_fallback",
+        lambda *args: pytest.fail("Verl fallback must not run when LCK is available"),
+    )
+
+    result = _FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+        _input,
+        weight,
+        target,
+        process_group,
+        0.5,
+        -1,
+        2,
+        True,
+    )
+
+    assert result == "lck-result"
+    assert calls == [(_input, weight, target, 32, 0.5, -1, 2, True, process_group)]
+
+
+def test_tp_group_is_a_call_argument():
+    parameters = inspect.signature(_FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply).parameters
+
+    assert list(parameters)[3] == "tp_group"
+
+
+@pytest.mark.parametrize("lck_result", [None, ImportError("lck unavailable")])
+def test_tp_frontend_uses_verl_when_lck_is_unavailable(monkeypatch, lck_result):
+    process_group = object()
+    device = torch.device("cuda:0")
+    _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
+    weight = SimpleNamespace(shape=(8, 16))
+    target = object()
+    calls = []
+
+    monkeypatch.setattr(_FRONTEND, "_tp_group_info", lambda actual: (actual, 1))
+    monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
+    monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: True)
+
+    def load_lck():
+        if isinstance(lck_result, BaseException):
+            raise lck_result
+        return lck_result
+
+    monkeypatch.setattr(_FRONTEND, "_load_lck_tp_function", load_lck)
+    monkeypatch.setattr(
+        _FRONTEND,
+        "_apply_verl_tp_fallback",
+        lambda *args: calls.append(args) or "verl-result",
+    )
+
+    result = _FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+        _input,
+        weight,
+        target,
+        process_group,
+    )
+
+    assert result == "verl-result"
+    assert calls == [(_input, weight, target, 1.0, -100, False, process_group)]
+
+
+def test_tp_verl_fallback_masks_ignored_rows_and_reduces_input_gradient(monkeypatch):
+    process_group = object()
+    _input = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], requires_grad=True)
+    weight = torch.tensor([[1.0, 2.0], [4.0, 8.0]], requires_grad=True)
+    target = torch.tensor([0, -100, 1], dtype=torch.int64)
+    seen = {}
+
+    def fake_verl(hidden, local_weight, labels, temperature, reduction, group):
+        seen["labels"] = labels.clone()
+        seen["temperature"] = temperature
+        seen["reduction"] = reduction
+        seen["group"] = group
+        logits = hidden @ local_weight.t()
+        return logits[:, 0], logits[:, 1]
+
+    def fake_all_reduce(tensor, op, group):
+        seen["all_reduce"] = (op, group)
+        tensor.mul_(2)
+
+    monkeypatch.setattr(_FRONTEND, "_load_verl_tp_function", lambda: fake_verl)
+    monkeypatch.setattr(_FRONTEND.dist, "all_reduce", fake_all_reduce)
+
+    nll, entropy = _FRONTEND._apply_verl_tp_fallback(
+        _input,
+        weight,
+        target,
+        0.5,
+        -100,
+        True,
+        process_group,
+    )
+    (nll + entropy).sum().backward()
+
+    torch.testing.assert_close(nll, torch.tensor([-5.0, 0.0, -17.0]))
+    torch.testing.assert_close(entropy, torch.tensor([20.0, 0.0, 68.0]))
+    torch.testing.assert_close(_input.grad, torch.tensor([[6.0, 12.0], [0.0, 0.0], [6.0, 12.0]]))
+    assert seen["labels"].tolist() == [0, 0, 1]
+    assert seen["temperature"] == 0.5
+    assert seen["reduction"] == "none"
+    assert seen["group"] is process_group
+    assert seen["all_reduce"] == (torch.distributed.ReduceOp.SUM, process_group)
+
+
+def test_lck_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):
+    calls = {}
+
+    class FakeTvmFfi:
+        @staticmethod
+        def fused_linear_scaled_cross_entropy_forward(*args):
+            calls["forward"] = args
+            tokens = args[0].shape[0]
+            return torch.arange(tokens, dtype=torch.float32), torch.ones(tokens), torch.full((tokens,), 2.0)
+
+        @staticmethod
+        def fused_linear_scaled_cross_entropy_backward(*args):
+            calls["backward"] = args
+            return torch.full_like(args[2], 3.0), torch.full_like(args[3], 4.0)
+
+    runtime = SimpleNamespace(team_handle=17, nccl_comm_handle=23)
+    monkeypatch.setattr(_LCK_FRONTEND, "_validate_inputs", lambda *args: None)
+    monkeypatch.setattr(_LCK_FRONTEND, "_pad_hidden", lambda x, weight: (x, weight, x.shape[1]))
+    monkeypatch.setattr(_LCK_FRONTEND, "_prepare_runtime", lambda *args: runtime)
+    monkeypatch.setattr(_LCK_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
+
+    _input = torch.randn(3, 4, requires_grad=True)
+    weight = torch.randn(5, 4, requires_grad=True)
+    target = torch.tensor([0, 1, 2], dtype=torch.int64)
+    nll, entropy = _LCK_FRONTEND.LigerFusedLinearScaledCrossEntropyLckTPFunction.apply(
+        _input,
+        weight,
+        target,
+        10,
+        0.5,
+        -100,
+        2,
+        True,
+        object(),
+    )
+    torch.autograd.backward((nll, entropy), (torch.ones_like(nll), torch.full_like(entropy, 0.25)))
+
+    assert calls["forward"][3:] == (10, -100, 2.0, 23, True)
+    torch.testing.assert_close(calls["backward"][0], torch.ones(3))
+    torch.testing.assert_close(calls["backward"][1], torch.full((3,), 0.25))
+    assert calls["backward"][7:] == (10, -100, 2.0, 17, 2, True)
+    torch.testing.assert_close(_input.grad, torch.full_like(_input, 3.0))
+    torch.testing.assert_close(weight.grad, torch.full_like(weight, 4.0))
+
+
+def test_lck_runtime_initializes_group_and_configures_once(monkeypatch):
+    process_group = object()
+    calls = []
+
+    class FakeNvshmem:
+        initialized = False
+
+        @classmethod
+        def is_initialized(cls):
+            return cls.initialized
+
+        @classmethod
+        def ensure_initialized(cls, group=None):
+            calls.append(("ensure", group))
+            cls.initialized = True
+
+        @staticmethod
+        def resolve_team(group):
+            calls.append(("team", group))
+            return 17
+
+    class FakeTvmFfi:
+        generation = 0
+
+        @staticmethod
+        def pool_generation():
+            return FakeTvmFfi.generation
+
+        @staticmethod
+        def fused_linear_scaled_cross_entropy_configure_backward(*args):
+            calls.append(("backward_config", args))
+
+        @staticmethod
+        def fused_linear_scaled_cross_entropy_configure_forward(*args):
+            calls.append(("forward_config", args))
+
+    monkeypatch.setattr(_LCK_FRONTEND, "_RUNTIME", None)
+    monkeypatch.setattr(_LCK_FRONTEND, "_get_nvshmem", lambda: FakeNvshmem)
+    monkeypatch.setattr(_LCK_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
+    monkeypatch.setattr(_LCK_FRONTEND, "_group_ranks", lambda group: (0, 2))
+    monkeypatch.setattr(
+        _LCK_FRONTEND,
+        "_create_nccl_communicator",
+        lambda group, device: calls.append(("nccl", group, device)) or 23,
+    )
+    monkeypatch.setattr(_LCK_FRONTEND.torch.cuda, "device", lambda device: nullcontext())
+
+    runtime = _LCK_FRONTEND._prepare_runtime(
+        process_group,
+        torch.device("cuda:1"),
+        128,
+        2048,
+        320,
+        2,
+    )
+    repeated = _LCK_FRONTEND._prepare_runtime(
+        process_group,
+        torch.device("cuda:1"),
+        64,
+        1024,
+        160,
+        1,
+    )
+    FakeTvmFfi.generation = 1
+    reconfigured = _LCK_FRONTEND._prepare_runtime(
+        process_group,
+        torch.device("cuda:1"),
+        64,
+        1024,
+        160,
+        1,
+    )
+
+    assert repeated is runtime
+    assert reconfigured is runtime
+    assert runtime.team_handle == 17
+    assert runtime.nccl_comm_handle == 23
+    assert calls == [
+        ("ensure", None),
+        ("team", process_group),
+        ("backward_config", (128, 2048, 320, 2, 17)),
+        ("forward_config", (128, 320)),
+        ("nccl", process_group, torch.device("cuda:1")),
+        ("backward_config", (64, 1024, 160, 1, 17)),
+        ("forward_config", (64, 160)),
+    ]
+
+
+def test_lck_pool_generation_tracks_configuration_resets(monkeypatch):
+    calls = []
+
+    class FakeModule:
+        @staticmethod
+        def pool_clear_all():
+            calls.append("all")
+
+        @staticmethod
+        def pool_clear_buffers():
+            calls.append("buffers")
+
+        @staticmethod
+        def finalize():
+            calls.append("finalize")
+
+    monkeypatch.setattr(_TVM_FFI, "_load_module", lambda: FakeModule)
+    start = _TVM_FFI.pool_generation()
+
+    _TVM_FFI.pool_clear_all()
+    _TVM_FFI.pool_clear_buffers()
+    _TVM_FFI.finalize()
+
+    assert _TVM_FFI.pool_generation() == start + 3
+    assert calls == ["all", "buffers", "finalize"]
+
+
 def test_frontend_is_exported_from_ops_root():
     try:
         import liger_kernel.ops as ops
@@ -187,3 +496,6 @@ def test_frontend_is_exported_from_ops_root():
         else "liger_kernel.ops.fused_linear_scaled_cross_entropy"
     )
     assert ops.LigerFusedLinearScaledCrossEntropyFunction.__module__ == expected_module
+    assert ops.LigerFusedLinearScaledCrossEntropyTPFunction.__module__ == (
+        "liger_kernel.ops.fused_linear_scaled_cross_entropy"
+    )

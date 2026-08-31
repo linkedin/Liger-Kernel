@@ -28,8 +28,10 @@ import torch
 from liger_cute_kernels import tvm_ffi
 
 __all__ = [
+    "ensure_initialized",
     "init_from_pg",
     "init_pmi",
+    "is_initialized",
     "finalize",
     "my_pe",
     "n_pes",
@@ -48,6 +50,7 @@ __all__ = [
 _BOOTSTRAP_PG: Optional["torch.distributed.ProcessGroup"] = None
 _BOOTSTRAP_GLOBAL_RANKS: tuple[int, ...] | None = None
 _PG_TEAM_CACHE: dict[int, int] = {}
+_INITIALIZED = False
 
 
 def _reset_team_state() -> None:
@@ -89,9 +92,10 @@ def init_from_pg(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
     tvm_ffi.init_with_uniqueid(rank, world, uid_cpu.data_ptr())
 
     _reset_team_state()
-    global _BOOTSTRAP_PG, _BOOTSTRAP_GLOBAL_RANKS
+    global _BOOTSTRAP_PG, _BOOTSTRAP_GLOBAL_RANKS, _INITIALIZED
     _BOOTSTRAP_PG = pg
     _BOOTSTRAP_GLOBAL_RANKS = global_ranks
+    _INITIALIZED = True
 
 
 def init_pmi(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
@@ -111,6 +115,8 @@ def init_pmi(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
 
     tvm_ffi.init_pmi()
     _reset_team_state()
+    global _INITIALIZED
+    _INITIALIZED = True
 
     if not dist.is_initialized():
         return
@@ -123,6 +129,7 @@ def init_pmi(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
             return
         tvm_ffi.finalize()
         _reset_team_state()
+        _INITIALIZED = False
         raise RuntimeError(
             f"PMI NVSHMEM job has {nvshmem_size} PEs, but the supplied torch process group has {pg_size} ranks"
         )
@@ -135,6 +142,7 @@ def init_pmi(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
             return
         tvm_ffi.finalize()
         _reset_team_state()
+        _INITIALIZED = False
         raise RuntimeError("the supplied torch process-group rank order does not match PMI NVSHMEM PE numbering")
 
     global _BOOTSTRAP_PG, _BOOTSTRAP_GLOBAL_RANKS
@@ -142,10 +150,23 @@ def init_pmi(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
     _BOOTSTRAP_GLOBAL_RANKS = tuple(dist.get_global_rank(pg, i) for i in range(pg_size))
 
 
+def is_initialized() -> bool:
+    """Return whether NVSHMEM was initialized through this module."""
+    return _INITIALIZED
+
+
+def ensure_initialized(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
+    """Initialize NVSHMEM from ``pg`` once, leaving an existing runtime intact."""
+    if not _INITIALIZED:
+        init_from_pg(pg)
+
+
 def finalize() -> None:
+    global _INITIALIZED
     try:
         tvm_ffi.finalize()
     finally:
+        _INITIALIZED = False
         _reset_team_state()
 
 
