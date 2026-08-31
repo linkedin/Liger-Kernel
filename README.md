@@ -500,7 +500,7 @@ loss.backward()
             </div>
             <div style="display: block;">
                 <a href="https://github.com/Ascend/Ascend-CI/actions/workflows/liger_kernel.yml">
-                    <img src="https://github.com/Ascend/Ascend-CI/actions/workflows/liger_kernel.yml/badge.svg?branch=main" alt="Build">
+                    <img src="https://img.shields.io/github/actions/workflow/status/Ascend/Ascend-CI/liger_kernel.yml?branch=main&label=Ascend%20NPU" alt="Ascend NPU">
                 </a>
             </div>
         </td>
