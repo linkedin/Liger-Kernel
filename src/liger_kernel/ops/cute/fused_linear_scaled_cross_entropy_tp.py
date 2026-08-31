@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -113,6 +114,16 @@ def _pad_hidden(x, weight):
     )
 
 
+@contextmanager
+def _cuda_device_context(tensor):
+    if not tensor.is_cuda:
+        yield
+        return
+    with torch.cuda.device(tensor.device):
+        torch.cuda.set_device(tensor.device)
+        yield
+
+
 def _group_ranks(process_group: "ProcessGroup") -> tuple[int, ...]:
     return tuple(dist.get_global_rank(process_group, rank) for rank in range(dist.get_world_size(process_group)))
 
@@ -199,6 +210,14 @@ def _prepare_runtime(process_group: "ProcessGroup", device, tokens, hidden, loca
     return runtime
 
 
+def _release_runtime() -> None:
+    global _RUNTIME
+    if _RUNTIME is None:
+        return
+    _get_tvm_ffi().nccl_comm_destroy(_RUNTIME.nccl_comm_handle)
+    _RUNTIME = None
+
+
 class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -227,17 +246,17 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
             weight.shape[0],
             tiles_per_reduce,
         )
-        tvm_ffi = _get_tvm_ffi()
-        nll, lse, entropy = tvm_ffi.fused_linear_scaled_cross_entropy_forward(
-            x_padded,
-            weight_padded,
-            target,
-            vocab_start,
-            ignore_index,
-            1.0 / temperature,
-            runtime.nccl_comm_handle,
-            return_entropy,
-        )
+        with _cuda_device_context(x_padded):
+            nll, lse, entropy = _get_tvm_ffi().fused_linear_scaled_cross_entropy_forward(
+                x_padded,
+                weight_padded,
+                target,
+                vocab_start,
+                ignore_index,
+                1.0 / temperature,
+                runtime.nccl_comm_handle,
+                return_entropy,
+            )
 
         ctx.save_for_backward(x_padded, weight_padded, target, lse, entropy)
         ctx.hidden = hidden
@@ -269,21 +288,22 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
                 f"expected per-token entropy gradients with shape {(tokens,)}, got {tuple(grad_entropy.shape)}"
             )
 
-        grad_input, grad_weight = _get_tvm_ffi().fused_linear_scaled_cross_entropy_backward(
-            grad_nll,
-            grad_entropy,
-            x,
-            weight,
-            target,
-            lse,
-            entropy,
-            ctx.vocab_start,
-            ctx.ignore_index,
-            ctx.inverse_temperature,
-            ctx.team_handle,
-            ctx.tiles_per_reduce,
-            ctx.return_entropy,
-        )
+        with _cuda_device_context(x):
+            grad_input, grad_weight = _get_tvm_ffi().fused_linear_scaled_cross_entropy_backward(
+                grad_nll,
+                grad_entropy,
+                x,
+                weight,
+                target,
+                lse,
+                entropy,
+                ctx.vocab_start,
+                ctx.ignore_index,
+                ctx.inverse_temperature,
+                ctx.team_handle,
+                ctx.tiles_per_reduce,
+                ctx.return_entropy,
+            )
         if ctx.hidden != x.shape[1]:
             grad_input = grad_input[:, : ctx.hidden].contiguous()
             grad_weight = grad_weight[:, : ctx.hidden].contiguous()
