@@ -17,13 +17,13 @@ def _load_sm90_function():
     return LigerFusedScaledCrossEntropySM90Function
 
 
-def _load_lck_tp_function():
+def _load_native_tp_function():
     from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import (
-        LigerFusedLinearScaledCrossEntropyLckTPFunction,
+        LigerFusedLinearScaledCrossEntropyNativeTPFunction,
     )
     from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import is_available
 
-    return LigerFusedLinearScaledCrossEntropyLckTPFunction if is_available() else None
+    return LigerFusedLinearScaledCrossEntropyNativeTPFunction if is_available() else None
 
 
 def _validate_temperature(temperature):
@@ -368,7 +368,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
 
 
 class LigerFusedLinearScaledCrossEntropyTPFunction:
-    """Tensor-parallel frontend using LCK on Hopper and a Liger fallback otherwise.
+    """Tensor-parallel frontend using native CUTLASS + NVSHMEM on Hopper.
 
     ``weight`` is the calling rank's equally sized contiguous vocabulary shard,
     while ``target`` contains global vocabulary indices.
@@ -397,14 +397,14 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
         _validate_tp_inputs(_input, weight, target)
         vocab_start = rank * weight.shape[0]
 
-        lck_function = None
+        native_function = None
         if _input.dtype == torch.bfloat16 and _is_hopper(_input.device):
             try:
-                lck_function = _load_lck_tp_function()
+                native_function = _load_native_tp_function()
             except ImportError:
-                lck_function = None
-        if lck_function is not None:
-            return lck_function.apply(
+                native_function = None
+        if native_function is not None:
+            return native_function.apply(
                 _input,
                 weight,
                 target,
