@@ -1,9 +1,8 @@
 """Fused expert-parallel MoE autograd op for the ``cute`` backend.
 
 Thin autograd wrapper around the native fused MoE fwd/bwd kernels shipped by the
-separate ``liger_cute_kernels`` package. Ported from LigerCommKernels'
-``liger_comm_kernels/moe_ops.py``; the kernel ABI is identical, only the package
-plumbing differs:
+separate ``liger_cute_kernels`` package. Adapted from the LigerCuteKernels MoE
+frontend; the kernel ABI is identical, only the package plumbing differs:
 
   - the TVM FFI facade is reached through the parent package's
     ``_load_tvm_ffi()`` (``liger_cute_kernels.tvm_ffi``), and

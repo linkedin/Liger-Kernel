@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# LigerCute — native build harness (ported from LigerCommKernels)
+# LigerCuteKernels — native build harness
 #
 # Target split:
 #
