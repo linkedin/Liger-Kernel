@@ -40,6 +40,48 @@ _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
+def _supports_out_dtype_accumulation(grad_weight, grad_logits_t):
+    return (
+        _ADDMM_SUPPORTS_OUT_DTYPE
+        and grad_weight.device.type == "cuda"
+        and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
+        and grad_weight.dtype == torch.float32
+        and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
+    )
+
+
+def _accumulate_grad_weight(grad_weight, grad_logits_t, input_chunk, accumulate):
+    """grad_weight = (grad_weight if accumulate else 0) + grad_logits_t @ input_chunk.
+
+    The product is a full V x H tensor, so it is written straight into grad_weight through
+    mm/addmm ``out=`` instead of being materialized. ``accumulate=False`` (first chunk) also
+    skips one read-modify-write pass over grad_weight, which at LLM vocab shapes is several
+    GB of traffic per chunk and dominates the chunk loop at small token counts.
+    """
+    if _supports_out_dtype_accumulation(grad_weight, grad_logits_t):
+        # Unlike torch.mm, torch.addmm's out_dtype path does not participate in
+        # autocast operand casting, so under AMP (fp32 params, no bias) input_chunk
+        # can stay fp32 while grad_logits is the autocast dtype. addmm requires mat1
+        # and mat2 to share a dtype, so align input_chunk before accumulating.
+        if input_chunk.dtype != grad_logits_t.dtype:
+            input_chunk = input_chunk.to(grad_logits_t.dtype)
+        if accumulate:
+            torch.addmm(grad_weight, grad_logits_t, input_chunk, out_dtype=torch.float32, out=grad_weight)
+        else:
+            torch.mm(grad_logits_t, input_chunk, out_dtype=torch.float32, out=grad_weight)
+    elif grad_weight.dtype == grad_logits_t.dtype == input_chunk.dtype:
+        if accumulate:
+            torch.addmm(grad_weight, grad_logits_t, input_chunk, out=grad_weight)
+        else:
+            torch.mm(grad_logits_t, input_chunk, out=grad_weight)
+    else:
+        product = torch.mm(grad_logits_t, input_chunk).float()
+        if accumulate:
+            grad_weight += product
+        else:
+            grad_weight.copy_(product)
+
+
 def fused_linear_cross_entropy_forward(
     _input,
     weight,
@@ -94,15 +136,19 @@ def fused_linear_cross_entropy_forward(
     chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
-    grad_input = torch.zeros_like(_input, device=device)
+    # every chunk writes its own slice of grad_input, and the first chunk writes all of
+    # grad_weight (accumulate=False), so neither buffer needs to be zero-filled first
+    grad_input = (
+        torch.empty_like(_input, device=device) if input_requires_grad else torch.zeros_like(_input, device=device)
+    )
 
     # we use fp32 for loss and gradients accumulator
     if input_requires_grad:
         if accum_dtype is None:
-            grad_weight = torch.zeros_like(weight, device=device) if weight_needs_grad else None
+            grad_weight = torch.empty_like(weight, device=device) if weight_needs_grad else None
             grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
         else:
-            grad_weight = torch.zeros_like(weight, dtype=accum_dtype, device=device) if weight_needs_grad else None
+            grad_weight = torch.empty_like(weight, dtype=accum_dtype, device=device) if weight_needs_grad else None
             grad_bias = torch.zeros_like(bias, dtype=accum_dtype, device=device) if bias is not None else None
     else:
         grad_weight = None
@@ -280,30 +326,7 @@ def fused_linear_cross_entropy_forward(
             grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None and input_requires_grad:
-            grad_logits_t = grad_logits_chunk.t()
-            if (
-                _ADDMM_SUPPORTS_OUT_DTYPE
-                and grad_weight.device.type == "cuda"
-                and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
-                and grad_weight.dtype == torch.float32
-                and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
-            ):
-                # Unlike torch.mm, torch.addmm's out_dtype path does not participate in
-                # autocast operand casting, so under AMP (fp32 params, no bias) _input_chunk
-                # can stay fp32 while grad_logits is the autocast dtype. addmm requires mat1
-                # and mat2 to share a dtype, so align _input_chunk before accumulating.
-                input_chunk = _input_chunk
-                if input_chunk.dtype != grad_logits_t.dtype:
-                    input_chunk = input_chunk.to(grad_logits_t.dtype)
-                torch.addmm(
-                    grad_weight,
-                    grad_logits_t,
-                    input_chunk,
-                    out_dtype=torch.float32,
-                    out=grad_weight,
-                )
-            else:
-                grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
+            _accumulate_grad_weight(grad_weight, grad_logits_chunk.t(), _input_chunk, accumulate=chunk_id > 0)
 
         if bias is not None and input_requires_grad:
             torch.add(
