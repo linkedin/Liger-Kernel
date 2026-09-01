@@ -17,7 +17,7 @@ assert _SPEC is not None and _SPEC.loader is not None
 _FRONTEND = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_FRONTEND)
 
-_LCK_FRONTEND_PATH = (
+_NATIVE_FRONTEND_PATH = (
     Path(__file__).resolve().parents[2]
     / "src"
     / "liger_kernel"
@@ -25,12 +25,12 @@ _LCK_FRONTEND_PATH = (
     / "cute"
     / "fused_linear_scaled_cross_entropy_tp.py"
 )
-_LCK_SPEC = importlib.util.spec_from_file_location(
-    "_fused_linear_scaled_cross_entropy_lck_frontend", _LCK_FRONTEND_PATH
+_NATIVE_SPEC = importlib.util.spec_from_file_location(
+    "_fused_linear_scaled_cross_entropy_native_frontend", _NATIVE_FRONTEND_PATH
 )
-assert _LCK_SPEC is not None and _LCK_SPEC.loader is not None
-_LCK_FRONTEND = importlib.util.module_from_spec(_LCK_SPEC)
-_LCK_SPEC.loader.exec_module(_LCK_FRONTEND)
+assert _NATIVE_SPEC is not None and _NATIVE_SPEC.loader is not None
+_NATIVE_FRONTEND = importlib.util.module_from_spec(_NATIVE_SPEC)
+_NATIVE_SPEC.loader.exec_module(_NATIVE_FRONTEND)
 
 _CUTILE_ENABLED = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower() == "cutile"
 
@@ -190,7 +190,7 @@ def test_frontend_fallback_supports_entropy_only_backward():
     assert weight.grad is not None
 
 
-def test_tp_frontend_dispatches_hopper_bf16_to_lck(monkeypatch):
+def test_tp_frontend_dispatches_hopper_bf16_to_native(monkeypatch):
     process_group = object()
     device = torch.device("cuda:3")
     _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
@@ -198,20 +198,20 @@ def test_tp_frontend_dispatches_hopper_bf16_to_lck(monkeypatch):
     target = object()
     calls = []
 
-    class StubLckFunction:
+    class StubNativeFunction:
         @staticmethod
         def apply(*args):
             calls.append(args)
-            return "lck-result"
+            return "native-result"
 
     monkeypatch.setattr(_FRONTEND, "_tp_group_info", lambda actual: (actual, 2))
     monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
     monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: actual == device)
-    monkeypatch.setattr(_FRONTEND, "_load_lck_tp_function", lambda: StubLckFunction)
+    monkeypatch.setattr(_FRONTEND, "_load_native_tp_function", lambda: StubNativeFunction)
     monkeypatch.setattr(
         _FRONTEND,
         "_apply_tp_fallback",
-        lambda *args: pytest.fail("the Liger fallback must not run when LCK is available"),
+        lambda *args: pytest.fail("the Liger fallback must not run when the native package is available"),
     )
 
     result = _FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply(
@@ -225,7 +225,7 @@ def test_tp_frontend_dispatches_hopper_bf16_to_lck(monkeypatch):
         True,
     )
 
-    assert result == "lck-result"
+    assert result == "native-result"
     assert calls == [(_input, weight, target, 32, 0.5, -1, 2, True, process_group)]
 
 
@@ -235,8 +235,8 @@ def test_tp_group_is_a_call_argument():
     assert list(parameters)[3] == "tp_group"
 
 
-@pytest.mark.parametrize("lck_result", [None, ImportError("lck unavailable")])
-def test_tp_frontend_uses_liger_fallback_when_lck_is_unavailable(monkeypatch, lck_result):
+@pytest.mark.parametrize("native_result", [None, ImportError("native package unavailable")])
+def test_tp_frontend_uses_liger_fallback_when_native_is_unavailable(monkeypatch, native_result):
     process_group = object()
     device = torch.device("cuda:0")
     _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
@@ -248,12 +248,12 @@ def test_tp_frontend_uses_liger_fallback_when_lck_is_unavailable(monkeypatch, lc
     monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
     monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: True)
 
-    def load_lck():
-        if isinstance(lck_result, BaseException):
-            raise lck_result
-        return lck_result
+    def load_native():
+        if isinstance(native_result, BaseException):
+            raise native_result
+        return native_result
 
-    monkeypatch.setattr(_FRONTEND, "_load_lck_tp_function", load_lck)
+    monkeypatch.setattr(_FRONTEND, "_load_native_tp_function", load_native)
     monkeypatch.setattr(
         _FRONTEND,
         "_apply_tp_fallback",
@@ -321,7 +321,7 @@ def test_tp_fallback_matches_torch_with_entropy_and_ignored_rows(monkeypatch):
     torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=2e-5, rtol=2e-5)
 
 
-def test_lck_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):
+def test_native_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):
     calls = {}
 
     class FakeTvmFfi:
@@ -336,15 +336,15 @@ def test_lck_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):
             calls["backward"] = args
             return torch.full_like(args[2], 3.0), torch.full_like(args[3], 4.0)
 
-    monkeypatch.setattr(_LCK_FRONTEND, "_validate_inputs", lambda *args: None)
-    monkeypatch.setattr(_LCK_FRONTEND, "_pad_hidden", lambda x, weight: (x, weight, x.shape[1]))
-    monkeypatch.setattr(_LCK_FRONTEND, "_prepare_lck_call", lambda *args: 17)
-    monkeypatch.setattr(_LCK_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_validate_inputs", lambda *args: None)
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_pad_hidden", lambda x, weight: (x, weight, x.shape[1]))
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_prepare_native_call", lambda *args: 17)
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
 
     _input = torch.randn(3, 4, requires_grad=True)
     weight = torch.randn(5, 4, requires_grad=True)
     target = torch.tensor([0, 1, 2], dtype=torch.int64)
-    nll, entropy = _LCK_FRONTEND.LigerFusedLinearScaledCrossEntropyLckTPFunction.apply(
+    nll, entropy = _NATIVE_FRONTEND.LigerFusedLinearScaledCrossEntropyNativeTPFunction.apply(
         _input,
         weight,
         target,
@@ -365,7 +365,7 @@ def test_lck_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):
     torch.testing.assert_close(weight.grad, torch.full_like(weight, 4.0))
 
 
-def test_lck_call_uses_prepared_group_without_global_state(monkeypatch):
+def test_native_call_uses_prepared_group_without_global_state(monkeypatch):
     process_group = object()
     calls = []
 
@@ -384,11 +384,11 @@ def test_lck_call_uses_prepared_group_without_global_state(monkeypatch):
         def fused_linear_scaled_cross_entropy_configure_forward(*args):
             calls.append(("forward_config", args))
 
-    monkeypatch.setattr(_LCK_FRONTEND, "_get_nvshmem", lambda: FakeNvshmem)
-    monkeypatch.setattr(_LCK_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
-    monkeypatch.setattr(_LCK_FRONTEND.torch.cuda, "device", lambda device: nullcontext())
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_get_nvshmem", lambda: FakeNvshmem)
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
+    monkeypatch.setattr(_NATIVE_FRONTEND.torch.cuda, "device", lambda device: nullcontext())
 
-    team = _LCK_FRONTEND._prepare_lck_call(
+    team = _NATIVE_FRONTEND._prepare_native_call(
         process_group,
         torch.device("cuda:1"),
         128,
@@ -396,7 +396,7 @@ def test_lck_call_uses_prepared_group_without_global_state(monkeypatch):
         320,
         2,
     )
-    repeated = _LCK_FRONTEND._prepare_lck_call(
+    repeated = _NATIVE_FRONTEND._prepare_native_call(
         process_group,
         torch.device("cuda:1"),
         64,

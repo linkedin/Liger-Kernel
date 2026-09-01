@@ -1,7 +1,7 @@
 """Fused expert-parallel MoE autograd op for the ``cute`` backend.
 
 Thin autograd wrapper around the native fused MoE fwd/bwd kernels shipped by the
-separate ``liger_cute_kernels`` (lck) wheel. Ported from LigerCommKernels'
+separate ``liger_cute_kernels`` package. Ported from LigerCommKernels'
 ``liger_comm_kernels/moe_ops.py``; the kernel ABI is identical, only the package
 plumbing differs:
 
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 __all__ = ["LigerExpertParallelFusedMoEFunction", "moe_fused"]
 
 # Resolve the TVM FFI facade once at import. cute/ops is imported only when the
-# "cute" implementation is actively selected, so a missing lck wheel surfaces as
+# "cute" implementation is actively selected, so a missing native package surfaces as
 # a clear ImportError to the user who asked for it (see _load_tvm_ffi).
 tvm_ffi = _load_tvm_ffi()
 

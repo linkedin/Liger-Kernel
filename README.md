@@ -262,17 +262,17 @@ nll, entropy = LigerFusedLinearScaledCrossEntropyTPFunction.apply(
 ```
 
 The TP frontend derives `vocab_start` from the process-group rank. BF16 inputs on Hopper use the optional
-`liger_cute_kernels` (LCK) implementation when its native core is available; other configurations use Liger's chunked
+`liger_cute_kernels` implementation when its native core is available; other configurations use Liger's chunked
 tensor-parallel fallback adapted from Verl's fused PPO formulas. Both paths return globally correct per-token outputs
-and sum the input gradient across the TP group. The LCK forward and backward paths communicate exclusively through
+and sum the input gradient across the TP group. The native CUTLASS + NVSHMEM paths communicate exclusively through
 NVSHMEM; no Torch communicator or Torch C++ ABI crosses the TVM-FFI boundary. Calls remain collectives on `tp_group`, so
 they must have the same ordering on every member.
 
-LCK shares the process-wide NVSHMEM bootstrap used by `LigerExpertParallelFusedMoe`, while TP and EP use separate cached
-teams and separately named workspaces. Application setup must initialize NVSHMEM from a common parent group (normally
-`WORLD`) and resolve both process groups before invoking either kernel. The first FSLCE call fixes its workspace
-capacity, so warm it up with the largest expected token, hidden, local-vocabulary, and `tiles_per_reduce` settings
-before CUDA Graph capture.
+The native operators share the process-wide NVSHMEM bootstrap used by `LigerExpertParallelFusedMoe`, while TP and EP
+use separate cached teams and separately named workspaces. Application setup must initialize NVSHMEM from a common
+parent group (normally `WORLD`) and resolve both process groups before invoking either kernel. The first FSLCE call
+fixes its workspace capacity, so warm it up with the largest expected token, hidden, local-vocabulary, and
+`tiles_per_reduce` settings before CUDA Graph capture.
 
 H100 BF16 forward medians from 60 interleaved samples per provider at
 `H=4096`, `V=131072`. Effective TFLOPS count the common projection work,

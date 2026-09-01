@@ -16,16 +16,16 @@ try:
     import torch.multiprocessing as mp
 
     from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyTPFunction
-    from liger_kernel.ops.cute import fused_linear_scaled_cross_entropy_tp as lck_frontend
+    from liger_kernel.ops.cute import fused_linear_scaled_cross_entropy_tp as native_frontend
 
-    _LCK_AVAILABLE = lck_frontend.is_available()
+    _NATIVE_AVAILABLE = native_frontend.is_available()
 except ImportError:
     torch = None
     dist = None
     mp = None
     LigerFusedLinearScaledCrossEntropyTPFunction = None
-    lck_frontend = None
-    _LCK_AVAILABLE = False
+    native_frontend = None
+    _NATIVE_AVAILABLE = False
 
 _NDEV = torch.cuda.device_count() if torch is not None and torch.cuda.is_available() else 0
 _TOKENS = 521
@@ -157,7 +157,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
     if implementation == "fallback":
         import liger_kernel.ops.fused_linear_scaled_cross_entropy as frontend
 
-        frontend._load_lck_tp_function = lambda: None
+        frontend._load_native_tp_function = lambda: None
         nvshmem = None
     else:
         from liger_cute_kernels import nvshmem
@@ -178,7 +178,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         tp_rank = tp_ranks.index(rank)
         tp_size = len(tp_ranks)
         group_index = _group_layout(layout, world_size).index(tp_ranks)
-        if implementation == "lck":
+        if implementation == "native":
             nvshmem.init_from_pg()
             nvshmem_initialized = True
             team_handle = nvshmem.resolve_team(tp_group)
@@ -241,17 +241,17 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         torch.testing.assert_close(weight.grad.float(), expected_dw, atol=8e-3, rtol=4e-2)
 
         torch.cuda.synchronize()
-        if implementation == "lck":
+        if implementation == "native":
             nvshmem.pool_clear_all()
             if team_handle != nvshmem.team_world():
                 nvshmem.team_destroy(team_handle)
                 team_handle = None
         dist.barrier()
-        if implementation == "lck":
+        if implementation == "native":
             nvshmem.finalize()
         dist.destroy_process_group()
     except BaseException:
-        if implementation == "lck":
+        if implementation == "native":
             try:
                 if nvshmem_initialized:
                     nvshmem.finalize()
@@ -299,20 +299,20 @@ def _run(
 
 @pytest.mark.parametrize("world_size", [1, 2, 4, 8])
 def test_tp_frontend_world_process_group(world_size):
-    if not _LCK_AVAILABLE:
+    if not _NATIVE_AVAILABLE:
         pytest.skip("requires a matching liger_cute_kernels wheel")
     if _NDEV < world_size:
         pytest.skip(f"requires at least {world_size} CUDA devices")
-    _run(world_size, "world", "lck")
+    _run(world_size, "world", "native")
 
 
 @pytest.mark.parametrize("layout", ["contiguous", "strided"])
 def test_tp_frontend_subgroups(layout):
-    if not _LCK_AVAILABLE:
+    if not _NATIVE_AVAILABLE:
         pytest.skip("requires a matching liger_cute_kernels wheel")
     if _NDEV < 4:
         pytest.skip("requires at least four CUDA devices")
-    _run(4, layout, "lck")
+    _run(4, layout, "native")
 
 
 @pytest.mark.parametrize(
@@ -328,17 +328,17 @@ def test_tp_frontend_liger_fallback(world_size, layout):
     _run(world_size, layout, "fallback")
 
 
-def test_lck_moe_and_tp_frontend_use_different_process_groups():
-    if not _LCK_AVAILABLE:
+def test_native_moe_and_tp_frontend_use_different_process_groups():
+    if not _NATIVE_AVAILABLE:
         pytest.skip("requires a matching liger_cute_kernels wheel")
     if _NDEV < 4:
         pytest.skip("requires at least four CUDA devices")
-    _run(4, "strided", "lck", run_moe=True)
+    _run(4, "strided", "native", run_moe=True)
 
 
 def test_tp_frontend_direct_peer_fallback():
-    if not _LCK_AVAILABLE:
+    if not _NATIVE_AVAILABLE:
         pytest.skip("requires a matching liger_cute_kernels wheel")
     if _NDEV < 2:
         pytest.skip("requires at least two CUDA devices")
-    _run(2, "world", "lck", disable_nvls=True)
+    _run(2, "world", "native", disable_nvls=True)

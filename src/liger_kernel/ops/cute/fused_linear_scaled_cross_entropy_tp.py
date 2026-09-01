@@ -1,4 +1,4 @@
-"""LCK adapter for tensor-parallel fused linear scaled cross entropy."""
+"""Native CUTLASS + NVSHMEM adapter for tensor-parallel scaled cross entropy."""
 
 from __future__ import annotations
 
@@ -56,9 +56,9 @@ def _validate_inputs(x, weight, target, vocab_start, tiles_per_reduce, return_en
     if x.device != weight.device or x.device != target.device:
         raise ValueError("input, weight, and target must be on the same CUDA device")
     if not x.is_cuda:
-        raise RuntimeError("the LCK tensor-parallel path requires CUDA tensors")
+        raise RuntimeError("the native tensor-parallel path requires CUDA tensors")
     if x.dtype != torch.bfloat16 or weight.dtype != torch.bfloat16:
-        raise TypeError("the LCK tensor-parallel path supports BF16 input and weight only")
+        raise TypeError("the native tensor-parallel path supports BF16 input and weight only")
     if target.dtype != torch.int64:
         raise TypeError("target must be an int64 tensor of global vocabulary indices")
     if x.ndim != 2 or weight.ndim != 2 or target.ndim != 1:
@@ -102,7 +102,7 @@ def _cuda_device_context(tensor):
         yield
 
 
-def _prepare_lck_call(process_group: "ProcessGroup", device, tokens, hidden, local_vocab, tiles_per_reduce) -> int:
+def _prepare_native_call(process_group: "ProcessGroup", device, tokens, hidden, local_vocab, tiles_per_reduce) -> int:
     tvm_ffi = _get_tvm_ffi()
     with torch.cuda.device(device):
         team_handle = _get_nvshmem().resolve_team(process_group, create=False)
@@ -120,7 +120,7 @@ def _prepare_lck_call(process_group: "ProcessGroup", device, tokens, hidden, loc
     return team_handle
 
 
-class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
+class LigerFusedLinearScaledCrossEntropyNativeTPFunction(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
@@ -140,7 +140,7 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
 
         x_padded, weight_padded, hidden = _pad_hidden(x, weight)
         target = target.contiguous()
-        team_handle = _prepare_lck_call(
+        team_handle = _prepare_native_call(
             tp_group,
             x.device,
             target.shape[0],
@@ -212,4 +212,4 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
         return grad_input, grad_weight, None, None, None, None, None, None, None
 
 
-__all__ = ["LigerFusedLinearScaledCrossEntropyLckTPFunction", "is_available"]
+__all__ = ["LigerFusedLinearScaledCrossEntropyNativeTPFunction", "is_available"]
