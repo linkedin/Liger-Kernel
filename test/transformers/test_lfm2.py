@@ -305,11 +305,9 @@ def test_lfm2_hopper_native_forward_boundary(monkeypatch):
 
     monkeypatch.setattr(lfm2_utils.torch.version, "hip", None)
     monkeypatch.setattr(lfm2_utils, "infer_device_arch", lambda _device_id: "hopper")
-    for operation in ("short_conv", "swiglu"):
-        assert use_lfm2_native_forward(Tensor(4095), operation=operation, sequence_dim=1)
-        assert not use_lfm2_native_forward(Tensor(4096), operation=operation, sequence_dim=1)
-    for operation in ("rms_norm", "rope"):
-        assert not use_lfm2_native_forward(Tensor(4095), operation=operation, sequence_dim=1)
+    for operation, cutoff in (("rms_norm", 1536), ("rope", 1536), ("short_conv", 4096), ("swiglu", 4096)):
+        assert use_lfm2_native_forward(Tensor(cutoff - 1), operation=operation, sequence_dim=1)
+        assert not use_lfm2_native_forward(Tensor(cutoff), operation=operation, sequence_dim=1)
 
 
 @pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")

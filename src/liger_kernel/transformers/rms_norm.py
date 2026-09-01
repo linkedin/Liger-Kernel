@@ -51,7 +51,7 @@ class LigerRMSNorm(nn.Module):
 
 
 class LigerLfm2RMSNorm(LigerRMSNorm):
-    """LFM2 RMSNorm with a native inference path."""
+    """LFM2 RMSNorm with native inference and short-sequence Hopper paths."""
 
     def forward(self, hidden_states):
         if use_lfm2_native_forward(hidden_states, operation="rms_norm", sequence_dim=1):
