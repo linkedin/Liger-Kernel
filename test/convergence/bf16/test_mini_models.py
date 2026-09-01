@@ -46,6 +46,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_ministral
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_muse_glimmer
 from liger_kernel.transformers import apply_liger_kernel_to_nemotron
 from liger_kernel.transformers import apply_liger_kernel_to_olmo2
 from liger_kernel.transformers import apply_liger_kernel_to_olmo3
@@ -90,6 +91,7 @@ from test.utils import revert_liger_kernel_to_ministral
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
+from test.utils import revert_liger_kernel_to_muse_glimmer
 from test.utils import revert_liger_kernel_to_nemotron
 from test.utils import revert_liger_kernel_to_olmo2
 from test.utils import revert_liger_kernel_to_olmo3
@@ -172,6 +174,21 @@ try:
     QWEN3_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.57.0")
 except ImportError:
     QWEN3_VL_AVAILABLE = False
+
+
+try:
+    # MuseGlimmer is only available in transformers>=5.15.0
+    import transformers
+
+    from packaging import version
+    from transformers.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerConfig
+    from transformers.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerTextConfig
+    from transformers.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerVisionConfig
+    from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerForConditionalGeneration
+
+    MUSE_GLIMMER_AVAILABLE = version.parse(transformers.__version__) >= version.parse("5.15.0")
+except ImportError:
+    MUSE_GLIMMER_AVAILABLE = False
 
 
 try:
@@ -961,6 +978,58 @@ if QWEN2_5_VL_AVAILABLE:
                 "tokens_per_second": 2,
                 "temporal_patch_size": 2,
             },
+        ),
+    )
+
+
+if MUSE_GLIMMER_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_muse_glimmer"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_muse_glimmer,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_muse_glimmer,
+        model_class=MuseGlimmerForConditionalGeneration,
+        mini_model_config=MuseGlimmerConfig(
+            attn_implementation="sdpa",
+            image_token_id=32768,
+            video_token_id=32769,
+            # The vision adapter consumes `vision hidden_size * merge_size ** 2` after pixel shuffle
+            out_hidden_size=128 * 2**2,
+            projector_hidden_size=256,
+            projector_hidden_act="gelu",
+            text_config=MuseGlimmerTextConfig(
+                bos_token_id=1,
+                eos_token_id=2,
+                pad_token_id=None,
+                vocab_size=32000,
+                hidden_size=896,
+                intermediate_size=2176,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=112,
+                hidden_activation="silu",
+                max_position_embeddings=4096,
+                initializer_range=0.02,
+                rms_norm_eps=1e-5,
+                post_norm_eps=1e-8,
+                sliding_window=128,
+                attention_dropout=0.0,
+                attention_bias=False,
+                tie_word_embeddings=False,
+                use_cache=True,
+            ),
+            vision_config=MuseGlimmerVisionConfig(
+                hidden_size=128,
+                intermediate_size=256,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                hidden_act="gelu",
+                patch_size=14,
+                pos_emb_height=4,
+                pos_emb_width=4,
+                max_position_embeddings=16,
+                merge_size=2,
+                layer_norm_eps=1e-5,
+            ),
         ),
     )
 
@@ -2036,6 +2105,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN2_5_VL_AVAILABLE,
                     reason="Qwen2.5-VL not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_muse_glimmer",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not MUSE_GLIMMER_AVAILABLE,
+                    reason="MuseGlimmer not available in this version of transformers",
                 ),
             ],
         ),
