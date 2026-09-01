@@ -367,6 +367,15 @@ def _swiglu_kernel_backward_dI(
 
     # Compute dI = dG @ gate_weight + dU @ up_weight
     # [B, S, hidden_dim] @ [hidden_dim, dim] + ... @ ... = [B, S, dim]
+    #
+    # The two matmuls are accumulated in *separate* sequential K-loops rather
+    # than interleaved into one accumulator inside a single loop body. On
+    # Blackwell (SM100 / tcgen05) issuing two `tl.dot(..., acc=acc)` calls that
+    # target the same accumulator within one iteration miscompiles: it produces
+    # ~45% wrong results for bf16/fp16 and pipelines all four operands at once,
+    # which overflows shared memory (OOM) for fp32. Splitting into two loops
+    # keeps the result correct and pipelines only two operands at a time, so the
+    # BLOCK_K=64 configs fit inside the SM100 shared-memory budget.
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     for k in range(0, hidden_dim, BLOCK_K):
         dG_block = desc_dG.load([b, M_start, k])  # [1, BLOCK_M, BLOCK_K]
@@ -374,6 +383,7 @@ def _swiglu_kernel_backward_dI(
         gate_weight_block = desc_Wg.load([k, N_start])  # [BLOCK_K, BLOCK_N]
         acc = tl.dot(dG_block, gate_weight_block, acc=acc)
 
+    for k in range(0, hidden_dim, BLOCK_K):
         dU_block = desc_dU.load([b, M_start, k])  # [1, BLOCK_M, BLOCK_K]
         dU_block = tl.reshape(dU_block, [BLOCK_M, BLOCK_K])  # [BLOCK_M, BLOCK_K]
         up_weight_block = desc_Wu.load([k, N_start])  # [BLOCK_K, BLOCK_N]
