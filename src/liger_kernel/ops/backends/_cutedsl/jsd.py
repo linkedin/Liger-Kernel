@@ -93,6 +93,7 @@ from liger_kernel.ops.backends._cutedsl._cute_lib.compile_utils import make_fake
 from liger_kernel.ops.backends._cutedsl._cute_lib.dtype_map import torch2cute_dtype_map
 from liger_kernel.ops.backends._triton.jsd import jsd_loss_and_grad_triton
 from liger_kernel.ops.jsd import LigerJSDFunction
+from liger_kernel.ops.utils import device_context
 
 
 def _max_capability() -> int:
@@ -463,34 +464,35 @@ def _jsd_loss_and_grad_cutedsl(
     packed batch (``n_non_ignore == BT``) pass ``None`` -- the absent-arg
     specialization dead-code-eliminates the zero-fill.
     """
-    BT, V = student_prob.shape
-    x_flat = student_prob.contiguous()
-    y_flat = teacher_prob.contiguous()
-    # empty, not zeros: the elementwise kernel stores loss+dX for EVERY
-    # in-tensor element unconditionally (predication only masks columns >= V
-    # and rows >= BT, both outside the (BT, V) allocation), so the zeros
-    # memset is a redundant (BT, V) fp32 write the kernel fully overwrites.
-    loss = torch.empty((BT, V), dtype=torch.float32, device=student_prob.device)
-    dx = x_flat  # in-place overwrite (matches Triton contract)
+    with device_context(student_prob.device):
+        BT, V = student_prob.shape
+        x_flat = student_prob.contiguous()
+        y_flat = teacher_prob.contiguous()
+        # empty, not zeros: the elementwise kernel stores loss+dX for EVERY
+        # in-tensor element unconditionally (predication only masks columns >= V
+        # and rows >= BT, both outside the (BT, V) allocation), so the zeros
+        # memset is a redundant (BT, V) fp32 write the kernel fully overwrites.
+        loss = torch.empty((BT, V), dtype=torch.float32, device=student_prob.device)
+        dx = x_flat  # in-place overwrite (matches Triton contract)
 
-    label_arg = None
-    if shift_labels is not None:
-        labels_i64 = shift_labels.contiguous().to(torch.int64)
-        # Thread labels whenever THIS (chunk-local) label tensor actually
-        # contains an ignored row. The previous `n_non_ignore < BT` compared the
-        # GLOBAL non-ignore count with the per-chunk BT, so multi-chunk batches
-        # with a few ignores (global_n_non_ignore >= chunk_BT) silently dropped
-        # the label stream and let ignored rows contribute loss/gradient.
-        if bool((labels_i64 == ignore_index).any()):
-            label_arg = labels_i64
+        label_arg = None
+        if shift_labels is not None:
+            labels_i64 = shift_labels.contiguous().to(torch.int64)
+            # Thread labels whenever THIS (chunk-local) label tensor actually
+            # contains an ignored row. The previous `n_non_ignore < BT` compared the
+            # GLOBAL non-ignore count with the per-chunk BT, so multi-chunk batches
+            # with a few ignores (global_n_non_ignore >= chunk_BT) silently dropped
+            # the label stream and let ignored rows contribute loss/gradient.
+            if bool((labels_i64 == ignore_index).any()):
+                label_arg = labels_i64
 
-    scale = Float32(1.0 / max(n_non_ignore, 1))
-    compiled = _get_kernel(
-        x_flat.dtype, y_flat.dtype, loss.dtype, dx.dtype, V, float(beta), has_label=label_arg is not None
-    )
-    compiled(x_flat, y_flat, loss, dx, label_arg, scale, int(ignore_index))
+        scale = Float32(1.0 / max(n_non_ignore, 1))
+        compiled = _get_kernel(
+            x_flat.dtype, y_flat.dtype, loss.dtype, dx.dtype, V, float(beta), has_label=label_arg is not None
+        )
+        compiled(x_flat, y_flat, loss, dx, label_arg, scale, int(ignore_index))
 
-    return loss, dx
+        return loss, dx
 
 
 # ===========================================================================
