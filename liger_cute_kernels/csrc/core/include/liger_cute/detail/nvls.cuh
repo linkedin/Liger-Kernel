@@ -192,6 +192,53 @@ __device__ __forceinline__ void nvls_sum_reduce_warp_twoshot(
 #endif
 }
 
+__device__ __forceinline__ void nvls_max_reduce_warp_twoshot(
+    float* multicast_dest, const float* multicast_source, std::size_t count,
+    int team_rank, int team_size) {
+#if defined(__CUDA_ARCH__)
+  static_assert(__CUDA_ARCH__ >= 900,
+                "nvls_max_reduce_warp_twoshot requires SM90 or newer");
+
+  if (count == 0) return;
+
+  const unsigned int lane = nvls_lane_id();
+  const std::size_t elements_per_pe =
+      count / static_cast<std::size_t>(team_size);
+  const std::size_t rank_offset =
+      elements_per_pe * static_cast<std::size_t>(team_rank);
+  const std::size_t local_count =
+      elements_per_pe +
+      (team_rank == team_size - 1
+           ? count % static_cast<std::size_t>(team_size)
+           : 0);
+  const float* source = multicast_source + rank_offset;
+  float* dest = multicast_dest + rank_offset;
+
+  __syncwarp();
+  asm volatile("" ::: "memory");
+  for (std::size_t index = static_cast<std::size_t>(lane);
+       index < local_count; index += 32) {
+    std::uint32_t value;
+    asm volatile("multimem.ld_reduce.relaxed.sys.global.max.u32 %0, [%1];"
+                 : "=r"(value)
+                 : "l"(source + index)
+                 : "memory");
+    asm volatile("multimem.st.relaxed.sys.global.f32 [%0], %1;"
+                 :
+                 : "l"(dest + index), "r"(value)
+                 : "memory");
+  }
+  asm volatile("fence.acq_rel.sys;" ::: "memory");
+  __syncwarp();
+#else
+  (void)multicast_dest;
+  (void)multicast_source;
+  (void)count;
+  (void)team_rank;
+  (void)team_size;
+#endif
+}
+
 __device__ __forceinline__ std::size_t nvls_rank_count(
     std::size_t count, int rank, int size) {
   std::size_t per_rank = count / static_cast<std::size_t>(size);

@@ -9,6 +9,7 @@ from liger_kernel.ops import LigerDyTFunction
 from liger_kernel.ops import LigerFusedAddRMSNormFunction
 from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops import LigerFusedLinearJSDFunction
+from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyTPFunction
 from liger_kernel.ops import LigerFusedNeighborhoodAttentionFunction
 from liger_kernel.ops import LigerGELUMulFunction
 from liger_kernel.ops import LigerGroupNormFunction
@@ -121,6 +122,29 @@ def liger_fused_linear_cross_entropy(
 
     return CrossEntropyOutput(
         loss=loss, z_loss=z_loss, token_accuracy=token_accuracy, predicted_tokens=predicted_tokens
+    )
+
+
+def liger_fused_linear_scaled_cross_entropy_tp(
+    input,
+    weight,
+    target,
+    tp_group,
+    temperature: float = 1.0,
+    ignore_index: int = -100,
+    tiles_per_reduce: int = 1,
+    return_entropy: bool = False,
+):
+    """Return per-token TP negative log-likelihood and optional entropy."""
+    return LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+        input,
+        weight,
+        target,
+        tp_group,
+        temperature,
+        ignore_index,
+        tiles_per_reduce,
+        return_entropy,
     )
 
 

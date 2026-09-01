@@ -57,6 +57,11 @@ struct ForwardLocalStatsBuffers {
 	float* local_weighted_sum;
 };
 
+inline constexpr int kForwardReducedSumField = 0;
+inline constexpr int kForwardReducedTargetField = 1;
+inline constexpr int kForwardReducedWeightedField = 2;
+inline constexpr int kForwardReducedFields = 3;
+
 // _fused_scaled_cross_entropy_utils_sm90.py constants.
 inline constexpr float kForwardLog2E = 1.4426950408889634f;
 inline constexpr float kForwardLn2 = 0.6931471805599453f;
@@ -482,10 +487,9 @@ struct ForwardGemmLaunchSm90 {
 		"SM90 forward shared-memory footprint exceeds the Hopper limit");
 };
 
-// End-to-end tensor-parallel forward: the exact CuTe-DSL local-statistic GEMM
-// followed by NCCL MAX, correction/packing, NCCL SUM, and finalization. This
-// is the sole production forward host launcher; it directly prepares and
-// launches forward_gemm_kernel_sm90.
+// End-to-end tensor-parallel forward: the exact CuTe-DSL local-statistic GEMM,
+// in-kernel local MAX and corrected SUM reductions, then the optional remote
+// reduction and finalization follow-up.
 //
 // `gemm` describes this rank's contiguous vocabulary shard. Its `output` and
 // `workspace` fields are launcher-owned and overwritten: both the local
@@ -503,8 +507,7 @@ struct ForwardTpParamsSm90 {
 	float* lse = nullptr;      // [tokens]
 	float* entropy = nullptr;  // [tokens], required when ReturnEntropy=true
 
-	// ncclComm_t for the tensor-parallel communicator, as an int64 handle.
-	std::int64_t nccl_comm_handle = 0;
+	std::int64_t team_handle = 0;
 };
 
 template <bool ReturnEntropy, int Compute = 90>

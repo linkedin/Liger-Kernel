@@ -5,10 +5,10 @@
 //
 //   fused_linear_scaled_cross_entropy_forward
 //     -> forward_gemm_kernel_sm90
-//     -> forward_split_reduce_kernel_sm90
-//     -> NCCL MAX
-//     -> pack_forward_reduction_kernel
-//     -> NCCL SUM
+//        -> split last-arrival epilogue
+//        -> local NVSHMEM MAX
+//        -> corrected local NVSHMEM SUM
+//     -> optional sharded remote NVSHMEM state merge
 //     -> finalize_forward_kernel
 //
 // The WGMMA translation unit is deliberately non-RDC. NVSHMEM collective
@@ -23,72 +23,17 @@
 #include "forward_reduce.cuh"
 #include "gemm_sm90.cuh"
 #include "liger_cute/check.h"
+#include "liger_cute/detail/tp_reduce.cuh"
 #include "online_softmax.cuh"
-
-#include <nccl.h>
+#include "workspace.cuh"
 
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 namespace liger {
 namespace fused_scaled_linear_cross_entropy {
 namespace {
-
-template <bool ReturnEntropy>
-__global__ void pack_forward_reduction_kernel(
-		const float* local_max,
-		const float* global_max,
-		const float* local_sum,
-		const float* local_target,
-		const float* local_weighted_sum,
-		float* packed,
-		int tokens) {
-	int row = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-	if (row >= tokens) return;
-
-	float correction = local_sum[row] == 0.0f
-		? 0.0f
-		: expf(local_max[row] - global_max[row]);
-	packed[kForwardReducedSumField * tokens + row] =
-		local_sum[row] * correction;
-	packed[kForwardReducedTargetField * tokens + row] =
-		local_target[row];
-	if constexpr (ReturnEntropy) {
-		packed[kForwardReducedWeightedField * tokens + row] =
-			local_weighted_sum[row] * correction;
-	}
-}
-
-template <bool ReturnEntropy>
-__global__ void finalize_forward_kernel(
-		const float* global_max,
-		const float* reduced,
-		const std::int64_t* target,
-		float* nll,
-		float* lse,
-		float* entropy,
-		int tokens,
-		std::int64_t ignore_index) {
-	int row = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-	if (row >= tokens) return;
-
-	float global_weighted = 0.0f;
-	if constexpr (ReturnEntropy) {
-		global_weighted =
-			reduced[kForwardReducedWeightedField * tokens + row];
-	}
-	FinalizedSoftmax result = finalize_softmax<ReturnEntropy>(
-		global_max[row],
-		reduced[kForwardReducedSumField * tokens + row],
-		reduced[kForwardReducedTargetField * tokens + row],
-		global_weighted,
-		target[row] == ignore_index);
-	nll[row] = result.nll;
-	lse[row] = result.lse;
-	if constexpr (ReturnEntropy) {
-		entropy[row] = result.entropy;
-	}
-}
 
 void check_cuda(cudaError_t error, const char* what) {
 	LIGER_CHECK(
@@ -97,15 +42,6 @@ void check_cuda(cudaError_t error, const char* what) {
 		what,
 		" failed: ",
 		cudaGetErrorString(error));
-}
-
-void check_nccl(ncclResult_t result, const char* what) {
-	LIGER_CHECK(
-		result == ncclSuccess,
-		"fused_scaled_linear_cross_entropy forward: ",
-		what,
-		" failed: ",
-		ncclGetErrorString(result));
 }
 
 }  // namespace
@@ -141,8 +77,8 @@ void fused_linear_scaled_cross_entropy_forward(
 			"entropy output is required when ReturnEntropy=true");
 	}
 	LIGER_CHECK(
-		params.nccl_comm_handle != 0,
-		"forward TP requires a valid ncclComm_t handle");
+		params.team_handle == backward_dx_team_handle(),
+		"forward TP team must match the configured reduction team");
 	LIGER_CHECK(
 		reinterpret_cast<std::uintptr_t>(input.x) % 16 == 0 &&
 			reinterpret_cast<std::uintptr_t>(input.weight) % 16 == 0,
@@ -200,9 +136,6 @@ void fused_linear_scaled_cross_entropy_forward(
 				gemm_params.local_vocab,
 				gemm_params.hidden);
 
-	auto* kernel_fn = &forward_gemm_kernel_sm90<
-		ReturnEntropy, Compute, decltype(tma_load_x), decltype(tma_load_w)>;
-
 	constexpr int kSmemBytes = static_cast<int>(sizeof(Smem));
 	static_assert(kSmemBytes <= kHopperMaxSmemBytes,
 		"SM90 forward shared-memory footprint exceeds the Hopper limit");
@@ -210,131 +143,203 @@ void fused_linear_scaled_cross_entropy_forward(
 		"ForwardGemmLaunchSm90::smem_bytes must bound the real footprint");
 
 	using Cluster = sm90::ClusterLaunchSm90<Compute>;
-	check_cuda(
-		Cluster::prepare(kernel_fn, kSmemBytes),
-		"cudaFuncSetAttribute(MaxDynamicSharedMemorySize / "
-		"NonPortableClusterSizeAllowed)");
+	liger_cute::detail::TpReducePlan reduce =
+		liger_cute::detail::tp_reduce_plan();
+	DxReduceWorkspace<float> comm = {};
+	float* remote_source = reduce.remote.enabled()
+		? reduce.remote.reduced_shard
+		: nullptr;
 
-	int max_active_cluster_pairs = Cluster::max_active_clusters(
-		kernel_fn, Config::kNumThreads, kSmemBytes, Config::kClusterM);
-	ForwardGemmSplitSm90<Compute> split = Launch::resolve_split(
-		gemm_params.tuning,
-		gemm_params.tokens,
-		gemm_params.local_vocab,
-		max_active_cluster_pairs);
-	LIGER_CHECK(
-		split.base_split_n >= 1 &&
-			split.split_n <= split.num_logical_n_tiles,
-		"split_n must be between 1 and the number of logical vocabulary tiles");
-	LIGER_CHECK(
-		split.extra_m_pairs < split.num_m_pairs &&
-			split.split_n ==
-				split.base_split_n + (split.extra_m_pairs != 0 ? 1 : 0),
-		"uneven split tuning must use split_n=base_split_n+1 for a proper "
-		"subset of M pairs");
+	auto launch_local = [&](auto mapping, auto backend_tag, auto remote_tag) {
+		constexpr auto Backend = decltype(backend_tag)::value;
+		constexpr bool RequiresRemote = decltype(remote_tag)::value;
+		using Mapping = std::decay_t<decltype(mapping)>;
+		auto* kernel_fn = &forward_gemm_tp_kernel_sm90<
+			ReturnEntropy,
+			Compute,
+			RequiresRemote,
+			Backend,
+			decltype(tma_load_x),
+			decltype(tma_load_w),
+			Mapping>;
 
-	// Split partials are laid out [statistic][M tile][split][row].
-	std::size_t partial_rows =
-		static_cast<std::size_t>(split.num_m_tiles) *
-		static_cast<std::size_t>(split.split_n) *
-		static_cast<std::size_t>(Config::kTileM);
-	std::size_t partial_bytes = partial_rows * sizeof(float);
-	std::size_t required_bytes =
-		partial_bytes * (ReturnEntropy ? 4u : 3u);
-	LIGER_CHECK(
-		gemm_params.workspace != nullptr &&
-			gemm_params.workspace_bytes >= required_bytes,
-		"forward GEMM needs a ",
-		required_bytes,
-		" B split-partial workspace, got ",
-		gemm_params.workspace_bytes);
-	LIGER_CHECK(
-		reinterpret_cast<std::uintptr_t>(gemm_params.workspace) % 16 == 0,
-		"forward GEMM workspace must be 16 B aligned");
-
-	float* scratch = static_cast<float*>(gemm_params.workspace);
-	ForwardGemmPartialsSm90<Compute> partials;
-	partials.partial_max = scratch + 0 * partial_rows;
-	partials.partial_sum = scratch + 1 * partial_rows;
-	partials.partial_target = scratch + 2 * partial_rows;
-	partials.partial_weighted =
-		ReturnEntropy ? scratch + 3 * partial_rows : nullptr;
-
-	check_cuda(
-		Cluster::launch(
+		check_cuda(
+			Cluster::prepare(kernel_fn, kSmemBytes),
+			"cudaFuncSetAttribute(MaxDynamicSharedMemorySize / "
+			"NonPortableClusterSizeAllowed)");
+		int max_active_cluster_pairs = Cluster::max_active_clusters(
 			kernel_fn,
-			dim3(
-				static_cast<unsigned>(Config::kClusterM),
-				1u,
-				static_cast<unsigned>(split.num_cluster_pairs)),
 			Config::kNumThreads,
 			kSmemBytes,
-			Config::kClusterM,
-			stream,
-			tma_load_x,
-			tma_load_w,
-			gemm_params,
-			partials,
-			split),
-		"cudaLaunchKernelEx(forward_gemm_kernel_sm90)");
-
-	forward_split_reduce_kernel_sm90<ReturnEntropy, Compute>
-		<<<split.num_m_tiles, Config::kTileM, 0, stream>>>(
-			gemm_params, partials, split);
-	check_cuda(
-		cudaGetLastError(), "forward_split_reduce_kernel_sm90 launch");
-
-	ncclComm_t comm =
-		reinterpret_cast<ncclComm_t>(params.nccl_comm_handle);
-	check_nccl(
-		ncclAllReduce(
-			reduce_workspace.local.local_max,
-			reduce_workspace.global_max,
+			Config::kClusterM);
+		ForwardGemmSplitSm90<Compute> split = Launch::resolve_split(
+			gemm_params.tuning,
 			gemm_params.tokens,
-			ncclFloat32,
-			ncclMax,
-			comm,
-			stream),
-		"ncclAllReduce(MAX)");
+			gemm_params.local_vocab,
+			max_active_cluster_pairs);
+		LIGER_CHECK(
+			split.num_cluster_pairs <= max_active_cluster_pairs,
+			"forward local reduction requires the complete cluster grid "
+			"to remain resident");
+		LIGER_CHECK(
+			split.base_split_n >= 1 &&
+				split.split_n <= split.num_logical_n_tiles,
+			"split_n must be between 1 and the number of logical vocabulary "
+			"tiles");
+		LIGER_CHECK(
+			split.extra_m_pairs < split.num_m_pairs &&
+				split.split_n ==
+					split.base_split_n +
+						(split.extra_m_pairs != 0 ? 1 : 0),
+			"uneven split tuning must use split_n=base_split_n+1 for a "
+			"proper subset of M pairs");
 
-	constexpr int kPostThreads = 256;
-	int post_blocks = ceil_div(gemm_params.tokens, kPostThreads);
-	pack_forward_reduction_kernel<ReturnEntropy>
-		<<<post_blocks, kPostThreads, 0, stream>>>(
-			reduce_workspace.local.local_max,
-			reduce_workspace.global_max,
-			reduce_workspace.local.local_sum,
-			reduce_workspace.local.local_target,
-			reduce_workspace.local.local_weighted_sum,
-			reduce_workspace.packed,
-			gemm_params.tokens);
-	check_cuda(
-		cudaGetLastError(), "pack_forward_reduction_kernel launch");
+		std::size_t partial_rows =
+			static_cast<std::size_t>(split.num_m_tiles) *
+			static_cast<std::size_t>(split.split_n) *
+			static_cast<std::size_t>(Config::kTileM);
+		std::size_t partial_bytes = partial_rows * sizeof(float);
+		std::size_t required_bytes =
+			partial_bytes * (ReturnEntropy ? 4u : 3u);
+		LIGER_CHECK(
+			gemm_params.workspace != nullptr &&
+				gemm_params.workspace_bytes >= required_bytes,
+			"forward GEMM needs a ",
+			required_bytes,
+			" B split-partial workspace, got ",
+			gemm_params.workspace_bytes);
+		LIGER_CHECK(
+			reinterpret_cast<std::uintptr_t>(gemm_params.workspace) % 16 ==
+				0,
+			"forward GEMM workspace must be 16 B aligned");
 
-	check_nccl(
-		ncclAllReduce(
-			reduce_workspace.packed,
-			reduce_workspace.reduced,
-			static_cast<std::size_t>(reduce_workspace.fields) *
-				static_cast<std::size_t>(gemm_params.tokens),
-			ncclFloat32,
-			ncclSum,
-			comm,
-			stream),
-		"ncclAllReduce(SUM)");
+		float* scratch = static_cast<float*>(gemm_params.workspace);
+		ForwardGemmPartialsSm90<Compute> partials;
+		partials.partial_max = scratch + 0 * partial_rows;
+		partials.partial_sum = scratch + 1 * partial_rows;
+		partials.partial_target = scratch + 2 * partial_rows;
+		partials.partial_weighted =
+			ReturnEntropy ? scratch + 3 * partial_rows : nullptr;
 
-	finalize_forward_kernel<ReturnEntropy>
-		<<<post_blocks, kPostThreads, 0, stream>>>(
-			reduce_workspace.global_max,
-			reduce_workspace.reduced,
-			gemm_params.target,
-			params.nll,
-			params.lse,
-			params.entropy,
-			gemm_params.tokens,
-			gemm_params.ignore_index);
-	check_cuda(
-		cudaGetLastError(), "finalize_forward_kernel launch");
+		int grid_ctas = split.num_cluster_pairs * Config::kClusterM;
+		comm = reserve_dx_reduce_workspace(
+			1, kDxRingStages, grid_ctas);
+		std::size_t forward_comm_elements =
+			static_cast<std::size_t>(split.num_m_tiles) *
+			kForwardReducedFields *
+			Config::kTileM;
+		LIGER_CHECK(
+			forward_comm_elements * sizeof(float) <=
+				backward_dx_configured_staging_bytes(),
+			"forward local reduction exceeds the configured TP staging "
+			"capacity");
+		if constexpr (RequiresRemote) {
+			static_assert(
+				Backend ==
+					liger_cute::detail::LocalReduceBackend::kNvls);
+			int rows_per_rank = ceil_div(
+				gemm_params.tokens, mapping.size);
+			std::size_t remote_elements =
+				static_cast<std::size_t>(rows_per_rank) *
+				static_cast<std::size_t>(
+					1 + reduce_workspace.fields);
+			LIGER_CHECK(
+				remote_elements * sizeof(float) <=
+					backward_dx_configured_packed_durable_bytes(),
+				"forward remote reduction exceeds the configured "
+				"symmetric durable capacity");
+			std::size_t gathered_elements =
+				remote_elements *
+				static_cast<std::size_t>(mapping.size);
+			LIGER_CHECK(
+				gathered_elements * sizeof(float) <=
+					backward_dx_configured_staging_bytes(),
+				"forward remote all-gather exceeds the configured "
+				"symmetric staging capacity");
+		}
+		LIGER_CHECK(
+			reduce_workspace.split_ready != nullptr,
+			"forward split completion counters must be non-null");
+
+		check_cuda(
+			cudaMemsetAsync(
+				reduce_workspace.split_ready,
+				0,
+				static_cast<std::size_t>(split.num_m_tiles) *
+					sizeof(int),
+				stream),
+			"cudaMemsetAsync(forward split counters)");
+		liger_cute::detail::begin_tp_reduce(
+			comm.launch_epoch, stream);
+		check_cuda(
+			Cluster::launch(
+				kernel_fn,
+				dim3(
+					static_cast<unsigned>(Config::kClusterM),
+					1u,
+					static_cast<unsigned>(split.num_cluster_pairs)),
+				Config::kNumThreads,
+				kSmemBytes,
+				Config::kClusterM,
+				stream,
+				tma_load_x,
+				tma_load_w,
+				gemm_params,
+				partials,
+				split,
+				comm,
+				mapping,
+				reduce_workspace.split_ready,
+				reduce_workspace.global_max,
+				reduce_workspace.reduced,
+				remote_source),
+			"cudaLaunchKernelEx(forward_gemm_tp_kernel_sm90)");
+	};
+
+	if (reduce.backend ==
+		liger_cute::detail::LocalReduceBackend::kNvls) {
+		if (reduce.remote.enabled()) {
+			launch_local(
+				reduce.nvls,
+				std::integral_constant<
+					liger_cute::detail::LocalReduceBackend,
+					liger_cute::detail::LocalReduceBackend::kNvls>{},
+				std::true_type{});
+		} else {
+			launch_local(
+				reduce.nvls,
+				std::integral_constant<
+					liger_cute::detail::LocalReduceBackend,
+					liger_cute::detail::LocalReduceBackend::kNvls>{},
+				std::false_type{});
+		}
+	} else {
+		LIGER_CHECK(
+			reduce.direct.available != 0,
+			"forward TP requires NVLS or complete direct-peer mappings");
+		launch_local(
+			reduce.direct,
+			std::integral_constant<
+				liger_cute::detail::LocalReduceBackend,
+				liger_cute::detail::LocalReduceBackend::kDirectPeer>{},
+			std::false_type{});
+	}
+
+	launch_forward_remote_finalize(
+		ReturnEntropy,
+		reduce.remote,
+		reduce.nvls,
+		comm,
+		comm.launch_epoch,
+		reduce_workspace,
+		gemm_params.target,
+		params.nll,
+		params.lse,
+		params.entropy,
+		gemm_params.tokens,
+		gemm_params.ignore_index,
+		stream);
+	liger_cute::detail::end_tp_reduce(stream);
 }
 
 template void fused_linear_scaled_cross_entropy_forward<false, 90>(

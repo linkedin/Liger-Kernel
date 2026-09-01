@@ -125,6 +125,7 @@ DxReduceWorkspace<float> reserve_dx_reduce_workspace(
 std::size_t backward_dx_staging_bytes(int max_tiles_per_reduce);
 std::size_t backward_dx_configured_staging_bytes();
 std::size_t backward_dx_configured_durable_bytes();
+std::size_t backward_dx_configured_packed_durable_bytes();
 
 void validate_backward_tp_shape(
 	int tokens, int hidden, int local_vocab);
