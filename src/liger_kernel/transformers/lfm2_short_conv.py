@@ -15,7 +15,11 @@ def liger_lfm2_short_conv_forward(
     seq_idx=None,
 ):
     """Fused full-sequence training forward for LFM2 short convolution."""
-    if use_lfm2_native_forward(hidden_states, sequence_dim=1) or past_key_values is not None or seq_idx is not None:
+    if (
+        use_lfm2_native_forward(hidden_states, operation="short_conv", sequence_dim=1)
+        or past_key_values is not None
+        or seq_idx is not None
+    ):
         original_forward = getattr(self, "_liger_original_forward", None)
         if original_forward is None:
             original_forward = getattr(self, "slow_forward", None)
