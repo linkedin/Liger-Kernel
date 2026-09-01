@@ -450,6 +450,18 @@ def revert_liger_kernel_to_mixtral(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_muse_glimmer(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to MuseGlimmer.
+    """
+
+    from transformers.models.muse_glimmer import modeling_muse_glimmer
+
+    importlib.reload(modeling_muse_glimmer)
+    model_config.model_class = modeling_muse_glimmer.MuseGlimmerForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_gemma(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Gemma.

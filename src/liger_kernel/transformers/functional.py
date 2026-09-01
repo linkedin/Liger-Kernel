@@ -120,7 +120,7 @@ def liger_fused_linear_cross_entropy(
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
 ):
-    loss, z_loss, token_accuracy, predicted_tokens = LigerFusedLinearCrossEntropyFunction.apply(
+    apply_args = (
         input,
         weight,
         target,
@@ -137,6 +137,9 @@ def liger_fused_linear_cross_entropy(
         return_token_accuracy,
         return_predicted_tokens,
     )
+    if getattr(LigerFusedLinearCrossEntropyFunction, "supports_inner_impl_dispatch", False):
+        apply_args += (None, None)
+    loss, z_loss, token_accuracy, predicted_tokens = LigerFusedLinearCrossEntropyFunction.apply(*apply_args)
 
     if not return_z_loss and not return_token_accuracy and not return_predicted_tokens:
         return loss
@@ -167,6 +170,8 @@ def liger_fused_linear_jsd(
         ignore_index,
         temperature,
         accum_dtype,
+        None,
+        None,
     )
 
 
@@ -205,6 +210,8 @@ def liger_jsd(
         shift_labels,
         beta,
         ignore_index,
+        None,
+        None,
     )
 
 

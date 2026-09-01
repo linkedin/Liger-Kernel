@@ -3,6 +3,12 @@ import triton
 
 from packaging.version import Version
 
+# Trigger declaration of the ``cross_entropy_loss_and_grad`` op location so the
+# dispatcher knows where to discover the Triton + CuTe DSL impls. Without this
+# import the first dispatch call would return "no impl registered".
+import liger_kernel.functional  # noqa: F401
+
+from liger_kernel.backends import dispatch
 from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
@@ -50,6 +56,8 @@ def fused_linear_cross_entropy_forward(
     use_token_scaling=False,
     return_token_accuracy=False,
     return_predicted_tokens=False,
+    ce_impl=None,
+    ce_mode=None,
     token_grad_output=None,
     compute_gradients=None,
     weight_requires_grad=None,
@@ -79,7 +87,6 @@ def fused_linear_cross_entropy_forward(
     # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = 8, chunk_size = 2048
     BT, H = _input.shape
     V = weight.shape[0]
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
     # widen the transient logits budget to C x BT x H (C=1 is a memory floor, not a perf target)
     inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
@@ -135,8 +142,6 @@ def fused_linear_cross_entropy_forward(
 
         target_chunk = target[start_idx:end_idx]  # chunk_size,
 
-        n_rows = logits_chunk.shape[0]
-
         # Compute predicted probabilities for token scaling if needed
         if use_token_scaling:
             # Compute softmax probabilities for scaling
@@ -167,52 +172,79 @@ def fused_linear_cross_entropy_forward(
             # Store the scaling factors
             scaling_factors = pred_probs.detach()  # Detach to ensure no gradient flow
 
-        # unreduced loss
-        loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size,
-        z_loss_1d_slice = z_loss_1d[start_idx:end_idx] if return_z_loss else None
-        token_accuracy_1d_slice = token_accuracy_1d[start_idx:end_idx] if return_token_accuracy else None
-        predicted_tokens_1d_slice = predicted_tokens_1d[start_idx:end_idx] if return_predicted_tokens else None
-
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
         target_chunk = target_chunk.contiguous()
 
-        # Here we calculate the gradient of logits_chunk in place so we can save memory.
-        liger_cross_entropy_kernel[(n_rows,)](
-            X_ptr=logits_chunk,
-            X_stride=logits_chunk.stride(-2),
-            Y_ptr=target_chunk,
-            Y_stride=target_chunk.stride(-1),  # always 1
-            weight_ptr=ce_weight,
-            loss_ptr=loss_1d_slice,
-            z_loss_ptr=z_loss_1d_slice,
-            loss_stride=loss_1d_slice.stride(-1),  # always 1
-            token_accuracy_ptr=token_accuracy_1d_slice,
-            token_accuracy_stride=token_accuracy_1d_slice.stride(-1)
-            if return_token_accuracy
-            else 0,  # always 1 if accuracy is enabled
-            predicted_tokens_ptr=predicted_tokens_1d_slice,
-            predicted_tokens_stride=predicted_tokens_1d_slice.stride(-1)
-            if return_predicted_tokens
-            else 0,  # always 1 if predicted tokens is enabled
-            n_cols=V,
-            n_non_ignore=total_n_non_ignore,
-            sum_non_ignore_weight=total_sum_non_ignore_ce_weight,
-            weight_sum=ce_weight_sum,
-            ignore_index=ignore_index,
-            lse_square_scale=lse_square_scale,
-            label_smoothing=label_smoothing,
-            reduction=reduction,
-            softcap=softcap,
-            RETURN_Z_LOSS=return_z_loss,
-            RETURN_TOKEN_ACCURACY=return_token_accuracy,
-            RETURN_PREDICTED_TOKENS=return_predicted_tokens,
-            HAS_WEIGHT=True if ce_weight is not None else False,
-            HAS_SOFTCAPPING=True if softcap is not None else False,
-            HAS_GRADIENTS=input_requires_grad,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32 if not is_hip() else 16,
-        )
+        if ce_impl is None:
+            loss_1d_slice = loss_1d[start_idx:end_idx]
+            z_loss_1d_slice = z_loss_1d[start_idx:end_idx] if return_z_loss else None
+            token_accuracy_1d_slice = token_accuracy_1d[start_idx:end_idx] if return_token_accuracy else None
+            predicted_tokens_1d_slice = predicted_tokens_1d[start_idx:end_idx] if return_predicted_tokens else None
+            block_size = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+
+            liger_cross_entropy_kernel[(end_idx - start_idx,)](
+                X_ptr=logits_chunk,
+                X_stride=logits_chunk.stride(-2),
+                Y_ptr=target_chunk,
+                Y_stride=target_chunk.stride(-1),
+                weight_ptr=ce_weight,
+                loss_ptr=loss_1d_slice,
+                z_loss_ptr=z_loss_1d_slice,
+                loss_stride=loss_1d_slice.stride(-1),
+                token_accuracy_ptr=token_accuracy_1d_slice,
+                token_accuracy_stride=token_accuracy_1d_slice.stride(-1) if return_token_accuracy else 0,
+                predicted_tokens_ptr=predicted_tokens_1d_slice,
+                predicted_tokens_stride=predicted_tokens_1d_slice.stride(-1) if return_predicted_tokens else 0,
+                n_cols=V,
+                n_non_ignore=total_n_non_ignore,
+                sum_non_ignore_weight=total_sum_non_ignore_ce_weight,
+                weight_sum=ce_weight_sum,
+                ignore_index=ignore_index,
+                lse_square_scale=lse_square_scale,
+                label_smoothing=label_smoothing,
+                reduction=reduction,
+                softcap=softcap,
+                RETURN_Z_LOSS=return_z_loss,
+                RETURN_TOKEN_ACCURACY=return_token_accuracy,
+                RETURN_PREDICTED_TOKENS=return_predicted_tokens,
+                HAS_WEIGHT=ce_weight is not None,
+                HAS_SOFTCAPPING=softcap is not None,
+                HAS_GRADIENTS=input_requires_grad,
+                BLOCK_SIZE=block_size,
+                num_warps=32 if not is_hip() else 16,
+            )
+            grad_logits_chunk = logits_chunk
+        else:
+            ce_args = (
+                logits_chunk,
+                target_chunk,
+                ce_weight,
+                ignore_index,
+                lse_square_scale,
+                label_smoothing,
+                reduction,
+                softcap,
+                total_n_non_ignore,
+                total_sum_non_ignore_ce_weight,
+                ce_weight_sum,
+                return_z_loss,
+                return_token_accuracy,
+                return_predicted_tokens,
+                input_requires_grad,
+            )
+            (
+                loss_1d_slice,
+                z_loss_1d_slice,
+                token_accuracy_1d_slice,
+                predicted_tokens_1d_slice,
+                grad_logits_chunk,
+            ) = dispatch(
+                "cross_entropy_loss_and_grad",
+                *ce_args,
+                impl=ce_impl,
+                mode=ce_mode,
+            )
 
         # Apply token scaling if requested
         if use_token_scaling:
@@ -227,7 +259,6 @@ def fused_linear_cross_entropy_forward(
             token_accuracy_1d[start_idx:end_idx] = token_accuracy_1d_slice
         if return_predicted_tokens:
             predicted_tokens_1d[start_idx:end_idx] = predicted_tokens_1d_slice
-        grad_logits_chunk = logits_chunk  # chunk_size x V
 
         # Apply token scaling to gradients if requested
         if use_token_scaling:
@@ -355,6 +386,8 @@ def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, gr
 
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
+    supports_inner_impl_dispatch = True
+
     @staticmethod
     @amp_custom_fwd
     def forward(
@@ -374,6 +407,8 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         use_token_scaling: bool = False,
         return_token_accuracy: bool = False,
         return_predicted_tokens: bool = False,
+        ce_impl=None,
+        ce_mode=None,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -427,6 +462,8 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 use_token_scaling=use_token_scaling,
                 return_token_accuracy=return_token_accuracy,
                 return_predicted_tokens=return_predicted_tokens,
+                ce_impl=ce_impl,
+                ce_mode=ce_mode,
                 compute_gradients=False if ctx.defer_grads else None,
             )
         )
@@ -442,6 +479,10 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 softcap=softcap,
                 accum_dtype=accum_dtype,
                 use_token_scaling=use_token_scaling,
+                # Preserve the linkedin-managed multi-backend dispatch selection when the
+                # reduction="none" path re-enters forward from backward to recompute grads.
+                ce_impl=ce_impl,
+                ce_mode=ce_mode,
             )
             ctx.weight_requires_grad = weight.requires_grad
         else:
@@ -502,4 +543,6 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             None,  # use_token_scaling
             None,  # return_token_accuracy
             None,  # return_predicted_tokens
+            None,  # ce_impl
+            None,  # ce_mode
         )

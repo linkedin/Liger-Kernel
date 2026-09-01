@@ -68,8 +68,8 @@ def _kldiv_kernel_forward(
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + base_offsets
         mask = offsets < n_cols
-        y = tl.load(y_ptr + offsets, mask=mask, other=0.0)
-        y_true = tl.load(gt_ptr + offsets, mask=mask, other=0.0)
+        y = tl.load(y_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        y_true = tl.load(gt_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
 
         # KL(y_true || y) = y_true * (log(y_true) - log(y))
         # We compute KL(y_true || y) with y in the log-space
@@ -109,7 +109,7 @@ def _kldiv_kernel_backward(
         offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_cols
 
-        target = tl.load(target_ptr + offsets, mask=mask, other=0.0)
+        target = tl.load(target_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
 
         if not log_target:
             res = target * -1

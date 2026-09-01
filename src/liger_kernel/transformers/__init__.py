@@ -23,6 +23,8 @@ from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAtten
 from liger_kernel.transformers.poly_norm import LigerPolyNorm  # noqa: F401
 from liger_kernel.transformers.relu_squared import LigerReLUSquared  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
+from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmer  # noqa: F401
+from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmerTextCentered  # noqa: F401
 from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.softmax import LigerSoftmax  # noqa: F401
 from liger_kernel.transformers.sparsemax import LigerSparsemax  # noqa: F401
@@ -32,6 +34,7 @@ from liger_kernel.transformers.swiglu import LigerFalconH1SwiGLUMLP  # noqa: F40
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
+from liger_kernel.transformers.swiglu import LigerSwiGLUMLPForMuseGlimmer  # noqa: F401
 from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
@@ -66,6 +69,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_muse_glimmer  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_nemotron  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo2  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo3  # noqa: F401
@@ -140,6 +144,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_ministral",
         "apply_liger_kernel_to_mistral",
         "apply_liger_kernel_to_mixtral",
+        "apply_liger_kernel_to_muse_glimmer",
         "apply_liger_kernel_to_nemotron",
         "apply_liger_kernel_to_mllama",
         "apply_liger_kernel_to_olmo2",
@@ -187,6 +192,8 @@ __all__ = [
     "LigerPolyNorm",
     "LigerReLUSquared",
     "LigerRMSNorm",
+    "LigerRMSNormForMuseGlimmer",
+    "LigerRMSNormForMuseGlimmerTextCentered",
     "liger_rotary_pos_emb",
     "liger_llama4_text_rotary_pos_emb",
     "liger_llama4_vision_rotary_pos_emb",
@@ -195,6 +202,7 @@ __all__ = [
     "LigerPhi3SwiGLUMLP",
     "LigerQwen3MoeSwiGLUMLP",
     "LigerSwiGLUMLP",
+    "LigerSwiGLUMLPForMuseGlimmer",
     "LigerTiledGEGLUMLP",
     "LigerTiledSwiGLUMLP",
     "LigerTVDLoss",
@@ -233,6 +241,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_ministral",
             "apply_liger_kernel_to_mistral",
             "apply_liger_kernel_to_mixtral",
+            "apply_liger_kernel_to_muse_glimmer",
             "apply_liger_kernel_to_nemotron",
             "apply_liger_kernel_to_mllama",
             "apply_liger_kernel_to_olmo2",
