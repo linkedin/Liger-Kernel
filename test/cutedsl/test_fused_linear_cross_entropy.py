@@ -104,6 +104,14 @@ def _run_or_skip(thunk):
       * the SM100-only hardware gate — the native FLCE kernel raises a ``RuntimeError``
         mentioning SM100 on non-SM100 GPUs (e.g. the H100/SM90 daily-CI half, which must
         self-skip this SM100 suite per the nvi-ci.yml arch split).
+
+    Note: this file targets the SM100 *native* op ``LigerFusedLinearCrossEntropyFunction``,
+    whose full feature set (fp16, bias, label smoothing, z-loss, softcap, ce-weight, token
+    scaling, arbitrary shapes) the separate Hopper op
+    ``LigerFusedLinearCrossEntropySM90Function`` deliberately rejects — it is a narrow
+    BF16/mean-sum/aligned-shape MVP. SM90 FLCE has its own coverage in
+    ``test_fused_linear_cross_entropy_sm90.py`` (which runs on the H100/SM90 CI half), so
+    these skips do not leave SM90 FLCE untested.
     """
     try:
         return thunk()
