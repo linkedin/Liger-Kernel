@@ -58,6 +58,22 @@ def liger_cutile_tests():
     subprocess.run(["make test-cutile"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
+@app.function(gpu="B200!", image=repo, timeout=90 * 60)
+def liger_cutile_tests_b200():
+    import subprocess
+
+    # cutile-tileiras pulls in the tileiras compiler so `import cuda.tile` resolves;
+    # without it the cuTile tests importorskip (skip) rather than run.
+    subprocess.run(
+        ["uv pip install -e '.[dev,cutile-tileiras]' --system"],
+        check=True,
+        shell=True,
+        cwd=REMOTE_ROOT_PATH,
+    )
+    # make test-cutile sets LIGER_KERNEL_IMPL=cutile internally.
+    subprocess.run(["make test-cutile"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
+
+
 @app.function(gpu="H100!", image=repo, timeout=90 * 60)
 def liger_cutedsl_tests_h100():
     import subprocess
@@ -73,7 +89,7 @@ def liger_cutedsl_tests_h100():
     subprocess.run(["make test-cutedsl"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
-@app.function(gpu="B200", image=repo, timeout=90 * 60)
+@app.function(gpu="B200!", image=repo, timeout=90 * 60)
 def liger_cutedsl_tests_b200():
     import subprocess
 
