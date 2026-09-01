@@ -157,7 +157,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
     if implementation == "fallback":
         import liger_kernel.ops.fused_linear_scaled_cross_entropy as frontend
 
-        frontend._load_lck_tp_function = lambda group, device: None
+        frontend._load_lck_tp_function = lambda: None
         nvshmem = None
     else:
         from liger_cute_kernels import nvshmem
@@ -264,11 +264,18 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         raise
 
 
-def _run(world_size: int, layout: str, implementation: str, run_moe: bool = False):
+def _run(
+    world_size: int,
+    layout: str,
+    implementation: str,
+    run_moe: bool = False,
+    disable_nvls: bool = False,
+):
     rendezvous = tempfile.mkdtemp(prefix=f"liger_fslce_tp_{layout}_")
     init_file = os.path.join(rendezvous, "store")
     env = {
         "NVSHMEM_DISABLE_NCCL": "1",
+        "NVSHMEM_DISABLE_NVLS": "1" if disable_nvls else "0",
         "NVSHMEM_REMOTE_TRANSPORT": "none",
         "NVSHMEM_SYMMETRIC_SIZE": "3G",
     }
@@ -327,3 +334,11 @@ def test_lck_moe_and_tp_frontend_use_different_process_groups():
     if _NDEV < 4:
         pytest.skip("requires at least four CUDA devices")
     _run(4, "strided", "lck", run_moe=True)
+
+
+def test_tp_frontend_direct_peer_fallback():
+    if not _LCK_AVAILABLE:
+        pytest.skip("requires a matching liger_cute_kernels wheel")
+    if _NDEV < 2:
+        pytest.skip("requires at least two CUDA devices")
+    _run(2, "world", "lck", disable_nvls=True)

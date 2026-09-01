@@ -39,26 +39,10 @@ def is_available() -> bool:
         "fused_linear_scaled_cross_entropy_configure_forward",
         "fused_linear_scaled_cross_entropy_backward",
         "fused_linear_scaled_cross_entropy_forward",
-        "nccl_runtime_version",
     )
     if not all(hasattr(native_module, name) for name in required_native):
         return False
     return callable(getattr(nvshmem, "resolve_team", None))
-
-
-def supports_process_group(process_group: "ProcessGroup", device: torch.device) -> bool:
-    try:
-        backend = process_group._get_backend(device)
-    except (AttributeError, RuntimeError):
-        return False
-    required = (
-        "_comm_ptr",
-        "eager_connect_single_device",
-        "get_runtime_nccl_version",
-    )
-    if not all(callable(getattr(backend, name, None)) for name in required):
-        return False
-    return tuple(backend.get_runtime_nccl_version()) == _get_tvm_ffi().nccl_runtime_version()
 
 
 def _validate_temperature(temperature) -> None:
@@ -118,25 +102,6 @@ def _cuda_device_context(tensor):
         yield
 
 
-def _borrow_nccl_communicator(process_group: "ProcessGroup", device: torch.device) -> int:
-    """Borrow the current-device communicator without storing or owning it."""
-    backend = process_group._get_backend(device)
-    torch_nccl_version = tuple(backend.get_runtime_nccl_version())
-    lck_nccl_version = _get_tvm_ffi().nccl_runtime_version()
-    if torch_nccl_version != lck_nccl_version:
-        raise RuntimeError(
-            "the PyTorch and LCK NCCL runtime versions must match before sharing a communicator: "
-            f"torch={torch_nccl_version}, lck={lck_nccl_version}"
-        )
-    comm_handle = int(backend._comm_ptr())
-    if comm_handle == 0:
-        backend.eager_connect_single_device(device)
-        comm_handle = int(backend._comm_ptr())
-    if comm_handle == 0:
-        raise RuntimeError("PyTorch did not expose a ready NCCL communicator for the tensor-parallel process group")
-    return comm_handle
-
-
 def _prepare_lck_call(process_group: "ProcessGroup", device, tokens, hidden, local_vocab, tiles_per_reduce) -> int:
     tvm_ffi = _get_tvm_ffi()
     with torch.cuda.device(device):
@@ -184,7 +149,6 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
             tiles_per_reduce,
         )
         with _cuda_device_context(x_padded):
-            nccl_comm_handle = _borrow_nccl_communicator(tp_group, x_padded.device)
             nll, lse, entropy = _get_tvm_ffi().fused_linear_scaled_cross_entropy_forward(
                 x_padded,
                 weight_padded,
@@ -192,7 +156,7 @@ class LigerFusedLinearScaledCrossEntropyLckTPFunction(torch.autograd.Function):
                 vocab_start,
                 ignore_index,
                 1.0 / temperature,
-                nccl_comm_handle,
+                team_handle,
                 return_entropy,
             )
 

@@ -2,12 +2,10 @@
 #include <tvm/ffi/tvm_ffi.h>
 
 #include <cuda_runtime.h>
-#include <nccl.h>
 
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <exception>
 
 #include "backward_gemm_sm90.cuh"
@@ -72,13 +70,6 @@ void CheckStatus(liger_cute_status_t status, const char* what) {
     TVM_FFI_THROW(RuntimeError) << "liger_cute: " << what << " failed ("
                                 << liger_cute_status_string(status)
                                 << "): " << liger_cute_last_error_string();
-  }
-}
-
-void CheckNccl(ncclResult_t status, const char* what) {
-  if (status != ncclSuccess) {
-    TVM_FFI_THROW(RuntimeError) << "liger_cute: " << what << " failed: "
-                                << ncclGetErrorString(status);
   }
 }
 
@@ -185,62 +176,6 @@ void init_pmi() { CheckStatus(liger_cute_nvshmem_init_pmi(), "init_pmi"); }
 void finalize() { CheckStatus(liger_cute_nvshmem_finalize(), "finalize"); }
 void pool_clear_all() { CheckStatus(liger_cute_pool_clear_all(), "pool_clear_all"); }
 void pool_clear_buffers() { CheckStatus(liger_cute_pool_clear_buffers(), "pool_clear_buffers"); }
-
-void nccl_unique_id_nbytes(ffi::TensorView out) {
-  RequireCpuInt64(out, 1);
-  static_cast<int64_t*>(out.data_ptr())[0] = sizeof(ncclUniqueId);
-}
-
-void nccl_get_unique_id(ffi::TensorView out) {
-  DLDataType u8{kDLUInt, 8, 1};
-  RequireTensor(out, 1, u8, "out");
-  TVM_FFI_ICHECK_EQ(out.device().device_type, kDLCPU);
-  TVM_FFI_ICHECK_EQ(out.size(0), static_cast<int64_t>(sizeof(ncclUniqueId)));
-  ncclUniqueId unique_id;
-  CheckNccl(ncclGetUniqueId(&unique_id), "ncclGetUniqueId");
-  std::memcpy(out.data_ptr(), &unique_id, sizeof(unique_id));
-}
-
-void nccl_comm_init_rank(
-    int64_t rank, int64_t nranks, ffi::TensorView unique_id, ffi::TensorView out) {
-  DLDataType u8{kDLUInt, 8, 1};
-  RequireTensor(unique_id, 1, u8, "unique_id");
-  TVM_FFI_ICHECK_EQ(unique_id.device().device_type, kDLCPU);
-  TVM_FFI_ICHECK_EQ(
-      unique_id.size(0), static_cast<int64_t>(sizeof(ncclUniqueId)));
-  RequireCpuInt64(out, 1);
-  TVM_FFI_ICHECK_GT(nranks, 0);
-  TVM_FFI_ICHECK_GE(rank, 0);
-  TVM_FFI_ICHECK_LT(rank, nranks);
-  ncclUniqueId id;
-  std::memcpy(&id, unique_id.data_ptr(), sizeof(id));
-  ncclComm_t comm = nullptr;
-  CheckNccl(
-      ncclCommInitRank(
-          &comm, static_cast<int>(nranks), id, static_cast<int>(rank)),
-      "ncclCommInitRank");
-  static_cast<int64_t*>(out.data_ptr())[0] =
-      reinterpret_cast<int64_t>(comm);
-}
-
-void nccl_comm_destroy(int64_t comm_handle) {
-  if (comm_handle == 0) {
-    return;
-  }
-  CheckNccl(
-      ncclCommDestroy(reinterpret_cast<ncclComm_t>(comm_handle)),
-      "ncclCommDestroy");
-}
-
-void nccl_runtime_version(ffi::TensorView out) {
-  RequireCpuInt32(out, 3);
-  int version = 0;
-  CheckNccl(ncclGetVersion(&version), "ncclGetVersion");
-  auto* values = static_cast<int32_t*>(out.data_ptr());
-  values[0] = version / 10000;
-  values[1] = (version % 10000) / 100;
-  values[2] = version % 100;
-}
 
 void my_pe(ffi::TensorView out) {
   RequireCpuInt32(out, 1);
@@ -499,7 +434,7 @@ void fused_linear_scaled_cross_entropy_configure_backward(
 void fused_linear_scaled_cross_entropy_forward(
     ffi::TensorView x, ffi::TensorView weight, ffi::TensorView target,
     int64_t vocab_start, int64_t ignore_index, double inverse_temperature,
-    int64_t nccl_comm_handle, bool return_entropy, ffi::TensorView nll,
+    int64_t team_handle, bool return_entropy, ffi::TensorView nll,
     ffi::TensorView lse, ffi::TensorView entropy) {
   DLDataType bf16{kDLBfloat, 16, 1};
   DLDataType f32{kDLFloat, 32, 1};
@@ -525,7 +460,6 @@ void fused_linear_scaled_cross_entropy_forward(
   TVM_FFI_ICHECK_EQ(lse.size(0), tokens);
   TVM_FFI_ICHECK_EQ(entropy.size(0), tokens);
   TVM_FFI_ICHECK_GE(vocab_start, 0);
-  TVM_FFI_ICHECK_NE(nccl_comm_handle, 0);
   RequirePositiveInverseTemperature(inverse_temperature);
 
   using namespace liger::fused_scaled_linear_cross_entropy;
@@ -542,7 +476,7 @@ void fused_linear_scaled_cross_entropy_forward(
   params.nll = static_cast<float*>(nll.data_ptr());
   params.lse = static_cast<float*>(lse.data_ptr());
   params.entropy = static_cast<float*>(entropy.data_ptr());
-  params.nccl_comm_handle = nccl_comm_handle;
+  params.team_handle = team_handle;
   cudaStream_t stream = reinterpret_cast<cudaStream_t>(
       TVMFFIEnvGetStream(x.device().device_type, x.device().device_id));
   try {
@@ -648,11 +582,6 @@ TVM_FFI_DLL_EXPORT_TYPED_FUNC(get_uniqueid, get_uniqueid);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(init_with_uniqueid, init_with_uniqueid);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(init_pmi, init_pmi);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(finalize, finalize);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_unique_id_nbytes, nccl_unique_id_nbytes);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_get_unique_id, nccl_get_unique_id);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_comm_init_rank, nccl_comm_init_rank);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_comm_destroy, nccl_comm_destroy);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(nccl_runtime_version, nccl_runtime_version);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(my_pe, my_pe);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(n_pes, n_pes);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(team_world, team_world);

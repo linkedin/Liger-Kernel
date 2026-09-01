@@ -17,16 +17,13 @@ def _load_sm90_function():
     return LigerFusedScaledCrossEntropySM90Function
 
 
-def _load_lck_tp_function(process_group, device):
+def _load_lck_tp_function():
     from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import (
         LigerFusedLinearScaledCrossEntropyLckTPFunction,
     )
     from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import is_available
-    from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import supports_process_group
 
-    if not is_available() or not supports_process_group(process_group, device):
-        return None
-    return LigerFusedLinearScaledCrossEntropyLckTPFunction
+    return LigerFusedLinearScaledCrossEntropyLckTPFunction if is_available() else None
 
 
 def _validate_temperature(temperature):
@@ -64,8 +61,6 @@ def _tp_group_info(process_group):
     if not dist.is_available() or not dist.is_initialized():
         raise RuntimeError("torch.distributed must be initialized before using tensor-parallel scaled cross entropy")
     process_group = process_group if process_group is not None else dist.group.WORLD
-    if str(dist.get_backend(process_group)).lower() != "nccl":
-        raise RuntimeError("tensor-parallel fused linear scaled cross entropy requires an NCCL process group")
     return process_group, dist.get_rank(process_group)
 
 
@@ -405,7 +400,7 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
         lck_function = None
         if _input.dtype == torch.bfloat16 and _is_hopper(_input.device):
             try:
-                lck_function = _load_lck_tp_function(process_group, _input.device)
+                lck_function = _load_lck_tp_function()
             except ImportError:
                 lck_function = None
         if lck_function is not None:

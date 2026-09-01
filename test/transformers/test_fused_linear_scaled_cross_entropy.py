@@ -207,7 +207,7 @@ def test_tp_frontend_dispatches_hopper_bf16_to_lck(monkeypatch):
     monkeypatch.setattr(_FRONTEND, "_tp_group_info", lambda actual: (actual, 2))
     monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
     monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: actual == device)
-    monkeypatch.setattr(_FRONTEND, "_load_lck_tp_function", lambda group, actual_device: StubLckFunction)
+    monkeypatch.setattr(_FRONTEND, "_load_lck_tp_function", lambda: StubLckFunction)
     monkeypatch.setattr(
         _FRONTEND,
         "_apply_tp_fallback",
@@ -248,7 +248,7 @@ def test_tp_frontend_uses_liger_fallback_when_lck_is_unavailable(monkeypatch, lc
     monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
     monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: True)
 
-    def load_lck(group, actual_device):
+    def load_lck():
         if isinstance(lck_result, BaseException):
             raise lck_result
         return lck_result
@@ -339,7 +339,6 @@ def test_lck_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):
     monkeypatch.setattr(_LCK_FRONTEND, "_validate_inputs", lambda *args: None)
     monkeypatch.setattr(_LCK_FRONTEND, "_pad_hidden", lambda x, weight: (x, weight, x.shape[1]))
     monkeypatch.setattr(_LCK_FRONTEND, "_prepare_lck_call", lambda *args: 17)
-    monkeypatch.setattr(_LCK_FRONTEND, "_borrow_nccl_communicator", lambda group, device: 23)
     monkeypatch.setattr(_LCK_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
 
     _input = torch.randn(3, 4, requires_grad=True)
@@ -358,7 +357,7 @@ def test_lck_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):
     )
     torch.autograd.backward((nll, entropy), (torch.ones_like(nll), torch.full_like(entropy, 0.25)))
 
-    assert calls["forward"][3:] == (10, -100, 2.0, 23, True)
+    assert calls["forward"][3:] == (10, -100, 2.0, 17, True)
     torch.testing.assert_close(calls["backward"][0], torch.ones(3))
     torch.testing.assert_close(calls["backward"][1], torch.full((3,), 0.25))
     assert calls["backward"][7:] == (10, -100, 2.0, 17, 2, True)
@@ -415,67 +414,6 @@ def test_lck_call_uses_prepared_group_without_global_state(monkeypatch):
         ("backward_config", (64, 1024, 160, 1, 17)),
         ("forward_config", (64, 160)),
     ]
-
-
-def test_lck_borrows_matching_process_group_nccl_communicator(monkeypatch):
-    calls = []
-    comm_handles = iter((0, 23))
-    device = torch.device("cuda:2")
-
-    class FakeBackend:
-        @staticmethod
-        def get_runtime_nccl_version():
-            return (2, 27, 6)
-
-        @staticmethod
-        def eager_connect_single_device(actual_device):
-            calls.append(("eager", actual_device))
-
-        @staticmethod
-        def _comm_ptr():
-            calls.append(("comm_ptr",))
-            return next(comm_handles)
-
-    class FakeProcessGroup:
-        @staticmethod
-        def _get_backend(actual_device):
-            calls.append(("backend", actual_device))
-            return FakeBackend()
-
-    fake_tvm_ffi = SimpleNamespace(nccl_runtime_version=lambda: (2, 27, 6))
-    monkeypatch.setattr(_LCK_FRONTEND, "_get_tvm_ffi", lambda: fake_tvm_ffi)
-
-    assert _LCK_FRONTEND._borrow_nccl_communicator(FakeProcessGroup(), device) == 23
-    assert calls == [("backend", device), ("comm_ptr",), ("eager", device), ("comm_ptr",)]
-
-
-def test_lck_rejects_mismatched_nccl_runtime(monkeypatch):
-    class FakeBackend:
-        @staticmethod
-        def get_runtime_nccl_version():
-            return (2, 27, 6)
-
-        @staticmethod
-        def eager_connect_single_device(device):
-            pytest.fail(f"must not initialize a mismatched communicator on {device}")
-
-        @staticmethod
-        def _comm_ptr():
-            return 23
-
-    class FakeProcessGroup:
-        @staticmethod
-        def _get_backend(device):
-            return FakeBackend()
-
-    monkeypatch.setattr(
-        _LCK_FRONTEND,
-        "_get_tvm_ffi",
-        lambda: SimpleNamespace(nccl_runtime_version=lambda: (2, 26, 5)),
-    )
-
-    with pytest.raises(RuntimeError, match="NCCL runtime versions must match"):
-        _LCK_FRONTEND._borrow_nccl_communicator(FakeProcessGroup(), torch.device("cuda:0"))
 
 
 def test_frontend_is_exported_from_ops_root():

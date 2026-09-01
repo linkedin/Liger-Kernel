@@ -147,7 +147,8 @@ __device__ void direct_peer_communicate(
 			mapping.rank,
 			mapping.size};
 		liger_cute::detail::local_all_reduce<
-			liger_cute::detail::LocalReduceBackend::kDirectPeer>(
+			liger_cute::detail::LocalReduceBackend::kDirectPeer,
+			liger_cute::detail::ReduceOp::kSum>(
 			context,
 			local_reduced,
 			comm.partial + base + segment_begin,
