@@ -5,7 +5,12 @@ import triton
 
 from packaging.version import Version
 
-from liger_kernel.ops.jsd import _jsd_kernel
+# Trigger declaration of the ``jsd_loss_and_grad`` op location so the
+# dispatcher knows where to discover the Triton + cuTile impls. Without this
+# import the first dispatch call would return "no impl registered".
+import liger_kernel.functional  # noqa: F401
+
+from liger_kernel.backends import dispatch
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import element_mul_kernel
@@ -20,6 +25,44 @@ _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
+def _max_capability() -> int:
+    # Runtime dispatch-plane key (e.g. 100 = sm_100/B200, 103 = sm_103/B300).
+    # Called per wrapper invocation (never memoized) so mock-cc suites key
+    # separately per call, same idiom as capability.is_satisfied.
+    if torch.cuda.is_available():
+        try:
+            maj, minor = torch.cuda.get_device_capability()
+        except (IndexError, RuntimeError, AssertionError):  # pragma: no cover
+            return 0
+        return 10 * maj + minor
+    return 0
+
+
+# Chunk-memory constants: the chunked forward below sizes its BT chunks so
+# the transient per-chunk logits buffers live in a budget proportional to
+# BT x H. The original budget constant was 1 (budget == BT x H), which is a
+# memory floor, not a performance target: every chunk pays ~11 kernel
+# launches + host passes (2 proj GEMMs, 2 log_softmax, softmax, 2
+# contiguous, the dispatched inner JSD, the dx broadcast-reduction chain,
+# the input GEMM and the grad-weight addmm), so over-chunking turns the
+# whole forward into a launch-bound small-M loop. Measured on B200 (sm_100,
+# bf16, inner JSD pinned to the auto-selected nvidia-cutedsl): at llama
+# shapes (V = 128256, H = 4096) the constant-1 formula forces 32 chunks; a
+# constant of 8 lands in the flat optimum (B200 knee measured at 8x) and is
+# 1.37x faster end-to-end (4.6x at BT = 1024, where constant 1 degenerates
+# to 32-row chunks). Re-measured on B300 (sm_103, identical llama-shape
+# sweep): the smaller constants (2, 4) regress 12-156% exactly as on B200,
+# but the knee sits one multiple further out -- constant 16 beats constant 8
+# by -0.8% (BT=8192), -5.2% (BT=4096), -19.9% (BT=1024) at V=128256 and
+# -2.0% at V=69120/H=5120, wash at V=32000/H=4096. The plane guard selects
+# 16 on sm_103+ and keeps the B200-tuned 8 elsewhere (same plane-selected-
+# constant pattern as FARN 305238c). Memory stays bounded by O(BT x H) --
+# the constant only widens the hidden-budget proportionality (<= 16 x BT x H
+# on B300).
+_CHUNK_MEM_CONST_B200 = 8
+_CHUNK_MEM_CONST_B300 = 16
+
+
 def fused_linear_jsd_forward(
     student_input,
     student_weight,
@@ -30,6 +73,8 @@ def fused_linear_jsd_forward(
     ignore_index,
     has_label,
     temperature,
+    jsd_impl=None,
+    jsd_mode=None,
     accum_dtype=None,
 ):
     device = student_input.device
@@ -37,17 +82,27 @@ def fused_linear_jsd_forward(
 
     # inputs have shape: BT x H
     # materialized activations will have shape: BT x V
-    # the increase in memory = BT x V
-    # reduction can be achieved by partitioning the number of tokens BT into smaller chunks.
-    # for ex: if we were to achieve the same memory consumption as BT x H, then the chunk size should be:
-    # inc_factor = (V+H-1)//H, chunk_size = (BT + inc_factor - 1)//inc_factor
-    # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = 8, chunk_size = 2048
+    # the transient memory increase over BT x H is num_chunks x BT x H (each
+    # chunk materializes a chunk_size x V activation for one iteration).
+    # Chunking on BT bounds that increase; the chunk count is sized below by
+    # the constant-widened budget (see _CHUNK_MEM_CONST_B200/_B300).
+    # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = ceil(32000/(8*4096)) = 1,
+    #   chunk_size = BT (single pass; the constant-1 budget forces 8 chunks of 2048).
     BT, H = student_input.shape
     V = student_weight.shape[0]
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-    inc_factor = triton.cdiv(V, H)  # (V + H - 1) // H
-    chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
+    # num_chunks = ceil(V / (chunk_mem_const * H)): the loop above says memory
+    # increases by (num_chunks x BT x H); sizing the chunk count by the
+    # constant-widened budget keeps that increase <= chunk_mem_const x BT x H.
+    # Only Blackwell widens the budget (measured there): sm_103+ uses the B300
+    # constant, sm_100 the B200 constant; every pre-Blackwell device (Hopper,
+    # Ampere, CPU/no-CUDA where _max_capability()==0) keeps the original tight
+    # budget (constant 1 == ceil(V / H)), so non-Blackwell memory is unchanged.
+    _cc = _max_capability()
+    chunk_mem_const = _CHUNK_MEM_CONST_B300 if _cc > 100 else (_CHUNK_MEM_CONST_B200 if _cc == 100 else 1)
+    inc_factor = triton.cdiv(V, chunk_mem_const * H)
+    chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # ceil(BT / inc_factor)
+    chunk_size = min(chunk_size, BT)
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
     if accum_dtype is None:
@@ -57,11 +112,11 @@ def fused_linear_jsd_forward(
             torch.zeros_like(student_weight, dtype=accum_dtype, device=device) if student_weight.requires_grad else None
         )
     grad_input = torch.zeros_like(student_input)
-    # we use fp32 for loss accumulator.
-    # Only the reduced loss is ever returned, so accumulate a scalar per chunk rather than
-    # materializing an unreduced BT x V buffer -- the latter costs as much as the full logits
-    # tensor that chunking exists to avoid (~4 GB at BT=8192, V=128000).
-    loss = torch.zeros((), dtype=torch.float32, device=device)
+    # Optimization #1: scalar loss accumulator instead of a full (BT, V) fp32
+    # buffer. At BT=4096 V=128256 that buffer is 2.1 GB; allocate a
+    # (chunk_size, V) fp32 buffer per iteration and fold each chunk's sum into
+    # a scalar. Matches the memory pattern in TileGym's reference.
+    total_loss = torch.zeros((), dtype=torch.float32, device=device)
 
     if has_label:
         n_non_ignore = (shift_labels != ignore_index).sum().item()
@@ -81,52 +136,52 @@ def fused_linear_jsd_forward(
         # in FP32 to avoid losing numerical stability.
         student_logits_chunk = (student_input_chunk @ student_weight.t()).to(torch.float32)
         teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(torch.float32)
-        chunk_n_rows = student_logits_chunk.shape[0]
 
-        # unreduced loss for this chunk
-        # NOTE: this must be a standalone contiguous buffer, *not* a view into a larger loss
-        # tensor. `torch.compile` functionalizes the kernel's mutation by cloning the pointer
-        # argument via `clone_preserve_strides`, which clones `storage_offset + numel` elements out
-        # of a buffer Inductor may have sized to the view alone -- an out-of-bounds read whose
-        # garbage survives into the loss on rows where the kernel returns early (ignore_index).
-        loss_chunk = torch.zeros((chunk_n_rows, V), dtype=torch.float32, device=device)
         # log-softmax with temperature
         student_logits_chunk = student_logits_chunk / temperature
         teacher_logits_chunk = teacher_logits_chunk / temperature
         student_prob_chunk = torch.log_softmax(student_logits_chunk, dim=-1)
         teacher_prob_chunk = torch.log_softmax(teacher_logits_chunk, dim=-1)
 
+        # Optimization #3: pre-compute softmax(logits) BEFORE the JSD kernel
+        # launch so CUDA can overlap it with the kernel's startup. We need
+        # softmax(student_logits) in the dx reduction below; computing it
+        # eagerly here unblocks the launch pipeline.
+        softmax_s_chunk = torch.softmax(student_logits_chunk, dim=-1)
+
         # ensure _input and target are contiguous
         student_prob_chunk = student_prob_chunk.contiguous()
         teacher_prob_chunk = teacher_prob_chunk.contiguous()
 
-        # Here we calculate the gradient of prob_chunk in place so we can save memory.
-        _jsd_kernel[(chunk_n_rows,)](
-            X_ptr=student_prob_chunk,
-            X_stride=student_prob_chunk.stride(-2),
-            Y_ptr=teacher_prob_chunk,
-            Y_stride=teacher_prob_chunk.stride(-2),
-            loss_ptr=loss_chunk,
-            loss_stride=loss_chunk.stride(-2),
-            dX_ptr=student_prob_chunk,
-            dX_stride=student_prob_chunk.stride(-2),
-            label_ptr=(
-                shift_labels[start_idx:end_idx] if has_label else torch.empty(1, device=device)
-            ),  # dummy ptr if no label
-            beta=jsd_beta,
-            n_non_ignore=n_non_ignore,
-            ignore_index=ignore_index,
-            n_cols=V,
-            BLOCK_SIZE=BLOCK_SIZE,
-            HAS_LABEL=has_label,
+        # Compute the per-chunk loss + dx through the dispatcher so cuTile is
+        # picked up when the user sets ``impl="nvidia-cutile"``. The dispatched
+        # primitive writes the per-row loss tile into a (chunk_n_rows, V) buffer
+        # and returns ``dx`` — either an in-place overwrite of ``student_prob_chunk``
+        # (Triton) or a freshly allocated tensor (cuTile). We rebind so the rest
+        # of the function sees the gradient regardless of which impl ran.
+        chunk_labels = shift_labels[start_idx:end_idx] if has_label else None
+        jsd_args = (
+            student_prob_chunk,
+            teacher_prob_chunk,
+            chunk_labels,
+            float(jsd_beta),
+            int(ignore_index),
+            float(n_non_ignore),
         )
-        loss = loss + loss_chunk.sum()
-        # gradients of prob_chunk in place, shape: chunk_size x V
-        # gradients of logits_chunk in place, shape: chunk_size x V
+        loss_chunk, student_prob_chunk = dispatch(
+            "jsd_loss_and_grad",
+            *jsd_args,
+            impl=jsd_impl,
+            mode=jsd_mode,
+        )
+        # Accumulate this chunk's loss into the scalar; the (chunk_size, V)
+        # ``loss_chunk`` tensor is freed at the end of this iteration.
+        total_loss = total_loss + loss_chunk.sum()
+        # ``student_prob_chunk`` now holds dx (per-element). Continue the
+        # logits-side reduction using the pre-computed softmax.
         student_logits_chunk = (
             student_prob_chunk
-            - torch.softmax(student_logits_chunk, dim=-1)
-            * student_prob_chunk.sum(dim=-1, keepdim=True).broadcast_to(student_prob_chunk.shape)
+            - softmax_s_chunk * student_prob_chunk.sum(dim=-1, keepdim=True).broadcast_to(student_prob_chunk.shape)
         ) / temperature
         # now we traverse back to grad w.r.t. input to `lm_head` and grad
         # w.r.t. `lm_head` which should be computed in original dtype
@@ -135,7 +190,13 @@ def fused_linear_jsd_forward(
 
         if grad_weight is not None:
             if accum_dtype is None:
-                grad_weight.add_(student_logits_chunk.t() @ student_input_chunk)
+                # Optimization #2: addmm_ fuses the matmul + accumulate into a
+                # single cuBLAS call (vs separate ``matmul`` + ``add_``). Only
+                # safe when dtypes match — fall back to the two-op path otherwise.
+                if grad_weight.dtype == student_logits_chunk.dtype == student_input_chunk.dtype:
+                    grad_weight.addmm_(student_logits_chunk.t(), student_input_chunk)
+                else:
+                    grad_weight.add_(student_logits_chunk.t() @ student_input_chunk)
             else:
                 grad_logits_t = student_logits_chunk.t()
                 if (
@@ -161,40 +222,39 @@ def fused_linear_jsd_forward(
     grad_weight = (
         grad_weight.to(student_weight.dtype) if grad_weight is not None and accum_dtype is not None else grad_weight
     )
-    return loss, grad_input, grad_weight
+    return total_loss, grad_input, grad_weight
 
 
 def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
-    # If JSD is the last layer, grad_output is 1.0. Skip the mul to save time
-    if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
-        # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
-        BT, H = grad_input.shape
-        n_rows = BT
-        BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+    # Skip the elementwise scale when JSD is the final loss and its upstream
+    # gradient is exactly 1.0.
+    if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
+        return grad_input, grad_weight
 
+    BT, H = grad_input.shape
+    n_rows = BT
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+
+    element_mul_kernel[(n_rows,)](
+        grad_input,
+        grad_input.stride(-2),
+        grad_output,
+        H,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=32 if not is_hip() else 16,
+    )
+
+    if grad_weight is not None:
+        V, H = grad_weight.shape
+        n_rows = V
         element_mul_kernel[(n_rows,)](
-            grad_input,
-            grad_input.stride(-2),
+            grad_weight,
+            grad_weight.stride(-2),
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
-
-        # handle grad_weight
-        if grad_weight is not None:
-            V, H = grad_weight.shape
-            n_rows = V
-
-            element_mul_kernel[(n_rows,)](
-                grad_weight,
-                grad_weight.stride(-2),
-                grad_output,
-                H,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32 if not is_hip() else 16,
-            )
 
     return grad_input, grad_weight
 
@@ -221,6 +281,8 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         ignore_index: int = -100,
         temperature: float = 1.0,
         accum_dtype: Optional[torch.dtype] = None,
+        jsd_impl=None,
+        jsd_mode=None,
     ):
         """
         Args:
@@ -255,6 +317,8 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             ignore_index,
             has_label,
             temperature,
+            jsd_impl,
+            jsd_mode,
             accum_dtype,
         )
         # downcast to dtype and store for backward
@@ -269,4 +333,4 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         (grad_input, grad_weight) = ctx.saved_tensors
         grad_input, grad_weight = fused_linear_jsd_backward(grad_output, grad_input, grad_weight)
-        return (grad_input, grad_weight, None, None, None, None, None, None, None)
+        return (grad_input, grad_weight, None, None, None, None, None, None, None, None, None)

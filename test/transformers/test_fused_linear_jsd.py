@@ -297,6 +297,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, t
         ignore_index,
         temperature,
         accum_dtype,
+        None,
+        None,
     )
 
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
@@ -337,7 +339,15 @@ def test_correctness_with_torch_compile(B, T, H, V, beta, ignore_index, temperat
     writing `loss_ptr`, so the garbage survived into the reduced loss.
 
     Forward-only: `fused_linear_jsd_backward` branches on a tensor value, so the backward pass
-    cannot be captured with `fullgraph=True`.
+    cannot be captured under `torch.compile` in one graph.
+
+    Uses plain `torch.compile` rather than `fullgraph=True`: `fused_linear_jsd_forward` now reaches
+    `_jsd_kernel` through `liger_kernel.backends.dispatch`, which is decorated
+    `@torch.compiler.disable`, so requesting a full graph raises
+    `Unsupported: Skip calling torch.compiler.disable()d function`. That graph break also keeps the
+    Triton kernel out of Inductor on the default path, so this asserts the eager/compiled contract
+    rather than actively reproducing the original over-read; the kernel-side zeroing in
+    `_jsd_kernel` is what keeps that contract true if the kernel is ever lowered again.
     """
     student_weight = torch.rand(V, H // 2, device=device, dtype=torch.float32)
     teacher_weight = torch.rand(V, H, device=device, dtype=torch.float32)
@@ -363,7 +373,7 @@ def test_correctness_with_torch_compile(B, T, H, V, beta, ignore_index, temperat
     expected = call(student_input, teacher_input, label)
 
     torch._dynamo.reset()
-    actual = torch.compile(call, fullgraph=True)(student_input, teacher_input, label)
+    actual = torch.compile(call)(student_input, teacher_input, label)
 
     # Identical kernels on identical inputs: the only permitted difference is reduction ordering.
     assert_verbose_allclose(actual, expected, atol=1e-5, rtol=1e-5)

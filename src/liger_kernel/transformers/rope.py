@@ -2,7 +2,7 @@ from typing import Tuple
 
 import torch
 
-from liger_kernel.ops import LigerRopeFunction
+from liger_kernel.backends import dispatch
 
 
 def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -21,7 +21,7 @@ def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         Tuple[torch.Tensor, torch.Tensor]: The query and key tensors after applying the RoPE operation.
     """
 
-    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+    return dispatch("rope", q, k, cos, sin, position_ids, unsqueeze_dim)
 
 
 def liger_rotary_pos_emb_vision(

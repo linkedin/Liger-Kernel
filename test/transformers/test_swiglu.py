@@ -5,6 +5,14 @@ import torch
 import torch.multiprocessing as mp
 import transformers
 
+# torch.distributed.tensor is a lazy submodule on torch 2.12+; bind it once so
+# downstream ``torch.distributed.tensor.distribute_tensor`` / ``.Shard`` access
+# doesn't AttributeError before any explicit import has happened.
+try:
+    import torch.distributed.tensor  # noqa: F401
+except Exception:
+    pass
+
 from packaging import version
 from test.utils import supports_bfloat16
 from transformers.models.llama.configuration_llama import LlamaConfig
@@ -355,6 +363,26 @@ def test_correctness_mixtralexperts(bsz, seq_len, hidden_size, intermediate_size
     _assert_close(mixtral_experts.gate_up_proj.grad, liger_experts.gate_up_proj.grad, "gate_up_proj.grad")
     _assert_close(mixtral_experts.down_proj.grad, liger_experts.down_proj.grad, "down_proj.grad")
     _assert_close(x1.grad, x2.grad, "x.grad")
+
+
+def test_transformers_swiglu_preserves_legacy_function(monkeypatch):
+    import liger_kernel.transformers.swiglu as swiglu_module
+
+    observed = []
+    expected = object()
+
+    def fake_apply(*args):
+        observed.append(args)
+        return expected
+
+    monkeypatch.setattr(swiglu_module.LigerSiLUMulFunction, "apply", fake_apply)
+    a = torch.randn(2, 8)
+    b = torch.randn(2, 8)
+
+    actual = swiglu_module._swiglu_dispatch(a, b, 2.0, 3.0)
+
+    assert actual is expected
+    assert observed == [(a, b, 2.0, 3.0)]
 
 
 @pytest.mark.parametrize(

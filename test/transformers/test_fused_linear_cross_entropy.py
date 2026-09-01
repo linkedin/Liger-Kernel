@@ -400,7 +400,23 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, ce_weight, atol
         y1, z1 = result
 
     y2, z2, _, _ = LigerFusedLinearCrossEntropyFunction.apply(
-        x2, weight, target, bias, ce_weight, -100, 1e-4, 0.1, "mean", 30.0, True, torch.float32, False, False, False
+        x2,
+        weight,
+        target,
+        bias,
+        ce_weight,
+        -100,
+        1e-4,
+        0.1,
+        "mean",
+        30.0,
+        True,
+        torch.float32,
+        False,
+        False,
+        False,
+        None,
+        None,
     )
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
