@@ -378,6 +378,7 @@ loss.backward()
 | Ministral   | `liger_kernel.transformers.apply_liger_kernel_to_ministral` | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mistral     | `liger_kernel.transformers.apply_liger_kernel_to_mistral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mixtral     | `liger_kernel.transformers.apply_liger_kernel_to_mixtral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
+| Muse Glimmer | `liger_kernel.transformers.apply_liger_kernel_to_muse_glimmer` | LayerNorm, RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | Nemotron    | `liger_kernel.transformers.apply_liger_kernel_to_nemotron` | ReLUSquared, CrossEntropyLoss, FusedLinearCrossEntropy                  |
 | Pixtral     | `liger_kernel.transformers.apply_liger_kernel_to_pixtral`  | RoPE, RMSNorm, SwiGLU|
 | Gemma1      | `liger_kernel.transformers.apply_liger_kernel_to_gemma`    | RoPE, RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
@@ -477,32 +478,41 @@ loss.backward()
 
 ## CI status
 
-<table style="width: 100%; text-align: center; border-collapse: collapse;">
+<table>
     <tr>
-        <th style="padding: 10px;">Build</th>
+        <th>Platform</th>
+        <th>Build</th>
     </tr>
     <tr>
-        <td style="padding: 10px;">
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/xuedinge233/Liger-Kernel/actions/workflows/ascend_npu_ci.yml">
-                    <img src="https://github.com/xuedinge233/Liger-Kernel/actions/workflows/ascend_npu_ci.yml/badge.svg?branch=main" alt="Build">
-                </a>
-            </div>
+        <td>NVIDIA GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/nvi-ci.yml?branch=main&event=push&label=" alt="NVIDIA GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>AMD GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/amd-ci.yml?branch=main&event=push&label=" alt="AMD GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>Intel GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/intel-ci.yml?branch=main&event=push&label=" alt="Intel GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>Ascend NPU</td>
+        <td>
+            <a href="https://github.com/Ascend/Ascend-CI/actions/workflows/liger_kernel.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/Ascend/Ascend-CI/liger_kernel.yml?branch=main&label=" alt="Ascend NPU Build">
+            </a>
         </td>
     </tr>
 </table>
@@ -530,7 +540,7 @@ url={https://openreview.net/forum?id=36SjAIT42G}
 ```
 
 ## Star History
-[![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://www.star-history.com/#linkedin/Liger-Kernel&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.dera.page/#linkedin/Liger-Kernel&Date)
 
 <p align="right" style="font-size: 14px; color: #555; margin-top: 20px;">
     <a href="#readme-top" style="text-decoration: none; color: #007bff; font-weight: bold;">

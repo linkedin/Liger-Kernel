@@ -1,25 +1,54 @@
 name: NVIDIA GPU
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-  merge_group:
-    types: [checks_requested]
-    branches:
-      - main
   workflow_dispatch:  # Enables manual trigger
+    inputs:
+      suite:
+        description: "Which test set to run on manual dispatch"
+        type: choice
+        default: daily
+        options:
+          - daily
+          - weekly
+  schedule:
+    # Daily: correctness + cuTile + cuTeDSL (SM90) on H100, cuTeDSL (SM100) on B200.
+    # Randomized off-peak minute; round hours (esp. 00:00) get throttled/queued by GitHub.
+    - cron: '24 9 * * *'
+    # Weekly (Sundays): convergence (latest tf) + oldest-tf correctness & convergence.
+    # Staggered a few hours after the daily run as an extra guard against overlap.
+    - cron: '24 13 * * 0'
 
+# Serialize whole runs so the daily and weekly runs never execute at the same time.
+# Together with `max-parallel: 3` on each job this caps concurrent Modal GPU calls at 3
+# (a 4th concurrent GPU call is rejected by the runner/Modal limit).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
-  nvi-correctness-tests:
-    if: github.event_name == 'merge_group'
+  # ---------------------------------------------------------------------------
+  # Daily: general correctness + cuTile + cuTeDSL, split across H100 and B200.
+  # cuTeDSL runs on BOTH archs on purpose: SM90 tests only run on H100 and SM100
+  # tests only run on B200 (each arch self-skips the other half).
+  # ---------------------------------------------------------------------------
+  daily:
+    name: daily / ${{ matrix.name }}
+    if: >-
+      github.event.schedule == '24 9 * * *'
+      || (github.event_name == 'workflow_dispatch' && github.event.inputs.suite == 'daily')
+    strategy:
+      max-parallel: 3      # never run more than 3 GPU jobs at once
+      fail-fast: false
+      matrix:
+        include:
+          - name: correctness (H100)
+            modal_fn: liger_correctness_tests
+          - name: cuTile (H100)
+            modal_fn: liger_cutile_tests
+          - name: cuTeDSL SM90 (H100)
+            modal_fn: liger_cutedsl_tests_h100
+          - name: cuTeDSL SM100 (B200)
+            modal_fn: liger_cutedsl_tests_b200
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -39,12 +68,30 @@ jobs:
         python -m pip install --upgrade pip
         pip install modal
 
-    - name: Run tests
+    - name: Run ${{ matrix.name }}
       run: |
-        modal run -m dev.modal.tests::liger_correctness_tests
+        modal run -m dev.modal.tests::${{ matrix.modal_fn }}
 
-  nvi-convergence-tests:
-    if: github.event_name == 'merge_group'
+  # ---------------------------------------------------------------------------
+  # Weekly (Sundays): convergence (latest tf) + oldest-supported-tf correctness
+  # and convergence. All on H100.
+  # ---------------------------------------------------------------------------
+  weekly:
+    name: weekly / ${{ matrix.name }}
+    if: >-
+      github.event.schedule == '24 13 * * 0'
+      || (github.event_name == 'workflow_dispatch' && github.event.inputs.suite == 'weekly')
+    strategy:
+      max-parallel: 3      # never run more than 3 GPU jobs at once
+      fail-fast: false
+      matrix:
+        include:
+          - name: convergence (H100)
+            modal_fn: liger_convergence_tests
+          - name: oldest-tf correctness (H100)
+            modal_fn: liger_oldest_v4_correctness_tests
+          - name: oldest-tf convergence (H100)
+            modal_fn: liger_oldest_v4_convergence_tests
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -64,57 +111,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install modal
 
-    - name: Run tests
+    - name: Run ${{ matrix.name }}
       run: |
-        modal run -m dev.modal.tests::liger_convergence_tests
-
-  nvi-correctness-tests-with-transformers-4-52-0:
-    if: github.event_name == 'merge_group'
-    runs-on: ubuntu-latest
-    env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-
-    - name: Set up Python
-      uses: actions/setup-python@v6
-      with:
-        python-version: '3.10'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install modal
-
-    - name: Run tests
-      run: |
-        modal run -m dev.modal.tests::liger_oldest_v4_correctness_tests
-
-
-  nvi-convergence-tests-with-transformers-4-52-0:
-    if: github.event_name == 'merge_group'
-    runs-on: ubuntu-latest
-    env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-
-    - name: Set up Python
-      uses: actions/setup-python@v6
-      with:
-        python-version: '3.10'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install modal
-
-    - name: Run tests
-      run: |
-        modal run -m dev.modal.tests::liger_oldest_v4_convergence_tests
+        modal run -m dev.modal.tests::${{ matrix.modal_fn }}

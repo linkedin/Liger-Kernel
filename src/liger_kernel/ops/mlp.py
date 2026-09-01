@@ -22,7 +22,11 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from triton.tools.tensor_descriptor import TensorDescriptor
+# Optional: not all Triton builds ship triton.tools.tensor_descriptor.
+try:
+    from triton.tools.tensor_descriptor import TensorDescriptor
+except ModuleNotFoundError:
+    TensorDescriptor = None
 
 from liger_kernel.ops.utils import device_context
 
@@ -636,6 +640,10 @@ class LigerMLPFunction(torch.autograd.Function):
         gate_multiplier=1.0,
         down_multiplier=1.0,
     ):
+        if TensorDescriptor is None:
+            raise RuntimeError(
+                "LigerMLP requires triton.tools.tensor_descriptor, which is not available in this Triton build."
+            )
         assert input.is_cuda and gate_weight.is_cuda and up_weight.is_cuda and down_weight.is_cuda
         input, gate_weight, up_weight, down_weight = _check_inputs(input, gate_weight, up_weight, down_weight)
         # Note:

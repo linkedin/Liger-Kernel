@@ -54,12 +54,14 @@ try:
 except ImportError:
     pass
 
+import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
 import cutlass.cute.arch as carch
 import cutlass.cute.math as cute_math
 
 from cutlass.cute.runtime import from_dlpack
+from cutlass.cute.runtime import make_fake_stream
 
 from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
@@ -432,7 +434,7 @@ def _swiglu_bwd_vec_kernel(
 # ---------------------------------------------------------------------------
 def _make_fwd_vec(vec: int):
     @cute.jit
-    def fwd(mA, mB, mC, gate_mult: cutlass.Float32):
+    def fwd(mA, mB, mC, gate_mult: cutlass.Float32, stream: cuda.CUstream = None):
         copy_atom = cute.make_copy_atom(
             cute.nvgpu.CopyUniversalOp(), mA.element_type, num_bits_per_copy=vec * mA.element_type.width
         )
@@ -448,6 +450,7 @@ def _make_fwd_vec(vec: int):
         _swiglu_fwd_vec_kernel(gA, gB, gC, tiled_copy, gate_mult).launch(
             grid=[cute.size(gC, mode=[1]), 1, 1],
             block=[_NUM_THREADS, 1, 1],
+            stream=stream,
         )
 
     return fwd
@@ -455,7 +458,7 @@ def _make_fwd_vec(vec: int):
 
 def _make_bwd_vec(vec: int):
     @cute.jit
-    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32):
+    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32, stream: cuda.CUstream = None):
         copy_atom = cute.make_copy_atom(
             cute.nvgpu.CopyUniversalOp(), mA.element_type, num_bits_per_copy=vec * mA.element_type.width
         )
@@ -471,6 +474,7 @@ def _make_bwd_vec(vec: int):
         _swiglu_bwd_vec_kernel(gDC, gA, gB, tiled_copy, gate_mult).launch(
             grid=[cute.size(gA, mode=[1]), 1, 1],
             block=[_NUM_THREADS, 1, 1],
+            stream=stream,
         )
 
     return bwd
@@ -481,7 +485,7 @@ def _make_bwd_vec(vec: int):
 # ---------------------------------------------------------------------------
 def _make_fwd(vec: int, predicated: bool, packed_math: bool):
     @cute.jit
-    def fwd(mA, mB, mC, gate_mult: cutlass.Float32):
+    def fwd(mA, mB, mC, gate_mult: cutlass.Float32, stream: cuda.CUstream = None):
         thr_layout = cute.make_layout(_NUM_THREADS, stride=vec)
         val_layout = cute.make_layout(vec, stride=1)
         tiler, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
@@ -495,6 +499,7 @@ def _make_fwd(vec: int, predicated: bool, packed_math: bool):
         _swiglu_fwd_kernel(gA, gB, gC, cC, mC.shape, thr_layout, val_layout, gate_mult, predicated, packed_math).launch(
             grid=[cute.size(gC, mode=[1]), 1, 1],
             block=[cute.size(tv_layout, mode=[0]), 1, 1],
+            stream=stream,
         )
 
     return fwd
@@ -502,7 +507,7 @@ def _make_fwd(vec: int, predicated: bool, packed_math: bool):
 
 def _make_bwd(vec: int, predicated: bool, packed_math: bool):
     @cute.jit
-    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32):
+    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32, stream: cuda.CUstream = None):
         thr_layout = cute.make_layout(_NUM_THREADS, stride=vec)
         val_layout = cute.make_layout(vec, stride=1)
         tiler, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
@@ -518,6 +523,7 @@ def _make_bwd(vec: int, predicated: bool, packed_math: bool):
         ).launch(
             grid=[cute.size(gA, mode=[1]), 1, 1],
             block=[cute.size(tv_layout, mode=[0]), 1, 1],
+            stream=stream,
         )
 
     return bwd
@@ -578,35 +584,65 @@ def _dyn(t: torch.Tensor):
     return from_dlpack(t.detach()).mark_layout_dynamic()
 
 
+# Cache the ``cuda.CUstream`` wrapper keyed on torch's raw stream handle so we don't
+# rebuild it every launch. The kernels MUST run on PyTorch's *current* stream (not the
+# default/null stream) so the op is CUDA-graph capturable and preserves ordering under
+# multi-stream execution (pipeline parallelism, grad checkpointing). This is the
+# non-TVM-FFI (``_dyn``) counterpart to TVM-FFI's env-stream mechanism; mirrors
+# rms_norm.py / rope.py.
+_stream_cache: dict = {}
+
+
+def _cute_stream():
+    raw = torch.cuda.current_stream().cuda_stream
+    s = _stream_cache.get(raw)
+    if s is None:
+        s = cuda.CUstream(raw)
+        _stream_cache[raw] = s
+    return s
+
+
 class _DynCaller:
-    """Wraps a non-TVM-FFI compiled function so callers always pass raw tensors."""
+    """Wraps a non-TVM-FFI compiled function so callers always pass raw tensors.
+
+    The compiled function bakes a trailing ``stream`` parameter (the ``@cute.jit``
+    launcher's last arg); we source PyTorch's current stream here so the caller's
+    invocation signature stays identical to the TVM-FFI env-stream path.
+    """
 
     def __init__(self, compiled):
         self._compiled = compiled
 
     def __call__(self, a, b, c, gm):
-        return self._compiled(_dyn(a), _dyn(b), _dyn(c), gm)
+        with device_context(a.device):
+            return self._compiled(_dyn(a), _dyn(b), _dyn(c), gm, _cute_stream(a.device))
 
 
 def _get_compiled(kind: str, ref: torch.Tensor, vec: int, predicated: bool, packed_math: bool):
-    key = (ref.dtype, vec, predicated, packed_math, kind, ref.device.index)
-    fn = _COMPILE_CACHE.get(key)
-    if fn is not None:
+    with device_context(ref.device):
+        key = (ref.dtype, vec, predicated, packed_math, kind, ref.device.index)
+        fn = _COMPILE_CACHE.get(key)
+        if fn is not None:
+            return fn
+        gm = cutlass.Float32(1.0)
+        maker = _make_fwd(vec, predicated, packed_math) if kind == "fwd" else _make_bwd(vec, predicated, packed_math)
+        if _TVM_FFI_PRESENT:
+            # TVM-FFI: 1-D sym_int fake tensor; PyTorch tensors passed directly — no
+            # from_dlpack overhead. Divisibility=1 since the predicated path makes no
+            # alignment guarantee beyond element size. ``use_tvm_ffi_env_stream=True``
+            # drops the stream from the FFI signature: the compiled fn runs on the
+            # caller's env stream (torch.cuda.current_stream()), so the launch is
+            # CUDA-graph capturable with no per-call stream marshalling.
+            cute_dtype = torch2cute_dtype_map[ref.dtype]
+            fake = make_fake_tensor(cute_dtype, (cute.sym_int(),), 1)
+            fn = cute.compile(
+                maker, fake, fake, fake, gm, make_fake_stream(use_tvm_ffi_env_stream=True), options="--enable-tvm-ffi"
+            )
+        else:
+            compiled = cute.compile(maker, _dyn(ref), _dyn(ref), _dyn(ref), gm, _cute_stream(ref.device))
+            fn = _DynCaller(compiled)
+        _COMPILE_CACHE[key] = fn
         return fn
-    gm = cutlass.Float32(1.0)
-    maker = _make_fwd(vec, predicated, packed_math) if kind == "fwd" else _make_bwd(vec, predicated, packed_math)
-    if _TVM_FFI_PRESENT:
-        # TVM-FFI: 1-D sym_int fake tensor; PyTorch tensors passed directly — no
-        # from_dlpack overhead. Divisibility=1 since the predicated path makes no
-        # alignment guarantee beyond element size.
-        cute_dtype = torch2cute_dtype_map[ref.dtype]
-        fake = make_fake_tensor(cute_dtype, (cute.sym_int(),), 1)
-        fn = cute.compile(maker, fake, fake, fake, gm, options="--enable-tvm-ffi")
-    else:
-        compiled = cute.compile(maker, _dyn(ref), _dyn(ref), _dyn(ref), gm)
-        fn = _DynCaller(compiled)
-    _COMPILE_CACHE[key] = fn
-    return fn
 
 
 def _get_compiled_vec(kind: str, dtype: torch.dtype, vec: int, device_index: int):
@@ -630,9 +666,25 @@ def _get_compiled_vec(kind: str, dtype: torch.dtype, vec: int, device_index: int
         return make_fake_tensor(cute_dtype, (cute.sym_int(), inner), vec)
 
     if kind == "fwd":
-        fn = cute.compile(_make_fwd_vec(vec), fake(), fake(), fake(), gm, options="--enable-tvm-ffi")
+        fn = cute.compile(
+            _make_fwd_vec(vec),
+            fake(),
+            fake(),
+            fake(),
+            gm,
+            make_fake_stream(use_tvm_ffi_env_stream=True),
+            options="--enable-tvm-ffi",
+        )
     else:
-        fn = cute.compile(_make_bwd_vec(vec), fake(), fake(), fake(), gm, options="--enable-tvm-ffi")
+        fn = cute.compile(
+            _make_bwd_vec(vec),
+            fake(),
+            fake(),
+            fake(),
+            gm,
+            make_fake_stream(use_tvm_ffi_env_stream=True),
+            options="--enable-tvm-ffi",
+        )
     _VEC_COMPILE_CACHE[key] = fn
     return fn
 

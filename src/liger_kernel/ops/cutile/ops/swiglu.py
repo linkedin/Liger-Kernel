@@ -15,16 +15,41 @@ gate_multiplier: applied inside the kernel as ct.Constant[float] (compile-time
 down_multiplier: applied at the Python wrapper level only (multiplied onto output
   in forward; multiplied onto dc before backward kernel dispatch). Not in kernel.
 
-Two kernel variants per direction (fwd/bwd):
-  *_aligned: check_bounds=False — used when n_cols % BLOCK_SIZE == 0
-             (all power-of-2 n_cols up to MAX_FUSED_SIZE, e.g. 4096, 8192),
-             ~17-20% faster vs check_bounds=True on B200.
-  *_ct:      check_bounds=True  — fallback for non-aligned n_cols.
+Both directions use ct.gather / ct.scatter with a contiguous ct.arange index —
+the leanest, fully-coalesced lowering on B200 (block ct.load / ct.store emit ~3x
+more address-arithmetic instructions for identical memory traffic and are slower
+here for this row-wise pattern).
+
+Forward — exact-fit power-of-2 tiling (removes the non-power-of-2 cliff)
+-----------------------------------------------------------------------
+The forward is memory-bound and highly sensitive to the tiling. Whenever no large
+power-of-2 tile divides n_cols evenly, a single uniform-tile kernel must fall back
+to check_bounds=True (masking) for the overhang tile, which was ~1.4-1.6x slower
+on the non-power-of-2 intermediate sizes of e.g. Qwen2.5 (11008, 13824, 18944).
+
+Instead we decompose each row into exact-fit descending power-of-2 chunks so every
+chunk is fully in-bounds and uses the fast check_bounds=False path:
+
+  * n_cols // BASE full BASE chunks via a uniform ``for`` loop, then
+  * the n_cols % BASE remainder as a fixed ladder of ``if <present>:`` guards for
+    chunk widths BASE/2 .. 1 (each guard is constant-folded away when absent).
+
+``ct.arange`` requires a power-of-2 size and cuTile compiles ``for`` / ``while`` as
+*device* loops (the loop variable is a runtime value), so a single loop cannot vary
+the chunk width. The kernel is therefore built by a factory keyed on n_cols
+(cached) that bakes the decomposition as compile-time scalars. BASE = 2048 gives
+the best DRAM utilisation on B200 (4096 tiles become issue-bound; see git history).
 
 Forward uses @ct.kernel(occupancy=1) → 8 warps and the exp2 trick:
   sigmoid via exp2(-a * LOG2E) → FMUL+EX2 on Blackwell. occupancy=1 is required
-  for the exp2→EX2 lowering. Backward does NOT set occupancy=1 (scatter inside a
-  backward loop risks hangs), so it uses exp(-a) instead of exp2.
+  for the exp2→EX2 lowering.
+
+Backward — uniform tiling with adaptive block size
+--------------------------------------------------
+The backward is more compute-heavy per element, so the check_bounds=True predicate
+is fully hidden behind the math: measured backward throughput is flat across
+aligned and non-aligned n_cols (no cliff). It therefore keeps the simpler uniform
+kernel with an adaptive block size and does NOT set occupancy=1 (uses exp(-a)).
 """
 
 import cuda.tile as ct
@@ -33,8 +58,12 @@ import torch
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.utils import device_context
 
-MAX_FUSED_SIZE_FWD = 4096  # Forward: larger tile fits; forward is compute-bound, no register spill observed
-MAX_FUSED_SIZE_BWD = 1024  # Backward: 14 chunks at n_cols=14336 (vs 28 at 512); stable without occupancy=1
+# Forward base tile for the exact-fit decomposition (occupancy=1 + exp2). 2048
+# gives the best DRAM utilisation on B200; larger tiles (4096) become issue-bound.
+MAX_FUSED_SIZE_FWD = 2048
+# Backward base tile cap. Backward reads dc/a/b and writes da/db in-place, so it
+# runs at a smaller cap to keep register pressure low.
+MAX_FUSED_SIZE_BWD = 1024
 
 # exp2 trick: sigmoid(x) = 1 / (1 + exp(-x)) = 1 / (1 + exp2(-x * LOG2E))
 # Using exp2(x * LOG2E) instead of exp(x) avoids Cody-Waite range reduction
@@ -43,91 +72,126 @@ MAX_FUSED_SIZE_BWD = 1024  # Backward: 14 chunks at n_cols=14336 (vs 28 at 512);
 LOG2E: float = 1.4426950408889634  # log2(e) = 1/ln(2)
 
 
-@ct.kernel(occupancy=1, num_worker_warps=8)
-def _swiglu_fwd_ct_aligned(
-    A,  # (n_rows, n_cols) input a
-    B,  # (n_rows, n_cols) input b
-    C,  # (n_rows, n_cols) output c
-    n_cols: ct.Constant[int],
-    BLOCK_SIZE: ct.Constant[int],
-    gate_multiplier: ct.Constant[float],
-):
+# ---------------------------------------------------------------------------
+# Forward — exact-fit power-of-2 gather/scatter
+# ---------------------------------------------------------------------------
+def _swiglu_fwd_chunk(A, B, C, row_idx, col_offset, BLOCK, gate_multiplier):
+    """Forward SwiGLU on one exact-fit chunk of ``BLOCK`` contiguous columns.
+
+    Inlined into the generated forward kernel; ``BLOCK`` is a compile-time literal
+    power of two and ``[col_offset, col_offset + BLOCK)`` is fully in-bounds, so
+    ``check_bounds=False`` is safe.
     """
-    SwiGLU forward — aligned fast path (check_bounds=False).
+    col_idx = ct.add(ct.arange(BLOCK, dtype=ct.int32), col_offset)
 
-    Safe only when n_cols % BLOCK_SIZE == 0 (no out-of-bounds accesses).
-    ~17-20% faster than the bounds-checked variant on B200.
-    Computes: c = silu(a * gate_multiplier) * b
+    a = ct.astype(ct.gather(A, (row_idx, col_idx), check_bounds=False, padding_value=0.0), ct.float32)
+    b = ct.gather(B, (row_idx, col_idx), check_bounds=False, padding_value=0.0)
+
+    # Apply gate_multiplier before SiLU (Liger convention)
+    a_scaled = a * gate_multiplier
+
+    # exp2 trick + flush_to_zero: sigmoid via exp2(-a*LOG2E) — FMUL+EX2 (avoids Cody-Waite range reduction).
+    # flush_to_zero=True skips denormal handling; sigmoid range is well above the denormal threshold.
+    # Requires occupancy=1 for correct exp2→EX2 lowering.
+    sig_a = ct.truediv(
+        1.0,
+        1.0 + ct.exp2(ct.mul(-a_scaled, LOG2E), flush_to_zero=True),
+        flush_to_zero=True,
+        rounding_mode=ct.RoundingMode.APPROX,
+    )
+    silu_a = a_scaled * sig_a
+
+    c = ct.astype(silu_a, b.dtype) * b
+    ct.scatter(C, (row_idx, col_idx), c, check_bounds=False)
+
+
+def _remainder_offsets(n_cols, base):
+    """Column offsets for the exact-fit descending power-of-2 remainder chunks.
+
+    Returns ``{chunk_width: col_offset}`` for each active power in ``base//2 .. 1``
+    covering ``n_cols % base`` columns after the uniform ``base`` chunks.
     """
-    row_idx = ct.bid(0)
-    n_chunks = (n_cols + BLOCK_SIZE - 1) // BLOCK_SIZE
-
-    for ci in range(n_chunks):
-        col_idx = ct.add(ct.arange(BLOCK_SIZE, dtype=ct.int32), ci * BLOCK_SIZE)
-
-        a = ct.astype(ct.gather(A, (row_idx, col_idx), check_bounds=False, padding_value=0.0), ct.float32)
-        b = ct.gather(B, (row_idx, col_idx), check_bounds=False, padding_value=0.0)
-
-        # Apply gate_multiplier before SiLU (Liger convention)
-        a_scaled = a * gate_multiplier
-
-        # exp2 trick + flush_to_zero: sigmoid via exp2(-a*LOG2E) — FMUL+EX2 (avoids Cody-Waite range reduction).
-        # flush_to_zero=True skips denormal handling; sigmoid range is well above the denormal threshold.
-        # Requires occupancy=1 for correct exp2→EX2 lowering.
-        sig_a = ct.truediv(
-            1.0,
-            1.0 + ct.exp2(ct.mul(-a_scaled, LOG2E), flush_to_zero=True),
-            flush_to_zero=True,
-            rounding_mode=ct.RoundingMode.APPROX,
-        )
-        silu_a = a_scaled * sig_a
-
-        c = ct.astype(silu_a, b.dtype) * b
-        ct.scatter(C, (row_idx, col_idx), c, check_bounds=False)
+    plan = {}
+    offset = (n_cols // base) * base
+    remaining = n_cols % base
+    size = base // 2
+    while size >= 1:
+        if remaining >= size:
+            plan[size] = offset
+            offset += size
+            remaining -= size
+        size //= 2
+    return plan
 
 
-@ct.kernel(occupancy=1, num_worker_warps=8)
-def _swiglu_fwd_ct(
-    A,  # (n_rows, n_cols) input a
-    B,  # (n_rows, n_cols) input b
-    C,  # (n_rows, n_cols) output c
-    n_cols: ct.Constant[int],
-    BLOCK_SIZE: ct.Constant[int],
-    gate_multiplier: ct.Constant[float],
-):
-    """
-    SwiGLU forward — general path (check_bounds=True).
-
-    Handles arbitrary n_cols. Used as fallback when n_cols % BLOCK_SIZE != 0.
-    Computes: c = silu(a * gate_multiplier) * b
-    """
-    row_idx = ct.bid(0)
-    n_chunks = (n_cols + BLOCK_SIZE - 1) // BLOCK_SIZE
-
-    for ci in range(n_chunks):
-        col_idx = ct.add(ct.arange(BLOCK_SIZE, dtype=ct.int32), ci * BLOCK_SIZE)
-
-        a = ct.astype(ct.gather(A, (row_idx, col_idx), check_bounds=True, padding_value=0.0), ct.float32)
-        b = ct.gather(B, (row_idx, col_idx), check_bounds=True, padding_value=0.0)
-
-        # Apply gate_multiplier before SiLU (Liger convention)
-        a_scaled = a * gate_multiplier
-
-        # exp2 trick + flush_to_zero: sigmoid via exp2(-a*LOG2E) — FMUL+EX2 (avoids Cody-Waite range reduction).
-        # flush_to_zero=True skips denormal handling; sigmoid range is well above the denormal threshold.
-        # Requires occupancy=1 for correct exp2→EX2 lowering.
-        sig_a = ct.truediv(
-            1.0,
-            1.0 + ct.exp2(ct.mul(-a_scaled, LOG2E), flush_to_zero=True),
-            flush_to_zero=True,
-            rounding_mode=ct.RoundingMode.APPROX,
-        )
-        silu_a = a_scaled * sig_a
-
-        c = ct.astype(silu_a, b.dtype) * b
-        ct.scatter(C, (row_idx, col_idx), c, check_bounds=True)
+_FWD_KERNEL_CACHE = {}
 
 
+def _make_fwd_kernel(n_cols):
+    base = MAX_FUSED_SIZE_FWD
+    n_full = n_cols // base
+    plan = _remainder_offsets(n_cols, base)
+    # Presence + column offset per pow2 level (base//2 .. 1), baked as compile-time scalars.
+    p1024, c1024 = 1024 in plan, plan.get(1024, 0)
+    p512, c512 = 512 in plan, plan.get(512, 0)
+    p256, c256 = 256 in plan, plan.get(256, 0)
+    p128, c128 = 128 in plan, plan.get(128, 0)
+    p64, c64 = 64 in plan, plan.get(64, 0)
+    p32, c32 = 32 in plan, plan.get(32, 0)
+    p16, c16 = 16 in plan, plan.get(16, 0)
+    p8, c8 = 8 in plan, plan.get(8, 0)
+    p4, c4 = 4 in plan, plan.get(4, 0)
+    p2, c2 = 2 in plan, plan.get(2, 0)
+    p1, c1 = 1 in plan, plan.get(1, 0)
+
+    @ct.kernel(occupancy=1, num_worker_warps=8)
+    def _swiglu_fwd_ct(
+        A,  # (n_rows, n_cols) input a
+        B,  # (n_rows, n_cols) input b
+        C,  # (n_rows, n_cols) output c
+        gate_multiplier: ct.Constant[float],
+    ):
+        row_idx = ct.bid(0)
+        for ci in range(n_full):
+            _swiglu_fwd_chunk(A, B, C, row_idx, ci * base, base, gate_multiplier)
+        # Exact-fit remainder ladder (absent powers constant-fold away).
+        if p1024:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c1024, 1024, gate_multiplier)
+        if p512:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c512, 512, gate_multiplier)
+        if p256:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c256, 256, gate_multiplier)
+        if p128:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c128, 128, gate_multiplier)
+        if p64:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c64, 64, gate_multiplier)
+        if p32:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c32, 32, gate_multiplier)
+        if p16:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c16, 16, gate_multiplier)
+        if p8:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c8, 8, gate_multiplier)
+        if p4:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c4, 4, gate_multiplier)
+        if p2:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c2, 2, gate_multiplier)
+        if p1:
+            _swiglu_fwd_chunk(A, B, C, row_idx, c1, 1, gate_multiplier)
+
+    return _swiglu_fwd_ct
+
+
+def _get_fwd_kernel(n_cols):
+    kernel = _FWD_KERNEL_CACHE.get(n_cols)
+    if kernel is None:
+        kernel = _make_fwd_kernel(n_cols)
+        _FWD_KERNEL_CACHE[n_cols] = kernel
+    return kernel
+
+
+# ---------------------------------------------------------------------------
+# Backward — uniform tiling with adaptive block size (no cliff in backward)
+# ---------------------------------------------------------------------------
 @ct.kernel
 def _swiglu_bwd_ct_aligned(
     DC,  # (n_rows, n_cols) upstream gradient
@@ -246,14 +310,13 @@ class LigerSiLUMulFunction(torch.autograd.Function):
             n_rows = a.shape[0]
 
             c = torch.empty_like(a)
-            BLOCK_SIZE = _calculate_block_size(n_cols, MAX_FUSED_SIZE_FWD)
-            fwd_kernel = _swiglu_fwd_ct_aligned if n_cols % BLOCK_SIZE == 0 else _swiglu_fwd_ct
+            fwd_kernel = _get_fwd_kernel(int(n_cols))
 
             ct.launch(
                 torch.cuda.current_stream(),
                 (n_rows, 1, 1),
                 fwd_kernel,
-                (a, b, c, int(n_cols), int(BLOCK_SIZE), gate_multiplier),
+                (a, b, c, gate_multiplier),
             )
             c_out = c.view(*ori_shape)
             if down_multiplier != 1.0:
