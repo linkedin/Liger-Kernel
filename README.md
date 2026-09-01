@@ -137,9 +137,10 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm
 
 #### Ascend NPU
 
-- `torch == 2.7.1`
-- `torch_npu == 2.7.1`
-- `triton-ascend == 3.2.1` Install from the Ascend PyPI mirror (not on default PyPI).
+- `torch == 2.9.0`
+- `torch_npu == 2.9.0`
+- `triton-ascend == 3.2.2` Install from the Ascend PyPI mirror (not on default PyPI).
+- `CANN == 9.1.0`
 
 ```bash
 pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple
@@ -150,7 +151,7 @@ pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
 - `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
 - `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
-- `nvidia-cutlass-dsl`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
+- `nvidia-cutlass-dsl >= 4.6.0`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -217,7 +218,84 @@ pip install "liger-kernel[cutedsl]"
 LIGER_KERNEL_IMPL=cutedsl python your_script.py
 ```
 
-It currently provides genuine `cutlass.cute` implementations of **RMSNorm** and **cross entropy**. Any op without a CuTe DSL kernel transparently falls back to the default Triton kernel, so selecting the backend is always safe. Selecting it on a non-CUDA device, or without `nvidia-cutlass-dsl` installed, raises an error.
+It currently provides genuine `cutlass.cute` implementations of:
+
+- **RMSNorm**
+- **RoPE**
+- **SwiGLU**
+- **Cross entropy**
+- **Fused linear cross entropy** (with an SM90-specialized variant)
+- **Fused scaled cross entropy** (SM90)
+
+Ops without a CuTe DSL kernel transparently fall back to the default Triton kernel.
+
+The `cutedsl` extra also pulls in `apache-tvm-ffi`, which lets compiled kernels take PyTorch tensors directly rather than marshalling each one per call. It is optional — every kernel falls back to the marshalling launch without it — but short kernels are dominated by that per-call cost, so installing it is strongly recommended.
+
+### Fused Scaled Cross Entropy
+
+`LigerFusedLinearScaledCrossEntropyFunction` is an additional per-token operator, not a replacement for the reduction-oriented Triton `LigerFusedLinearCrossEntropyFunction`. It takes `input[M, H]`, `weight[V, H]`, and `target[M]`, applies `logits / temperature`, and returns FP32 negative log-likelihood `[M]` plus optional differentiable vocabulary entropy `[M]` in the input dtype. Reductions remain in PyTorch, and rows whose target equals `ignore_index` contribute zero outputs and gradients.
+
+```python
+from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyFunction
+
+nll, entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
+    x, weight, target, 1.0, -100, 1, True
+)  # [M], [M]
+loss = nll.sum() / (target != -100).sum().clamp_min(1)
+```
+
+The implementations share this public contract but use different schedules:
+
+- **cuTile** (`LIGER_KERNEL_IMPL=cutile`) supports matching floating-point `input` and `weight` tensors on CUDA and a finite positive scalar `temperature`. The portable temporary-logits budget is 256 MiB. Large FP16/BF16 Blackwell workloads (`M >= 4096`, `V >= 131072`) automatically use 512 MiB to improve GEMM utilization. Set `LIGER_CUTILE_SCALED_CE_WORKSPACE_MB` to another positive MiB value for workload-specific tuning; for example, 1024 can help large combined NLL-plus-entropy workloads but is not universally faster. Backward reuses one workspace and writes `dX` and accumulates `dW` directly into their final tensors. `m_tiles_per_cluster` is accepted for API compatibility but does not change the cuTile schedule.
+- **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Its sole forward uses the fixed cluster-M2 N160 fragment kernel, with a measured split-N lookup for profiled long-sequence shapes, and never writes logits to HBM; `m_tiles_per_cluster` remains accepted for API compatibility but does not change that schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
+- **Fallback** uses a 512-token chunked PyTorch implementation adapted from Verl's fused PPO formulas when the default frontend cannot use the SM90 kernel.
+
+H100 BF16 forward medians from 60 interleaved samples per provider at
+`H=4096`, `V=131072`. Effective TFLOPS count the common projection work,
+`2*M*H*V`:
+
+| M | Entropy | CuTe SM90 | cuTile | Verl Torch fallback |
+|---:|:---:|---:|---:|---:|
+| 2048 | No | **3.12 ms / 706 TFLOPS** | 3.19 ms / 690 TFLOPS | 11.36 ms / 194 TFLOPS |
+| 2048 | Yes | **3.13 ms / 703 TFLOPS** | 3.25 ms / 676 TFLOPS | 11.37 ms / 193 TFLOPS |
+| 4096 | No | **6.05 ms / 727 TFLOPS** | 6.28 ms / 701 TFLOPS | 22.62 ms / 194 TFLOPS |
+| 4096 | Yes | **6.11 ms / 720 TFLOPS** | 6.39 ms / 688 TFLOPS | 22.68 ms / 194 TFLOPS |
+| 8192 | No | **12.25 ms / 718 TFLOPS** | 12.41 ms / 709 TFLOPS | 45.35 ms / 194 TFLOPS |
+| 8192 | Yes | **12.30 ms / 715 TFLOPS** | 12.70 ms / 693 TFLOPS | 45.59 ms / 193 TFLOPS |
+| 16384 | No | **23.84 ms / 738 TFLOPS** | 25.11 ms / 700 TFLOPS | 90.81 ms / 194 TFLOPS |
+| 16384 | Yes | **24.09 ms / 730 TFLOPS** | 26.10 ms / 674 TFLOPS | 90.97 ms / 193 TFLOPS |
+| 32768 | No | **49.69 ms / 708 TFLOPS** | 54.31 ms / 648 TFLOPS | 180.01 ms / 195 TFLOPS |
+| 32768 | Yes | **49.85 ms / 706 TFLOPS** | 55.69 ms / 632 TFLOPS | 179.85 ms / 196 TFLOPS |
+
+Backward medians use 30 interleaved samples per provider. Effective TFLOPS
+count `6*M*H*V`:
+
+| M | Entropy | CuTe SM90 | cuTile | Verl Torch fallback |
+|---:|:---:|---:|---:|---:|
+| 8192 | No | **37.93 ms / 696 TFLOPS** | 42.55 ms / 620 TFLOPS | 85.17 ms / 310 TFLOPS |
+| 8192 | Yes | **37.89 ms / 696 TFLOPS** | 41.43 ms / 637 TFLOPS | 121.00 ms / 218 TFLOPS |
+| 16384 | No | **79.42 ms / 665 TFLOPS** | 83.78 ms / 630 TFLOPS | 166.85 ms / 316 TFLOPS |
+| 16384 | Yes | **78.20 ms / 675 TFLOPS** | 84.12 ms / 627 TFLOPS | 239.39 ms / 220 TFLOPS |
+| 32768 | No | 163.34 ms / 646 TFLOPS | **163.21 ms / 647 TFLOPS** | 331.08 ms / 319 TFLOPS |
+| 32768 | Yes | **160.64 ms / 657 TFLOPS** | 161.73 ms / 653 TFLOPS | 477.51 ms / 221 TFLOPS |
+
+Full forward-and-backward effective TFLOPS count `8*M*H*V`:
+
+| M | Entropy | CuTe SM90 | cuTile | Verl Torch fallback |
+|---:|:---:|---:|---:|---:|
+| 8192 | No | **50.39 ms / 698 TFLOPS** | 57.15 ms / 616 TFLOPS | 128.76 ms / 273 TFLOPS |
+| 8192 | Yes | **50.22 ms / 701 TFLOPS** | 56.86 ms / 619 TFLOPS | 165.63 ms / 212 TFLOPS |
+| 16384 | No | **104.77 ms / 672 TFLOPS** | 112.03 ms / 628 TFLOPS | 254.91 ms / 276 TFLOPS |
+| 16384 | Yes | **103.65 ms / 679 TFLOPS** | 111.21 ms / 633 TFLOPS | 328.37 ms / 214 TFLOPS |
+| 32768 | No | **211.30 ms / 666 TFLOPS** | 221.34 ms / 636 TFLOPS | 508.33 ms / 277 TFLOPS |
+| 32768 | Yes | **210.60 ms / 668 TFLOPS** | 221.39 ms / 636 TFLOPS | 655.89 ms / 215 TFLOPS |
+
+B200 measurements for the same shape, using automatic cuTile workspace selection:
+
+| Implementation | Forward | Backward | Full | Peak full memory |
+|---|---:|---:|---:|---:|
+| cuTile | 2.97 ms | 8.35 ms | 11.36 ms | 2.64 GiB |
+| Torch | 5.24 ms | 7.15 ms | 12.85 ms | 7.22 GiB |
 
 
 ## Getting Started
@@ -300,6 +378,7 @@ loss.backward()
 | Ministral   | `liger_kernel.transformers.apply_liger_kernel_to_ministral` | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mistral     | `liger_kernel.transformers.apply_liger_kernel_to_mistral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mixtral     | `liger_kernel.transformers.apply_liger_kernel_to_mixtral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
+| Muse Glimmer | `liger_kernel.transformers.apply_liger_kernel_to_muse_glimmer` | LayerNorm, RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | Nemotron    | `liger_kernel.transformers.apply_liger_kernel_to_nemotron` | ReLUSquared, CrossEntropyLoss, FusedLinearCrossEntropy                  |
 | Pixtral     | `liger_kernel.transformers.apply_liger_kernel_to_pixtral`  | RoPE, RMSNorm, SwiGLU|
 | Gemma1      | `liger_kernel.transformers.apply_liger_kernel_to_gemma`    | RoPE, RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
@@ -399,32 +478,41 @@ loss.backward()
 
 ## CI status
 
-<table style="width: 100%; text-align: center; border-collapse: collapse;">
+<table>
     <tr>
-        <th style="padding: 10px;">Build</th>
+        <th>Platform</th>
+        <th>Build</th>
     </tr>
     <tr>
-        <td style="padding: 10px;">
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/xuedinge233/Liger-Kernel/actions/workflows/ascend_npu_ci.yml">
-                    <img src="https://github.com/xuedinge233/Liger-Kernel/actions/workflows/ascend_npu_ci.yml/badge.svg?branch=main" alt="Build">
-                </a>
-            </div>
+        <td>NVIDIA GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/nvi-ci.yml?branch=main&event=push&label=" alt="NVIDIA GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>AMD GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/amd-ci.yml?branch=main&event=push&label=" alt="AMD GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>Intel GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/intel-ci.yml?branch=main&event=push&label=" alt="Intel GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>Ascend NPU</td>
+        <td>
+            <a href="https://github.com/Ascend/Ascend-CI/actions/workflows/liger_kernel.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/Ascend/Ascend-CI/liger_kernel.yml?branch=main&label=" alt="Ascend NPU Build">
+            </a>
         </td>
     </tr>
 </table>
@@ -452,12 +540,10 @@ url={https://openreview.net/forum?id=36SjAIT42G}
 ```
 
 ## Star History
-[![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://www.star-history.com/#linkedin/Liger-Kernel&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.dera.page/#linkedin/Liger-Kernel&Date)
 
 <p align="right" style="font-size: 14px; color: #555; margin-top: 20px;">
     <a href="#readme-top" style="text-decoration: none; color: #007bff; font-weight: bold;">
         ↑ Back to Top ↑
     </a>
 </p>
-
-

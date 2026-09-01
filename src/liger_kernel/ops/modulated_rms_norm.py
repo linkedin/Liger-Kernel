@@ -86,6 +86,10 @@ def _modulated_rms_norm_forward_kernel(
     if casting_mode == _CASTING_MODE_NONE:
         eps = eps.to(X_row_dtype)
         offset = offset.to(X_row_dtype)
+    else:
+        # Force fp32 scalars: Inductor may use fp64 under torch.compile and tank throughput.
+        eps = eps.to(tl.float32)
+        offset = offset.to(tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
     rstd = rsqrt(mean_square + eps)
@@ -134,7 +138,7 @@ def _modulated_rms_norm_backward_kernel(
     dShift_row_stride,
     n_rows,
     n_cols,
-    offset,
+    offset: tl.constexpr,
     rows_per_program,
     casting_mode: tl.constexpr,
     elementwise_affine: tl.constexpr,

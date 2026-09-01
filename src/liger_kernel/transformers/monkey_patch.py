@@ -32,12 +32,15 @@ from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_f
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.relu_squared import LigerReLUSquared
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
+from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmer
+from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmerTextCentered
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
+from liger_kernel.transformers.swiglu import LigerSwiGLUMLPForMuseGlimmer
 
 try:
     import peft
@@ -76,6 +79,8 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         )
         module.modules_to_save.default.in_place = in_place
         module.modules_to_save.default.row_mode = row_mode
+        module.modules_to_save.default.impl = None
+        module.modules_to_save.default.mode = None
         module.original_module.offset = offset
         module.original_module.casting_mode = casting_mode
         module.original_module.variance_epsilon = (
@@ -83,6 +88,8 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         )
         module.original_module.in_place = in_place
         module.original_module.row_mode = row_mode
+        module.original_module.impl = None
+        module.original_module.mode = None
         _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
         _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
@@ -95,9 +102,33 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         module.in_place = in_place
         module.row_mode = row_mode
+        module.impl = None
+        module.mode = None
         _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
         _bind_method_to_module(module, "_get_name", lambda self: LigerRMSNorm.__name__)
+
+
+def _patch_muse_glimmer_scale_free_rms_norm_module(module, eps=1e-6):
+    # MuseGlimmerRMSNorm(with_scale=False) has no weight parameter, so the Liger kernel has
+    # nothing to scale by. Bind the torch fallback that matches HF exactly.
+
+    assert getattr(module, "weight", None) is None, (
+        f"{type(module).__name__} has a weight parameter and cannot use the scale-free "
+        "fallback -- use _patch_rms_norm_module(offset=0.0, casting_mode='gemma') instead."
+    )
+    module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+    module.with_scale = False
+    module.offset = 0.0
+    module.casting_mode = "gemma"
+    module.in_place = False
+    module.row_mode = None
+    _bind_method_to_module(module, "forward", LigerRMSNormForMuseGlimmer.forward)
+    _bind_method_to_module(module, "_get_name", lambda self: LigerRMSNormForMuseGlimmer.__name__)
+
+
+def _patch_muse_glimmer_text_centered_rms_norm_module(module, eps=1e-6):
+    _patch_rms_norm_module(module, offset=1.0, eps=eps, casting_mode="gemma", in_place=False)
 
 
 def _patch_layer_norm_module(module, eps=1e-6):
@@ -110,12 +141,16 @@ def _patch_layer_norm_module(module, eps=1e-6):
         module.modules_to_save.default.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
+        module.modules_to_save.default.impl = None
+        module.modules_to_save.default.mode = None
         module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
             module, "normalized_shape", None
         )
         module.original_module.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
+        module.original_module.impl = None
+        module.original_module.mode = None
         module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
             module, "normalized_shape", None
         )
@@ -128,6 +163,8 @@ def _patch_layer_norm_module(module, eps=1e-6):
     else:
         module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+        module.impl = None
+        module.mode = None
         _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
         _bind_method_to_module(module, "_get_name", lambda self: LigerLayerNorm.__name__)
@@ -867,6 +904,123 @@ def apply_liger_kernel_to_mixtral(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_muse_glimmer(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    layer_norm: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to HuggingFace MuseGlimmer models.
+
+    Vision RoPE is left unchanged because its 4D layout is incompatible with
+    Liger's 3D vision RoPE kernel.
+
+    Args:
+        rope: Patch text RoPE. Default: True.
+        cross_entropy: Patch cross entropy. Default: False.
+        fused_linear_cross_entropy: Patch fused cross entropy. Default: True.
+        layer_norm: Patch vision LayerNorm when `model` is provided. Default: True.
+        rms_norm: Patch RMSNorm. Default: True.
+        swiglu: Patch SwiGLU. Default: True.
+        model: Existing model instance to patch. Default: None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.muse_glimmer import modeling_muse_glimmer
+    from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerForConditionalGeneration
+    from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerModel
+    from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerTextModel
+
+    from liger_kernel.transformers.model.muse_glimmer import lce_forward as muse_glimmer_lce_forward
+
+    if rope:
+        modeling_muse_glimmer.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_muse_glimmer.MuseGlimmerRMSNorm = LigerRMSNormForMuseGlimmer
+        modeling_muse_glimmer.MuseGlimmerTextCenteredRMSNorm = LigerRMSNormForMuseGlimmerTextCentered
+
+    if swiglu:
+        modeling_muse_glimmer.MuseGlimmerTextMLP = LigerSwiGLUMLPForMuseGlimmer
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if layer_norm and model is None:
+        # MuseGlimmer vision LayerNorm uses torch.nn.LayerNorm directly, so patching requires a model instance.
+        logger.warning_once(
+            "layer_norm=True is a no-op for MuseGlimmer when `model` is None: the vision "
+            "tower constructs `nn.LayerNorm` directly, so it can only be patched on an "
+            "existing instance. Pass `model=` to enable the LayerNorm kernel."
+        )
+
+    if fused_linear_cross_entropy:
+        if model is None:
+            modeling_muse_glimmer.MuseGlimmerForConditionalGeneration.forward = muse_glimmer_lce_forward
+        elif isinstance(model, MuseGlimmerForConditionalGeneration):
+            model.forward = MethodType(muse_glimmer_lce_forward, model)
+        # MuseGlimmerModel and MuseGlimmerTextModel lack lm_head, so CausalLM forward isn't patched; their layer kernels are still patched below.
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        if isinstance(model, MuseGlimmerForConditionalGeneration):
+            base_model = model.model
+        elif isinstance(model, MuseGlimmerModel):
+            base_model = model
+        elif isinstance(model, MuseGlimmerTextModel):
+            base_model = None
+        else:
+            raise TypeError(
+                "Unsupported MuseGlimmer model type. `model` must be `MuseGlimmerForConditionalGeneration`, "
+                f"`MuseGlimmerModel` or `MuseGlimmerTextModel`. Got: {type(model)}"
+            )
+
+        text_model = model if base_model is None else base_model.language_model
+        vision_model = None if base_model is None else getattr(base_model, "vision_tower", None)
+
+        if rms_norm:
+            if base_model is not None and getattr(base_model, "perception_emb_norm", None) is not None:
+                _patch_muse_glimmer_scale_free_rms_norm_module(base_model.perception_emb_norm)
+
+            if text_model is not None:
+                _patch_rms_norm_module(text_model.norm, offset=0.0, casting_mode="gemma", in_place=False)
+
+                embed_tokens = getattr(text_model, "embed_tokens", None)
+                if embed_tokens is not None and getattr(embed_tokens, "embed_norm", None) is not None:
+                    _patch_muse_glimmer_scale_free_rms_norm_module(embed_tokens.embed_norm)
+
+        if text_model is not None:
+            for decoder_layer in text_model.layers:
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLPForMuseGlimmer)
+                if rms_norm:
+                    _patch_muse_glimmer_text_centered_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_muse_glimmer_text_centered_rms_norm_module(decoder_layer.post_attention_layernorm)
+                    _patch_muse_glimmer_text_centered_rms_norm_module(decoder_layer.pre_feedforward_layernorm)
+                    _patch_muse_glimmer_text_centered_rms_norm_module(decoder_layer.post_feedforward_layernorm)
+
+                    self_attn = getattr(decoder_layer, "self_attn", None)
+                    if self_attn is not None and getattr(self_attn, "qk_norm", None) is not None:
+                        _patch_muse_glimmer_scale_free_rms_norm_module(self_attn.qk_norm)
+
+        if layer_norm and vision_model is not None:
+            _patch_layer_norm_module(vision_model.ln_pre)
+            _patch_layer_norm_module(vision_model.ln_post)
+            for vision_layer in vision_model.layers:
+                _patch_layer_norm_module(vision_layer.norm1)
+                _patch_layer_norm_module(vision_layer.norm2)
 
 
 def apply_liger_kernel_to_pixtral(
@@ -3554,6 +3708,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "ministral": apply_liger_kernel_to_ministral,
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
+    "muse_glimmer": apply_liger_kernel_to_muse_glimmer,
     "nemotron": apply_liger_kernel_to_nemotron,
     "olmo2": apply_liger_kernel_to_olmo2,
     "pixtral": apply_liger_kernel_to_pixtral,
