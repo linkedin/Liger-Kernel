@@ -8,6 +8,7 @@ from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_route_token
 from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_router_forward
 from liger_kernel.transformers.lfm2_short_conv import liger_lfm2_short_conv_forward
 from liger_kernel.transformers.lfm2_utils import _lfm2_training_sequence_length
+from liger_kernel.transformers.lfm2_utils import use_lfm2_native_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as lfm2_lce_forward
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
 from liger_kernel.transformers.rms_norm import LigerLfm2RMSNorm
@@ -287,6 +288,25 @@ def test_lfm2_training_sequence_length_handles_attention_layouts():
     assert _lfm2_training_sequence_length(torch.empty(1, 4096, 32, 64), sequence_dim=1) == 4096
     assert _lfm2_training_sequence_length(torch.empty(1, 32, 4096, 64), sequence_dim=-2) == 4096
     assert _lfm2_training_sequence_length(torch.empty(1, 4096, 2048), sequence_dim=-2) == 4096
+
+
+def test_lfm2_hopper_native_forward_boundary(monkeypatch):
+    from liger_kernel.transformers import lfm2_utils
+
+    class Device:
+        type = "cuda"
+        index = 0
+
+    class Tensor:
+        device = Device()
+
+        def __init__(self, sequence_length):
+            self.shape = (1, sequence_length, 2048)
+
+    monkeypatch.setattr(lfm2_utils.torch.version, "hip", None)
+    monkeypatch.setattr(lfm2_utils, "infer_device_arch", lambda _device_id: "hopper")
+    assert use_lfm2_native_forward(Tensor(4095), sequence_dim=1)
+    assert not use_lfm2_native_forward(Tensor(4096), sequence_dim=1)
 
 
 @pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")

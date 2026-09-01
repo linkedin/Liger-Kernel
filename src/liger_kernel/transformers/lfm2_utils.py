@@ -2,7 +2,9 @@ import torch
 
 from liger_kernel.utils import infer_device_arch
 
-_HOPPER_NATIVE_SEQUENCE_CUTOFF = 1024
+# Correctly-autocast H100 end-to-end sweeps show native pointwise ops winning
+# below 4K, while the Liger paths remain useful at 4K+ for activation memory.
+_HOPPER_NATIVE_SEQUENCE_CUTOFF = 4096
 
 
 def _lfm2_training_sequence_length(tensor: torch.Tensor, sequence_dim: int) -> int:
