@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 
 from liger_kernel.backends import dispatch
+from liger_kernel.ops import LigerCrossEntropyFunction  # noqa: F401 — re-exported for backend-routing checks
 from liger_kernel.transformers.functional import CrossEntropyOutput
 
 
