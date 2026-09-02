@@ -47,6 +47,8 @@ The public API mirrors ``liger_kernel.ops.swiglu``:
 ``swiglu_forward`` / ``swiglu_backward`` / ``LigerSiLUMulCuteDSLFunction``.
 """
 
+import functools
+
 import torch
 
 try:
@@ -63,6 +65,9 @@ import cutlass.cute.math as cute_math
 from cutlass.cute.runtime import from_dlpack
 from cutlass.cute.runtime import make_fake_stream
 
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import EPILOGUE_TILE_SIZE
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import K_ALIGNMENT
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import run_grouped_epilogue_gemm
 from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
 from liger_kernel.ops.utils import ensure_contiguous
@@ -684,6 +689,126 @@ def _get_compiled_vec(kind: str, dtype: torch.dtype, vec: int, device_index: int
         )
     _VEC_COMPILE_CACHE[key] = fn
     return fn
+
+
+# ---------------------------------------------------------------------------
+# Fused linear SwiGLU
+# ---------------------------------------------------------------------------
+@cute.jit
+def _fused_swiglu_epilogue(gate, up, out):
+    _silu_mul_fwd_packed(gate, up, out, cutlass.Float32(1.0))
+
+
+def pack_swiglu_weights(gate_weight, up_weight):
+    """Pack ``[N, K]`` gate/up weights into alternating 32-row tiles."""
+    if gate_weight.ndim != 2 or up_weight.ndim != 2:
+        raise ValueError("gate_weight and up_weight must both be 2D tensors.")
+    if gate_weight.shape != up_weight.shape:
+        raise ValueError(
+            f"gate_weight and up_weight must have identical shapes, got {gate_weight.shape} and {up_weight.shape}."
+        )
+    if gate_weight.dtype != up_weight.dtype:
+        raise TypeError(
+            f"gate_weight and up_weight must have the same dtype, got {gate_weight.dtype} and {up_weight.dtype}."
+        )
+    if gate_weight.device != up_weight.device:
+        raise ValueError(
+            f"gate_weight and up_weight must be on the same device, got {gate_weight.device} and {up_weight.device}."
+        )
+
+    output_features, input_features = gate_weight.shape
+    padded_features = ((output_features + EPILOGUE_TILE_SIZE - 1) // EPILOGUE_TILE_SIZE) * EPILOGUE_TILE_SIZE
+    if padded_features != output_features:
+        padded_gate = gate_weight.new_zeros(padded_features, input_features)
+        padded_up = up_weight.new_zeros(padded_features, input_features)
+        padded_gate[:output_features].copy_(gate_weight)
+        padded_up[:output_features].copy_(up_weight)
+    else:
+        padded_gate = gate_weight
+        padded_up = up_weight
+
+    gate_tiles = padded_gate.reshape(-1, EPILOGUE_TILE_SIZE, input_features)
+    up_tiles = padded_up.reshape(-1, EPILOGUE_TILE_SIZE, input_features)
+    packed = torch.stack((gate_tiles, up_tiles), dim=1)
+    return packed.reshape(-1, input_features).contiguous(), output_features
+
+
+@functools.lru_cache(maxsize=32)
+def _validate_fused_swiglu_signature(a_shape, packed_shape, output_features):
+    if len(a_shape) != 2 or len(packed_shape) != 2:
+        raise ValueError("a and packed_gate_up_weight must both be 2D tensors.")
+    if a_shape[1] != packed_shape[1]:
+        raise ValueError(f"Input and packed weight K dimensions must match, got {a_shape[1]} and {packed_shape[1]}.")
+    if packed_shape[0] % (2 * EPILOGUE_TILE_SIZE) != 0:
+        raise ValueError(f"Packed weight rows must be divisible by {2 * EPILOGUE_TILE_SIZE}, got {packed_shape[0]}.")
+
+    padded_features = packed_shape[0] // 2
+    if output_features is None:
+        output_features = padded_features
+    if not 0 < output_features <= padded_features:
+        raise ValueError(f"output_features must be in [1, {padded_features}], got {output_features}.")
+    return output_features
+
+
+def _native_fused_swiglu_supported(a):
+    if a.device.type != "cuda" or a.dtype not in (torch.float16, torch.bfloat16) or a.shape[1] % K_ALIGNMENT != 0:
+        return False
+    device_id = a.device.index if a.device.index is not None else torch.cuda.current_device()
+    return infer_device_arch(device_id) == "blackwell" and torch.cuda.get_device_capability(a.device) == (10, 0)
+
+
+def _unpack_swiglu_weights(packed_gate_up_weight):
+    input_features = packed_gate_up_weight.shape[1]
+    tiles = packed_gate_up_weight.view(-1, 2, EPILOGUE_TILE_SIZE, input_features)
+    gate_weight = tiles[:, 0].reshape(-1, input_features)
+    up_weight = tiles[:, 1].reshape(-1, input_features)
+    return gate_weight, up_weight
+
+
+def _fused_swiglu_sm100(a, packed_gate_up_weight, output_features):
+    padded_features = packed_gate_up_weight.shape[0] // 2
+    out = torch.empty(
+        a.shape[0],
+        padded_features,
+        device=a.device,
+        dtype=a.dtype,
+    )
+    run_grouped_epilogue_gemm(
+        a.contiguous(),
+        packed_gate_up_weight.contiguous(),
+        out,
+        _fused_swiglu_epilogue,
+    )
+    return out[:, :output_features]
+
+
+def fused_swiglu(a, packed_gate_up_weight, output_features=None):
+    """Compute fused gate/up projections and SwiGLU with an SM100 fast path."""
+    if a.device.type != "cuda" or packed_gate_up_weight.device.type != "cuda":
+        raise ValueError("a and packed_gate_up_weight must be CUDA tensors.")
+    if a.device != packed_gate_up_weight.device:
+        raise ValueError(
+            f"a and packed_gate_up_weight must be on the same device, got "
+            f"{a.device} and {packed_gate_up_weight.device}."
+        )
+    if a.dtype != packed_gate_up_weight.dtype:
+        raise TypeError(
+            f"a and packed_gate_up_weight must have the same dtype, got {a.dtype} and {packed_gate_up_weight.dtype}."
+        )
+    _validate_supported_dtype(a.dtype)
+    output_features = _validate_fused_swiglu_signature(
+        tuple(a.shape),
+        tuple(packed_gate_up_weight.shape),
+        output_features,
+    )
+
+    if _native_fused_swiglu_supported(a):
+        return _fused_swiglu_sm100(a, packed_gate_up_weight, output_features)
+
+    gate_weight, up_weight = _unpack_swiglu_weights(packed_gate_up_weight)
+    gate = torch.nn.functional.linear(a, gate_weight)
+    up = torch.nn.functional.linear(a, up_weight)
+    return swiglu_forward(gate, up)[2][:, :output_features]
 
 
 # ---------------------------------------------------------------------------
