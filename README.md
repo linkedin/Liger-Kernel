@@ -250,6 +250,30 @@ The implementations share this public contract but use different schedules:
 - **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Its sole forward uses the fixed cluster-M2 N160 fragment kernel, with a measured split-N lookup for profiled long-sequence shapes, and never writes logits to HBM; `m_tiles_per_cluster` remains accepted for API compatibility but does not change that schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
 - **Fallback** uses a 512-token chunked PyTorch implementation adapted from Verl's fused PPO formulas when the default frontend cannot use the SM90 kernel.
 
+For a classifier weight sharded into equally sized contiguous ranges across a tensor-parallel process group, use the
+TP frontend. Targets remain global vocabulary indices:
+
+```python
+from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyTPFunction
+
+nll, entropy = LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+    x, local_weight, target, tp_group, 1.0, -100, 1, True
+)
+```
+
+The TP frontend derives `vocab_start` from the process-group rank. BF16 inputs on Hopper use the optional
+`liger_cute_kernels` implementation when its native core is available; other configurations use Liger's chunked
+tensor-parallel fallback adapted from Verl's fused PPO formulas. Both paths return globally correct per-token outputs
+and sum the input gradient across the TP group. The native CUTLASS + NVSHMEM paths communicate exclusively through
+NVSHMEM; no Torch communicator or Torch C++ ABI crosses the TVM-FFI boundary. Calls remain collectives on `tp_group`, so
+they must have the same ordering on every member.
+
+The native operators share the process-wide NVSHMEM bootstrap used by `LigerExpertParallelFusedMoe`, while TP and EP
+use separate cached teams and separately named workspaces. Application setup must initialize NVSHMEM from a common
+parent group (normally `WORLD`) and resolve both process groups before invoking either kernel. The first FSLCE call
+fixes its workspace capacity, so warm it up with the largest expected token, hidden, local-vocabulary, and
+`tiles_per_reduce` settings before CUDA Graph capture.
+
 H100 BF16 forward medians from 60 interleaved samples per provider at
 `H=4096`, `V=131072`. Effective TFLOPS count the common projection work,
 `2*M*H*V`:
