@@ -58,7 +58,7 @@ def liger_cutile_tests():
     subprocess.run(["make test-cutile"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
-@app.function(gpu="B200!", image=repo, timeout=90 * 60)
+@app.function(gpu="B200", image=repo, timeout=90 * 60)
 def liger_cutile_tests_b200():
     import subprocess
 
@@ -89,7 +89,7 @@ def liger_cutedsl_tests_h100():
     subprocess.run(["make test-cutedsl"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
-@app.function(gpu="B200!", image=repo, timeout=90 * 60)
+@app.function(gpu="B200", image=repo, timeout=90 * 60)
 def liger_cutedsl_tests_b200():
     import subprocess
 
