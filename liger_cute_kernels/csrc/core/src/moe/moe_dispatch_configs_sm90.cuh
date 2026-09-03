@@ -1,6 +1,6 @@
 #pragma once
 
-#include "moe_fwd_bwd_tune_configs.hpp"
+#include "moe_fwd_bwd_tune_configs_sm90.hpp"
 
 // SM90 / Hopper dispatch config set. The action macros receive the same row
 // shapes as the base tuning menus:

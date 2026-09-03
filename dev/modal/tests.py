@@ -42,6 +42,68 @@ def liger_convergence_tests():
     subprocess.run(["make test-convergence"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
+@app.function(gpu="H100!", image=repo, timeout=90 * 60)
+def liger_cutile_tests():
+    import subprocess
+
+    # cutile-tileiras pulls in the tileiras compiler so `import cuda.tile` resolves;
+    # without it the cuTile tests importorskip (skip) rather than run.
+    subprocess.run(
+        ["uv pip install -e '.[dev,cutile-tileiras]' --system"],
+        check=True,
+        shell=True,
+        cwd=REMOTE_ROOT_PATH,
+    )
+    # make test-cutile sets LIGER_KERNEL_IMPL=cutile internally.
+    subprocess.run(["make test-cutile"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
+
+
+@app.function(gpu="B200", image=repo, timeout=90 * 60)
+def liger_cutile_tests_b200():
+    import subprocess
+
+    # cutile-tileiras pulls in the tileiras compiler so `import cuda.tile` resolves;
+    # without it the cuTile tests importorskip (skip) rather than run.
+    subprocess.run(
+        ["uv pip install -e '.[dev,cutile-tileiras]' --system"],
+        check=True,
+        shell=True,
+        cwd=REMOTE_ROOT_PATH,
+    )
+    # make test-cutile sets LIGER_KERNEL_IMPL=cutile internally.
+    subprocess.run(["make test-cutile"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
+
+
+@app.function(gpu="H100!", image=repo, timeout=90 * 60)
+def liger_cutedsl_tests_h100():
+    import subprocess
+
+    # On H100 (SM90) this runs the cutedsl SM90 + generic tests; the SM100 tests self-skip.
+    subprocess.run(
+        ["uv pip install -e '.[dev,cutedsl]' --system"],
+        check=True,
+        shell=True,
+        cwd=REMOTE_ROOT_PATH,
+    )
+    # make test-cutedsl sets LIGER_KERNEL_IMPL=cutedsl internally.
+    subprocess.run(["make test-cutedsl"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
+
+
+@app.function(gpu="B200", image=repo, timeout=90 * 60)
+def liger_cutedsl_tests_b200():
+    import subprocess
+
+    # On B200 (SM100) this runs the cutedsl SM100 + generic tests; the SM90 tests self-skip.
+    subprocess.run(
+        ["uv pip install -e '.[dev,cutedsl]' --system"],
+        check=True,
+        shell=True,
+        cwd=REMOTE_ROOT_PATH,
+    )
+    # make test-cutedsl sets LIGER_KERNEL_IMPL=cutedsl internally.
+    subprocess.run(["make test-cutedsl"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
+
+
 oldest_v4_app = modal.App("liger_oldest_v4_tests", image=image)  # 4.52.0
 
 

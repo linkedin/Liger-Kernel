@@ -184,7 +184,7 @@ def _scale_in_place_host(mX: cute.Tensor, mScale: cute.Tensor, stream: cuda.CUst
 
 def _scale_in_place(x, scale):
     x_ct = to_cute_tensor(x)
-    scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
+    scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=scale.element_size())
     stream = _cute_stream()
     key = (x.dtype, scale.dtype)
     if key not in _scale_compile_cache:
@@ -713,7 +713,7 @@ def _launch_ce_fwd(
     softcap_val = float(softcap) if has_softcap else 0.0
     x_ct = to_cute_tensor(x)
     y_ct = to_cute_tensor(y, assumed_align=8)  # int64
-    loss_ct = to_cute_tensor(loss, assumed_align=2)  # bf16/fp16/fp32 scalar
+    loss_ct = to_cute_tensor(loss, assumed_align=loss.element_size())  # bf16/fp16/fp32 scalar
     stream = _cute_stream()
     # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
     #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
@@ -727,7 +727,7 @@ def _launch_ce_fwd(
     # False, and the compile key carries that flag so a real-output compile can't reuse it.
     # Reuse the already-marshalled loss_ct/y_ct handles for the dummies (no extra from_dlpack
     # on the common path — one fewer DLPack capsule per call).
-    z_ct = to_cute_tensor(z_loss_out, assumed_align=2) if return_z_loss else loss_ct
+    z_ct = to_cute_tensor(z_loss_out, assumed_align=loss.element_size()) if return_z_loss else loss_ct
     ta_ct = to_cute_tensor(token_acc_out, assumed_align=4) if return_token_accuracy else loss_ct
     pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
     # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.

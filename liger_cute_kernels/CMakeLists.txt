@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# LigerCute — native build harness (ported from LigerCommKernels)
+# LigerCuteKernels — native build harness
 #
 # Target split:
 #
@@ -15,9 +15,9 @@
 #     cmake -S . -B build -DLIGER_CUTE_BUILD_BINDINGS=OFF
 #     cmake --build build --target liger_cute_kernels
 #
-# The fused MoE kernels (csrc/core/src/moe/{moe,moe_bwd,mlp*}.cu) are wired into
-# the core; csrc/core/src/moe/tune/ is a separate standalone autotuner project
-# (see README "Offline autotuner"), excluded from the core target.
+# The core includes CUTLASS + NVSHMEM operators such as expert-parallel MoE and
+# tensor-parallel fused scaled linear cross entropy. csrc/core/src/moe/tune/ is
+# a separate standalone autotuner project, excluded from the core target.
 # ─────────────────────────────────────────────────────────────────────────────
 cmake_minimum_required(VERSION 3.24)
 project(LigerCute LANGUAGES CXX CUDA)
@@ -29,7 +29,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(LIGER_CUTE_BUILD_BINDINGS
-    "Deprecated compatibility option. The lck wheel now exposes tensor APIs through TVM FFI only." OFF)
+    "Deprecated compatibility option. The native wheel exposes tensor APIs through TVM FFI only." OFF)
 
 # Core-reuse knob: when set to a directory containing a prebuilt
 # libliger_cute_kernels.so, the core is NOT compiled from source — it is linked
@@ -71,10 +71,9 @@ endif()
 # Disable device-side assertions to avoid extern __assert_fail calls that cause
 # ptxas to serialize WGMMA instructions.
 add_compile_definitions(NDEBUG)
-# NVSHMEM_ENABLE_ALL_DEVICE_INLINING is REQUIRED globally — see LigerCommKernels
-# root CMakeLists for the full rationale (nvshmem.h device helpers reference
-# device-state symbols gated on __CUDACC_RDC__; inlining makes non-RDC host-only
-# TUs build cleanly).
+# NVSHMEM_ENABLE_ALL_DEVICE_INLINING is the default for non-RDC host-only TUs:
+# nvshmem.h device helpers otherwise reference state gated on __CUDACC_RDC__.
+# RDC collective TUs explicitly undefine it when they need library device code.
 add_compile_definitions(NVSHMEM_ENABLE_ALL_DEVICE_INLINING=ON)
 
 # ── NVSHMEM ──────────────────────────────────────────────────────────────────
