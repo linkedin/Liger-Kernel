@@ -11,7 +11,8 @@ on:
           - daily
           - weekly
   schedule:
-    # Daily: correctness + cuTile + cuTeDSL (SM90) on H100, cuTeDSL (SM100) on B200.
+    # Daily: correctness + cuTeDSL (SM90) on H100, cuTeDSL (SM100) on B200,
+    # and cuTile on BOTH archs.
     # Randomized off-peak minute; round hours (esp. 00:00) get throttled/queued by GitHub.
     - cron: '24 9 * * *'
     # Weekly (Sundays): convergence (latest tf) + oldest-tf correctness & convergence.
@@ -29,7 +30,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # Daily: general correctness + cuTile + cuTeDSL, split across H100 and B200.
   # cuTeDSL runs on BOTH archs on purpose: SM90 tests only run on H100 and SM100
-  # tests only run on B200 (each arch self-skips the other half).
+  # tests only run on B200 (each arch self-skips the other half). cuTile likewise
+  # runs on BOTH archs to catch arch-specific (e.g. SM100/tcgen05) regressions.
   # ---------------------------------------------------------------------------
   daily:
     name: daily / ${{ matrix.name }}
@@ -45,6 +47,8 @@ jobs:
             modal_fn: liger_correctness_tests
           - name: cuTile (H100)
             modal_fn: liger_cutile_tests
+          - name: cuTile (B200)
+            modal_fn: liger_cutile_tests_b200
           - name: cuTeDSL SM90 (H100)
             modal_fn: liger_cutedsl_tests_h100
           - name: cuTeDSL SM100 (B200)

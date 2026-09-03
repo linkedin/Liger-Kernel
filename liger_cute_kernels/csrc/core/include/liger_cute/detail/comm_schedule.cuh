@@ -1,6 +1,6 @@
 // comm_schedule.cuh — CORE-INTERNAL communication schedule (device tables + host setup).
 //
-// Ported from LigerCommKernels' nvshmem_helpers.{h,cuh}. NOT part of the flat
+// Adapted from LigerCuteKernels' NVSHMEM scheduling helpers. NOT part of the flat
 // ABI: it declares __constant__ device storage and a device accessor for the
 // dispatch/combine kernels, plus the host-side functions that populate them.
 // The flat ABI wrapper (liger_cute_init_comm_schedule, in nvshmem.h) calls the

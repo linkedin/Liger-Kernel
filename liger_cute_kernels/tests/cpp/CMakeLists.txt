@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # C++ unit tests (gtest). Torch-free: tests include the device-function headers
 # from csrc/core/src/moe directly and define their own launcher kernels, so they
-# only need CUTLASS (header-only), CUDA, and gtest. The lck.so API dispatch
+# only need CUTLASS (header-only), CUDA, and gtest. The native core API dispatch
 # coverage test links the core library when it is built in this CMake run.
 #
 # Enabled via -DLIGER_CUTE_BUILD_TESTS=ON. Global CMAKE_CUDA_FLAGS already sets

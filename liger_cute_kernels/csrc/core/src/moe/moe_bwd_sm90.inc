@@ -1,8 +1,8 @@
 // Fused MoE Backward: sort → fwd-dispatch (for X) → reverse-combine (for dY)
 //   → MLP_bwd + comm overlap → reverse-dispatch (for dX).
-// Compiled with separable compilation. Do NOT link liger_comm_kernels library.
+// Compiled with separable compilation directly into the native core.
 //
-// Torch-free core (liger_cute): ported from LigerCommKernels' moe_bwd.cu. The
+// Torch-free core (liger_cute): adapted from LigerCuteKernels' MoE backward. The
 // device kernel + templated launcher are upstream-verbatim (namespace liger).
 // Tensor-carrying backward calls are exported through TVM FFI and lower directly
 // into MoeBwdArgs.

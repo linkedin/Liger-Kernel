@@ -14,8 +14,8 @@
 //   warp  0     : TMA producer, 24 registers. Loads the CTA's own M128xK64 X
 //                 tile and multicasts two N160xK64 W panels to the cluster
 //                 peer through one 3-stage mbarrier pipeline.
-//   warps 1..3  : idle in forward (they carry the dX comms in backward), but
-//                 they still take PRODUCER_REGISTERS so the warp group's
+//   warp  1     : last-arrival local MAX/SUM communication epilogue.
+//   warps 2..3  : idle; they still take PRODUCER_REGISTERS so the warp group's
 //                 setmaxnreg is uniform.
 //   warps 4..11 : two WGMMA consumer warp groups, 240 registers. Each owns 64
 //                 token rows and two FP32 N160 accumulators.
@@ -39,7 +39,9 @@
 // must be the first CUTLASS/CuTe include of any TU using this header.
 #include "gemm_sm90.cuh"
 
+#include "dx_reduce.cuh"
 #include "forward_gemm_sm90.cuh"
+#include "liger_cute/detail/local_reduce.cuh"
 #include "online_softmax.cuh"
 
 #include <cstdint>
@@ -163,6 +165,7 @@ struct ForwardGemmSmemSm90 {
 	alignas(16) float segment_sum[Traits::kTileM];
 	alignas(16) float segment_target[Traits::kTileM];
 	alignas(16) float segment_weighted[kWeightedElements];
+	int finalizer;
 
 	CUTE_DEVICE Element* x_data() { return &smem_x[0]; }
 	CUTE_DEVICE Element* w0_data() { return &smem_w0[0]; }
@@ -634,13 +637,13 @@ struct ForwardGemmConsumerSm90 {
 // ───────────────────────────────────────────────────────────────────────────
 
 template <bool ReturnEntropy, int Compute, class TmaLoadX, class TmaLoadW>
-__global__ __launch_bounds__(ForwardGemmTraitsSm90<Compute>::kNumThreads, 1)
-void forward_gemm_kernel_sm90(
-		__grid_constant__ const TmaLoadX tma_load_x,
-		__grid_constant__ const TmaLoadW tma_load_w,
-		__grid_constant__ const ForwardGemmParamsSm90<Compute> params,
-		__grid_constant__ const ForwardGemmPartialsSm90<Compute> partials,
-		__grid_constant__ const ForwardGemmSplitSm90<Compute> split) {
+__device__ __forceinline__ void forward_gemm_compute_sm90(
+		ForwardGemmSmemSm90<Compute, ReturnEntropy>& smem,
+		const TmaLoadX& tma_load_x,
+		const TmaLoadW& tma_load_w,
+		const ForwardGemmParamsSm90<Compute>& params,
+		const ForwardGemmPartialsSm90<Compute>& partials,
+		const ForwardGemmSplitSm90<Compute>& split) {
 	using Traits = ForwardGemmTraitsSm90<Compute>;
 	using Config = typename Traits::Config;
 	using Launch = ForwardGemmLaunchSm90<Compute>;
@@ -649,9 +652,6 @@ void forward_gemm_kernel_sm90(
 	using ClusterShape = typename Traits::ClusterShape;
 	using Registers = sm90::WarpSpecializedRegistersSm90<
 		Config::kProducerRegisters, Config::kMmaRegisters, Compute>;
-
-	extern __shared__ char raw_smem[];
-	Smem& smem = *reinterpret_cast<Smem*>(raw_smem);
 
 	int warp_group = cutlass::canonical_warp_group_idx();
 	int warp = cutlass::canonical_warp_idx_sync();
@@ -729,12 +729,394 @@ void forward_gemm_kernel_sm90(
 			num_k_tiles);
 	}
 
+}
+
+template <bool ReturnEntropy, int Compute, class TmaLoadX, class TmaLoadW>
+__global__ __launch_bounds__(ForwardGemmTraitsSm90<Compute>::kNumThreads, 1)
+void forward_gemm_kernel_sm90(
+		__grid_constant__ const TmaLoadX tma_load_x,
+		__grid_constant__ const TmaLoadW tma_load_w,
+		__grid_constant__ const ForwardGemmParamsSm90<Compute> params,
+		__grid_constant__ const ForwardGemmPartialsSm90<Compute> partials,
+		__grid_constant__ const ForwardGemmSplitSm90<Compute> split) {
+	using Smem = ForwardGemmSmemSm90<Compute, ReturnEntropy>;
+	extern __shared__ char raw_smem[];
+	Smem& smem = *reinterpret_cast<Smem*>(raw_smem);
+	forward_gemm_compute_sm90<ReturnEntropy, Compute>(
+		smem, tma_load_x, tma_load_w, params, partials, split);
+	sm90::cluster_exit_sm90<Compute>();
+}
+
+template <
+	liger_cute::detail::LocalReduceBackend Backend,
+	liger_cute::detail::ReduceOp Op,
+	class Mapping>
+__device__ __forceinline__ void forward_local_reduce_warp(
+		const DxReduceWorkspace<float>& comm,
+		const Mapping& mapping,
+		std::size_t data_offset,
+		std::size_t count,
+		int m_tile,
+		int phase) {
+	unsigned int lane = liger_cute::detail::nvls_lane_id();
+	if (mapping.size == 1) {
+		for (std::size_t index = lane; index < count; index += 32) {
+			comm.reduced[data_offset + index] =
+				comm.partial[data_offset + index];
+		}
+		__syncwarp();
+		return;
+	}
+
+	std::size_t ready_offset =
+		static_cast<std::size_t>(m_tile * 4 + phase * 2) *
+		static_cast<std::size_t>(mapping.size);
+	std::size_t complete_offset =
+		ready_offset + static_cast<std::size_t>(mapping.size);
+	std::uint64_t epoch =
+		dx_epoch_base(comm) | 0x10000000u |
+		(static_cast<std::uint64_t>(m_tile) << 4) |
+		static_cast<std::uint64_t>(phase + 1);
+
+	if constexpr (
+		Backend == liger_cute::detail::LocalReduceBackend::kNvls) {
+		liger_cute::detail::LocalReduceContext<Backend, float> context{
+			comm.partial + data_offset,
+			comm.reduced + data_offset,
+			comm.sync + ready_offset,
+			mapping.multicast_sync + ready_offset,
+			comm.sync + complete_offset,
+			mapping.multicast_sync + complete_offset,
+			mapping.rank,
+			mapping.size};
+		liger_cute::detail::local_all_reduce<Backend, Op>(
+			context,
+			mapping.multicast_reduced + data_offset,
+			mapping.multicast_partial + data_offset,
+			count,
+			epoch);
+	} else {
+		liger_cute::detail::LocalReduceContext<Backend, float> context{
+			mapping.peer_partial,
+			data_offset,
+			comm.sync + ready_offset,
+			mapping.peer_sync,
+			ready_offset,
+			comm.sync + complete_offset,
+			complete_offset,
+			mapping.rank,
+			mapping.size};
+		liger_cute::detail::local_all_reduce<Backend, Op>(
+			context,
+			comm.reduced + data_offset,
+			comm.partial + data_offset,
+			count,
+			epoch);
+	}
+}
+
+template <
+	bool ReturnEntropy,
+	int Compute,
+	bool RequiresRemote,
+	liger_cute::detail::LocalReduceBackend Backend,
+	class Mapping>
+__device__ __forceinline__ void forward_finalize_splits_and_reduce_sm90(
+		ForwardGemmSmemSm90<Compute, ReturnEntropy>& smem,
+		const ForwardGemmParamsSm90<Compute>& params,
+		const ForwardGemmPartialsSm90<Compute>& partials,
+		const ForwardGemmSplitSm90<Compute>& split,
+		const DxReduceWorkspace<float>& comm,
+		const Mapping& mapping,
+		int* split_ready,
+		float* global_max,
+		float* reduced,
+		float* remote_source) {
+	using Traits = ForwardGemmTraitsSm90<Compute>;
+	using Config = typename Traits::Config;
+	using Epilogue = ForwardGemmEpilogueSm90<Compute>;
+
+	ForwardGemmWorkSm90 work = forward_gemm_assign_work_sm90<Compute>(
+		split,
+		static_cast<int>(blockIdx.z),
+		static_cast<int>(blockIdx.x));
+	int warp_group = cutlass::canonical_warp_group_idx();
+	int consumer_thread =
+		static_cast<int>(threadIdx.x) - Traits::kWarpGroupSize;
+	bool wrote_partial =
+		warp_group != 0 &&
+		consumer_thread % Traits::kWarpGroupSize <
+			Traits::kRowsPerWarpGroup;
+	if (wrote_partial && work.store_enabled) {
+		__threadfence();
+	}
+	__syncthreads();
+
+	if (threadIdx.x == 0) {
+		smem.finalizer = 0;
+		if (work.store_enabled) {
+			int completed = atomicAdd(
+				split_ready + work.raw_pid_m, 1) + 1;
+			smem.finalizer =
+				completed == split.split_count_for_pair(
+					work.raw_pid_m / Config::kClusterM);
+		}
+	}
+	__syncthreads();
+
+	if (smem.finalizer != 0) {
+		int tid = static_cast<int>(threadIdx.x);
+		if (tid < Config::kTileM) {
+			int row = work.raw_pid_m * Config::kTileM + tid;
+			int split_count = split.split_count_for_pair(
+				work.raw_pid_m / Config::kClusterM);
+			float row_max = kForwardNegInf;
+			float row_target = 0.0f;
+			for (int split_id = 0; split_id < split_count; ++split_id) {
+				int index =
+					(work.raw_pid_m * split.split_n + split_id) *
+						Config::kTileM +
+					tid;
+				row_max = fmaxf(row_max, partials.partial_max[index]);
+				row_target += partials.partial_target[index];
+			}
+
+			float row_sum = 0.0f;
+			float row_weighted = 0.0f;
+			for (int split_id = 0; split_id < split_count; ++split_id) {
+				int index =
+					(work.raw_pid_m * split.split_n + split_id) *
+						Config::kTileM +
+					tid;
+				float split_scale = forward_exp2_sm90(
+					(partials.partial_max[index] - row_max) *
+						kForwardLog2E);
+				row_sum += partials.partial_sum[index] * split_scale;
+				if constexpr (ReturnEntropy) {
+					row_weighted +=
+						partials.partial_weighted[index] * split_scale;
+				}
+			}
+
+			OnlineSoftmaxState state;
+			state.max_value = row_max;
+			state.exp_sum = row_sum;
+			state.target_logit = row_target;
+			if constexpr (ReturnEntropy) {
+				state.exp_weighted_sum = row_weighted;
+			}
+			state.has_target = 0;
+			if (row < params.tokens) {
+				std::int64_t target_id = params.target[row];
+				std::int64_t local = target_id - params.vocab_start;
+				state.has_target =
+					target_id != params.ignore_index &&
+					local >= 0 &&
+					local < static_cast<std::int64_t>(
+						params.local_vocab);
+				Epilogue::template store_row<ReturnEntropy>(
+					state, params.output, row);
+			}
+		}
+		__syncthreads();
+
+		int warp = cutlass::canonical_warp_idx_sync();
+		int lane = static_cast<int>(threadIdx.x) % Traits::kWarpSize;
+		if (warp == 1) {
+			constexpr std::size_t kRows = Config::kTileM;
+			constexpr std::size_t kStride =
+				kForwardReducedFields * kRows;
+			std::size_t base =
+				static_cast<std::size_t>(work.raw_pid_m) * kStride;
+			for (int row_in_tile = lane;
+					row_in_tile < Config::kTileM;
+					row_in_tile += Traits::kWarpSize) {
+				int row =
+					work.raw_pid_m * Config::kTileM + row_in_tile;
+				comm.partial[base + row_in_tile] =
+					row < params.tokens
+					? params.output.local_max[row]
+					: kForwardNegInf;
+			}
+			__syncwarp();
+			forward_local_reduce_warp<
+				Backend,
+				liger_cute::detail::ReduceOp::kMax>(
+					comm,
+					mapping,
+					base,
+					kRows,
+					work.raw_pid_m,
+					0);
+
+			constexpr std::size_t kFields =
+				ReturnEntropy ? kForwardReducedFields : 2;
+			constexpr std::size_t kStateFields = 1 + kFields;
+			int padded_tokens = ceil_div(
+				params.tokens, mapping.size) * mapping.size;
+			int rows_per_rank = padded_tokens / mapping.size;
+			int owned_row_begin =
+				mapping.rank * rows_per_rank;
+			for (int row_in_tile = lane;
+					row_in_tile < Config::kTileM;
+					row_in_tile += Traits::kWarpSize) {
+				int row =
+					work.raw_pid_m * Config::kTileM + row_in_tile;
+				float local_sum = row < params.tokens
+					? params.output.local_sum[row]
+					: 0.0f;
+				float local_max = row < params.tokens
+					? params.output.local_max[row]
+					: kForwardNegInf;
+				float node_max = comm.reduced[base + row_in_tile];
+				if (row < params.tokens) {
+					params.output.local_max[row] = node_max;
+					global_max[row] = node_max;
+				}
+				float correction = local_sum == 0.0f
+					? 0.0f
+					: forward_exp2_sm90(
+						(local_max - node_max) * kForwardLog2E);
+				float local_target = row < params.tokens
+					? params.output.local_target[row]
+					: 0.0f;
+				float local_weighted = 0.0f;
+				if constexpr (ReturnEntropy) {
+					local_weighted = row < params.tokens
+						? params.output.local_weighted_sum[row]
+						: 0.0f;
+				}
+				comm.partial[
+					base +
+					kForwardReducedSumField * kRows +
+					row_in_tile] =
+					local_sum * correction;
+				comm.partial[
+					base +
+					kForwardReducedTargetField * kRows +
+					row_in_tile] =
+					local_target;
+				if constexpr (ReturnEntropy) {
+					comm.partial[
+						base +
+						kForwardReducedWeightedField * kRows +
+						row_in_tile] =
+						local_weighted * correction;
+				}
+				if constexpr (RequiresRemote) {
+					// Every local GPU has the complete node state. Pack only
+					// this rank's contiguous token shard for the IBRC pair.
+					if (row >= owned_row_begin &&
+						row < owned_row_begin + rows_per_rank) {
+						int local_row = row - owned_row_begin;
+						remote_source[
+							static_cast<std::size_t>(local_row) *
+								kStateFields] =
+							node_max;
+					}
+				}
+			}
+			__syncwarp();
+			liger_cute::detail::publish_local_reduce_source();
+			forward_local_reduce_warp<
+				Backend,
+				liger_cute::detail::ReduceOp::kSum>(
+					comm,
+					mapping,
+					base,
+					kFields * kRows,
+					work.raw_pid_m,
+					1);
+			for (int row_in_tile = lane;
+					row_in_tile < Config::kTileM;
+					row_in_tile += Traits::kWarpSize) {
+				int row =
+					work.raw_pid_m * Config::kTileM + row_in_tile;
+				if constexpr (RequiresRemote) {
+					if (row >= owned_row_begin &&
+						row < owned_row_begin + rows_per_rank) {
+						int local_row = row - owned_row_begin;
+						for (int field = 0;
+								field < static_cast<int>(kFields);
+								++field) {
+							remote_source[
+								static_cast<std::size_t>(local_row) *
+									kStateFields +
+								1 +
+								field] =
+								comm.reduced[
+									base +
+									static_cast<std::size_t>(field) *
+										kRows +
+									row_in_tile];
+						}
+					}
+				} else if (row < params.tokens) {
+					CUTE_UNROLL
+					for (int field = 0;
+							field < static_cast<int>(kFields);
+							++field) {
+							reduced[field * params.tokens + row] =
+								comm.reduced[
+									base +
+									static_cast<std::size_t>(field) *
+										kRows +
+										row_in_tile];
+					}
+				}
+			}
+		}
+		__syncthreads();
+	}
+}
+
+template <
+	bool ReturnEntropy,
+	int Compute,
+	bool RequiresRemote,
+	liger_cute::detail::LocalReduceBackend Backend,
+	class TmaLoadX,
+	class TmaLoadW,
+	class Mapping>
+__global__ __launch_bounds__(ForwardGemmTraitsSm90<Compute>::kNumThreads, 1)
+void forward_gemm_tp_kernel_sm90(
+		__grid_constant__ const TmaLoadX tma_load_x,
+		__grid_constant__ const TmaLoadW tma_load_w,
+		__grid_constant__ const ForwardGemmParamsSm90<Compute> params,
+		__grid_constant__ const ForwardGemmPartialsSm90<Compute> partials,
+		__grid_constant__ const ForwardGemmSplitSm90<Compute> split,
+		__grid_constant__ const DxReduceWorkspace<float> comm,
+		__grid_constant__ const Mapping mapping,
+		int* split_ready,
+		float* global_max,
+		float* reduced,
+		float* remote_source) {
+	using Smem = ForwardGemmSmemSm90<Compute, ReturnEntropy>;
+	extern __shared__ char raw_smem[];
+	Smem& smem = *reinterpret_cast<Smem*>(raw_smem);
+	forward_gemm_compute_sm90<ReturnEntropy, Compute>(
+		smem, tma_load_x, tma_load_w, params, partials, split);
+	forward_finalize_splits_and_reduce_sm90<
+		ReturnEntropy,
+		Compute,
+		RequiresRemote,
+		Backend>(
+			smem,
+			params,
+			partials,
+			split,
+			comm,
+			mapping,
+			split_ready,
+			global_max,
+			reduced,
+			remote_source);
 	sm90::cluster_exit_sm90<Compute>();
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Split reducer — the reference finalizer, stopped at *local* statistics so
-// The host forward wrapper reduces across the tensor-parallel group.
+// Test-only split reducer for the GEMM-only self-test. Production performs this
+// merge through the last-arrival epilogue above.
 // ───────────────────────────────────────────────────────────────────────────
 
 template <bool ReturnEntropy, int Compute>

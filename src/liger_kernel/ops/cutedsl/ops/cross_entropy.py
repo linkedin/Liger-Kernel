@@ -191,8 +191,8 @@ def _scale_in_place_host(mX: cute.Tensor, mScale: cute.Tensor, stream: cuda.CUst
 def _scale_in_place(x, scale):
     with device_context(x.device):
         x_ct = to_cute_tensor(x)
-        scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
-        stream = _cute_stream(x.device)
+        scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=scale.element_size())
+        stream = _cute_stream()
         key = (x.dtype, scale.dtype)
         if key not in _scale_compile_cache:
             _scale_compile_cache[key] = cute.compile(_scale_in_place_host, x_ct, scale_ct, stream)
@@ -708,7 +708,7 @@ def _launch_ce_fwd(
             inv_n_z = inv_n_loss
         # Compile ONCE per (dtype, has_grad, feature flags) and cache the compiled callable;
         # invoke it each call. (Eager-calling the @cute.jit fn recompiled on every invocation
-        # -> ~30 ms fixed overhead). Launch on torch's current CUDA stream so the in-place
+        # -> ~30 ms fixed overhead.) Launch on torch's current CUDA stream so the in-place
         # grad write is ordered w.r.t. the caller.
         has_zloss = bool(lse_sq_scale != 0.0 or return_z_loss)
         has_softcap = softcap is not None
@@ -721,8 +721,8 @@ def _launch_ce_fwd(
         softcap_val = float(softcap) if has_softcap else 0.0
         x_ct = to_cute_tensor(x)
         y_ct = to_cute_tensor(y, assumed_align=8)  # int64
-        loss_ct = to_cute_tensor(loss, assumed_align=2)  # bf16/fp16/fp32 scalar
-        stream = _cute_stream(x.device)
+        loss_ct = to_cute_tensor(loss, assumed_align=loss.element_size())  # bf16/fp16/fp32 scalar
+        stream = _cute_stream()
         # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
         #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
         #   `loss.to(mLoss.element_type)`). Missing loss.dtype let two callers with the
@@ -735,7 +735,7 @@ def _launch_ce_fwd(
         # False, and the compile key carries that flag so a real-output compile can't reuse it.
         # Reuse the already-marshalled loss_ct/y_ct handles for the dummies (no extra from_dlpack
         # on the common path — one fewer DLPack capsule per call).
-        z_ct = to_cute_tensor(z_loss_out, assumed_align=2) if return_z_loss else loss_ct
+        z_ct = to_cute_tensor(z_loss_out, assumed_align=loss.element_size()) if return_z_loss else loss_ct
         ta_ct = to_cute_tensor(token_acc_out, assumed_align=4) if return_token_accuracy else loss_ct
         pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
         # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.
@@ -785,37 +785,8 @@ def _launch_ce_fwd(
                 float(weight_sum),
                 logical_vocab_size,
                 int(ignore_index),
-                has_grad,
-                has_zloss,
-                bool(return_z_loss),
-                has_softcap,
-                bool(return_token_accuracy),
-                bool(return_predicted_tokens),
-                has_weight,
-                has_smoothing,
-                has_padding,
-                num_warps,
                 stream,
             )
-        # The constexpr flags are baked at compile; pass runtime tensors/scalars/stream only.
-        _compile_cache[key](
-            x_ct,
-            y_ct,
-            loss_ct,
-            z_ct,
-            ta_ct,
-            pt_ct,
-            w_ct,
-            float(inv_n_loss),
-            float(inv_n_z),
-            float(lse_sq_scale),
-            float(softcap_val),
-            float(label_smoothing),
-            float(weight_sum),
-            logical_vocab_size,
-            int(ignore_index),
-            stream,
-        )
 
 
 # =============================================================================
