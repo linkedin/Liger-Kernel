@@ -785,8 +785,37 @@ def _launch_ce_fwd(
                 float(weight_sum),
                 logical_vocab_size,
                 int(ignore_index),
+                has_grad,
+                has_zloss,
+                bool(return_z_loss),
+                has_softcap,
+                bool(return_token_accuracy),
+                bool(return_predicted_tokens),
+                has_weight,
+                has_smoothing,
+                has_padding,
+                num_warps,
                 stream,
             )
+        # The constexpr flags are baked at compile; pass runtime tensors/scalars/stream only.
+        _compile_cache[key](
+            x_ct,
+            y_ct,
+            loss_ct,
+            z_ct,
+            ta_ct,
+            pt_ct,
+            w_ct,
+            float(inv_n_loss),
+            float(inv_n_z),
+            float(lse_sq_scale),
+            float(softcap_val),
+            float(label_smoothing),
+            float(weight_sum),
+            logical_vocab_size,
+            int(ignore_index),
+            stream,
+        )
 
 
 # =============================================================================
