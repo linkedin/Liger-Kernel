@@ -582,17 +582,40 @@ def _ce_fwd_kernel(
             w_vidx = w_vidx + THREADS
         cute.arch.cp_async_wait_group(0)  # drain remaining prefetches
         cute.arch.barrier()  # all grad writes visible before the target correction
-        # -(1 - ls) * weight_y / N_loss correction at the (non-ignored) target index, one thread.
+        # True-class gradient correction at the (non-ignored) target index, one thread.
+        # dx_y = softmax(x_y) - (1 - ls) cancels catastrophically once the model is confident
+        # (softmax(x_y) -> 1), so the -(1 - ls) term must be folded in *before* the result is
+        # rounded to X's low-precision dtype. The pass-2 loop already stored the per-element
+        # part softmax(x_y)*coef (+smoothing) at gX[y], but reading that low-precision value back
+        # and adding -(1 - ls)/N would lose most of the significant bits in bf16/fp16. Instead we
+        # recompute the *entire* dx_y once, fully in fp32, and OVERWRITE gX[y] with a single
+        # store. ori_xy is the (softcapped) fp32 logit at y, so softmax_y matches the loop exactly.
         do_correction = y != ignore_index
         if tid == 0:
             if do_correction:
-                dxy = (Float32(0.0) - (Float32(1.0) - label_smoothing)) * w_eff * inv_n_loss
+                softmax_y = cute.math.exp2(ori_xy * LOG2_E + neg_m2_p2, fastmath=True) / d
+                # dloss_ori (+ z_loss) coefficient, identical to the loop's `coef`.
+                if const_expr(HAS_WEIGHT):
+                    coef_y = (Float32(1.0) - label_smoothing) * w_eff * inv_n_loss
+                else:
+                    coef_y = inv_n_loss
+                if const_expr(HAS_ZLOSS):
+                    coef_y = coef_y + (Float32(2.0) * lse_sq_scale * lse) * inv_n_z
+                dxy = softmax_y * coef_y
+                # additive label-smoothing term (matches the loop's NEED_WBLOCK/else split).
+                if const_expr(HAS_SMOOTHING):
+                    eps_g = eps * inv_n_loss
+                    if const_expr(HAS_WEIGHT):
+                        dxy = dxy + (softmax_y * weight_sum - w_eff) * eps_g
+                    else:
+                        dxy = dxy + (Float32(0.0) - eps_g)
+                # true-class term: dx_y picks up -(1 - ls) * weight_y / N_loss.
+                dxy = dxy + (Float32(0.0) - (Float32(1.0) - label_smoothing)) * w_eff * inv_n_loss
                 if const_expr(HAS_SOFTCAP):
                     # same chain factor at y: t_y = tanh(x_y/softcap) = ori_xy_capped/softcap.
                     t_y = ori_xy / softcap
-                    dxy = dxy * (1.0 - t_y * t_y)
-                corr = gX[y].to(Float32) + dxy
-                gX[y] = corr.to(gX.element_type)
+                    dxy = dxy * (Float32(1.0) - t_y * t_y)
+                gX[y] = dxy.to(gX.element_type)
 
 
 # =============================================================================
