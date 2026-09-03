@@ -235,9 +235,32 @@ def _check_tiled_mlp_layout(module, liger_tiled_module):
         )
 
 
+def _warn_if_hub_kernel_dispatch_eligible(module):
+    """Warn when instance-patching a class transformers can also dispatch to a hub kernel.
+
+    transformers decorates MLPs like LlamaMLP with `@use_kernel_forward_from_hub(...)` (see
+    huggingface/transformers#48335), which sets `kernel_layer_name` on the class. `kernels.kernelize()`
+    walks a model by class and unconditionally rebinds `forward` on every instance of a class carrying
+    that attribute -- including one already instance-patched here -- even when no kernel mapping is
+    registered, in which case it falls back to the class's own original forward. It records no marker of
+    having done so, so nothing here can detect or undo a kernelize() call made afterward; the only way to
+    avoid the race is to always call kernelize()/load hub kernels *before* apply_liger_tiled_mlp on an
+    already-built model. The registration path (`apply_liger_tiled_mlp()` with no `model`) is unaffected:
+    it swaps the class outright, and kernelize() only ever touches classes carrying `kernel_layer_name`.
+    """
+    if hasattr(type(module), "kernel_layer_name"):
+        logger.warning(
+            f"{module.__class__.__name__} is registered for transformers' hub-kernel dispatch via "
+            f"kernel_layer_name={module.__class__.kernel_layer_name!r}. If you also call kernelize() or "
+            "load hub kernels on this model, do so before apply_liger_tiled_mlp: kernelize() walks "
+            "modules by class and will silently overwrite this patch if it runs afterward."
+        )
+
+
 def _patch_tiled_mlp_module(module, liger_tiled_module, num_shards=None):
     _check_tiled_mlp_activation(module, liger_tiled_module)
     _check_tiled_mlp_layout(module, liger_tiled_module)
+    _warn_if_hub_kernel_dispatch_eligible(module)
     module.num_shards = num_shards
     _bind_method_to_module(module, "_mlp_forward", liger_tiled_module._mlp_forward)
     _bind_method_to_module(module, "forward", liger_tiled_module.forward)

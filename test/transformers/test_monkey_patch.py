@@ -1,5 +1,7 @@
 import inspect
+import logging
 
+from contextlib import contextmanager
 from inspect import signature
 from unittest.mock import MagicMock
 from unittest.mock import Mock
@@ -681,6 +683,84 @@ def test_apply_liger_tiled_mlp_registers_supported_models():
             assert isinstance(layer.mlp, LigerTiledGEGLUMLP)
     finally:
         _unregister_liger_tiled_mlp()
+
+
+@contextmanager
+def _decorated_for_hub_kernel_dispatch(cls, layer_name):
+    """Simulate transformers decorating `cls` with `@use_kernel_forward_from_hub(layer_name)`, as
+    LlamaMLP is expected to be once huggingface/transformers#48335 lands, then undo it."""
+    from kernels import use_kernel_forward_from_hub
+
+    had_attr = "kernel_layer_name" in cls.__dict__
+    prev_value = cls.__dict__.get("kernel_layer_name")
+    use_kernel_forward_from_hub(layer_name)(cls)
+    try:
+        yield
+    finally:
+        if had_attr:
+            cls.kernel_layer_name = prev_value
+        else:
+            del cls.kernel_layer_name
+
+
+def test_apply_liger_tiled_mlp_warns_when_instance_is_hub_kernel_eligible(caplog):
+    """A class transformers has decorated with `use_kernel_forward_from_hub` (as LlamaMLP will be, per
+    huggingface/transformers#48335) is walked by `kernels.kernelize()` regardless of any instance patch
+    already applied to it, so patching such an instance must say so."""
+    pytest.importorskip("kernels")
+
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=1,
+    )
+    LlamaMLP = transformers.models.llama.modeling_llama.LlamaMLP
+
+    with _decorated_for_hub_kernel_dispatch(LlamaMLP, "SwiGLUMLP"):
+        model = AutoModelForCausalLM.from_config(config)
+        with caplog.at_level(logging.WARNING, logger="liger_kernel.transformers.monkey_patch"):
+            monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=2)
+
+    assert "hub-kernel dispatch" in caplog.text
+    assert "kernel_layer_name='SwiGLUMLP'" in caplog.text
+
+
+def test_kernelize_after_tiled_mlp_patch_silently_reverts_it():
+    """Demonstrates the exact hazard `_warn_if_hub_kernel_dispatch_eligible` warns about: `kernelize()`
+    rebinds `forward` on every instance of a decorated class, even with no kernel mapping registered, so
+    calling it after `apply_liger_tiled_mlp` discards the tiled patch without raising anything."""
+    kernels = pytest.importorskip("kernels")
+
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=1,
+    )
+    LlamaMLP = transformers.models.llama.modeling_llama.LlamaMLP
+
+    with _decorated_for_hub_kernel_dispatch(LlamaMLP, "SwiGLUMLP"):
+        model = AutoModelForCausalLM.from_config(config)
+        monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=2)
+        mlp = model.model.layers[0].mlp
+        assert inspect.getsource(mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
+
+        with pytest.warns(UserWarning, match="No kernel mapping found"):
+            kernels.kernelize(model, mode=kernels.Mode.INFERENCE)
+
+        # kernelize() found no mapping for "SwiGLUMLP" and fell back -- to LlamaMLP's own forward, not
+        # the tiled one, silently undoing the patch above.
+        assert inspect.getsource(mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLP.forward)
+        assert inspect.getsource(mlp.forward) == inspect.getsource(LlamaMLP.forward)
+
+        # Applying the tiled patch again, after kernelize(), is the correct order and sticks.
+        monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=2)
+        assert inspect.getsource(mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
 
 
 @pytest.mark.skipif(not is_muse_glimmer_available(), reason="muse_glimmer module not available")
