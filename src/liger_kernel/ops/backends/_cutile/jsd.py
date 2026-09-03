@@ -157,24 +157,29 @@ def _launch_jsd_kernel(
     )
     label_arg = shift_labels if has_label else torch.empty(1, dtype=torch.int64, device=student_prob.device)
 
-    ct.launch(
-        torch.cuda.current_stream(),
-        (BT, 1, 1),
-        _jsd_kernel_ct,
-        (
-            student_prob,
-            teacher_prob,
-            loss,
-            dx,
-            label_arg,
-            float(beta),
-            inv_n_non_ignore,
-            int(ignore_index),
-            int(V),
-            int(BLOCK_SIZE),
-            int(has_label),
-        ),
-    )
+    # Device-safe launch: dispatch selects this backend from the input tensor's
+    # device, so tie the launch (and stream) to that device rather than the
+    # process-current one. Mirrors ops/cutile/ops/fused_linear_cross_entropy.py.
+    device = student_prob.device
+    with torch.cuda.device(device):
+        ct.launch(
+            torch.cuda.current_stream(device),
+            (BT, 1, 1),
+            _jsd_kernel_ct,
+            (
+                student_prob,
+                teacher_prob,
+                loss,
+                dx,
+                label_arg,
+                float(beta),
+                inv_n_non_ignore,
+                int(ignore_index),
+                int(V),
+                int(BLOCK_SIZE),
+                int(has_label),
+            ),
+        )
     return loss, dx
 
 
