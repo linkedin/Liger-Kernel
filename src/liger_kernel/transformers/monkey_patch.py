@@ -43,6 +43,7 @@ from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLPForMuseGlimmer
 from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP
 from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP
+from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLPForMuseGlimmer
 
 try:
     import peft
@@ -290,6 +291,7 @@ LIGER_TILED_MLP_PATCH_MAPPING = {
     "Exaone4MLP": LigerTiledSwiGLUMLP,
     "Olmo2MLP": LigerTiledSwiGLUMLP,
     "Olmo3MLP": LigerTiledSwiGLUMLP,
+    "MuseGlimmerTextMLP": LigerTiledSwiGLUMLPForMuseGlimmer,
     "GemmaMLP": LigerTiledGEGLUMLP,
     "Gemma2MLP": LigerTiledGEGLUMLP,
     "Gemma3MLP": LigerTiledGEGLUMLP,

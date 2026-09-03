@@ -129,6 +129,32 @@ class LigerTiledSwiGLUMLP(nn.Module):
         )
 
 
+class LigerTiledSwiGLUMLPForMuseGlimmer(LigerTiledSwiGLUMLP):
+    """Tiled SwiGLU MLP wrapper for MuseGlimmerTextMLP.
+
+    MuseGlimmerTextConfig names its activation field ``hidden_activation`` (Gemma-style) rather than
+    ``hidden_act`` -- and its top-level ``hidden_act`` names an unrelated (non-text) activation -- so the
+    base class' validation would check the wrong attribute. Mirrors LigerSwiGLUMLPForMuseGlimmer.
+    """
+
+    def __init__(self, config, num_shards: Optional[int] = None):
+        nn.Module.__init__(self)
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+        self.num_shards = num_shards
+
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+
+        hidden_activation = getattr(config, "hidden_activation", None) or getattr(config, "hidden_act", None)
+        if hidden_activation not in ["silu", "swish"]:
+            raise ValueError(
+                f"LigerTiledSwiGLUMLPForMuseGlimmer requires SiLU/Swish activation, got {hidden_activation}"
+            )
+
+
 # Activations with a fused Liger gate*activation kernel. Exact (erf) GELU is deliberately absent:
 # LigerGELUMulFunction implements the tanh approximation, so routing erf GELU through it would change
 # numerics. Anything unlisted falls back to act_fn(gate) * up, which is still tiled -- tiling is where
@@ -241,5 +267,6 @@ class LigerTiledGLUMLP(nn.Module):
 # absent on purpose: it adapts to whatever activation the module carries.
 _REQUIRED_FUSED_MUL = {
     LigerTiledSwiGLUMLP: LigerSiLUMulFunction,
+    LigerTiledSwiGLUMLPForMuseGlimmer: LigerSiLUMulFunction,
     LigerTiledGEGLUMLP: LigerGELUMulFunction,
 }

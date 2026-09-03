@@ -27,6 +27,7 @@ from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
 from liger_kernel.transformers import LigerTiledGEGLUMLP
 from liger_kernel.transformers import LigerTiledSwiGLUMLP
+from liger_kernel.transformers import LigerTiledSwiGLUMLPForMuseGlimmer
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
@@ -609,6 +610,36 @@ def test_apply_liger_tiled_mlp_to_instance():
         assert layer.mlp.num_shards == 4
 
 
+@pytest.mark.skipif(not is_muse_glimmer_available(), reason="muse_glimmer module not available")
+def test_apply_liger_tiled_mlp_to_instance_for_muse_glimmer():
+    """MuseGlimmerTextMLP has the plain gate/up/down SwiGLU layout but names its activation field
+    hidden_activation (Gemma-style), so it needs its own tiled wrapper -- see
+    LigerTiledSwiGLUMLPForMuseGlimmer."""
+    from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerTextModel
+
+    config = transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerTextConfig(
+        vocab_size=512,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        max_position_embeddings=128,
+        sliding_window=16,
+    )
+    model = MuseGlimmerTextModel(config)
+
+    for layer in model.layers:
+        assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLPForMuseGlimmer.forward)
+
+    monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=2)
+
+    for layer in model.layers:
+        assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLPForMuseGlimmer.forward)
+        assert layer.mlp.num_shards == 2
+
+
 def test_apply_liger_tiled_mlp_rejects_mismatched_activation():
     """Instance patching rebinds methods onto an already-built module, so the tiled MLP's own __init__
     check never runs. A model whose activation the fused kernel would silently replace must be rejected
@@ -681,6 +712,48 @@ def test_apply_liger_tiled_mlp_registers_supported_models():
             assert isinstance(layer.mlp, LigerTiledSwiGLUMLP)
         for layer in gemma2_model.model.layers:
             assert isinstance(layer.mlp, LigerTiledGEGLUMLP)
+    finally:
+        _unregister_liger_tiled_mlp()
+
+
+@pytest.mark.skipif(not is_muse_glimmer_available(), reason="muse_glimmer module not available")
+def test_apply_liger_tiled_mlp_registers_muse_glimmer():
+    from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerForConditionalGeneration
+
+    config = transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerConfig(
+        attn_implementation="sdpa",
+        out_hidden_size=128,
+        projector_hidden_size=64,
+        vision_config=transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerVisionConfig(
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            patch_size=14,
+            pos_emb_height=4,
+            pos_emb_width=4,
+            max_position_embeddings=16,
+        ),
+        text_config=transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerTextConfig(
+            vocab_size=512,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            max_position_embeddings=128,
+            sliding_window=16,
+        ),
+    )
+
+    try:
+        monkey_patch.apply_liger_tiled_mlp()
+
+        model = MuseGlimmerForConditionalGeneration._from_config(config)
+
+        for layer in model.model.language_model.layers:
+            assert isinstance(layer.mlp, LigerTiledSwiGLUMLPForMuseGlimmer)
     finally:
         _unregister_liger_tiled_mlp()
 

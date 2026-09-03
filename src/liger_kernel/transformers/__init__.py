@@ -37,6 +37,7 @@ from liger_kernel.transformers.swiglu import LigerSwiGLUMLPForMuseGlimmer  # noq
 from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.tiled_mlp import LigerTiledGLUMLP  # noqa: F401
 from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP  # noqa: F401
+from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLPForMuseGlimmer  # noqa: F401
 from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
 from liger_kernel.transformers.vocab_parallel_cross_entropy import LigerVocabParallelCrossEntropy  # noqa: F401
 
@@ -208,6 +209,7 @@ __all__ = [
     "LigerTiledGEGLUMLP",
     "LigerTiledGLUMLP",
     "LigerTiledSwiGLUMLP",
+    "LigerTiledSwiGLUMLPForMuseGlimmer",
     "LigerTVDLoss",
     "LigerKLDIVLoss",
     "LigerMHC",
