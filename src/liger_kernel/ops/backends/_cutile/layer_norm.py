@@ -92,10 +92,25 @@ from liger_kernel.ops._nvidia_shared import to_local_if_dtensor as _to_local_if_
 # ``_layer_norm_backward`` if the user feeds a wider row, mirroring the
 # Triton kernel's BLOCK_SIZE assertion. The test framework's "documented
 # range limit" path will skip rather than fail when this fires.
-_BWD_MAX_TILE = 8192
+# Both forward and backward materialise a single ``next_pow2(N)``-wide tile per
+# row, so the supported hidden dimension is capped identically on both sides.
+_MAX_TILE = 8192
+_BWD_MAX_TILE = _MAX_TILE
 
 
-def _select_mode(mode: Optional[str], n_rows: int, n_cols: int) -> str:
+def _launch(device: torch.device, grid, kernel, args) -> None:
+    """Device-safe cuTile launch tied to the input tensor's CUDA device.
+
+    Dispatch selects this backend from the first CUDA tensor's device, so in a
+    multi-GPU process the process-current device can differ. Guarding the
+    device (and using that device's stream) keeps the launch on the tensor's
+    GPU. Mirrors ``ops/cutile/ops/fused_linear_cross_entropy.py``.
+    """
+    with torch.cuda.device(device):
+        ct.launch(torch.cuda.current_stream(device), grid, kernel, args)
+
+
+def _select_mode(mode: Optional[str], n_rows: int, n_cols: int, device: torch.device) -> str:
     """Pick a kernel variant when ``mode`` is ``None``.
 
     Heuristic (matches the cuTile RMSNorm sibling after its multi-row removal):
@@ -120,7 +135,7 @@ def _select_mode(mode: Optional[str], n_rows: int, n_cols: int) -> str:
         return mode
     if n_rows <= 0 or n_cols <= 0:
         raise ValueError(f"layer_norm_cutile: invalid shape ({n_rows}, {n_cols}); both dims must be positive.")
-    sms = _num_sms()
+    sms = _num_sms(device)
     if n_rows > sms * 2:
         return "static_persistent"
     if n_cols <= 4096:
@@ -437,20 +452,26 @@ def _layer_norm_forward(X, W, B, eps, mode):
     n_cols = shape[-1]
     X_flat = X.view(-1, n_cols)
     n_rows = X_flat.shape[0]
+    device = X_flat.device
 
     if X_flat.shape[1] != W.shape[0]:
         raise ValueError(f"Hidden size mismatch: X has {X_flat.shape[1]}, W has {W.shape[0]}")
     if B.shape[0] != W.shape[0]:
         raise ValueError(f"Bias size mismatch: B has {B.shape[0]}, W has {W.shape[0]}")
 
-    # Same defensive cast as the cuTile RMSNorm sibling: the kernel can't
-    # promote fp32 weight × bf16/fp16 activation back to the bf16/fp16 store
-    # implicitly. Triton and CuTe DSL handle this internally; we make the
-    # cast explicit on the host so the kernel sees same-dtype W, B, X.
-    if W.dtype != X_flat.dtype:
-        W = W.to(X_flat.dtype)
-    if B.dtype != X_flat.dtype:
-        B = B.to(X_flat.dtype)
+    if n_cols > _MAX_TILE:
+        raise RuntimeError(
+            f"cuTile layer_norm only supports hidden dim <= {_MAX_TILE}; got {n_cols}. "
+            f"Both forward and backward materialise a single tile of this width; "
+            f"use the Triton backend for wider rows."
+        )
+
+    # Do NOT pre-quantize fp32 affine params to the activation dtype: the
+    # kernels already upcast W and B to fp32 internally (see the forward and
+    # backward bodies), and the autograd wrapper saves these *same* tensors for
+    # backward. Rounding them here would make forward use different affine
+    # values than backward differentiates, and would drop dB below the bias's
+    # true precision.
 
     TILE_SIZE = _next_pow2(n_cols)
 
@@ -462,29 +483,33 @@ def _layer_norm_forward(X, W, B, eps, mode):
     Mean = torch.empty(n_rows, dtype=torch.float32, device=X_flat.device)
     RSTD = torch.empty(n_rows, dtype=torch.float32, device=X_flat.device)
 
-    mode = _select_mode(mode, n_rows, n_cols)
+    mode = _select_mode(mode, n_rows, n_cols, device)
     if mode not in _VALID_MODES:
         raise ValueError(f"cuTile layer_norm: unknown mode {mode!r}; expected one of {_VALID_MODES}")
 
     kernel = _FWD[mode]
-    stream = torch.cuda.current_stream()
 
     if mode == "static_persistent":
-        grid = (_num_sms(),)
-        ct.launch(stream, grid, kernel, (X_flat, W, B, Y, Mean, RSTD, n_rows, n_cols, eps, TILE_SIZE))
+        grid = (_num_sms(device),)
+        _launch(device, grid, kernel, (X_flat, W, B, Y, Mean, RSTD, n_rows, n_cols, eps, TILE_SIZE))
     else:
         grid = (n_rows,)
-        ct.launch(stream, grid, kernel, (X_flat, W, B, Y, Mean, RSTD, n_cols, eps, TILE_SIZE))
+        _launch(device, grid, kernel, (X_flat, W, B, Y, Mean, RSTD, n_cols, eps, TILE_SIZE))
 
     return Y.view(*shape), X_flat, Mean, RSTD, TILE_SIZE, mode
 
 
-def _layer_norm_backward(dY, X, W, Mean, RSTD, TILE_SIZE):
-    """Launch the backward kernel; return ``(dX, dW, dB)``."""
+def _layer_norm_backward(dY, X, W, B, Mean, RSTD, TILE_SIZE):
+    """Launch the backward kernel; return ``(dX, dW, dB)``.
+
+    ``B`` is passed only so ``dB`` can be returned in the bias's own dtype
+    (the kernel itself does not read ``B`` — ``dB`` depends only on ``dY``).
+    """
     shape = dY.shape
     n_cols = shape[-1]
     dY_flat = dY.view(-1, n_cols)
     n_rows = dY_flat.shape[0]
+    device = dY_flat.device
 
     if n_cols > _BWD_MAX_TILE:
         raise RuntimeError(
@@ -492,7 +517,7 @@ def _layer_norm_backward(dY, X, W, Mean, RSTD, TILE_SIZE):
             f"got {n_cols}. Use the Triton backend for wider rows."
         )
 
-    sms = _num_sms()
+    sms = _num_sms(device)
     rows_per_program = math.ceil(n_rows / sms)
 
     dX_flat = torch.empty_like(dY_flat)
@@ -500,17 +525,16 @@ def _layer_norm_backward(dY, X, W, Mean, RSTD, TILE_SIZE):
     _dW = torch.empty((sms, n_cols), dtype=torch.float32, device=W.device)
     _dB = torch.empty((sms, n_cols), dtype=torch.float32, device=W.device)
 
-    stream = torch.cuda.current_stream()
     grid = (sms,)
-    ct.launch(
-        stream,
+    _launch(
+        device,
         grid,
         _bwd,
         (dY_flat, X, W, Mean, RSTD, dX_flat, _dW, _dB, n_rows, n_cols, rows_per_program, TILE_SIZE),
     )
 
     dW = _dW.sum(dim=0).to(W.dtype)
-    dB = _dB.sum(dim=0).to(W.dtype)  # B dtype must match W dtype in practice; use W.dtype defensively.
+    dB = _dB.sum(dim=0).to(B.dtype)  # return the bias gradient in the bias's own dtype
     return dX_flat.view(*shape), dW, dB
 
 
@@ -543,11 +567,10 @@ class _LigerLayerNormCuTileFunction(torch.autograd.Function):
         dY = _to_local_if_dtensor(dY).contiguous()
 
         X, W, B, Mean, RSTD = ctx.saved_tensors
-        # B is in saved_tensors only so its gradient flows back through the
-        # same ctx; the backward kernel itself doesn't need B as an input
-        # (dB depends only on dY).
-        del B
-        dX, dW, dB = _layer_norm_backward(dY, X, W, Mean, RSTD, ctx.TILE_SIZE)
+        # B is saved so dB can be returned in the bias's own dtype (and so its
+        # gradient flows back through the same ctx). The backward kernel itself
+        # doesn't read B — dB depends only on dY.
+        dX, dW, dB = _layer_norm_backward(dY, X, W, B, Mean, RSTD, ctx.TILE_SIZE)
         # Match forward arity: (X, W, B, eps, mode)
         return dX, dW, dB, None, None
 
@@ -568,7 +591,10 @@ class _LigerLayerNormCuTileFunction(torch.autograd.Function):
     # See sibling _cutile/rms_norm.py for measured-perf rationale: cuTile
     # LayerNorm also loses to both Triton and CuTeDSL across our shape sweep
     # (matches NVIDIA's own pptx — H100 fwd 0.98x, H100 bwd 0.93x, B200 bwd
-    # 0.90x vs Triton). Last-fallback rank; useful for hidden_dim > 32K.
+    # 0.90x vs Triton). Last-fallback rank. Both forward and backward
+    # materialise a single ``next_pow2(N)``-wide tile per row, so the hidden
+    # dimension is capped at 8192 (``_MAX_TILE``) on both sides; wider rows
+    # raise a clear error rather than silently mis-normalising.
     preference_rank=80,
     tolerances={
         torch.float16: {"atol_fwd": 5e-3, "atol_bwd": 5e-2, "rtol_fwd": 1e-3, "rtol_bwd": 1e-2},

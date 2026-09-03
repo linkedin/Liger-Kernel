@@ -22,11 +22,17 @@ Triton kernel's ``_dW.sum(dim=0).to(W.dtype)`` pattern).
 
 Casting modes mirror the Triton version exactly:
 
-- ``"llama"`` — only the RMS reduction runs in fp32; the weight multiply
-  stays in the input dtype.
+- ``"llama"`` — the RMS reduction runs in fp32 and the normalised value is
+  rounded back to the input dtype before the affine step; the affine
+  ``(offset + W)`` and its multiply are evaluated in fp32 so a fp32 weight
+  keeps full precision (Triton promotes the same way). The affine weight is
+  never pre-quantized on the host, so forward and backward differentiate the
+  identical values.
 - ``"gemma"`` — every operation runs in fp32; the result is cast back at the
   end. ``W`` is also cast to fp32 inside the kernel.
-- ``"none"``  — everything runs in the input dtype (faster but less precise).
+- ``"none"``  — the RMS reduction stays in the input dtype (faster, less
+  precise); the affine is evaluated in the weight's dtype, so a same-dtype
+  weight stays exact and a fp32 weight is promoted to fp32 (matching Triton).
 
 References
 ----------
@@ -76,10 +82,29 @@ from liger_kernel.ops._nvidia_shared import to_local_if_dtensor as _to_local_if_
 # right at the limit of the 256 KB register file). Keep N <= this; we
 # additionally fail-fast in ``rms_norm_backward`` if the user feeds a wider
 # row, mirroring the Triton kernel's BLOCK_SIZE assertion.
-_BWD_MAX_TILE = 8192
+# Both forward and backward materialise a single tile of width ``next_pow2(N)``
+# per row, so the supported hidden dimension is capped identically on both
+# sides. Rejecting oversized rows in forward AND backward keeps the capability
+# contract consistent (a shape you can normalise is a shape you can also
+# differentiate) instead of letting forward succeed and backward blow up.
+_MAX_TILE = 8192
+_BWD_MAX_TILE = _MAX_TILE
 
 
-def _select_mode(mode: Optional[str], n_rows: int, n_cols: int) -> str:
+def _launch(device: torch.device, grid, kernel, args) -> None:
+    """Device-safe cuTile launch.
+
+    Every launch must be tied to the *input tensor's* CUDA device, not the
+    process-current one: dispatch selects this backend from the first CUDA
+    tensor's device, so in a multi-GPU process the current device can differ
+    from the tensor's device. Mirrors the safe helper in
+    ``ops/cutile/ops/fused_linear_cross_entropy.py``.
+    """
+    with torch.cuda.device(device):
+        ct.launch(torch.cuda.current_stream(device), grid, kernel, args)
+
+
+def _select_mode(mode: Optional[str], n_rows: int, n_cols: int, device: torch.device) -> str:
     """Pick a kernel variant when ``mode`` is ``None``.
 
     Heuristic (matches the cuTile RMSNorm reference + production TileGym):
@@ -107,7 +132,7 @@ def _select_mode(mode: Optional[str], n_rows: int, n_cols: int) -> str:
     if n_rows <= 0 or n_cols <= 0:
         raise ValueError(f"rms_norm_cutile: invalid shape ({n_rows}, {n_cols}); both dims must be positive.")
 
-    sms = _num_sms()
+    sms = _num_sms(device)
     if n_rows > sms * 2:
         return "static_persistent"
     if n_cols <= 4096:
@@ -144,8 +169,12 @@ def _fwd_standard_llama(
     ct.store(RSTD, index=(row,), tile=ct.reshape(rstd, (1,)))
 
     x_norm = ct.astype(ct.mul(x_f32, rstd), x.dtype)
-    w_shifted = ct.astype(ct.astype(w, np.float32) + ct.full((TILE_SIZE,), offset, np.float32), x.dtype)
-    y = ct.mul(ct.reshape(x_norm, (TILE_SIZE,)), w_shifted)
+    # Preserve fp32 affine precision (Triton promotes the input-dtype x_norm to
+    # fp32 for the weight multiply because ``offset + W`` is fp32). Casting W to
+    # fp32 here — instead of pre-quantizing it on the host — keeps forward and
+    # backward using the exact same affine values.
+    w_shifted = ct.astype(w, np.float32) + ct.full((TILE_SIZE,), offset, np.float32)
+    y = ct.astype(ct.mul(ct.astype(ct.reshape(x_norm, (TILE_SIZE,)), np.float32), w_shifted), x.dtype)
     ct.store(Y, index=(row, 0), tile=ct.reshape(y, (1, TILE_SIZE)), allow_tma=False, latency=3)
 
 
@@ -199,8 +228,12 @@ def _fwd_standard_none(
     ct.store(RSTD, index=(row,), tile=ct.reshape(rstd, (1,)))
 
     x_norm = ct.mul(x, rstd)
+    # "none" mode does the affine in the *weight's* dtype (matching Triton: it
+    # keeps the input-dtype math when W matches the activation, and promotes to
+    # fp32 only when W is a wider dtype). x_norm is promoted to W's dtype so a
+    # fp32 weight keeps full precision while a same-dtype weight stays exact.
     w_shifted = w + ct.full((TILE_SIZE,), offset, w.dtype)
-    y = ct.mul(ct.reshape(x_norm, (TILE_SIZE,)), w_shifted)
+    y = ct.astype(ct.mul(ct.astype(ct.reshape(x_norm, (TILE_SIZE,)), w.dtype), w_shifted), x.dtype)
     ct.store(Y, index=(row, 0), tile=ct.reshape(y, (1, TILE_SIZE)), allow_tma=False, latency=3)
 
 
@@ -235,7 +268,9 @@ def _fwd_persistent_llama_singlerow(
     num_blocks = ct.num_blocks(0)
 
     w = ct.load(W, index=(0,), shape=(TILE_SIZE,), allow_tma=False, latency=1, padding_mode=ct.PaddingMode.ZERO)
-    w_shifted = ct.astype(ct.astype(w, np.float32) + ct.full((TILE_SIZE,), offset, np.float32), w.dtype)
+    # fp32 affine (see _fwd_standard_llama): keep a fp32 weight's precision and
+    # stay consistent with the backward kernel.
+    w_shifted = ct.astype(w, np.float32) + ct.full((TILE_SIZE,), offset, np.float32)
 
     row_idx = pid
     while row_idx < n_rows:
@@ -247,7 +282,7 @@ def _fwd_persistent_llama_singlerow(
         rstd = ct.rsqrt(mean_sq + eps)
         ct.store(RSTD, index=(row_idx,), tile=ct.reshape(rstd, (1,)))
         x_norm = ct.astype(ct.mul(x_f32, rstd), x.dtype)
-        y = ct.mul(ct.reshape(x_norm, (TILE_SIZE,)), w_shifted)
+        y = ct.astype(ct.mul(ct.astype(ct.reshape(x_norm, (TILE_SIZE,)), np.float32), w_shifted), x.dtype)
         ct.store(Y, index=(row_idx, 0), tile=ct.reshape(y, (1, TILE_SIZE)), allow_tma=False, latency=3)
         row_idx = row_idx + num_blocks
 
@@ -304,6 +339,8 @@ def _fwd_persistent_none_singlerow(
     num_blocks = ct.num_blocks(0)
 
     w = ct.load(W, index=(0,), shape=(TILE_SIZE,), allow_tma=False, latency=1, padding_mode=ct.PaddingMode.ZERO)
+    # Affine in W's dtype (see _fwd_standard_none): exact for a same-dtype
+    # weight, fp32-promoted for a fp32 weight.
     w_shifted = w + ct.full((TILE_SIZE,), offset, w.dtype)
 
     row_idx = pid
@@ -315,7 +352,7 @@ def _fwd_persistent_none_singlerow(
         rstd = ct.rsqrt(mean_sq + eps)
         ct.store(RSTD, index=(row_idx,), tile=ct.reshape(rstd, (1,)))
         x_norm = ct.mul(x, rstd)
-        y = ct.mul(ct.reshape(x_norm, (TILE_SIZE,)), w_shifted)
+        y = ct.astype(ct.mul(ct.astype(ct.reshape(x_norm, (TILE_SIZE,)), w.dtype), w_shifted), x.dtype)
         ct.store(Y, index=(row_idx, 0), tile=ct.reshape(y, (1, TILE_SIZE)), allow_tma=False, latency=3)
         row_idx = row_idx + num_blocks
 
@@ -356,7 +393,8 @@ def _fwd_cached_llama(
     """Llama casting, single row per program, latency-hinted X load."""
     row = ct.bid(0)
     w = ct.load(W, index=(0,), shape=(TILE_SIZE,), allow_tma=False, latency=1, padding_mode=ct.PaddingMode.ZERO)
-    w_shifted = ct.astype(ct.astype(w, np.float32) + ct.full((TILE_SIZE,), offset, np.float32), w.dtype)
+    # fp32 affine (see _fwd_standard_llama).
+    w_shifted = ct.astype(w, np.float32) + ct.full((TILE_SIZE,), offset, np.float32)
 
     x = ct.load(X, index=(row, 0), shape=(1, TILE_SIZE), allow_tma=False, latency=3, padding_mode=ct.PaddingMode.ZERO)
     x_f32 = ct.astype(x, np.float32)
@@ -364,7 +402,7 @@ def _fwd_cached_llama(
     rstd = ct.rsqrt(mean_sq + eps)
     ct.store(RSTD, index=(row,), tile=ct.reshape(rstd, (1,)))
     x_norm = ct.astype(ct.mul(x_f32, rstd), x.dtype)
-    y = ct.mul(ct.reshape(x_norm, (TILE_SIZE,)), w_shifted)
+    y = ct.astype(ct.mul(ct.astype(ct.reshape(x_norm, (TILE_SIZE,)), np.float32), w_shifted), x.dtype)
     ct.store(Y, index=(row, 0), tile=ct.reshape(y, (1, TILE_SIZE)), allow_tma=False, latency=3)
 
 
@@ -409,6 +447,8 @@ def _fwd_cached_none(
     """No casting, single row per program, latency-hinted X load."""
     row = ct.bid(0)
     w = ct.load(W, index=(0,), shape=(TILE_SIZE,), allow_tma=False, latency=1, padding_mode=ct.PaddingMode.ZERO)
+    # Affine in W's dtype (see _fwd_standard_none): exact for a same-dtype
+    # weight, fp32-promoted for a fp32 weight.
     w_shifted = w + ct.full((TILE_SIZE,), offset, w.dtype)
 
     x = ct.load(X, index=(row, 0), shape=(1, TILE_SIZE), allow_tma=False, latency=3, padding_mode=ct.PaddingMode.ZERO)
@@ -416,7 +456,7 @@ def _fwd_cached_none(
     rstd = ct.rsqrt(mean_sq + eps)
     ct.store(RSTD, index=(row,), tile=ct.reshape(rstd, (1,)))
     x_norm = ct.mul(x, rstd)
-    y = ct.mul(ct.reshape(x_norm, (TILE_SIZE,)), w_shifted)
+    y = ct.astype(ct.mul(ct.astype(ct.reshape(x_norm, (TILE_SIZE,)), w.dtype), w_shifted), x.dtype)
     ct.store(Y, index=(row, 0), tile=ct.reshape(y, (1, TILE_SIZE)), allow_tma=False, latency=3)
 
 
@@ -514,7 +554,10 @@ def _bwd_llama(
     row_end_val = (pid + 1) * rows_per_program
 
     w = ct.load(W, index=(0,), shape=(TILE_SIZE,), allow_tma=False, latency=1, padding_mode=ct.PaddingMode.ZERO)
-    w_shifted_orig = ct.astype(ct.astype(w, np.float32) + ct.full((TILE_SIZE,), offset, np.float32), w.dtype)
+    # fp32 affine (W + offset). Matches Triton, which promotes W_row to fp32
+    # via ``W_row + offset.to(fp32)``, and matches the forward kernel so this
+    # backward is the true derivative of the forward computation.
+    w_shifted_orig = ct.astype(w, np.float32) + ct.full((TILE_SIZE,), offset, np.float32)
 
     dw_accum = ct.full((TILE_SIZE,), 0.0, np.float32)
 
@@ -549,8 +592,9 @@ def _bwd_llama(
         x_f32 = ct.astype(x_row, np.float32)
         rstd_f32 = ct.astype(rstd_val, np.float32)
 
-        # Llama: (dY * W_shifted) in input dtype, THEN cast to fp32.
-        m = ct.astype(ct.mul(dy_row, w_shifted_orig), np.float32)
+        # Llama: (dY * W_shifted) in fp32 (dY promoted), matching Triton's
+        # ``m = (dY_row * W_row_fp32).to(fp32)``.
+        m = ct.mul(ct.astype(dy_row, np.float32), w_shifted_orig)
 
         # dX = rstd * m - (rstd^3 / N) * sum(m*x) * x
         inner = ct.sum(ct.mul(m, x_f32))
@@ -671,6 +715,9 @@ def _bwd_none(
     row_end_val = (pid + 1) * rows_per_program
 
     w = ct.load(W, index=(0,), shape=(TILE_SIZE,), allow_tma=False, latency=1, padding_mode=ct.PaddingMode.ZERO)
+    # Affine in W's dtype (matches Triton "none": input-dtype math for a
+    # same-dtype weight, fp32-promoted for a fp32 weight). Consistent with the
+    # "none" forward kernel above so backward is its true derivative.
     w_shifted = w + ct.full((TILE_SIZE,), offset, w.dtype)
 
     dw_accum = ct.full((TILE_SIZE,), 0.0, np.float32)
@@ -706,12 +753,14 @@ def _bwd_none(
         x_f32 = ct.astype(x_row, np.float32)
         rstd_f32 = ct.astype(rstd_val, np.float32)
 
-        m = ct.mul(dy_row, w_shifted)
+        # m = dY * (W + offset) in W's dtype (promoted to fp32 if W is fp32),
+        # matching the "none" forward and Triton's ``m = dY_row * W_row``.
+        m = ct.mul(ct.astype(dy_row, w.dtype), w_shifted)
         m_f32 = ct.astype(m, np.float32)
 
         inner = ct.sum(ct.mul(m_f32, x_f32))
         correction = ct.mul(ct.mul(rstd_f32, ct.mul(rstd_f32, rstd_f32)), inner) / N
-        dx_row_f32 = ct.astype(ct.mul(rstd_val, m), np.float32) - ct.mul(correction, x_f32)
+        dx_row_f32 = ct.astype(ct.mul(ct.astype(rstd_val, w.dtype), m), np.float32) - ct.mul(correction, x_f32)
         ct.store(
             dX,
             index=(row_idx, 0),
@@ -969,6 +1018,14 @@ def _rms_norm_forward(X, W, eps, offset, casting_mode, mode):
     n_cols = shape[-1]
     X_flat = X.view(-1, n_cols)
     n_rows = X_flat.shape[0]
+    device = X_flat.device
+
+    if n_cols > _MAX_TILE:
+        raise RuntimeError(
+            f"cuTile rms_norm only supports hidden dim <= {_MAX_TILE}; got {n_cols}. "
+            f"Both forward and backward materialise a single tile of this width; "
+            f"use the Triton backend for wider rows."
+        )
 
     TILE_SIZE = _next_pow2(n_cols)
 
@@ -979,37 +1036,32 @@ def _rms_norm_forward(X, W, eps, offset, casting_mode, mode):
     elementwise_affine = W is not None
     if elementwise_affine:
         assert X_flat.shape[1] == W.shape[0], f"Hidden size mismatch: X has {X_flat.shape[1]}, W has {W.shape[0]}"
-        # cuTile's @ct.kernel can't implicitly promote a mixed-dtype multiply
-        # (e.g., fp32 weight × bf16 activation) before the bf16 store. Triton
-        # and CuTe DSL both auto-cast internally; we cast the weight to the
-        # activation dtype on the host so the kernel sees same-dtype operands
-        # — matches Liger's existing semantic for "llama"-mode casting where
-        # the weight multiply stays in input dtype.
-        if W.dtype != X_flat.dtype:
-            W = W.to(X_flat.dtype)
-
-    stream = torch.cuda.current_stream()
+        # Do NOT pre-quantize a fp32 affine weight to the activation dtype: the
+        # kernels cast W to fp32 internally for the affine multiply (matching
+        # Triton's promotion), and the autograd wrapper saves this *same* W for
+        # backward. Silently rounding W here would make forward use a different
+        # weight than backward differentiates.
 
     if not elementwise_affine:
         # Without W there's only one kernel layout (standard one-row-per-program);
         # mode selection is a no-op in this branch.
         kernel = _FWD_NO_W[casting_mode]
-        ct.launch(stream, (n_rows,), kernel, (X_flat, Y, RSTD, n_cols, eps, TILE_SIZE))
+        _launch(device, (n_rows,), kernel, (X_flat, Y, RSTD, n_cols, eps, TILE_SIZE))
         return Y.view(*shape), X_flat, RSTD, TILE_SIZE, casting_mode, mode
 
-    mode = _select_mode(mode, n_rows, n_cols)
+    mode = _select_mode(mode, n_rows, n_cols, device)
     if mode not in _VALID_MODES:
         raise ValueError(f"cuTile rms_norm: unknown mode {mode!r}; expected one of {_VALID_MODES}")
 
     kernel = _FWD[(mode, casting_mode)]
     if mode == "static_persistent":
         # Persistent grid: NUM_SMS blocks each strides over rows.
-        grid = (_num_sms(),)
-        ct.launch(stream, grid, kernel, (X_flat, W, Y, RSTD, n_rows, n_cols, eps, offset, TILE_SIZE))
+        grid = (_num_sms(device),)
+        _launch(device, grid, kernel, (X_flat, W, Y, RSTD, n_rows, n_cols, eps, offset, TILE_SIZE))
     else:
         # standard / multi_wave_cached: one block per row.
         grid = (n_rows,)
-        ct.launch(stream, grid, kernel, (X_flat, W, Y, RSTD, n_cols, eps, offset, TILE_SIZE))
+        _launch(device, grid, kernel, (X_flat, W, Y, RSTD, n_cols, eps, offset, TILE_SIZE))
 
     return Y.view(*shape), X_flat, RSTD, TILE_SIZE, casting_mode, mode
 
@@ -1020,6 +1072,7 @@ def _rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, TILE_SIZE, in_place
     n_cols = shape[-1]
     dY_flat = dY.view(-1, n_cols)
     n_rows = dY_flat.shape[0]
+    device = dY_flat.device
 
     if n_cols > _BWD_MAX_TILE:
         raise RuntimeError(
@@ -1027,7 +1080,7 @@ def _rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, TILE_SIZE, in_place
             f"got {n_cols}. Use the Triton backend for wider rows."
         )
 
-    sms = _num_sms()
+    sms = _num_sms(device)
     elementwise_affine = W is not None
 
     # in_place reuses dY's storage for dX. We honour the request best-effort:
@@ -1039,7 +1092,6 @@ def _rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, TILE_SIZE, in_place
     else:
         dX_flat = torch.empty_like(dY_flat)
 
-    stream = torch.cuda.current_stream()
     rows_per_program = math.ceil(n_rows / sms)
     grid = (sms,)
 
@@ -1047,8 +1099,8 @@ def _rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, TILE_SIZE, in_place
         # Partial dW: one fp32 row per SM, reduced on the host after launch.
         _dW = torch.empty((sms, n_cols), dtype=torch.float32, device=W.device)
         kernel = _BWD[casting_mode]
-        ct.launch(
-            stream,
+        _launch(
+            device,
             grid,
             kernel,
             (dY_flat, X, W, RSTD, dX_flat, _dW, n_rows, n_cols, offset, rows_per_program, TILE_SIZE),
@@ -1056,8 +1108,8 @@ def _rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, TILE_SIZE, in_place
         dW = _dW.sum(dim=0).to(W.dtype)
     else:
         kernel = _BWD_NO_W[casting_mode]
-        ct.launch(
-            stream,
+        _launch(
+            device,
             grid,
             kernel,
             (dY_flat, X, RSTD, dX_flat, n_rows, n_cols, rows_per_program, TILE_SIZE),
@@ -1131,11 +1183,13 @@ class _LigerRMSNormCuTileFunction(torch.autograd.Function):
     modes=("standard", "static_persistent", "multi_wave_cached"),
     default_mode="static_persistent",
     # Measured on B200 sm_100 (torch 2.12, tileiras v13.2): cuTile RMSNorm
-    # loses to both Triton and CuTeDSL on every shape we sweep (e.g., 32K×4096
-    # bwd: cuTile 0.77ms vs Triton 0.38ms vs CuTeDSL 0.17ms). Keep cuTile as
-    # the *last* fallback so users only get it when explicitly requested or
-    # when no other impl is usable. The kernel ships because it's still useful
-    # for hidden_dim > 32K where CuTeDSL is range-capped.
+    # loses to both Triton and CuTeDSL on every shape we sweep (e.g., M=32K,
+    # N=4096 bwd: cuTile 0.77ms vs Triton 0.38ms vs CuTeDSL 0.17ms). Keep cuTile
+    # as the *last* fallback so users only get it when explicitly requested or
+    # when no other impl is usable. Both forward and backward materialise a
+    # single ``next_pow2(N)``-wide tile per row, so the hidden dimension is
+    # capped at 8192 (``_MAX_TILE``) on both sides; wider rows raise a clear
+    # error rather than silently mis-normalising.
     preference_rank=80,
     tolerances={
         torch.float16: {"atol_fwd": 5e-3, "atol_bwd": 5e-2, "rtol_fwd": 1e-3, "rtol_bwd": 1e-2},

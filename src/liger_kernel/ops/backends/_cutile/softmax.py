@@ -64,10 +64,21 @@ _ConstInt = ct.Constant[int]
 # backend's ``n_cols <= BLOCK_SIZE`` single-block vs multi-block split. The cap
 # is a power of two so ``next_pow2(N) <= _MAX_SINGLE_TILE`` is the exact gate.
 _MAX_SINGLE_TILE = 8192
-
 # Chunk width used by the multi-pass (chunked) kernels. A power of two so the
 # per-chunk ``ct.arange`` tiles align with the gather/scatter bounds.
 _CHUNK_SIZE = 4096
+
+
+def _launch(device: torch.device, grid, kernel, args) -> None:
+    """Device-safe cuTile launch tied to the input tensor's CUDA device.
+
+    Dispatch selects this backend from the first CUDA tensor's device, so in a
+    multi-GPU process the process-current device can differ. Guarding the
+    device (and using that device's stream) keeps the launch on the tensor's
+    GPU. Mirrors ``ops/cutile/ops/fused_linear_cross_entropy.py``.
+    """
+    with torch.cuda.device(device):
+        ct.launch(torch.cuda.current_stream(device), grid, kernel, args)
 
 
 # ===========================================================================
@@ -275,7 +286,7 @@ def _bwd_chunked(
 _VALID_MODES = ("standard", "static_persistent", "chunked")
 
 
-def _select_mode(mode: Optional[str], n_rows: int, n_cols: int) -> str:
+def _select_mode(mode: Optional[str], n_rows: int, n_cols: int, device: torch.device) -> str:
     """Pick a forward kernel variant when ``mode`` is ``None``.
 
     Heuristic (mirrors the cuTile rms_norm sibling + TileGym reference):
@@ -289,6 +300,17 @@ def _select_mode(mode: Optional[str], n_rows: int, n_cols: int) -> str:
     ValueError rather than a cryptic CUDA grid error.
     """
     if mode is not None:
+        # Explicit single-tile modes cannot handle a row wider than the
+        # per-row tile budget; reject up-front rather than compiling/launching
+        # an oversized tile that silently corrupts results. Only ``chunked``
+        # streams arbitrarily wide rows.
+        if mode in ("standard", "static_persistent") and _next_pow2(n_cols) > _MAX_SINGLE_TILE:
+            raise ValueError(
+                f"cuTile softmax mode={mode!r} only supports rows with "
+                f"next_pow2(N) <= {_MAX_SINGLE_TILE}; got N={n_cols} "
+                f"(next_pow2={_next_pow2(n_cols)}). Use mode='chunked' or auto "
+                f"selection (mode=None) for wider rows."
+            )
         return mode
 
     if n_rows <= 0 or n_cols <= 0:
@@ -296,17 +318,17 @@ def _select_mode(mode: Optional[str], n_rows: int, n_cols: int) -> str:
 
     if _next_pow2(n_cols) > _MAX_SINGLE_TILE:
         return "chunked"
-    if n_rows > _num_sms() * 2:
+    if n_rows > _num_sms(device) * 2:
         return "static_persistent"
     return "standard"
 
 
-def _persistent_grid(n_rows: int) -> tuple:
+def _persistent_grid(n_rows: int, device: torch.device) -> tuple:
     """Saturate at most ``NUM_SMS * 4`` blocks but never more than ``n_rows``.
 
     Matches TileGym's ``num_programs = min(NUM_SM * 4, n_rows)`` occupancy hint.
     """
-    return (min(_num_sms() * 4, max(n_rows, 1)), 1, 1)
+    return (min(_num_sms(device) * 4, max(n_rows, 1)), 1, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -318,22 +340,22 @@ def _softmax_forward(x: torch.Tensor, mode: Optional[str]):
     x2d = x.contiguous().view(-1, n_cols)
     n_rows = x2d.shape[0]
 
-    selected = _select_mode(mode, n_rows, n_cols)
+    selected = _select_mode(mode, n_rows, n_cols, x2d.device)
     if selected not in _VALID_MODES:
         raise ValueError(f"cuTile softmax: unknown mode {selected!r}; expected one of {_VALID_MODES}")
 
     y2d = torch.empty_like(x2d)
-    stream = torch.cuda.current_stream()
+    device = x2d.device
 
     if selected == "standard":
         tile_size = _next_pow2(n_cols)
-        ct.launch(stream, (n_rows, 1, 1), _fwd_standard, (x2d, y2d, n_cols, tile_size))
+        _launch(device, (n_rows, 1, 1), _fwd_standard, (x2d, y2d, n_cols, tile_size))
     elif selected == "static_persistent":
         tile_size = _next_pow2(n_cols)
-        ct.launch(stream, _persistent_grid(n_rows), _fwd_persistent, (x2d, y2d, n_rows, n_cols, tile_size))
+        _launch(device, _persistent_grid(n_rows, device), _fwd_persistent, (x2d, y2d, n_rows, n_cols, tile_size))
     else:  # chunked
         chunk = min(_CHUNK_SIZE, _next_pow2(n_cols))
-        ct.launch(stream, _persistent_grid(n_rows), _fwd_chunked, (x2d, y2d, n_rows, n_cols, chunk))
+        _launch(device, _persistent_grid(n_rows, device), _fwd_chunked, (x2d, y2d, n_rows, n_cols, chunk))
 
     return y2d.view(*batch, n_cols), selected
 
@@ -345,15 +367,14 @@ def _softmax_backward(dy: torch.Tensor, y: torch.Tensor, selected_mode: str):
     y2d = y.contiguous().view(-1, n_cols)
     n_rows = dy2d.shape[0]
     dx2d = torch.empty_like(dy2d)
-
-    stream = torch.cuda.current_stream()
+    device = dy2d.device
 
     if selected_mode == "chunked":
         chunk = min(_CHUNK_SIZE, _next_pow2(n_cols))
-        ct.launch(stream, _persistent_grid(n_rows), _bwd_chunked, (dy2d, y2d, dx2d, n_rows, n_cols, chunk))
+        _launch(device, _persistent_grid(n_rows, device), _bwd_chunked, (dy2d, y2d, dx2d, n_rows, n_cols, chunk))
     else:
         tile_size = _next_pow2(n_cols)
-        ct.launch(stream, _persistent_grid(n_rows), _bwd_persistent, (dy2d, y2d, dx2d, n_rows, n_cols, tile_size))
+        _launch(device, _persistent_grid(n_rows, device), _bwd_persistent, (dy2d, y2d, dx2d, n_rows, n_cols, tile_size))
 
     return dx2d.view(*batch, n_cols)
 
