@@ -36,7 +36,9 @@ pytest.importorskip("cuda.tile", reason="cuda.tile (cuTile) not importable on th
 import liger_kernel.functional as F  # noqa: E402  (importing also registers the op discovery map)
 
 from liger_kernel.backends.dispatch import available_impls  # noqa: E402
+from liger_kernel.backends.registry import get_discovery_failures  # noqa: E402
 from liger_kernel.backends.registry import get_registered  # noqa: E402
+from liger_kernel.ops._nvidia_shared import cutile_compiler_available  # noqa: E402
 from liger_kernel.testing import assert_op_correctness  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -54,11 +56,59 @@ def _impl_matching(op: str, needle: str) -> Optional[str]:
     return None
 
 
+def _cutile_supported() -> tuple[bool, str]:
+    """Is this host *genuinely* capable of running the cuTile impls?
+
+    ``cuda.tile`` importability is already guaranteed by the module-level
+    ``importorskip``. Here we check the remaining hard requirements the
+    ``Capability`` gate enforces: a CUDA device, compute capability >= (10, 0),
+    and a reachable ``tileiras`` compiler. When all three hold, absence of the
+    registered impl is a real import/registration regression — NOT an
+    "unsupported machine" — so callers must fail instead of skip.
+    """
+    if not torch.cuda.is_available():
+        return False, "CUDA device not available"
+    cc = torch.cuda.get_device_capability()
+    if cc < (10, 0):
+        return False, f"device sm_{cc[0]}{cc[1]} < required sm_100 (cuTile needs compute capability >= 10.0)"
+    if not cutile_compiler_available():
+        return False, "cuTile (tileiras) compiler not reachable"
+    return True, ""
+
+
 def _cutile_impl(op: str) -> str:
     impl = _impl_matching(op, "cutile")
-    if impl is None:
-        pytest.skip(f"nvidia-cutile not registered for {op!r} on this device (needs compute capability >= 10.0)")
-    return impl
+    if impl is not None:
+        return impl
+
+    supported, reason = _cutile_supported()
+    if not supported:
+        # Genuinely unsupported host (CPU / cc < 10.0 / missing compiler): skip.
+        pytest.skip(f"nvidia-cutile not available for {op!r}: {reason}")
+
+    # Compatible host (CUDA + sm>=100 + cuTile compiler) but the impl is still
+    # absent -> a real backend import/registration regression that discovery
+    # swallowed. Surface it and FAIL rather than mask it as a skip.
+    failures = get_discovery_failures()
+    detail = (
+        "; ".join(f"{path} -> {etype.__name__}: {msg}" for path, (etype, msg) in failures.items())
+        if failures
+        else "none recorded"
+    )
+    registered = get_registered(op, "nvidia-cutile")
+    if registered is None:
+        pytest.fail(
+            f"nvidia-cutile impl for {op!r} did NOT register on a cuTile-capable host "
+            f"(CUDA + sm>=100 + tileiras present). This is an import/registration regression, "
+            f"not an unsupported machine. Recorded discovery failures: {detail}"
+        )
+    # Registered but filtered out by the capability gate on a host we consider
+    # compatible -> a capability-evaluation mismatch worth surfacing.
+    pytest.fail(
+        f"nvidia-cutile impl for {op!r} is registered but reported unavailable on a cuTile-capable host. "
+        f"Capability reason: {registered.capability.reason_if_unsatisfied()!r}. "
+        f"Recorded discovery failures: {detail}"
+    )
 
 
 def _triton_impl(op: str) -> str:
@@ -91,15 +141,6 @@ def _assert_close(actual, expected, atol, rtol, label):
     )
 
 
-def _sum_close(actual, expected, atol, rtol) -> bool:
-    """Aggregate (per-feature sum) fallback for low-precision dW/dB reductions."""
-    s = actual.to(torch.float32).sum()
-    r = expected.to(torch.float32).sum()
-    denom = r.abs().clamp_min(1e-8)
-    rel = (s - r).abs() / denom
-    return bool(torch.isfinite(rel) and (rel.item() < rtol or (s - r).abs().item() < atol))
-
-
 # ===========================================================================
 # Ground-truth references (identical semantics to the Triton kernels)
 # ===========================================================================
@@ -113,9 +154,16 @@ def _ref_rms_norm(x, weight, eps, offset, casting_mode):
         xf = x.to(torch.float32)
         rstd = torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + eps)
         return ((xf * rstd) * (offset + weight.to(torch.float32))).to(in_dtype)
-    # none
-    rstd = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
-    return (x * rstd) * (offset + weight)
+    # none — cuTile keeps input-dtype math when W matches the activation but
+    # promotes to fp32 when W is a wider dtype (its backward reduces dW as
+    # ``x.float() * rstd.float()``). Mirror that fp32-faithful normalization so
+    # the elementwise dW/dX comparison reflects the gradient the kernel really
+    # computes (the mixed-precision test always uses a wider fp32 weight). The
+    # kernel forms ``mean(x*x)`` from input-dtype products (``ct.mul(x, x)``)
+    # then normalizes/reduces in fp32, so square in the input dtype first.
+    mean_sq = x.pow(2).to(torch.float32).mean(-1, keepdim=True)
+    rstd = torch.rsqrt(mean_sq + eps)
+    return ((x.to(torch.float32) * rstd) * (offset + weight)).to(in_dtype)
 
 
 def _ref_layer_norm(x, weight, bias, eps):
@@ -252,8 +300,7 @@ def test_fused_linear_jsd_parity_vs_triton(dtype, beta):
     ot, dsit, dswt = run(ti)
     _assert_close(oc, ot, tols["atol_fwd"], tols["rtol_fwd"], f"fljsd/{dtype}/beta={beta} fwd")
     _assert_close(dsic, dsit, tols["atol_bwd"], tols["rtol_bwd"], f"fljsd/{dtype}/beta={beta} d_student_input")
-    if not _sum_close(dswc, dswt, tols["atol_bwd"], tols["rtol_bwd"]):
-        _assert_close(dswc, dswt, tols["atol_bwd"], tols["rtol_bwd"], f"fljsd/{dtype}/beta={beta} d_student_weight")
+    _assert_close(dswc, dswt, tols["atol_bwd"], tols["rtol_bwd"], f"fljsd/{dtype}/beta={beta} d_student_weight")
 
 
 # ===========================================================================
@@ -292,8 +339,7 @@ def test_rms_norm_mixed_precision_affine(dtype, casting_mode):
 
     _assert_close(y, yr, tols["atol_fwd"], tols["rtol_fwd"], f"rms_norm-mixed/{casting_mode}/{dtype} fwd")
     _assert_close(x.grad, xr.grad, tols["atol_bwd"], tols["rtol_bwd"], f"rms_norm-mixed/{casting_mode}/{dtype} dx")
-    if not _sum_close(w.grad, wr.grad, tols["atol_bwd"], tols["rtol_bwd"]):
-        _assert_close(w.grad, wr.grad, tols["atol_bwd"], tols["rtol_bwd"], f"rms_norm-mixed/{casting_mode}/{dtype} dw")
+    _assert_close(w.grad, wr.grad, tols["atol_bwd"], tols["rtol_bwd"], f"rms_norm-mixed/{casting_mode}/{dtype} dw")
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -326,10 +372,49 @@ def test_layer_norm_mixed_precision_affine(dtype):
 
     _assert_close(y, yr, tols["atol_fwd"], tols["rtol_fwd"], f"layer_norm-mixed/{dtype} fwd")
     _assert_close(x.grad, xr.grad, tols["atol_bwd"], tols["rtol_bwd"], f"layer_norm-mixed/{dtype} dx")
-    if not _sum_close(w.grad, wr.grad, tols["atol_bwd"], tols["rtol_bwd"]):
-        _assert_close(w.grad, wr.grad, tols["atol_bwd"], tols["rtol_bwd"], f"layer_norm-mixed/{dtype} dw")
-    if not _sum_close(b.grad, br.grad, tols["atol_bwd"], tols["rtol_bwd"]):
-        _assert_close(b.grad, br.grad, tols["atol_bwd"], tols["rtol_bwd"], f"layer_norm-mixed/{dtype} db")
+    _assert_close(w.grad, wr.grad, tols["atol_bwd"], tols["rtol_bwd"], f"layer_norm-mixed/{dtype} dw")
+    _assert_close(b.grad, br.grad, tols["atol_bwd"], tols["rtol_bwd"], f"layer_norm-mixed/{dtype} db")
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("w_dtype,b_dtype", [(torch.float32, torch.bfloat16), (torch.bfloat16, torch.float32)])
+def test_layer_norm_affine_dtype_mismatch(dtype, w_dtype, b_dtype):
+    """W and B with DIFFERENT dtypes: dW must come back in W.dtype and dB in
+    B.dtype *independently* (the pre-fix bug cast dB to W.dtype), and each must
+    be elementwise-correct vs an fp32 ground-truth reference. A same-dtype test
+    can never catch dB being reduced/cast to W.dtype instead of B.dtype."""
+    assert w_dtype != b_dtype
+    ci = _cutile_impl("layer_norm")
+    M, N = 256, 1024
+    tols = _tols("layer_norm", ci, dtype)
+    g = torch.Generator(device="cpu").manual_seed(1)
+    x_cpu = torch.randn(M, N, generator=g)
+    w_cpu = torch.randn(N, generator=g)
+    b_cpu = torch.randn(N, generator=g)
+
+    def build():
+        x = x_cpu.to("cuda", dtype).detach().requires_grad_(True)
+        w = w_cpu.to("cuda", w_dtype).detach().requires_grad_(True)
+        b = b_cpu.to("cuda", b_dtype).detach().requires_grad_(True)
+        return x, w, b
+
+    x, w, b = build()
+    y = F.layer_norm(x, w, b, 1e-6, impl=ci)
+    y.backward(torch.ones_like(y))
+
+    xr, wr, br = build()
+    yr = _ref_layer_norm(xr, wr, br, 1e-6)
+    yr.backward(torch.ones_like(yr))
+
+    # Each param gradient must independently preserve its OWN dtype.
+    assert w.grad.dtype == w_dtype, f"dW dtype {w.grad.dtype} != W.dtype {w_dtype}"
+    assert b.grad.dtype == b_dtype, f"dB dtype {b.grad.dtype} != B.dtype {b_dtype}"
+    assert x.grad.dtype == dtype
+
+    _assert_close(y, yr, tols["atol_fwd"], tols["rtol_fwd"], f"ln-wbmismatch/{dtype}/W{w_dtype}/B{b_dtype} fwd")
+    _assert_close(x.grad, xr.grad, tols["atol_bwd"], tols["rtol_bwd"], f"ln-wbmismatch/{dtype} dx")
+    _assert_close(w.grad, wr.grad, tols["atol_bwd"], tols["rtol_bwd"], f"ln-wbmismatch/{dtype} dw")
+    _assert_close(b.grad, br.grad, tols["atol_bwd"], tols["rtol_bwd"], f"ln-wbmismatch/{dtype} db")
 
 
 # ===========================================================================
@@ -585,19 +670,23 @@ def test_jsd_non_contiguous():
     dtype = torch.float32
     tols = _tols("jsd", ci, dtype)
     torch.manual_seed(17)
-    raw_q = torch.randn(512, 64, device="cuda", dtype=dtype)
-    raw_p = torch.randn(512, 64, device="cuda", dtype=dtype)
-    # log_softmax over last dim then transpose -> (64, 512) non-contiguous rows.
-    lq_full = raw_q.log_softmax(-1)
-    lp_full = raw_p.log_softmax(-1)
-    lq = lq_full.t().detach().requires_grad_(True)
-    lp = lp_full.t().detach()
-    assert not lq.is_contiguous()
-    # Re-normalise across the new last dim so inputs are valid log-probs.
-    lq = lq.log_softmax(-1).detach().requires_grad_(True)
-    lp = lp.log_softmax(-1).detach()
+    BT, V = 256, 64
+    # Build VALID log-probs first (row-wise log_softmax over the V last dim),
+    # then take a strided row-slice to obtain a genuinely NON-contiguous VIEW
+    # whose rows are still valid log-probs (each retained row is untouched).
+    # The previous version re-ran log_softmax after transposing, which
+    # materialised a fresh contiguous tensor and never exercised a
+    # non-contiguous JSD input at all.
+    lq_full = torch.randn(2 * BT, V, device="cuda", dtype=dtype).log_softmax(-1)
+    lp_full = torch.randn(2 * BT, V, device="cuda", dtype=dtype).log_softmax(-1)
+    lq = lq_full[::2].detach().requires_grad_(True)  # (BT, V) rows stride 2V -> non-contig
+    lp = lp_full[::2].detach()
+    # Assert the exact layout that reaches the kernel, immediately before dispatch.
+    assert not lq.is_contiguous() and not lp.is_contiguous()
+    assert lq.shape == (BT, V)
+
     out = F.jsd(lq, lp, None, beta=0.5, ignore_index=-100, impl=ci)
-    lqr = lq.detach().clone().requires_grad_(True)
+    lqr = lq.detach().clone().requires_grad_(True)  # contiguous copy of the same values
     ref = _ref_jsd(lqr, lp, None, 0.5, -100)
     out.backward()
     ref.backward()
@@ -619,7 +708,8 @@ def test_fused_linear_jsd_non_contiguous():
 
     def run(impl):
         si = si_cpu.to("cuda", dtype).t().detach().requires_grad_(True)  # (BT, H) non-contig
-        assert not si.is_contiguous()
+        # Assert the exact layout that reaches the fused kernel, before dispatch.
+        assert not si.is_contiguous() and si.shape == (BT, H)
         sw = sw_cpu.to("cuda", dtype).detach().requires_grad_(True)
         t_in = ti_cpu.to("cuda", dtype).detach()
         tw = tw_cpu.to("cuda", dtype).detach()
@@ -631,3 +721,79 @@ def test_fused_linear_jsd_non_contiguous():
     ot, dsit, dswt = run(ti)
     _assert_close(oc, ot, tols["atol_fwd"], tols["rtol_fwd"], "fljsd-noncontig fwd")
     _assert_close(dsic, dsit, tols["atol_bwd"], tols["rtol_bwd"], "fljsd-noncontig d_student_input")
+    _assert_close(dswc, dswt, tols["atol_bwd"], tols["rtol_bwd"], "fljsd-noncontig d_student_weight")
+
+
+# ===========================================================================
+# 6. Fused-linear JSD semantics vs an INDEPENDENT torch reference
+# ===========================================================================
+# The parity-vs-Triton tests above only pin the inner cuTile primitive against
+# Triton (both share the outer chunked cuBLAS loop, so a shared bug would hide).
+# These cases build the whole fused_linear_jsd forward+backward from plain torch
+# ops in fp32 and differentiate through it, then compare the cuTile op against
+# that ground truth across: ignored labels, non-unit upstream gradient,
+# non-default temperature, asymmetric beta, and a multi-outer-chunk shape.
+def _ref_fused_linear_jsd(si_cpu, sw_cpu, t_in_cpu, tw_cpu, labels, beta, ignore_index, temperature, upstream):
+    """fp32 autograd ground truth for fused_linear_jsd -> (loss, d_si, d_sw)."""
+    si = si_cpu.to("cuda", torch.float32).detach().requires_grad_(True)
+    sw = sw_cpu.to("cuda", torch.float32).detach().requires_grad_(True)
+    t_in = t_in_cpu.to("cuda", torch.float32).detach()
+    tw = tw_cpu.to("cuda", torch.float32).detach()
+    student_logits = (si @ sw.t()) / temperature
+    teacher_logits = (t_in @ tw.t()) / temperature
+    log_q = student_logits.log_softmax(-1)
+    log_p = teacher_logits.log_softmax(-1)
+    loss = _ref_jsd(log_q, log_p, labels, beta, ignore_index)
+    loss.backward(upstream)
+    return loss.detach(), si.grad, sw.grad
+
+
+def _run_cutile_fused(si_cpu, sw_cpu, t_in_cpu, tw_cpu, labels, beta, ignore_index, temperature, upstream, impl):
+    si = si_cpu.to("cuda", torch.float32).detach().requires_grad_(True)
+    sw = sw_cpu.to("cuda", torch.float32).detach().requires_grad_(True)
+    t_in = t_in_cpu.to("cuda", torch.float32).detach()
+    tw = tw_cpu.to("cuda", torch.float32).detach()
+    out = F.fused_linear_jsd(
+        si, sw, t_in, tw, labels, jsd_beta=beta, ignore_index=ignore_index, temperature=temperature, impl=impl
+    )
+    out.backward(upstream)
+    return out.detach(), si.grad, sw.grad
+
+
+# (name, BT, H, V, beta, temperature, upstream_scale, label_kind)
+# multi_chunk uses V >> chunk_mem_const*H so the outer loop runs >1 chunk on
+# BOTH B200 (const 8) and B300 (const 16): V=4096 > 16*64.
+_FLJSD_SEMANTIC_CASES = [
+    ("ignored_labels", 32, 128, 512, 0.5, 1.0, 1.0, "scattered_ignore"),
+    ("non_unit_grad", 32, 128, 512, 0.5, 1.0, 2.75, "none"),
+    ("non_default_temp", 32, 128, 512, 0.5, 2.0, 1.0, "none"),
+    ("asymmetric_beta_low", 32, 128, 512, 0.1, 1.0, 1.0, "none"),
+    ("asymmetric_beta_high", 32, 128, 512, 0.9, 1.0, 1.0, "none"),
+    ("multi_chunk", 256, 64, 4096, 0.5, 1.0, 1.0, "none"),
+]
+
+
+@pytest.mark.parametrize("case", _FLJSD_SEMANTIC_CASES, ids=[c[0] for c in _FLJSD_SEMANTIC_CASES])
+def test_fused_linear_jsd_semantics_vs_torch(case):
+    name, BT, H, V, beta, temperature, scale, label_kind = case
+    ci = _cutile_impl("fused_linear_jsd")
+    dtype = torch.float32
+    tols = _tols("fused_linear_jsd", ci, dtype)
+    g = torch.Generator(device="cpu").manual_seed(hash(name) & 0xFFFF)
+    si_cpu = torch.randn(BT, H, generator=g)
+    sw_cpu = torch.randn(V, H, generator=g)
+    ti_cpu = torch.randn(BT, H, generator=g)
+    tw_cpu = torch.randn(V, H, generator=g)
+
+    if label_kind == "scattered_ignore":
+        labels = torch.arange(BT, device="cuda", dtype=torch.int64) % V
+        labels[::3] = -100
+    else:
+        labels = None
+    upstream = torch.tensor(scale, device="cuda", dtype=torch.float32)
+
+    oc, dsic, dswc = _run_cutile_fused(si_cpu, sw_cpu, ti_cpu, tw_cpu, labels, beta, -100, temperature, upstream, ci)
+    orf, dsir, dswr = _ref_fused_linear_jsd(si_cpu, sw_cpu, ti_cpu, tw_cpu, labels, beta, -100, temperature, upstream)
+    _assert_close(oc, orf, tols["atol_fwd"], tols["rtol_fwd"], f"fljsd-sem/{name} fwd")
+    _assert_close(dsic, dsir, tols["atol_bwd"], tols["rtol_bwd"], f"fljsd-sem/{name} d_student_input")
+    _assert_close(dswc, dswr, tols["atol_bwd"], tols["rtol_bwd"], f"fljsd-sem/{name} d_student_weight")
