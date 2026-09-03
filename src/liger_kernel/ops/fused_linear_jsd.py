@@ -23,6 +23,39 @@ from liger_kernel.utils import infer_device
 MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536 // 2
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
+# torch.mm(..., out_dtype=...) landed alongside the addmm variant (2.8.0) and
+# has the same sm_80+ (Ampere) requirement.
+_MM_SUPPORTS_OUT_DTYPE = _ADDMM_SUPPORTS_OUT_DTYPE
+
+
+def _project_logits_fp32(input_chunk: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """Project ``input_chunk @ weight.t()`` and return it in FP32.
+
+    The naive ``(input_chunk @ weight.t()).to(torch.float32)`` casts *after* the
+    matmul, so on a bf16/fp16 GEMM the output is already rounded to 8/11
+    mantissa bits before the cast ever runs -- the cast changes the container,
+    not the contents. cuBLAS already accumulates the GEMM in FP32 internally;
+    this just surfaces that accumulator instead of throwing it away on the
+    store.
+
+    ``torch.mm(..., out_dtype=torch.float32)`` (torch >= 2.8, CUDA sm_80+)
+    does this at no extra cost: a bf16xbf16 or fp16xfp16 product is exactly
+    representable in FP32 (8+8 / 11+11 mantissa bits both fit in 24), so it is
+    numerically identical to upcasting both operands first, while keeping the
+    low-precision tensor cores and avoiding an FP32 copy of the (potentially
+    huge, V x H) weight. When that path isn't available (older torch, no
+    CUDA, or CUDA < sm_80), fall back to the explicit upcast -- slower, but
+    still correct, unlike casting after the matmul.
+    """
+    if (
+        _MM_SUPPORTS_OUT_DTYPE
+        and input_chunk.is_cuda
+        and input_chunk.dtype in (torch.float16, torch.bfloat16)
+        and weight.dtype == input_chunk.dtype
+        and torch.cuda.get_device_capability(input_chunk.device)[0] >= 8
+    ):
+        return torch.mm(input_chunk, weight.t(), out_dtype=torch.float32)
+    return input_chunk.float() @ weight.float().t()
 
 
 def _max_capability() -> int:
@@ -133,9 +166,11 @@ def fused_linear_jsd_forward(
 
         # shape: chunk_size x V
         # For anything starting from logits to the final JSD loss, we do computation
-        # in FP32 to avoid losing numerical stability.
-        student_logits_chunk = (student_input_chunk @ student_weight.t()).to(torch.float32)
-        teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(torch.float32)
+        # in FP32 to avoid losing numerical stability. The projection itself must
+        # also run (or be recovered) in FP32: casting *after* a bf16/fp16 matmul
+        # only relabels an already-rounded result (see _project_logits_fp32).
+        student_logits_chunk = _project_logits_fp32(student_input_chunk, student_weight)
+        teacher_logits_chunk = _project_logits_fp32(teacher_input_chunk, teacher_weight)
 
         # log-softmax with temperature
         student_logits_chunk = student_logits_chunk / temperature

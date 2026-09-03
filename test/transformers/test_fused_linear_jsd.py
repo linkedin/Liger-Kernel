@@ -41,8 +41,10 @@ class TorchLMHeadJSD(torch.nn.Module):
         self.temperature = temperature
 
     def forward(self, student_input, teacher_input, label=None):
-        student_logits = self.student_lin(student_input).to(torch.float32)
-        teacher_logits = self.teacher_lin(teacher_input).to(torch.float32)
+        # Project in FP32 (not "matmul then cast", which just relabels an
+        # already-rounded bf16/fp16 result -- see linkedin/Liger-Kernel#1432).
+        student_logits = student_input.float() @ self.student_lin.weight.t().float()
+        teacher_logits = teacher_input.float() @ self.teacher_lin.weight.t().float()
         student_prob = torch.log_softmax(student_logits / self.temperature, dim=-1)
         teacher_prob = torch.log_softmax(teacher_logits / self.temperature, dim=-1)
 

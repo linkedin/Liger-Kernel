@@ -63,15 +63,28 @@ def _fused_linear_jsd_ref(
     student_log_probs = torch.log_softmax(student_logits, dim=-1)
     teacher_log_probs = torch.log_softmax(teacher_logits, dim=-1)
 
-    student_probs = student_log_probs.exp()
-    teacher_probs = teacher_log_probs.exp()
-
-    m = beta * student_probs + (1.0 - beta) * teacher_probs
-    log_m = m.log()
-
-    # JSD = beta * KL(student || m) + (1 - beta) * KL(teacher || m)
-    loss = beta * (student_probs * (student_log_probs - log_m)).sum(dim=-1)
-    loss += (1.0 - beta) * (teacher_probs * (teacher_log_probs - log_m)).sum(dim=-1)
+    # Pure FKL/RKL (beta in {0, 1}) reduce to a plain KL and are computed that
+    # way directly: the generic probability-space mixture below can underflow
+    # to exactly 0 for peaked distributions at large logit magnitudes (0 *
+    # log(0) -> nan) -- a separate bug from the one under test here (see
+    # linkedin/Liger-Kernel#1432's "out of scope" section). This mirrors
+    # test/transformers/test_jsd.py's JSD.forward reference.
+    if beta == 0.0:  # JSD(0) == KL(teacher || student)
+        loss = torch.nn.functional.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True).sum(
+            dim=-1
+        )
+    elif beta == 1.0:  # JSD(1) == KL(student || teacher)
+        loss = torch.nn.functional.kl_div(teacher_log_probs, student_log_probs, reduction="none", log_target=True).sum(
+            dim=-1
+        )
+    else:
+        student_probs = student_log_probs.exp()
+        teacher_probs = teacher_log_probs.exp()
+        m = beta * student_probs + (1.0 - beta) * teacher_probs
+        log_m = m.log()
+        # JSD = beta * KL(student || m) + (1 - beta) * KL(teacher || m)
+        loss = beta * (student_probs * (student_log_probs - log_m)).sum(dim=-1)
+        loss += (1.0 - beta) * (teacher_probs * (teacher_log_probs - log_m)).sum(dim=-1)
     return loss.mean()
 
 
@@ -144,6 +157,75 @@ def test_fused_linear_jsd_correctness(backend, shape, dtype):
         atol=tols["atol_bwd"],
         rtol=tols["rtol_bwd"],
         msg=lambda m: f"[fused_linear_jsd/{backend} shape={shape} dtype={dtype}] d_student_weight: {m}",
+    )
+
+
+@pytest.mark.parametrize("backend", _REGISTERED_BACKENDS or ["__none__"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("beta", [0.0, 1.0])  # FKL / RKL; see note below on 0 < beta < 1
+def test_fused_linear_jsd_correctness_realistic_logit_scale(backend, dtype, beta):
+    """Regression test for linkedin/Liger-Kernel#1432.
+
+    ``FLJSD_TEST_SHAPES``/``* 0.02`` weight scaling above keeps logits small
+    enough (std ~ a few) that casting a rounded bf16/fp16 matmul result to
+    FP32 -- instead of projecting in FP32 -- doesn't move the gradient beyond
+    the existing (loose) bwd tolerances. At a realistic logit spread (std
+    ~30, as in real LM heads) the same bug produces 4-23% gradient error, so
+    this test uses a wider weight scale and a tolerance tight enough to catch
+    a reintroduction of the "cast after matmul" bug.
+
+    Only pure FKL/RKL (beta in {0, 1}) are exercised here: 0 < beta < 1 at
+    this logit scale hits a separate, independent bug (the probability-space
+    mixture underflows to exactly 0 for peaked distributions, giving
+    log(0) -> nan) tracked in issue #1432's "out of scope" section, and is
+    not this fix's concern.
+    """
+    if backend == "__none__":
+        pytest.skip("No fused_linear_jsd backends registered in this environment")
+
+    BT, V, H = 256, 32000, 1024
+    device = "cuda"
+    g = torch.Generator(device="cpu").manual_seed(0)
+
+    logit_std = 30.0
+    si_cpu = torch.randn(BT, H, dtype=torch.float32, generator=g)
+    sw_cpu = torch.randn(V, H, dtype=torch.float32, generator=g) * (logit_std / H**0.5)
+    ti_cpu = torch.randn(BT, H, dtype=torch.float32, generator=g)
+    tw_cpu = torch.randn(V, H, dtype=torch.float32, generator=g) * (logit_std / H**0.5)
+
+    si = si_cpu.to(device=device, dtype=dtype).detach().requires_grad_(True)
+    sw = sw_cpu.to(device=device, dtype=dtype).detach().requires_grad_(True)
+    ti = ti_cpu.to(device=device, dtype=dtype).detach()
+    tw = tw_cpu.to(device=device, dtype=dtype).detach()
+
+    si_ref = si_cpu.to(device=device, dtype=dtype).detach().requires_grad_(True)
+    sw_ref = sw_cpu.to(device=device, dtype=dtype).detach().requires_grad_(True)
+    ti_ref = ti_cpu.to(device=device, dtype=dtype).detach()
+    tw_ref = tw_cpu.to(device=device, dtype=dtype).detach()
+
+    # The bug (cast-after-matmul) produces 4-23% relative gradient error at
+    # this scale; the fix (FP32 projection) brings it back under ~1%.
+    rtol_bwd = 3e-2
+
+    y = dispatch("fused_linear_jsd", si, sw, ti, tw, None, beta, -100, 1.0, backend=backend)
+    y_ref = _fused_linear_jsd_ref(si_ref, sw_ref, ti_ref, tw_ref, beta=beta)
+
+    y.backward()
+    y_ref.backward()
+
+    torch.testing.assert_close(
+        si.grad.to(torch.float32),
+        si_ref.grad.to(torch.float32),
+        atol=1e-2,
+        rtol=rtol_bwd,
+        msg=lambda m: f"[fused_linear_jsd/{backend} dtype={dtype} beta={beta}] d_student_input: {m}",
+    )
+    torch.testing.assert_close(
+        sw.grad.to(torch.float32),
+        sw_ref.grad.to(torch.float32),
+        atol=1e-2,
+        rtol=rtol_bwd,
+        msg=lambda m: f"[fused_linear_jsd/{backend} dtype={dtype} beta={beta}] d_student_weight: {m}",
     )
 
 
