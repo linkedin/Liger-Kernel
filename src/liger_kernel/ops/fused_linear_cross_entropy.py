@@ -177,13 +177,28 @@ def fused_linear_cross_entropy_forward(
         target_chunk = target_chunk.contiguous()
 
         if ce_impl is None:
-            loss_1d_slice = loss_1d[start_idx:end_idx]
-            z_loss_1d_slice = z_loss_1d[start_idx:end_idx] if return_z_loss else None
-            token_accuracy_1d_slice = token_accuracy_1d[start_idx:end_idx] if return_token_accuracy else None
-            predicted_tokens_1d_slice = predicted_tokens_1d[start_idx:end_idx] if return_predicted_tokens else None
+            # unreduced loss
+            # NOTE: these must be standalone contiguous buffers, *not* `xxx_1d[start_idx:end_idx]`
+            # views. `torch.compile` functionalizes the kernel's mutation by cloning the pointer
+            # argument via `clone_preserve_strides`, which clones `storage_offset + numel` elements
+            # out of a buffer Inductor may have sized to the view alone -- an out-of-bounds read
+            # whose garbage survives into the loss on rows where the kernel returns early
+            # (ignore_index). The write-back below copies them into the full-length tensors.
+            # The dispatched path (`else` branch) allocates the same way inside the primitive.
+            n_rows = end_idx - start_idx
+            loss_1d_slice = torch.zeros(n_rows, dtype=loss_1d.dtype, device=device)
+            z_loss_1d_slice = torch.zeros(n_rows, dtype=z_loss_1d.dtype, device=device) if return_z_loss else None
+            token_accuracy_1d_slice = (
+                torch.zeros(n_rows, dtype=token_accuracy_1d.dtype, device=device) if return_token_accuracy else None
+            )
+            predicted_tokens_1d_slice = (
+                torch.full((n_rows,), -1, dtype=predicted_tokens_1d.dtype, device=device)
+                if return_predicted_tokens
+                else None
+            )
             block_size = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-            liger_cross_entropy_kernel[(end_idx - start_idx,)](
+            liger_cross_entropy_kernel[(n_rows,)](
                 X_ptr=logits_chunk,
                 X_stride=logits_chunk.stride(-2),
                 Y_ptr=target_chunk,
