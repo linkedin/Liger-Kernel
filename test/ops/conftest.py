@@ -4,9 +4,9 @@ The ``available_backends_for`` fixture exposes the list of registered, currently
 *satisfied* backends for a given op so individual test files can parametrize
 without depending on whether cuTile/CuTe DSL is installed in the test env.
 
-All tests in this directory require a CUDA device — we install a session-level
-``autouse`` marker that skips when CUDA is unavailable, so individual test
-files don't need to repeat the check.
+All tests in this directory require a CUDA or MPS device — we install a session-level
+``autouse`` marker that skips when neither is available, so individual test files
+don't need to repeat the check.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from typing import Callable
 from typing import List
 
 import pytest
-import torch
 
 # Importing the functional module triggers ``declare_op_locations`` so the
 # dispatcher knows where to probe for impls — without this, every
@@ -24,6 +23,13 @@ import torch
 import liger_kernel.functional  # noqa: F401
 
 from liger_kernel.backends.dispatch import available_backends
+from liger_kernel.utils import infer_device
+
+_CUDA_OR_MPS_DEVICES = frozenset({"cuda", "mps"})
+
+
+def cuda_or_mps_available() -> bool:
+    return infer_device() in _CUDA_OR_MPS_DEVICES
 
 
 def _available_backends_for(op_name: str) -> List[str]:
@@ -49,13 +55,7 @@ def available_backends_for() -> Callable[[str], List[str]]:
 
 
 @pytest.fixture(autouse=True)
-def _require_cuda_for_ops_tests():
-    """Auto-skip every test in this directory when CUDA isn't visible.
-
-    Op-level tests dispatch into real Triton/cuTile kernels that need a GPU.
-    The backend abstraction tests under ``test/backends/`` exercise the same
-    machinery without GPUs.
-    """
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for op-level kernel tests")
+def _require_cuda_or_mps_for_ops_tests():
+    if not cuda_or_mps_available():
+        pytest.skip("CUDA or MPS required for op-level kernel tests")
     yield

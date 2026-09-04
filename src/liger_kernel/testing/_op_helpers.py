@@ -28,6 +28,7 @@ import torch
 
 from liger_kernel.backends import dispatch
 from liger_kernel.backends.registry import get_registered
+from liger_kernel.utils import infer_device
 
 # ---------------------------------------------------------------------------
 # Public reference implementations
@@ -366,14 +367,14 @@ def assert_op_correctness(
         offset: forwarded to op + reference.
         eps: forwarded to op + reference.
         seed: RNG seed for tensor construction.
-        device: where to allocate. Defaults to CUDA if available, else CPU.
+        device: where to allocate. Defaults to ``infer_device()`` when available.
     """
     if op_name not in _REFERENCE_IMPLS:
         raise KeyError(f"No reference impl registered for op {op_name!r}")
     if op_name not in _OP_SIGNATURES:
         raise KeyError(f"No input-builder registered for op {op_name!r}")
     if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device(infer_device())
 
     build_inputs = _OP_SIGNATURES[op_name]["build_inputs"]
     extra = extra or {}

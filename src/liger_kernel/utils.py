@@ -53,6 +53,8 @@ def infer_device():
     # XPU (Intel) if available
     elif torch.xpu.is_available():
         return "xpu"
+    elif torch.backends.mps.is_available():
+        return "mps"
     else:
         return "cpu"
 

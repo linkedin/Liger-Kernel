@@ -27,6 +27,7 @@ from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import register_op
 from liger_kernel.testing import assert_op_correctness
 from liger_kernel.testing import pytorch_reference_rms_norm
+from liger_kernel.utils import infer_device
 
 from .conftest import get_available_backends_for_op
 
@@ -52,7 +53,7 @@ _REGISTERED_BACKENDS = get_available_backends_for_op("rms_norm")
 def test_rms_norm_correctness(backend, shape, dtype, casting_mode):
     """Forward + backward parity against the PyTorch reference.
 
-    Auto-skips when CUDA is unavailable (conftest fixture). Auto-skips when
+    Auto-skips when CUDA/MPS is unavailable (conftest fixture). Auto-skips when
     no backends are registered at collection time (the placeholder
     ``"__none__"`` parameter is only used to keep collection valid in that
     edge case).
@@ -84,7 +85,7 @@ def test_rms_norm_offset_gemma(backend):
     torch.manual_seed(0)
     M, N = 64, 1024
     dtype = torch.float32
-    device = "cuda"
+    device = infer_device()
     x = torch.randn(M, N, dtype=dtype, device=device, requires_grad=True)
     w_small = torch.randn(N, dtype=dtype, device=device, requires_grad=False) * 0.01
 
@@ -113,6 +114,9 @@ def test_rms_norm_explicit_backend_unavailable():
     """Requesting a backend whose capability is unsatisfied must raise
     ``BackendNotAvailableError`` whose message names the unsatisfied gate.
     """
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA-only compute-capability gate test")
+
     fake_backend = "test_fake_cutile_unavailable"
 
     @register_op(
@@ -161,8 +165,9 @@ def test_rms_norm_global_set_backend(backend):
         pytest.skip("No rms_norm backends registered")
 
     M, N = 32, 256
-    x = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
-    w = torch.randn(N, device="cuda", dtype=torch.float32, requires_grad=True)
+    device = infer_device()
+    x = torch.randn(M, N, device=device, dtype=torch.float32, requires_grad=True)
+    w = torch.randn(N, device=device, dtype=torch.float32, requires_grad=True)
 
     try:
         liger_kernel.set_backend(backend)
@@ -193,8 +198,9 @@ def test_rms_norm_env_per_op(backend):
         pytest.skip("No rms_norm backends registered")
 
     M, N = 32, 256
-    x = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
-    w = torch.randn(N, device="cuda", dtype=torch.float32, requires_grad=True)
+    device = infer_device()
+    x = torch.randn(M, N, device=device, dtype=torch.float32, requires_grad=True)
+    w = torch.randn(N, device=device, dtype=torch.float32, requires_grad=True)
 
     saved = os.environ.get("LIGER_KERNEL_BACKEND_RMS_NORM")
     try:
@@ -273,14 +279,13 @@ def test_rms_norm_explicit_mode(backend, mode, shape):
     on a shape where multi-row would normally win)."""
     if backend == "__none__":
         pytest.skip("No rms_norm backends registered")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
 
     # Run a llama-mode bf16 forward+backward with the explicit mode pinned.
     M, N = shape
+    device = infer_device()
     g = torch.Generator(device="cpu").manual_seed(0)
-    x = torch.randn(M, N, dtype=torch.bfloat16, generator=g).to("cuda").requires_grad_(True)
-    w = torch.randn(N, dtype=torch.bfloat16, generator=g).to("cuda").requires_grad_(True)
+    x = torch.randn(M, N, dtype=torch.bfloat16, generator=g).to(device).requires_grad_(True)
+    w = torch.randn(N, dtype=torch.bfloat16, generator=g).to(device).requires_grad_(True)
     x_ref = x.detach().clone().requires_grad_(True)
     w_ref = w.detach().clone().requires_grad_(True)
 
