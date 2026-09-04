@@ -8,6 +8,7 @@ from test.utils import set_seed
 from test.utils import supports_bfloat16
 
 from liger_kernel.ops import LigerAttnResFunction
+from liger_kernel.transformers.attn_res import LigerAttnRes
 from liger_kernel.transformers.functional import liger_attn_res
 from liger_kernel.utils import infer_device
 
@@ -185,3 +186,99 @@ def test_correctness_functional(N, B, T, D, dtype, atol, rtol):
     y2.backward(grad)
 
     assert_verbose_allclose(V1.grad, V2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.flaky(reruns=3, reruns_delay=2)
+@pytest.mark.parametrize(
+    "N, B, T, D",
+    [
+        (4, 2, 64, 512),
+        (8, 2, 32, 256),
+        # weird shapes
+        (3, 5, 37, 123),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-5),
+        (torch.float16, 1e-2, 1e-3),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_module_matches_reference(N, B, T, D, dtype, atol, rtol):
+    """LigerAttnRes module matches the PyTorch reference (fwd) and trains its params (bwd)."""
+    set_seed(0)
+    model = LigerAttnRes(hidden_size=D, eps=1e-6).to(device).to(dtype)
+
+    V = torch.randn(N, B, T, D, device=device, dtype=dtype)
+    V_in = V.clone().requires_grad_(True)
+    out = model(V_in)
+    ref = pytorch_attn_res(V, model.w_query.detach(), model.w_norm.detach(), eps=1e-6)
+    assert out.shape == (B, T, D)
+    assert_verbose_allclose(out, ref, atol=atol, rtol=rtol)
+
+    out.backward(torch.randn_like(out))
+    assert V_in.grad is not None and torch.isfinite(V_in.grad).all()
+    for name, p in model.named_parameters():
+        assert p.grad is not None and torch.isfinite(p.grad).all(), f"no/invalid grad for {name}"
+
+
+@pytest.mark.flaky(reruns=3, reruns_delay=2)
+@pytest.mark.parametrize(
+    "N, B, T, D",
+    [
+        (4, 2, 64, 512),
+        (3, 5, 37, 123),
+    ],
+)
+def test_module_param_gradients_match_reference(N, B, T, D):
+    """The learned params (w_query, w_norm) must receive gradients that match the
+    PyTorch reference — the whole point of the module is to train them.
+
+    Checked in fp32 only: w_query/w_norm gradients are a sum-reduction over all
+    ``N*B*T`` tokens, and the kernel accumulates that reduction in fp32 while a
+    same-dtype PyTorch reference does not, so in fp16/bf16 the reference is the
+    less-accurate baseline (verified against an fp64 ground truth) and an
+    element-wise comparison would test reduction noise, not correctness. The
+    low-precision forward and input-grad paths are covered by the tests above.
+    """
+    set_seed(0)
+    atol, rtol = 1e-3, 1e-4
+    model = LigerAttnRes(hidden_size=D, eps=1e-6).to(device)
+
+    V = torch.randn(N, B, T, D, device=device)
+    do = torch.randn(B, T, D, device=device)
+
+    # Reference: same parameter values, plain PyTorch autograd.
+    V_ref = V.clone().requires_grad_(True)
+    wq_ref = model.w_query.detach().clone().requires_grad_(True)
+    wn_ref = model.w_norm.detach().clone().requires_grad_(True)
+    pytorch_attn_res(V_ref, wq_ref, wn_ref, eps=1e-6).backward(do)
+
+    # Module (Triton kernel) path.
+    V_mod = V.clone().requires_grad_(True)
+    model(V_mod).backward(do)
+
+    assert_verbose_allclose(V_mod.grad, V_ref.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(model.w_query.grad, wq_ref.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(model.w_norm.grad, wn_ref.grad, atol=atol, rtol=rtol)
+
+
+def test_module_list_input_and_repr():
+    """Module accepts a list of blocks (equivalent to the stacked tensor) and reprs its config."""
+    set_seed(0)
+    N, B, T, D = 4, 2, 16, 64
+    model = LigerAttnRes(hidden_size=D).to(device)
+    blocks = [torch.randn(B, T, D, device=device) for _ in range(N)]
+
+    out_list = model(blocks)
+    out_stacked = model(torch.stack(blocks))
+    assert out_list.shape == (B, T, D)
+    assert_verbose_allclose(out_list, out_stacked, atol=1e-6, rtol=1e-6)
+    assert f"hidden_size={D}" in model.extra_repr()
