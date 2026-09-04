@@ -1,3 +1,5 @@
+import os
+
 import torch
 import triton
 
@@ -35,7 +37,19 @@ MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 65536 // 2
 # GEMM reduction-order level; weight-grad differs only in addmm chunk-accumulation
 # order (same class as the fused_linear_jsd chunk-memory idiom). Same constant on
 # all devices.
-_CHUNK_MEM_CONST = 16
+#
+# The budget is C x BT x H, so the transient [chunk_size, V] logits slab grows
+# linearly with BT: at V=262144, H=5376 it is ~1.07 GiB at BT=8192 but ~4.3 GiB
+# at BT=32768. On memory-tight runs that headroom does not exist -- e.g. a
+# 262k-vocab model trained with DeepSpeed ZeRO-3 on 80 GB devices at seq 12k
+# has <3 GiB of transient headroom, and with direct weight-gradient
+# accumulation applied (as proposed in #1324/#1429, which removes the larger
+# per-chunk temporaries) this slab becomes the failing allocation at C=16
+# while the pre-#1414 geometry (C=1) clears it. LIGER_FLCE_CHUNK_MEM_CONST
+# lets such deployments trade the loop collapse back for bounded transients
+# (C=1 restores the historical floor) without patching the module; the
+# default is unchanged.
+_CHUNK_MEM_CONST = max(1, int(os.environ.get("LIGER_FLCE_CHUNK_MEM_CONST", "16")))
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
