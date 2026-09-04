@@ -60,9 +60,9 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         """
         Fused linear layer with ORPO loss.
         Args:
-            _input (torch.Tensor): Input tensor. Shape: (batch_size * seq_len, hidden_size)
+            _input (torch.Tensor): Input tensor. Shape: (batch_size, seq_len, hidden_size)
             weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size)
-            target (torch.LongTensor): Target tensor. Shape: (batch_size * seq_len,)
+            target (torch.LongTensor): Target tensor. Shape: (batch_size, seq_len)
             bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,)
             ignore_index (int): Index to ignore in loss computation
             beta (float): Weight for the odds ratio loss
