@@ -283,6 +283,7 @@ def fused_linear_cross_entropy_forward(
             grad_logits_t = grad_logits_chunk.t()
             if (
                 _ADDMM_SUPPORTS_OUT_DTYPE
+                and not torch.compiler.is_compiling()
                 and grad_weight.device.type == "cuda"
                 and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
                 and grad_weight.dtype == torch.float32
