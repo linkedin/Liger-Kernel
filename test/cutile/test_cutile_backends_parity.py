@@ -214,7 +214,7 @@ def test_rms_norm_fwd_bwd_parity(dtype, shape, casting_mode):
     the convention used by ``test/ops/test_jsd.py``.
     """
     ci = _cutile_impl("rms_norm")
-    assert_op_correctness("rms_norm", ci, shape, dtype, casting_mode=casting_mode)
+    assert_op_correctness("rms_norm", ci, shape, dtype, casting_mode=casting_mode, strict_grad=True)
 
 
 @pytest.mark.parametrize("dtype", _DTYPES)
@@ -224,7 +224,7 @@ def test_layer_norm_fwd_bwd_parity(dtype, shape, with_bias):
     """Forward + backward parity (output, dX, dW, dB) for cuTile LayerNorm vs the
     fp32 PyTorch reference, using the op's registered tolerances."""
     ci = _cutile_impl("layer_norm")
-    assert_op_correctness("layer_norm", ci, shape, dtype, extra={"include_bias": with_bias})
+    assert_op_correctness("layer_norm", ci, shape, dtype, extra={"include_bias": with_bias}, strict_grad=True)
 
 
 @pytest.mark.parametrize("dtype", _DTYPES)
