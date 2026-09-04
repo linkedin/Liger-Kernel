@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from liger_kernel.utils import is_npu_available
+from liger_kernel.utils import infer_device
 from test.utils import set_seed
 
 
@@ -11,13 +11,26 @@ def set_random_seed():
 
 
 @pytest.fixture(autouse=True)
+def require_triton_apple_backend_on_mps():
+    if infer_device() == "mps":
+        try:
+            import triton_apple_backend  # noqa: F401
+        except ImportError:
+            pytest.skip("triton_apple_backend is not installed")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def clear_gpu_cache():
     yield
-    if torch.cuda.is_available():
+    dev = infer_device()
+    if dev == "cuda":
         torch.cuda.empty_cache()
-    elif is_npu_available():
+    elif dev == "mps":
+        torch.mps.empty_cache()
+    elif dev == "npu":
         torch.npu.empty_cache()
-    elif torch.xpu.is_available():
+    elif dev == "xpu":
         torch.xpu.empty_cache()
 
 
