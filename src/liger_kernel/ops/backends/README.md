@@ -2,7 +2,10 @@
 
 This directory holds **alternative hardware backends** — operator implementations for devices other than the default (CUDA). Examples: Ascend NPU, future ROCm, future XPU.
 
-DSL alternatives for the *default* hardware (CUDA) — cuTile, future CUTLASS / CuteDSL / TileLang — live at the top level of `src/liger_kernel/ops/` (peers of this `backends/` directory), not inside it. The contract for registering them is the same; only the on-disk location differs.
+DSL alternatives for the *default* hardware (CUDA / HIP) — cuTile, CuTe DSL,
+FlyDSL, future TileLang — live at the top level of `src/liger_kernel/ops/`
+(peers of this `backends/` directory), not inside it. The contract for
+registering them is the same; only the on-disk location differs.
 
 ## Concepts
 
@@ -206,5 +209,16 @@ register_impl(ImplInfo(
   ```bash
   LIGER_KERNEL_IMPL=cutile python your_script.py
   ```
+  Ops include CE, fused linear CE (BT-chunked), JSD / fused linear JSD, GeGLU, LayerNorm.
+- `../cutedsl/` — opt-in NVIDIA CuTe DSL implementation. Enable with:
+  ```bash
+  LIGER_KERNEL_IMPL=cutedsl python your_script.py
+  ```
+  Ops include CE and fused linear CE (BT-chunked; never materializes full `BT×V`).
+- `../flydsl/` — opt-in ROCm FlyDSL implementation (AMD). Enable with:
+  ```bash
+  LIGER_KERNEL_IMPL=flydsl python your_script.py
+  ```
+  Ops include CE and fused linear CE (BT-chunked). Unimplemented ops fall back to Triton.
 
 `select_impl()` validates the request: if the current device isn't in the implementation's `devices`, or its module fails to import, the user gets a clear error instead of a silent fallback.
