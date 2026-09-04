@@ -231,6 +231,10 @@ Ops without a CuTe DSL kernel transparently fall back to the default Triton kern
 
 The `cutedsl` extra also pulls in `apache-tvm-ffi`, which lets compiled kernels take PyTorch tensors directly rather than marshalling each one per call. It is optional — every kernel falls back to the marshalling launch without it — but short kernels are dominated by that per-call cost, so installing it is strongly recommended.
 
+### Cut Cross Entropy (CCE)
+
+`LigerCCELoss` implements [Cut Your Losses in Large-Vocabulary Language Models](https://openreview.net/forum?id=E4Fk3YuG56) without materializing the full logits matrix. It supports bias, ignored targets, logit scaling, softcapping, per-token reductions, accuracy, and entropy metrics across Triton accelerator backends.
+
 ### Fused Scaled Cross Entropy
 
 `LigerFusedLinearScaledCrossEntropyFunction` is an additional per-token operator, not a replacement for the reduction-oriented Triton `LigerFusedLinearCrossEntropyFunction`. It takes `input[M, H]`, `weight[V, H]`, and `target[M]`, applies `logits / temperature`, and returns FP32 negative log-likelihood `[M]` plus optional differentiable vocabulary entropy `[M]` in the input dtype. Reductions remain in PyTorch, and rows whose target equals `ignore_index` contribute zero outputs and gradients.
@@ -448,6 +452,7 @@ loss.backward()
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
 | Fused Linear CrossEntropy       | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Cut Cross Entropy (CCE)         | `liger_kernel.transformers.LigerCCELoss`                    |
 | Multi Token Attention           | `liger_kernel.transformers.LigerMultiTokenAttention`        |
 | Softmax                         | `liger_kernel.transformers.LigerSoftmax`                    |
 | Sparsemax                       | `liger_kernel.transformers.LigerSparsemax`                  |
