@@ -107,6 +107,8 @@ def _layer_norm_backward_kernel(
     n_cols,
     rows_per_program: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    COMPUTE_DW: tl.constexpr = True,
+    COMPUTE_DB: tl.constexpr = True,
 ):
     """
     References:
@@ -119,8 +121,10 @@ def _layer_norm_backward_kernel(
     cols = tl.arange(0, BLOCK_SIZE)
     mask = cols < n_cols
 
-    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
-    db_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    if COMPUTE_DW:
+        dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    if COMPUTE_DB:
+        db_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     # Pre-load weights once (same optimization as forward pass)
     w = tl.load(W_ptr + cols, mask=mask, other=0.0)
@@ -157,13 +161,17 @@ def _layer_norm_backward_kernel(
         tl.store(row_DX_ptr + cols, dx, mask=mask)
 
         # Accumulate weight and bias gradients for this thread block's assigned rows
-        dw = dy_f32 * x_hat
-        db = dy_f32
-        dW_row += dw
-        db_row += db
+        if COMPUTE_DW:
+            dw = dy_f32 * x_hat
+            dW_row += dw
+        if COMPUTE_DB:
+            db = dy_f32
+            db_row += db
 
-    tl.store(DW_ptr + row_block_id * stride_dw + cols, dW_row, mask=mask)
-    tl.store(DB_ptr + row_block_id * stride_db + cols, db_row, mask=mask)
+    if COMPUTE_DW:
+        tl.store(DW_ptr + row_block_id * stride_dw + cols, dW_row, mask=mask)
+    if COMPUTE_DB:
+        tl.store(DB_ptr + row_block_id * stride_db + cols, db_row, mask=mask)
 
 
 def layer_norm_forward(X, W, B, eps):
@@ -227,7 +235,7 @@ def layer_norm_forward(X, W, B, eps):
     return Y.view(*shape), X, Mean, RSTD, BLOCK_SIZE, num_warps
 
 
-def layer_norm_backward(dY, X, W, B, Mean, RSTD):
+def layer_norm_backward(dY, X, W, B, Mean, RSTD, needs_dw=None, needs_db=None):
     """
     Args:
         dY: Gradient of output
@@ -236,6 +244,8 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         B: Bias tensor
         Mean: Pre-computed mean
         RSTD: Pre-computed reciprocal standard deviation
+        needs_dw: Whether to compute gradient of weight
+        needs_db: Whether to compute gradient of bias
 
     Returns:
         Tuple of (input_grad, weight_grad, bias_grad)
@@ -244,6 +254,9 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     dim = shape[-1]
     dY = dY.view(-1, dim)
     n_rows, n_cols = dY.shape
+
+    compute_dw = True if needs_dw is None else needs_dw
+    compute_db = True if needs_db is None else needs_db
 
     sm_count = 1
     if X.device.type == "cuda":
@@ -254,8 +267,8 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         sm_count = get_npu_core_count()
 
     # fp32 for numerical stability especially.
-    _DW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
-    _DB = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    _DW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device) if compute_dw else None
+    _DB = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device) if compute_db else None
 
     # Calculate optimal block size and warp configuration
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
@@ -285,21 +298,23 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         DX,
         DX.stride(0),
         _DW,
-        _DW.stride(0),
+        _DW.stride(0) if compute_dw else 0,
         _DB,
-        _DB.stride(0),
+        _DB.stride(0) if compute_db else 0,
         dY,
         dY.stride(0),
         n_rows,
         n_cols,
         rows_per_program=rows_per_program,
         BLOCK_SIZE=BLOCK_SIZE,
+        COMPUTE_DW=compute_dw,
+        COMPUTE_DB=compute_db,
         **kernel_args,
     )
 
     DX = DX.view(*shape)
-    DW = _DW.sum(dim=0).to(W.dtype)
-    DB = _DB.sum(dim=0).to(B.dtype)
+    DW = _DW.sum(dim=0).to(W.dtype) if compute_dw else None
+    DB = _DB.sum(dim=0).to(B.dtype) if compute_db else None
 
     return DX, DW, DB
 
@@ -316,5 +331,7 @@ class LigerLayerNormFunction(torch.autograd.Function):
     @ensure_contiguous
     def backward(ctx, dY):
         X, W, B, Mean, RSTD = ctx.saved_tensors
-        DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD)
+        needs_dw = ctx.needs_input_grad[1]
+        needs_db = ctx.needs_input_grad[2]
+        DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD, needs_dw=needs_dw, needs_db=needs_db)
         return DX, DW, DB, None

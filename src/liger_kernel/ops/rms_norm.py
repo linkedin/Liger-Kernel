@@ -172,6 +172,7 @@ def _rms_norm_backward_kernel(
     casting_mode: tl.constexpr,
     elementwise_affine: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    COMPUTE_DW: tl.constexpr = True,
 ):
     """
     dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
@@ -184,7 +185,7 @@ def _rms_norm_backward_kernel(
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
-    if elementwise_affine:
+    if elementwise_affine and COMPUTE_DW:
         dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     if elementwise_affine:
@@ -230,7 +231,7 @@ def _rms_norm_backward_kernel(
 
         dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row)
 
-        if elementwise_affine:
+        if elementwise_affine and COMPUTE_DW:
             # calculate the gradient of W
             if casting_mode == _CASTING_MODE_LLAMA:
                 dW_row += dY_row * (X_row * rstd_row).to(X_dtype)
@@ -240,7 +241,7 @@ def _rms_norm_backward_kernel(
 
         tl.store(dx_base + col_offsets, dX_row.to(X_dtype), mask=mask)
 
-    if elementwise_affine:
+    if elementwise_affine and COMPUTE_DW:
         tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
 
 
@@ -355,6 +356,7 @@ def _block_rms_norm_backward_kernel(
     elementwise_affine: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     BLOCK_ROW: tl.constexpr,
+    COMPUTE_DW: tl.constexpr = True,
 ):
     """
     dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
@@ -367,9 +369,10 @@ def _block_rms_norm_backward_kernel(
     col_offsets = tl.arange(0, BLOCK_SIZE)
     col_mask = col_offsets < n_cols
 
-    if elementwise_affine:
+    if elementwise_affine and COMPUTE_DW:
         dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
+    if elementwise_affine:
         W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
         # Pin the fp64 scalar Inductor passes to fp32 (see _rms_norm_forward_kernel).
         W_row = W_row + offset.to(tl.float32)
@@ -418,7 +421,7 @@ def _block_rms_norm_backward_kernel(
             -(1 / n_cols) * (rstd_row * rstd_row * tl.sum(m * X_row, axis=1))[:, None] * X_row
         )
 
-        if elementwise_affine:
+        if elementwise_affine and COMPUTE_DW:
             if casting_mode == _CASTING_MODE_LLAMA:
                 # TODO(tcc): use tl.sum(..., dtype=tl.float32) once we upgrade to triton>=3.3.0
                 dW_row += tl.sum((dY_row * (X_row * rstd_row[:, None]).to(X_dtype)).to(tl.float32), 0)
@@ -432,7 +435,7 @@ def _block_rms_norm_backward_kernel(
             mask=row_mask[:, None] & col_mask[None, :],
         )
 
-    if elementwise_affine:
+    if elementwise_affine and COMPUTE_DW:
         tl.store(dW_ptr + pid * dW_row_stride + col_offsets, dW_row, mask=col_mask)
 
 
@@ -520,7 +523,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode):
+def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode, needs_dw=None):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -535,12 +538,14 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         sm_count = get_npu_core_count()
 
     if W is not None:
-        # fp32 for numerical stability especially.
-        _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
         elementwise_affine = True
+        compute_dw = elementwise_affine if needs_dw is None else (elementwise_affine and needs_dw)
+        # fp32 for numerical stability especially.
+        _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device) if compute_dw else None
     else:
-        _dW = None
         elementwise_affine = False
+        compute_dw = False
+        _dW = None
 
     if n_cols > BLOCK_SIZE:
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
@@ -572,7 +577,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
                 RSTD,
                 RSTD.stride(0),
                 _dW,
-                _dW.stride(0) if elementwise_affine else 0,
+                _dW.stride(0) if compute_dw else 0,
                 n_rows,
                 n_cols,
                 offset,
@@ -580,6 +585,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
                 casting_mode,
                 elementwise_affine=elementwise_affine,
                 BLOCK_SIZE=BLOCK_SIZE,
+                COMPUTE_DW=compute_dw,
                 num_warps=num_warps,
                 **kernel_args,  # XPU-specific optimization
             )
@@ -599,19 +605,20 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
                 RSTD,
                 RSTD.stride(0),
                 _dW,
-                _dW.stride(0) if elementwise_affine else 0,
+                _dW.stride(0) if compute_dw else 0,
                 n_rows,
                 n_cols,
                 offset,
                 casting_mode,
                 elementwise_affine=elementwise_affine,
                 BLOCK_SIZE=BLOCK_SIZE,
+                COMPUTE_DW=compute_dw,
                 num_warps=num_warps,
                 **kernel_args,  # XPU-specific optimization
             )
     dX = dX.view(*shape)
 
-    if elementwise_affine:
+    if compute_dw:
         dW = _dW.sum(dim=0).to(W.dtype)
     else:
         dW = None
@@ -687,7 +694,19 @@ class LigerRMSNormFunction(torch.autograd.Function):
             # TODO: support CP.
             dY = dY.full_tensor()
 
+        needs_dw = ctx.needs_input_grad[1] if ctx.elementwise_affine else False
+
         dX, dW = rms_norm_backward(
-            dY, X, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
+            dY,
+            X,
+            W,
+            RSTD,
+            ctx.offset,
+            ctx.casting_mode,
+            ctx.BLOCK_SIZE,
+            ctx.num_warps,
+            ctx.in_place,
+            ctx.row_mode,
+            needs_dw=needs_dw,
         )
         return dX, dW, None, None, None, None, None
