@@ -38,6 +38,7 @@ from liger_kernel.ops.attn_res import attn_res_forward  # noqa: F401
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_backward  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_forward  # noqa: F401
+from liger_kernel.ops.deepseek_v4_rope import LigerDeepseekV4RopeFunction  # noqa: F401
 from liger_kernel.ops.dyt import LigerDyTFunction  # noqa: F401
 from liger_kernel.ops.experimental.embedding import LigerEmbeddingFunction  # noqa: F401
 from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction  # noqa: F401

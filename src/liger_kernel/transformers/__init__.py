@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 # Always-safe imports (independent of 'transformers')
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noqa: F401
+from liger_kernel.transformers.deepseek_v4_rope import liger_deepseek_v4_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.dyt import LigerDyT  # noqa: F401
 from liger_kernel.transformers.fused_add_rms_norm import LigerFusedAddRMSNorm  # noqa: F401
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
@@ -180,6 +181,7 @@ def __getattr__(name: str):
 __all__ = [
     "is_transformers_available",
     "LigerCrossEntropyLoss",
+    "liger_deepseek_v4_rotary_pos_emb",
     "LigerDyT",
     "LigerFusedLinearCrossEntropyLoss",
     "LigerFusedLinearJSD",
