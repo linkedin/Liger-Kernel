@@ -85,8 +85,9 @@ def _tv_distance_kernel(
         # TVD(P || Q) = 0.5 * |P - Q|
         tv_loss = 0.5 * tl.abs(p - q)
 
+        # d/dp 0.5 * |p - q| = 0.5 * sgn(p - q), which is 0 where p == q
         # Fuse reduction scaling into gradient computation (eliminates separate Python division)
-        grad_res = tl.where(p > q, 0.5 * scale, -0.5 * scale)
+        grad_res = tl.where(p == q, 0.0, tl.where(p > q, 0.5 * scale, -0.5 * scale))
 
         tl.store(grads_ptr + offsets, grad_res, mask=mask)
 

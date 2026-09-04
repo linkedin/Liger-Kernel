@@ -109,6 +109,47 @@ def _test_correctness_once(
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
+def _test_correctness_with_ties_once(
+    target_tvd,
+    torch_tvd,
+    B,
+    T,
+    V,
+    dtype,
+    atol,
+    rtol,
+    reduction,
+    tied_fraction,
+    device=infer_device(),
+):
+    torch.manual_seed(0)
+    input = torch.randn(B * T, V, device=device, dtype=dtype).softmax(dim=-1)
+
+    x1 = input.detach().clone().requires_grad_(True)
+    x2 = input.detach().clone().requires_grad_(True)
+
+    with torch.no_grad():
+        target = torch.randn(B * T, V, device=device).softmax(dim=-1)
+        # Tie the trailing slots: p == q there, so the gradient of |p - q| is 0.
+        # tied_fraction == 1.0 is self-distillation, where the two distributions
+        # are identical; a partial tie stands in for padded vocabulary slots,
+        # which are exactly 0.0 in both distributions.
+        n_tied = int(V * tied_fraction)
+        target[:, V - n_tied :] = input[:, V - n_tied :]
+
+    output = target_tvd(x1, target)
+    output2 = torch_tvd(x2, target)
+
+    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
+
+    if reduction == "none":
+        return
+
+    output.backward()
+    output2.backward()
+    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+
+
 def _test_correctness_with_ignore_index_once(
     target_tvd,
     torch_tvd,
@@ -176,6 +217,16 @@ def test_correctness_not_last(B, T, V, reduction, dtype, atol, rtol):
         reduction,
         is_last_layer=False,
     )
+
+
+@pytest.mark.parametrize("B, T, V", [(2, 8, 4096), (3, 423, 1271)])
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
+@pytest.mark.parametrize(*_DTYPE_PARAMS)
+@pytest.mark.parametrize("tied_fraction", [1.0, 0.5])
+def test_correctness_with_ties(B, T, V, reduction, dtype, atol, rtol, tied_fraction):
+    liger_tvd = LigerTVDLoss(reduction=reduction)
+    torch_tvd = TorchTVDLoss(reduction=reduction)
+    _test_correctness_with_ties_once(liger_tvd, torch_tvd, B, T, V, dtype, atol, rtol, reduction, tied_fraction)
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
