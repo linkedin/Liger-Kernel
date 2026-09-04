@@ -28,6 +28,7 @@ import torch
 from cuda.tile.tune import exhaustive_search
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 _CASTING_MODE_NONE = -1
@@ -452,121 +453,123 @@ _fused_add_rms_norm_bwd_persistent_2c_ct_nww8 = _fused_add_rms_norm_bwd_persiste
 
 
 def _fused_add_rms_norm_forward_ct(X, R, W, eps, offset, casting_mode):
-    if isinstance(casting_mode, str):
-        casting_mode = _STR_TO_CASTING_MODE[casting_mode]
+    with device_context(X.device):
+        if isinstance(casting_mode, str):
+            casting_mode = _STR_TO_CASTING_MODE[casting_mode]
 
-    shape = X.shape
-    dim = shape[-1]
-    X2d = X.view(-1, dim)
-    R2d = R.view(-1, dim)
-    n_rows, n_cols = X2d.shape
-    BLOCK_SIZE = calculate_settings(n_cols)
+        shape = X.shape
+        dim = shape[-1]
+        X2d = X.view(-1, dim)
+        R2d = R.view(-1, dim)
+        n_rows, n_cols = X2d.shape
+        BLOCK_SIZE = calculate_settings(n_cols)
 
-    Y = torch.empty_like(X2d)
-    S = torch.empty_like(X2d)
-    # RSTD dtype: float32 for llama/gemma (fp32 rstd computation), X.dtype for none
-    rstd_dtype = torch.float32 if casting_mode in (_CASTING_MODE_LLAMA, _CASTING_MODE_GEMMA) else X.dtype
-    RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
+        Y = torch.empty_like(X2d)
+        S = torch.empty_like(X2d)
+        # RSTD dtype: float32 for llama/gemma (fp32 rstd computation), X.dtype for none
+        rstd_dtype = torch.float32 if casting_mode in (_CASTING_MODE_LLAMA, _CASTING_MODE_GEMMA) else X.dtype
+        RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
 
-    # Fwd register pressure: for n_cols > 4096, 1 huge chunk spills; 2 chunks is the
-    # sweet spot (3+ adds per-iteration overhead with no register benefit).
-    FWD_BLOCK_SIZE = BLOCK_SIZE // 2 if BLOCK_SIZE > 4096 else BLOCK_SIZE
-    base_kernel = _fused_add_rms_norm_fwd_small_ct if BLOCK_SIZE < 2048 else _fused_add_rms_norm_fwd_large_ct
+        # Fwd register pressure: for n_cols > 4096, 1 huge chunk spills; 2 chunks is the
+        # sweet spot (3+ adds per-iteration overhead with no register benefit).
+        FWD_BLOCK_SIZE = BLOCK_SIZE // 2 if BLOCK_SIZE > 4096 else BLOCK_SIZE
+        base_kernel = _fused_add_rms_norm_fwd_small_ct if BLOCK_SIZE < 2048 else _fused_add_rms_norm_fwd_large_ct
 
-    stream = torch.cuda.current_stream()
-    args = (
-        Y,
-        S,
-        X2d.contiguous(),
-        R2d.contiguous(),
-        W.contiguous(),
-        RSTD,
-        int(n_cols),
-        float(eps),
-        float(offset),
-        int(FWD_BLOCK_SIZE),
-        int(casting_mode),
-    )
-    cache_key = (n_cols, FWD_BLOCK_SIZE, casting_mode, X.dtype, str(X.device))
-    tuned_kernel = _autotune_fwd_kernel(base_kernel, args, n_rows, cache_key, stream)
+        stream = torch.cuda.current_stream()
+        args = (
+            Y,
+            S,
+            X2d.contiguous(),
+            R2d.contiguous(),
+            W.contiguous(),
+            RSTD,
+            int(n_cols),
+            float(eps),
+            float(offset),
+            int(FWD_BLOCK_SIZE),
+            int(casting_mode),
+        )
+        cache_key = (n_cols, FWD_BLOCK_SIZE, casting_mode, X.dtype, str(X.device))
+        tuned_kernel = _autotune_fwd_kernel(base_kernel, args, n_rows, cache_key, stream)
 
-    ct.launch(stream, (n_rows, 1, 1), tuned_kernel, args)
+        ct.launch(stream, (n_rows, 1, 1), tuned_kernel, args)
 
-    return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, casting_mode
+        return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, casting_mode
 
 
 def _fused_add_rms_norm_backward_ct(dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE):
-    shape = dY.shape
-    dim = shape[-1]
-    dY2d = dY.view(-1, dim)
-    dS_out2d = dS_out.view(-1, dim)
-    S2d = S.view(-1, dim)
-    n_rows, n_cols = dY2d.shape
+    with device_context(dY.device):
+        shape = dY.shape
+        dim = shape[-1]
+        dY2d = dY.view(-1, dim)
+        dS_out2d = dS_out.view(-1, dim)
+        S2d = S.view(-1, dim)
+        n_rows, n_cols = dY2d.shape
 
-    # Persistent kernel: one block per SM, each handles ceil(n_rows/sm_count) rows.
-    # Grid = (sm_count,) -> exactly 1 block/SM -> full 256KB register file available.
-    # When BLOCK_SIZE > _BWD_MAX_CHUNK_SIZE, use the 2-chunk kernel to reduce
-    # register pressure (CHUNK_SIZE/128 elements/thread vs BLOCK_SIZE/128).
-    sm_count = torch.cuda.get_device_properties(W.device).multi_processor_count
-    num_iters = math.ceil(n_rows / sm_count)
+        # Persistent kernel: one block per SM, each handles ceil(n_rows/sm_count) rows.
+        # Grid = (sm_count,) -> exactly 1 block/SM -> full 256KB register file available.
+        # When BLOCK_SIZE > _BWD_MAX_CHUNK_SIZE, use the 2-chunk kernel to reduce
+        # register pressure (CHUNK_SIZE/128 elements/thread vs BLOCK_SIZE/128).
+        sm_count = torch.cuda.get_device_properties(W.device).multi_processor_count
+        num_iters = math.ceil(n_rows / sm_count)
 
-    dX = torch.empty_like(dY2d)
-    # Per-SM partial dW: shape (sm_count, n_cols).
-    dW_partial = torch.empty(sm_count, n_cols, dtype=torch.float32, device=W.device)
+        dX = torch.empty_like(dY2d)
+        # Per-SM partial dW: shape (sm_count, n_cols).
+        dW_partial = torch.empty(sm_count, n_cols, dtype=torch.float32, device=W.device)
 
-    grid = (sm_count, 1, 1)
-    # gather+latency=3 gives explicit cp.async-style pipelining that outperforms TMA
-    # at every test shape on this kernel. 2-chunk variant caps per-thread register
-    # usage when BLOCK_SIZE > _BWD_MAX_CHUNK_SIZE (splits cols into lo/hi halves).
-    if BLOCK_SIZE > _BWD_MAX_CHUNK_SIZE:
-        CHUNK_SIZE = BLOCK_SIZE // 2
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            _fused_add_rms_norm_bwd_persistent_2c_ct_nww8,
-            (
-                dY2d.contiguous(),
-                dS_out2d.contiguous(),
-                dX,
-                S2d.contiguous(),
-                W.contiguous(),
-                RSTD,
-                dW_partial,
-                int(n_cols),
-                float(offset),
-                int(num_iters),
-                int(sm_count),
-                int(n_rows),
-                int(CHUNK_SIZE),
-                int(casting_mode),
-            ),
-        )
-    else:
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            _fused_add_rms_norm_bwd_persistent_ct_nww8,
-            (
-                dY2d.contiguous(),
-                dS_out2d.contiguous(),
-                dX,
-                S2d.contiguous(),
-                W.contiguous(),
-                RSTD,
-                dW_partial,
-                int(n_cols),
-                float(offset),
-                int(num_iters),
-                int(sm_count),
-                int(n_rows),
-                int(BLOCK_SIZE),
-                int(casting_mode),
-            ),
-        )
+        grid = (sm_count, 1, 1)
+        # gather+latency=3 gives explicit cp.async-style pipelining that outperforms TMA
+        # at every test shape on this kernel. 2-chunk variant caps per-thread register
+        # usage when BLOCK_SIZE > _BWD_MAX_CHUNK_SIZE (splits cols into lo/hi halves).
+        if BLOCK_SIZE > _BWD_MAX_CHUNK_SIZE:
+            CHUNK_SIZE = BLOCK_SIZE // 2
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                _fused_add_rms_norm_bwd_persistent_2c_ct_nww8,
+                (
+                    dY2d.contiguous(),
+                    dS_out2d.contiguous(),
+                    dX,
+                    S2d.contiguous(),
+                    W.contiguous(),
+                    RSTD,
+                    dW_partial,
+                    int(n_cols),
+                    float(offset),
+                    int(num_iters),
+                    int(sm_count),
+                    int(n_rows),
+                    int(CHUNK_SIZE),
+                    int(casting_mode),
+                ),
+            )
+        else:
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                _fused_add_rms_norm_bwd_persistent_ct_nww8,
+                (
+                    dY2d.contiguous(),
+                    dS_out2d.contiguous(),
+                    dX,
+                    S2d.contiguous(),
+                    W.contiguous(),
+                    RSTD,
+                    dW_partial,
+                    int(n_cols),
+                    float(offset),
+                    int(num_iters),
+                    int(sm_count),
+                    int(n_rows),
+                    int(BLOCK_SIZE),
+                    int(casting_mode),
+                ),
+            )
 
-    dX = dX.view(*shape)
-    dW = dW_partial.sum(dim=0).to(W.dtype)
-    return dX, dX, dW  # dR == dX (gradient flows equally to X and R)
+        dX = dX.view(*shape)
+        dW = dW_partial.sum(dim=0).to(W.dtype)
+        return dX, dX, dW  # dR == dX (gradient flows equally to X and R)
 
 
 class LigerFusedAddRMSNormFunction(torch.autograd.Function):

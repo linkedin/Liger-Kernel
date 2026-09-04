@@ -48,6 +48,7 @@ from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import backward_warp_count
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fast_path_vector_width
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fwd_warp_count
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.utils import device_context
 
 # ---------------------------------------------------------------------------
 # Tuning / debug env vars are read ONCE at import. These are launch-time knobs
@@ -183,8 +184,13 @@ def _get_dw_partial_buf(num_strips, n_cols, device):
     return buf
 
 
-def _cute_stream():
-    raw = torch.cuda.current_stream().cuda_stream
+def _cute_stream(device=None):
+    """Return a CUstream for the current CUDA stream, optionally on ``device``."""
+    if device is None:
+        raw = torch.cuda.current_stream().cuda_stream
+    else:
+        with device_context(device):
+            raw = torch.cuda.current_stream().cuda_stream
     s = _stream_cache.get(raw)
     if s is None:
         s = cuda.CUstream(raw)
@@ -850,150 +856,154 @@ def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_aff
     The warp count (hence thread count and register-resident tiles per thread) is
     chosen from the hidden width by ``fwd_warp_count``; ``num_vec_tiles`` follows.
     """
-    stream = _cute_stream()
-    # Cache the marshaled handles for the INPUTS (X, W) -- their addresses are stable
-    # across steps (weights always; activations under a reused-buffer harness), so they
-    # hit the cache and marshal in ~0.4us. Y and RSTD are freshly allocated OUTPUTS:
-    # caching them would pin the storage and stop the allocator from recycling the
-    # address, so every call would churn a new address (misses + wasted pinning). Marshal
-    # those uncached so their addresses stay reusable.
-    x_ct = _to_cute_cached(X, assumed_align=16)
-    y_ct = to_cute_tensor(Y, assumed_align=16)
-    rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
-    w_ct = _to_cute_cached(W, assumed_align=16) if elementwise_affine else rstd_ct
-    n_cols = X.shape[1]
-    num_warps = fwd_warp_count(n_cols, vec)
-    num_threads = 32 * num_warps
-    num_vec_tiles = (n_cols // vec + num_threads - 1) // num_threads
-    # Optionally bucket n_cols in the compile key to reduce cold-compile churn.
-    bucket = _COMPILE_BUCKET
-    n_cols_key = n_cols
-    if bucket is not None and bucket > 0:
-        n_cols_key = ((int(n_cols) + bucket - 1) // bucket) * bucket
-    key = (
-        "fwd_vec",
-        n_cols_key,
-        vec,
-        num_vec_tiles,
-        num_warps,
-        X.dtype,
-        W.dtype if elementwise_affine else None,
-        casting_mode,
-        elementwise_affine,
-    )
-    compiled = _compile_cache.get(key)
-    _dbg = _DEBUG
-    if _dbg:
-        _rms_debug(
-            f"_launch_fwd_vector key={key} (n_cols={n_cols} n_cols_key={n_cols_key}) cache_hit={compiled is not None}"
-        )
-    if compiled is None:
-        compiled = cute.compile(
-            _rms_norm_fwd_vector_host,
-            x_ct,
-            w_ct,
-            y_ct,
-            rstd_ct,
-            float(eps),
-            float(offset),
-            casting_mode,
-            elementwise_affine,
-            n_cols,
+    with device_context(X.device):
+        stream = _cute_stream(X.device)
+        # Cache the marshaled handles for the INPUTS (X, W) -- their addresses are stable
+        # across steps (weights always; activations under a reused-buffer harness), so they
+        # hit the cache and marshal in ~0.4us. Y and RSTD are freshly allocated OUTPUTS:
+        # caching them would pin the storage and stop the allocator from recycling the
+        # address, so every call would churn a new address (misses + wasted pinning). Marshal
+        # those uncached so their addresses stay reusable.
+        x_ct = _to_cute_cached(X, assumed_align=16)
+        y_ct = to_cute_tensor(Y, assumed_align=16)
+        rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
+        w_ct = _to_cute_cached(W, assumed_align=16) if elementwise_affine else rstd_ct
+        n_cols = X.shape[1]
+        num_warps = fwd_warp_count(n_cols, vec)
+        num_threads = 32 * num_warps
+        num_vec_tiles = (n_cols // vec + num_threads - 1) // num_threads
+        # Optionally bucket n_cols in the compile key to reduce cold-compile churn.
+        bucket = _COMPILE_BUCKET
+        n_cols_key = n_cols
+        if bucket is not None and bucket > 0:
+            n_cols_key = ((int(n_cols) + bucket - 1) // bucket) * bucket
+        key = (
+            "fwd_vec",
+            n_cols_key,
             vec,
             num_vec_tiles,
             num_warps,
-            num_threads,
-            stream,
+            X.dtype,
+            W.dtype if elementwise_affine else None,
+            casting_mode,
+            elementwise_affine,
         )
-        _compile_cache[key] = compiled
+        compiled = _compile_cache.get(key)
+        _dbg = _DEBUG
         if _dbg:
-            _rms_debug(f"Compiled fwd_vec kernel for key: {key}")
-    elif _dbg:
-        _rms_debug(f"Reusing fwd_vec kernel for key: {key}")
-    compiled(x_ct, w_ct, y_ct, rstd_ct, float(eps), float(offset), stream)
+            _rms_debug(
+                f"_launch_fwd_vector key={key} (n_cols={n_cols} n_cols_key={n_cols_key}) cache_hit={compiled is not None}"
+            )
+        if compiled is None:
+            compiled = cute.compile(
+                _rms_norm_fwd_vector_host,
+                x_ct,
+                w_ct,
+                y_ct,
+                rstd_ct,
+                float(eps),
+                float(offset),
+                casting_mode,
+                elementwise_affine,
+                n_cols,
+                vec,
+                num_vec_tiles,
+                num_warps,
+                num_threads,
+                stream,
+            )
+            _compile_cache[key] = compiled
+            if _dbg:
+                _rms_debug(f"Compiled fwd_vec kernel for key: {key}")
+        elif _dbg:
+            _rms_debug(f"Reusing fwd_vec kernel for key: {key}")
+        compiled(x_ct, w_ct, y_ct, rstd_ct, float(eps), float(offset), stream)
 
 
 def _launch_fwd(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine):
-    fast_tensors = (X, Y, W) if elementwise_affine else (X, Y)
-    fast_params = _fast_vector_params(X.shape[1], *fast_tensors)
-    if fast_params is not None:
-        # fast_params[0] is VEC; _launch_fwd_vector derives the width-aware warp/thread
-        # count and num_vec_tiles itself, so only VEC is forwarded.
-        _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine, fast_params[0])
-        return
+    with device_context(X.device):
+        fast_tensors = (X, Y, W) if elementwise_affine else (X, Y)
+        fast_params = _fast_vector_params(X.shape[1], *fast_tensors)
+        if fast_params is not None:
+            # fast_params[0] is VEC; _launch_fwd_vector derives the width-aware warp/thread
+            # count and num_vec_tiles itself, so only VEC is forwarded.
+            _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_affine, fast_params[0])
+            return
 
-    stream = _cute_stream()
-    # Scalar (non-vectorized) access, so element-size alignment is all we assume — this
-    # keeps the kernel correct for unaligned contiguous slices and irregular hidden dims.
-    x_ct = _to_cute_cached(X, assumed_align=X.element_size())
-    y_ct = _to_cute_cached(Y, assumed_align=Y.element_size())
-    rstd_ct = _to_cute_cached(RSTD, assumed_align=4)  # fp32
-    # Non-affine: reuse the fp32 RSTD handle as a dummy — the kernel never reads it.
-    w_ct = _to_cute_cached(W, assumed_align=W.element_size()) if elementwise_affine else rstd_ct
+        stream = _cute_stream(X.device)
+        # Scalar (non-vectorized) access, so element-size alignment is all we assume — this
+        # keeps the kernel correct for unaligned contiguous slices and irregular hidden dims.
+        x_ct = _to_cute_cached(X, assumed_align=X.element_size())
+        y_ct = _to_cute_cached(Y, assumed_align=Y.element_size())
+        rstd_ct = _to_cute_cached(RSTD, assumed_align=4)  # fp32
+        # Non-affine: reuse the fp32 RSTD handle as a dummy — the kernel never reads it.
+        w_ct = _to_cute_cached(W, assumed_align=W.element_size()) if elementwise_affine else rstd_ct
 
-    # Key on every dtype the kernel bakes: X (also Y), and W when affine (mW.element_type
-    # is a compile-time specialization). Missing W.dtype would let a bf16-activations /
-    # fp32-weight call reuse a kernel baked for a different weight width — see the same
-    # guard in cross_entropy.py's compile key.
-    key = ("fwd", X.dtype, W.dtype if elementwise_affine else None, casting_mode, elementwise_affine)
-    if key not in _compile_cache:
-        _compile_cache[key] = cute.compile(
-            _rms_norm_fwd_host,
-            x_ct,
-            w_ct,
-            y_ct,
-            rstd_ct,
-            float(eps),
-            float(offset),
-            casting_mode,
-            elementwise_affine,
-            stream,
-        )
-    _compile_cache[key](x_ct, w_ct, y_ct, rstd_ct, float(eps), float(offset), stream)
+        # Key on every dtype the kernel bakes: X (also Y), and W when affine (mW.element_type
+        # is a compile-time specialization). Missing W.dtype would let a bf16-activations /
+        # fp32-weight call reuse a kernel baked for a different weight width — see the same
+        # guard in cross_entropy.py's compile key.
+        key = ("fwd", X.dtype, W.dtype if elementwise_affine else None, casting_mode, elementwise_affine)
+        if key not in _compile_cache:
+            _compile_cache[key] = cute.compile(
+                _rms_norm_fwd_host,
+                x_ct,
+                w_ct,
+                y_ct,
+                rstd_ct,
+                float(eps),
+                float(offset),
+                casting_mode,
+                elementwise_affine,
+                stream,
+            )
+        _compile_cache[key](x_ct, w_ct, y_ct, rstd_ct, float(eps), float(offset), stream)
 
 
 def _launch_bwd_dx(dY, X, W, RSTD, dX, offset, casting_mode, elementwise_affine):
-    stream = _cute_stream()
-    dy_ct = _to_cute_cached(dY, assumed_align=dY.element_size())
-    x_ct = _to_cute_cached(X, assumed_align=X.element_size())
-    rstd_ct = _to_cute_cached(RSTD, assumed_align=4)
-    dx_ct = _to_cute_cached(dX, assumed_align=dX.element_size())
-    w_ct = _to_cute_cached(W, assumed_align=W.element_size()) if elementwise_affine else rstd_ct
+    with device_context(X.device):
+        stream = _cute_stream(X.device)
+        dy_ct = _to_cute_cached(dY, assumed_align=dY.element_size())
+        x_ct = _to_cute_cached(X, assumed_align=X.element_size())
+        rstd_ct = _to_cute_cached(RSTD, assumed_align=4)
+        dx_ct = _to_cute_cached(dX, assumed_align=dX.element_size())
+        w_ct = _to_cute_cached(W, assumed_align=W.element_size()) if elementwise_affine else rstd_ct
 
-    # Key on every baked dtype: dY, X (also dX == dY.dtype), and W when affine.
-    key = ("bwd_dx", X.dtype, dY.dtype, W.dtype if elementwise_affine else None, casting_mode, elementwise_affine)
-    if key not in _compile_cache:
-        _compile_cache[key] = cute.compile(
-            _rms_norm_bwd_dx_host,
-            dy_ct,
-            x_ct,
-            w_ct,
-            rstd_ct,
-            dx_ct,
-            float(offset),
-            casting_mode,
-            elementwise_affine,
-            stream,
-        )
-    _compile_cache[key](dy_ct, x_ct, w_ct, rstd_ct, dx_ct, float(offset), stream)
+        # Key on every baked dtype: dY, X (also dX == dY.dtype), and W when affine.
+        key = ("bwd_dx", X.dtype, dY.dtype, W.dtype if elementwise_affine else None, casting_mode, elementwise_affine)
+        if key not in _compile_cache:
+            _compile_cache[key] = cute.compile(
+                _rms_norm_bwd_dx_host,
+                dy_ct,
+                x_ct,
+                w_ct,
+                rstd_ct,
+                dx_ct,
+                float(offset),
+                casting_mode,
+                elementwise_affine,
+                stream,
+            )
+        _compile_cache[key](dy_ct, x_ct, w_ct, rstd_ct, dx_ct, float(offset), stream)
 
 
 def _launch_bwd_dw(dY, X, RSTD, dW_partial, rows_per_strip, casting_mode):
-    stream = _cute_stream()
-    dy_ct = _to_cute_cached(dY, assumed_align=dY.element_size())
-    x_ct = _to_cute_cached(X, assumed_align=X.element_size())
-    rstd_ct = _to_cute_cached(RSTD, assumed_align=4)
-    dw_ct = _to_cute_cached(dW_partial, assumed_align=4)  # fp32 (num_strips, n_cols)
+    with device_context(X.device):
+        stream = _cute_stream(X.device)
+        dy_ct = _to_cute_cached(dY, assumed_align=dY.element_size())
+        x_ct = _to_cute_cached(X, assumed_align=X.element_size())
+        rstd_ct = _to_cute_cached(RSTD, assumed_align=4)
+        dw_ct = _to_cute_cached(dW_partial, assumed_align=4)  # fp32 (num_strips, n_cols)
 
-    # Key on every baked dtype: dY and X (mdW is always fp32). The llama cast bakes
-    # mX.element_type; the loads bake mdY.element_type. rows_per_strip is a runtime
-    # arg (not baked), so one compiled kernel serves every shape.
-    key = ("bwd_dw", X.dtype, dY.dtype, casting_mode)
-    if key not in _compile_cache:
-        _compile_cache[key] = cute.compile(
-            _rms_norm_bwd_dw_host, dy_ct, x_ct, rstd_ct, dw_ct, int(rows_per_strip), casting_mode, stream
-        )
-    _compile_cache[key](dy_ct, x_ct, rstd_ct, dw_ct, int(rows_per_strip), stream)
+        # Key on every baked dtype: dY and X (mdW is always fp32). The llama cast bakes
+        # mX.element_type; the loads bake mdY.element_type. rows_per_strip is a runtime
+        # arg (not baked), so one compiled kernel serves every shape.
+        key = ("bwd_dw", X.dtype, dY.dtype, casting_mode)
+        if key not in _compile_cache:
+            _compile_cache[key] = cute.compile(
+                _rms_norm_bwd_dw_host, dy_ct, x_ct, rstd_ct, dw_ct, int(rows_per_strip), casting_mode, stream
+            )
+        _compile_cache[key](dy_ct, x_ct, rstd_ct, dw_ct, int(rows_per_strip), stream)
 
 
 def _launch_bwd_fused(
@@ -1010,84 +1020,85 @@ def _launch_bwd_fused(
     num_warps,
 ):
     """Launch the aligned register-resident affine backward specialization."""
-    stream = _cute_stream()
-    dy_ct = _to_cute_cached(dY, assumed_align=16)
-    x_ct = _to_cute_cached(X, assumed_align=16)
-    w_ct = _to_cute_cached(W, assumed_align=16)
-    rstd_ct = _to_cute_cached(RSTD, assumed_align=4)
-    dx_ct = _to_cute_cached(dX, assumed_align=16)
-    dw_ct = _to_cute_cached(dW_partial, assumed_align=16)  # fp32 (num_strips, n_cols)
-    n_cols = X.shape[1]
-    num_threads = 32 * num_warps
-    smem_bytes = (((num_warps + 1) * 4 + 15) // 16) * 16
+    with device_context(X.device):
+        stream = _cute_stream(X.device)
+        dy_ct = _to_cute_cached(dY, assumed_align=16)
+        x_ct = _to_cute_cached(X, assumed_align=16)
+        w_ct = _to_cute_cached(W, assumed_align=16)
+        rstd_ct = _to_cute_cached(RSTD, assumed_align=4)
+        dx_ct = _to_cute_cached(dX, assumed_align=16)
+        dw_ct = _to_cute_cached(dW_partial, assumed_align=16)  # fp32 (num_strips, n_cols)
+        n_cols = X.shape[1]
+        num_threads = 32 * num_warps
+        smem_bytes = (((num_warps + 1) * 4 + 15) // 16) * 16
 
-    # The width and thread geometry size the register layouts and reduction
-    # scratch, so every value is baked into the compiled specialization.
-    # Optionally bucket the n_cols compile key to reduce cold-compile churn.
-    bucket = _COMPILE_BUCKET
-    n_cols_key = n_cols
-    if bucket is not None and bucket > 0:
-        # round up to the next bucket, keep original n_cols for actual bake
-        n_cols_key = ((int(n_cols) + bucket - 1) // bucket) * bucket
-    # Support an optional reload policy tag (registers|smem|gmem|auto) baked
-    # into the compile-key so later device variants can be compiled per-policy.
-    reload_policy = _RELOAD_POLICY
-    key = (
-        "bwd_fused_vec",
-        n_cols_key,
-        vec,
-        num_vec_tiles,
-        num_threads,
-        num_warps,
-        smem_bytes,
-        reload_policy,
-        X.dtype,
-        dY.dtype,
-        W.dtype,
-        casting_mode,
-    )
-    if _DEBUG:
-        _rms_debug(f"_launch_bwd_fused reload_policy={reload_policy}")
-    cache_hit = key in _compile_cache
-    if _DEBUG:
-        _rms_debug(f"_launch_bwd_fused key={key} (n_cols={n_cols} n_cols_key={n_cols_key}) cache_hit={cache_hit}")
-    # Warn when a non-auto policy is requested but no device variant exists yet.
-    if reload_policy not in ("auto", "registers", "smem", "gmem"):
-        if _DEBUG:
-            _rms_debug(f"Unrecognized LIGER_RMS_RELOAD_POLICY={reload_policy}; falling back to 'auto' behavior")
-    elif reload_policy in ("smem", "gmem"):
-        # No specialized SMEM/GMEM variants implemented in this change; warn so
-        # experimenters know they're tagging the compile key but still using the
-        # current register-resident kernel implementation.
-        if _DEBUG:
-            _rms_debug(
-                f"LIGER_RMS_RELOAD_POLICY={reload_policy} requested, but device-side variant not implemented; using current kernel implementation"
-            )
-    if not cache_hit:
-        _compile_cache[key] = cute.compile(
-            _rms_norm_bwd_fused_host,
-            dy_ct,
-            x_ct,
-            w_ct,
-            rstd_ct,
-            dx_ct,
-            dw_ct,
-            float(offset),
-            casting_mode,
-            n_cols,
+        # The width and thread geometry size the register layouts and reduction
+        # scratch, so every value is baked into the compiled specialization.
+        # Optionally bucket the n_cols compile key to reduce cold-compile churn.
+        bucket = _COMPILE_BUCKET
+        n_cols_key = n_cols
+        if bucket is not None and bucket > 0:
+            # round up to the next bucket, keep original n_cols for actual bake
+            n_cols_key = ((int(n_cols) + bucket - 1) // bucket) * bucket
+        # Support an optional reload policy tag (registers|smem|gmem|auto) baked
+        # into the compile-key so later device variants can be compiled per-policy.
+        reload_policy = _RELOAD_POLICY
+        key = (
+            "bwd_fused_vec",
+            n_cols_key,
             vec,
             num_vec_tiles,
             num_threads,
             num_warps,
             smem_bytes,
-            stream,
+            reload_policy,
+            X.dtype,
+            dY.dtype,
+            W.dtype,
+            casting_mode,
         )
         if _DEBUG:
-            _rms_debug(f"Compiled kernel for key: {key}")
-    else:
+            _rms_debug(f"_launch_bwd_fused reload_policy={reload_policy}")
+        cache_hit = key in _compile_cache
         if _DEBUG:
-            _rms_debug(f"Reusing compiled kernel for key: {key}")
-    _compile_cache[key](dy_ct, x_ct, w_ct, rstd_ct, dx_ct, dw_ct, float(offset), stream)
+            _rms_debug(f"_launch_bwd_fused key={key} (n_cols={n_cols} n_cols_key={n_cols_key}) cache_hit={cache_hit}")
+        # Warn when a non-auto policy is requested but no device variant exists yet.
+        if reload_policy not in ("auto", "registers", "smem", "gmem"):
+            if _DEBUG:
+                _rms_debug(f"Unrecognized LIGER_RMS_RELOAD_POLICY={reload_policy}; falling back to 'auto' behavior")
+        elif reload_policy in ("smem", "gmem"):
+            # No specialized SMEM/GMEM variants implemented in this change; warn so
+            # experimenters know they're tagging the compile key but still using the
+            # current register-resident kernel implementation.
+            if _DEBUG:
+                _rms_debug(
+                    f"LIGER_RMS_RELOAD_POLICY={reload_policy} requested, but device-side variant not implemented; using current kernel implementation"
+                )
+        if not cache_hit:
+            _compile_cache[key] = cute.compile(
+                _rms_norm_bwd_fused_host,
+                dy_ct,
+                x_ct,
+                w_ct,
+                rstd_ct,
+                dx_ct,
+                dw_ct,
+                float(offset),
+                casting_mode,
+                n_cols,
+                vec,
+                num_vec_tiles,
+                num_threads,
+                num_warps,
+                smem_bytes,
+                stream,
+            )
+            if _DEBUG:
+                _rms_debug(f"Compiled kernel for key: {key}")
+        else:
+            if _DEBUG:
+                _rms_debug(f"Reusing compiled kernel for key: {key}")
+        _compile_cache[key](dy_ct, x_ct, w_ct, rstd_ct, dx_ct, dw_ct, float(offset), stream)
 
 
 # =============================================================================

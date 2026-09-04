@@ -7,6 +7,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 ConstBool = ct.Constant[bool]
@@ -195,139 +196,141 @@ def _rms_norm_dw_reduce_kernel_ct(
 
 
 def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
-    del row_mode
-    if not isinstance(casting_mode, int):
-        if casting_mode not in _STR_TO_CASTING_MODE:
+    with device_context(X.device):
+        del row_mode
+        if not isinstance(casting_mode, int):
+            if casting_mode not in _STR_TO_CASTING_MODE:
+                raise ValueError(f"Invalid casting mode: {casting_mode}")
+            casting_mode = _STR_TO_CASTING_MODE[casting_mode]
+        elif casting_mode not in _STR_TO_CASTING_MODE.values():
             raise ValueError(f"Invalid casting mode: {casting_mode}")
-        casting_mode = _STR_TO_CASTING_MODE[casting_mode]
-    elif casting_mode not in _STR_TO_CASTING_MODE.values():
-        raise ValueError(f"Invalid casting mode: {casting_mode}")
 
-    shape = X.shape
-    hidden_size = shape[-1]
-    x_2d = X.contiguous().view(-1, hidden_size)
-    n_rows, n_cols = x_2d.shape
-    block_size = _calculate_settings(n_cols)
-    aligned = n_cols == block_size
-    elementwise_affine = W is not None
-    if elementwise_affine:
-        if W.shape != (n_cols,):
-            raise ValueError(f"expected weight shape {(n_cols,)}, got {tuple(W.shape)}")
-        weight = W.contiguous()
+        shape = X.shape
+        hidden_size = shape[-1]
+        x_2d = X.contiguous().view(-1, hidden_size)
+        n_rows, n_cols = x_2d.shape
+        block_size = _calculate_settings(n_cols)
+        aligned = n_cols == block_size
+        elementwise_affine = W is not None
+        if elementwise_affine:
+            if W.shape != (n_cols,):
+                raise ValueError(f"expected weight shape {(n_cols,)}, got {tuple(W.shape)}")
+            weight = W.contiguous()
 
-    y = torch.empty_like(x_2d)
-    reciprocal_rms = torch.empty(n_rows, dtype=torch.float32, device=X.device)
-    weight_arg = weight if elementwise_affine else reciprocal_rms
-    ct.launch(
-        torch.cuda.current_stream(),
-        (n_rows, 1, 1),
-        _rms_norm_fwd_kernel_ct,
-        (
-            x_2d,
-            weight_arg,
-            y,
-            reciprocal_rms,
-            int(n_cols),
-            float(eps),
-            float(offset),
-            int(casting_mode),
-            bool(elementwise_affine),
-            int(block_size),
-            bool(aligned),
-        ),
-    )
-    return y.view(*shape), x_2d, reciprocal_rms, block_size, None, casting_mode
-
-
-def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode):
-    del num_warps, row_mode
-    shape = dY.shape
-    hidden_size = shape[-1]
-    dy_2d = dY.contiguous().view(-1, hidden_size)
-    x_2d = X.contiguous().view(-1, hidden_size)
-    n_rows, n_cols = dy_2d.shape
-    block_size = _calculate_settings(n_cols) if BLOCK_SIZE is None else BLOCK_SIZE
-    aligned = n_cols == block_size
-    elementwise_affine = W is not None
-    dx = dy_2d if in_place else torch.empty_like(dy_2d)
-
-    if not elementwise_affine:
+        y = torch.empty_like(x_2d)
+        reciprocal_rms = torch.empty(n_rows, dtype=torch.float32, device=X.device)
+        weight_arg = weight if elementwise_affine else reciprocal_rms
         ct.launch(
             torch.cuda.current_stream(),
             (n_rows, 1, 1),
-            _rms_norm_bwd_dx_kernel_ct,
+            _rms_norm_fwd_kernel_ct,
             (
                 x_2d,
-                dy_2d,
-                RSTD.contiguous(),
-                RSTD.contiguous(),
-                dx,
+                weight_arg,
+                y,
+                reciprocal_rms,
                 int(n_cols),
+                float(eps),
                 float(offset),
                 int(casting_mode),
-                False,
+                bool(elementwise_affine),
                 int(block_size),
                 bool(aligned),
             ),
         )
-        return dx.view(*shape), None
+        return y.view(*shape), x_2d, reciprocal_rms, block_size, None, casting_mode
 
-    weight = W.contiguous()
-    sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
-    strip_multiplier = 2 if n_rows >= 16 * sm_count else 1
-    num_programs = max(1, min(n_rows, strip_multiplier * sm_count))
-    rows_per_program = math.ceil(n_rows / num_programs)
-    dw_partial = torch.empty((num_programs, n_cols), dtype=torch.float32, device=W.device)
 
-    ct.launch(
-        torch.cuda.current_stream(),
-        (num_programs, 1, 1),
-        _rms_norm_bwd_combined_kernel_ct,
-        (
-            x_2d,
-            dy_2d,
-            weight,
-            RSTD.contiguous(),
-            dx,
-            dw_partial,
-            int(n_rows),
-            int(n_cols),
-            int(rows_per_program),
-            float(offset),
-            int(casting_mode),
-            int(block_size),
-            bool(aligned),
-        ),
-    )
-    if _DW_REDUCTION_POLICY in ("auto", "custom"):
-        tile_size = _DW_REDUCTION_TILE_SIZE
-        if tile_size <= 0 or tile_size & (tile_size - 1):
-            raise ValueError(f"LIGER_RMS_DW_REDUCTION_TILE_SIZE must be a positive power of two, got {tile_size}")
-        row_tile_size = _DW_REDUCTION_ROW_TILE_SIZE
-        if row_tile_size <= 0 or row_tile_size & (row_tile_size - 1):
-            raise ValueError(
-                f"LIGER_RMS_DW_REDUCTION_ROW_TILE_SIZE must be a positive power of two, got {row_tile_size}"
+def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode):
+    with device_context(X.device):
+        del num_warps, row_mode
+        shape = dY.shape
+        hidden_size = shape[-1]
+        dy_2d = dY.contiguous().view(-1, hidden_size)
+        x_2d = X.contiguous().view(-1, hidden_size)
+        n_rows, n_cols = dy_2d.shape
+        block_size = _calculate_settings(n_cols) if BLOCK_SIZE is None else BLOCK_SIZE
+        aligned = n_cols == block_size
+        elementwise_affine = W is not None
+        dx = dy_2d if in_place else torch.empty_like(dy_2d)
+
+        if not elementwise_affine:
+            ct.launch(
+                torch.cuda.current_stream(),
+                (n_rows, 1, 1),
+                _rms_norm_bwd_dx_kernel_ct,
+                (
+                    x_2d,
+                    dy_2d,
+                    RSTD.contiguous(),
+                    RSTD.contiguous(),
+                    dx,
+                    int(n_cols),
+                    float(offset),
+                    int(casting_mode),
+                    False,
+                    int(block_size),
+                    bool(aligned),
+                ),
             )
-        dw = torch.empty_like(weight)
+            return dx.view(*shape), None
+
+        weight = W.contiguous()
+        sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+        strip_multiplier = 2 if n_rows >= 16 * sm_count else 1
+        num_programs = max(1, min(n_rows, strip_multiplier * sm_count))
+        rows_per_program = math.ceil(n_rows / num_programs)
+        dw_partial = torch.empty((num_programs, n_cols), dtype=torch.float32, device=W.device)
+
         ct.launch(
             torch.cuda.current_stream(),
-            (math.ceil(n_cols / tile_size), 1, 1),
-            _rms_norm_dw_reduce_kernel_ct,
+            (num_programs, 1, 1),
+            _rms_norm_bwd_combined_kernel_ct,
             (
+                x_2d,
+                dy_2d,
+                weight,
+                RSTD.contiguous(),
+                dx,
                 dw_partial,
-                dw,
-                int(num_programs),
+                int(n_rows),
                 int(n_cols),
-                int(tile_size),
-                int(row_tile_size),
-                bool(n_cols % tile_size == 0),
+                int(rows_per_program),
+                float(offset),
+                int(casting_mode),
+                int(block_size),
+                bool(aligned),
             ),
         )
-    elif _DW_REDUCTION_POLICY == "torch":
-        dw = dw_partial.sum(dim=0).to(W.dtype)
-    else:
-        raise ValueError(f"Invalid LIGER_RMS_DW_REDUCTION policy: {_DW_REDUCTION_POLICY}")
-    return dx.view(*shape), dw
+        if _DW_REDUCTION_POLICY in ("auto", "custom"):
+            tile_size = _DW_REDUCTION_TILE_SIZE
+            if tile_size <= 0 or tile_size & (tile_size - 1):
+                raise ValueError(f"LIGER_RMS_DW_REDUCTION_TILE_SIZE must be a positive power of two, got {tile_size}")
+            row_tile_size = _DW_REDUCTION_ROW_TILE_SIZE
+            if row_tile_size <= 0 or row_tile_size & (row_tile_size - 1):
+                raise ValueError(
+                    f"LIGER_RMS_DW_REDUCTION_ROW_TILE_SIZE must be a positive power of two, got {row_tile_size}"
+                )
+            dw = torch.empty_like(weight)
+            ct.launch(
+                torch.cuda.current_stream(),
+                (math.ceil(n_cols / tile_size), 1, 1),
+                _rms_norm_dw_reduce_kernel_ct,
+                (
+                    dw_partial,
+                    dw,
+                    int(num_programs),
+                    int(n_cols),
+                    int(tile_size),
+                    int(row_tile_size),
+                    bool(n_cols % tile_size == 0),
+                ),
+            )
+        elif _DW_REDUCTION_POLICY == "torch":
+            dw = dw_partial.sum(dim=0).to(W.dtype)
+        else:
+            raise ValueError(f"Invalid LIGER_RMS_DW_REDUCTION policy: {_DW_REDUCTION_POLICY}")
+        return dx.view(*shape), dw
 
 
 class LigerRMSNormFunction(torch.autograd.Function):

@@ -56,6 +56,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 # Forward base tile for the exact-fit decomposition (occupancy=1 + exp2). 2048
 # gives the best DRAM utilisation on B200; larger tiles (4096) become issue-bound.
@@ -299,48 +300,50 @@ class LigerSiLUMulFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, a, b, gate_multiplier: float = 1.0, down_multiplier: float = 1.0):
-        gate_multiplier = float(gate_multiplier)
-        down_multiplier = float(down_multiplier)
-        ori_shape = a.shape
-        n_cols = ori_shape[-1]
-        a = a.view(-1, n_cols).contiguous()
-        b = b.view(-1, n_cols).contiguous()
-        n_rows = a.shape[0]
+        with device_context(a.device):
+            gate_multiplier = float(gate_multiplier)
+            down_multiplier = float(down_multiplier)
+            ori_shape = a.shape
+            n_cols = ori_shape[-1]
+            a = a.view(-1, n_cols).contiguous()
+            b = b.view(-1, n_cols).contiguous()
+            n_rows = a.shape[0]
 
-        c = torch.empty_like(a)
-        fwd_kernel = _get_fwd_kernel(int(n_cols))
+            c = torch.empty_like(a)
+            fwd_kernel = _get_fwd_kernel(int(n_cols))
 
-        ct.launch(
-            torch.cuda.current_stream(),
-            (n_rows, 1, 1),
-            fwd_kernel,
-            (a, b, c, gate_multiplier),
-        )
-        c_out = c.view(*ori_shape)
-        if down_multiplier != 1.0:
-            c_out = c_out * down_multiplier
-        ctx.save_for_backward(a, b)
-        ctx.ori_shape = ori_shape
-        ctx.gate_multiplier = gate_multiplier
-        ctx.down_multiplier = down_multiplier
-        return c_out
+            ct.launch(
+                torch.cuda.current_stream(),
+                (n_rows, 1, 1),
+                fwd_kernel,
+                (a, b, c, gate_multiplier),
+            )
+            c_out = c.view(*ori_shape)
+            if down_multiplier != 1.0:
+                c_out = c_out * down_multiplier
+            ctx.save_for_backward(a, b)
+            ctx.ori_shape = ori_shape
+            ctx.gate_multiplier = gate_multiplier
+            ctx.down_multiplier = down_multiplier
+            return c_out
 
     @staticmethod
     def backward(ctx, dc):
-        a, b = ctx.saved_tensors
-        ori_shape = ctx.ori_shape
-        n_cols = ori_shape[-1]
-        dc = dc.view(-1, n_cols).contiguous()
-        n_rows = dc.shape[0]
-        if ctx.down_multiplier != 1.0:
-            dc = dc * ctx.down_multiplier
-        BLOCK_SIZE = _calculate_block_size(n_cols, MAX_FUSED_SIZE_BWD)
-        bwd_kernel = _swiglu_bwd_ct_aligned if n_cols % BLOCK_SIZE == 0 else _swiglu_bwd_ct
+        with device_context(dc.device):
+            a, b = ctx.saved_tensors
+            ori_shape = ctx.ori_shape
+            n_cols = ori_shape[-1]
+            dc = dc.view(-1, n_cols).contiguous()
+            n_rows = dc.shape[0]
+            if ctx.down_multiplier != 1.0:
+                dc = dc * ctx.down_multiplier
+            BLOCK_SIZE = _calculate_block_size(n_cols, MAX_FUSED_SIZE_BWD)
+            bwd_kernel = _swiglu_bwd_ct_aligned if n_cols % BLOCK_SIZE == 0 else _swiglu_bwd_ct
 
-        ct.launch(
-            torch.cuda.current_stream(),
-            (n_rows, 1, 1),
-            bwd_kernel,
-            (dc, a, b, int(n_cols), int(BLOCK_SIZE), ctx.gate_multiplier),
-        )
-        return a.view(*ori_shape), b.view(*ori_shape), None, None
+            ct.launch(
+                torch.cuda.current_stream(),
+                (n_rows, 1, 1),
+                bwd_kernel,
+                (dc, a, b, int(n_cols), int(BLOCK_SIZE), ctx.gate_multiplier),
+            )
+            return a.view(*ori_shape), b.view(*ori_shape), None, None

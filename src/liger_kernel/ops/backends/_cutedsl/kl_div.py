@@ -65,6 +65,7 @@ from liger_kernel.ops.backends._cutedsl._cute_lib.compile_utils import make_fake
 from liger_kernel.ops.backends._cutedsl._cute_lib.dtype_map import torch2cute_dtype_map
 from liger_kernel.ops.backends._cutedsl._cute_lib.reduce import row_reduce
 from liger_kernel.ops.backends._cutedsl._cute_lib.reduction_base import ReductionBase
+from liger_kernel.ops.utils import device_context
 
 # log2(e) for the exp2-based exp (native HW instruction).
 _LOG2_E = math.log2(math.e)
@@ -413,31 +414,32 @@ def _kl_div_cutedsl_forward(
     (sum / mean / batchmean) host-side — matching the Triton kernel's
     post-kernel reduction logic.
     """
-    BT, V = y_pred.shape
-    both_fp32 = y_pred.element_size() > 2 and y_true.element_size() > 2
-    fwd_limit = _FWD_MAX_TILE_CUTEDSL_FP32 if both_fp32 else _FWD_MAX_TILE_CUTEDSL
-    if V > fwd_limit:
-        raise RuntimeError(
-            f"cuTeDSL kl_div forward only supports V <= {fwd_limit} for "
-            f"4-byte-pair inputs; got {V}. Use impl='nvidia-triton' for wider rows."
-        )
+    with device_context(y_pred.device):
+        BT, V = y_pred.shape
+        both_fp32 = y_pred.element_size() > 2 and y_true.element_size() > 2
+        fwd_limit = _FWD_MAX_TILE_CUTEDSL_FP32 if both_fp32 else _FWD_MAX_TILE_CUTEDSL
+        if V > fwd_limit:
+            raise RuntimeError(
+                f"cuTeDSL kl_div forward only supports V <= {fwd_limit} for "
+                f"4-byte-pair inputs; got {V}. Use impl='nvidia-triton' for wider rows."
+            )
 
-    y_flat = y_pred.contiguous()
-    t_flat = y_true.contiguous()
-    loss_per_row = torch.empty(BT, dtype=torch.float32, device=y_pred.device)
+        y_flat = y_pred.contiguous()
+        t_flat = y_true.contiguous()
+        loss_per_row = torch.empty(BT, dtype=torch.float32, device=y_pred.device)
 
-    compiled = _get_fwd_kernel(y_flat.dtype, t_flat.dtype, V, log_target, eps)
-    compiled(y_flat, t_flat, loss_per_row, Float32(float(eps)))
+        compiled = _get_fwd_kernel(y_flat.dtype, t_flat.dtype, V, log_target, eps)
+        compiled(y_flat, t_flat, loss_per_row, Float32(float(eps)))
 
-    # Cross-row reduction (matches Triton's host-side logic).
-    if reduction == "batchmean":
-        return loss_per_row.sum() / BT
-    elif reduction == "sum":
-        return loss_per_row.sum(dim=0)
-    elif reduction == "mean":
-        return loss_per_row.sum() / (BT * V)
-    else:  # "none"
-        return loss_per_row
+        # Cross-row reduction (matches Triton's host-side logic).
+        if reduction == "batchmean":
+            return loss_per_row.sum() / BT
+        elif reduction == "sum":
+            return loss_per_row.sum(dim=0)
+        elif reduction == "mean":
+            return loss_per_row.sum() / (BT * V)
+        else:  # "none"
+            return loss_per_row
 
 
 def _kl_div_cutedsl_backward(
@@ -456,33 +458,34 @@ def _kl_div_cutedsl_backward(
     batchmean / mean reductions. Folding removes both passes and the allocation, and is strictly
     MORE accurate (old: bf16 store -> bf16 mul -> bf16 div; new: one fp32 multiply -> one store).
     """
-    BT, V = y_true.shape
-    t_flat = y_true.contiguous()
-    new_grads = torch.empty_like(t_flat)
+    with device_context(y_true.device):
+        BT, V = y_true.shape
+        t_flat = y_true.contiguous()
+        new_grads = torch.empty_like(t_flat)
 
-    # Reduction divisor (matches torch/Triton semantics): batchmean -> /BT, mean -> /(BT*V),
-    # sum -> 1 ("none" never reaches here — the public wrapper delegates it to Triton).
-    if reduction == "batchmean":
-        red_div = float(BT)
-    elif reduction == "mean":
-        red_div = float(BT * V)
-    else:
-        red_div = 1.0
+        # Reduction divisor (matches torch/Triton semantics): batchmean -> /BT, mean -> /(BT*V),
+        # sum -> 1 ("none" never reaches here — the public wrapper delegates it to Triton).
+        if reduction == "batchmean":
+            red_div = float(BT)
+        elif reduction == "mean":
+            red_div = float(BT * V)
+        else:
+            red_div = 1.0
 
-    compiled = _get_bwd_kernel(t_flat.dtype, new_grads.dtype, V, log_target)
-    if grad_output.numel() != 1:
-        # Rare elementwise upstream grad: keep the old broadcast path exactly (per-element go).
-        compiled(t_flat, new_grads, Float32(1.0))
-        derivative = new_grads * grad_output
-        if red_div != 1.0:
-            derivative = derivative / red_div
-        return derivative
+        compiled = _get_bwd_kernel(t_flat.dtype, new_grads.dtype, V, log_target)
+        if grad_output.numel() != 1:
+            # Rare elementwise upstream grad: keep the old broadcast path exactly (per-element go).
+            compiled(t_flat, new_grads, Float32(1.0))
+            derivative = new_grads * grad_output
+            if red_div != 1.0:
+                derivative = derivative / red_div
+            return derivative
 
-    # Scalar upstream grad (every scalar-loss autograd backward): a single host read of the
-    # value (the old torch.equal path synced as well) and one fused fp32 multiply in-kernel.
-    scale = float(grad_output) / red_div
-    compiled(t_flat, new_grads, Float32(scale))
-    return new_grads
+        # Scalar upstream grad (every scalar-loss autograd backward): a single host read of the
+        # value (the old torch.equal path synced as well) and one fused fp32 multiply in-kernel.
+        scale = float(grad_output) / red_div
+        compiled(t_flat, new_grads, Float32(scale))
+        return new_grads
 
 
 class _LigerKLDivCuTeDSLFunction(torch.autograd.Function):

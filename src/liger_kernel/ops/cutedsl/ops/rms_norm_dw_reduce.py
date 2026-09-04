@@ -13,6 +13,7 @@ from liger_kernel.ops.cutedsl.ops.rms_norm import _compile_cache
 from liger_kernel.ops.cutedsl.ops.rms_norm import _cute_stream
 from liger_kernel.ops.cutedsl.ops.rms_norm import _to_cute_cached
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.utils import device_context
 
 _THREADS = 32
 _REDUCTION_WARPS = int(os.environ.get("LIGER_RMS_DW_REDUCTION_WARPS") or 32)
@@ -106,35 +107,38 @@ def _reduce_dw_partials_parallel_host(
 
 def reduce_dw_partials(dW_partial: torch.Tensor, output_dtype: torch.dtype) -> torch.Tensor:
     """Reduce FP32 strip partials and fuse the final output-dtype conversion."""
-    if _REDUCTION_WARPS not in (1, 2, 4, 8, 16, 32):
-        raise ValueError(f"LIGER_RMS_DW_REDUCTION_WARPS must be one of 1, 2, 4, 8, 16, or 32, got {_REDUCTION_WARPS}")
-    output = torch.empty(dW_partial.shape[1], dtype=output_dtype, device=dW_partial.device)
-    partial_ct = _to_cute_cached(dW_partial, assumed_align=16)
-    output_ct = to_cute_tensor(output, assumed_align=16)
-    key = (
-        "rms_norm_dw_reduce",
-        dW_partial.shape[0],
-        dW_partial.shape[1],
-        dW_partial.dtype,
-        output.dtype,
-        _REDUCTION_WARPS,
-    )
-    stream = _cute_stream()
-    if key not in _compile_cache:
-        if _REDUCTION_WARPS == 1:
-            _compile_cache[key] = cute.compile(
-                _reduce_dw_partials_host,
-                partial_ct,
-                output_ct,
-                stream,
+    with device_context(dW_partial.device):
+        if _REDUCTION_WARPS not in (1, 2, 4, 8, 16, 32):
+            raise ValueError(
+                f"LIGER_RMS_DW_REDUCTION_WARPS must be one of 1, 2, 4, 8, 16, or 32, got {_REDUCTION_WARPS}"
             )
-        else:
-            _compile_cache[key] = cute.compile(
-                _reduce_dw_partials_parallel_host,
-                partial_ct,
-                output_ct,
-                _REDUCTION_WARPS,
-                stream,
-            )
-    _compile_cache[key](partial_ct, output_ct, stream)
-    return output
+        output = torch.empty(dW_partial.shape[1], dtype=output_dtype, device=dW_partial.device)
+        partial_ct = _to_cute_cached(dW_partial, assumed_align=16)
+        output_ct = to_cute_tensor(output, assumed_align=16)
+        key = (
+            "rms_norm_dw_reduce",
+            dW_partial.shape[0],
+            dW_partial.shape[1],
+            dW_partial.dtype,
+            output.dtype,
+            _REDUCTION_WARPS,
+        )
+        stream = _cute_stream(dW_partial.device)
+        if key not in _compile_cache:
+            if _REDUCTION_WARPS == 1:
+                _compile_cache[key] = cute.compile(
+                    _reduce_dw_partials_host,
+                    partial_ct,
+                    output_ct,
+                    stream,
+                )
+            else:
+                _compile_cache[key] = cute.compile(
+                    _reduce_dw_partials_parallel_host,
+                    partial_ct,
+                    output_ct,
+                    _REDUCTION_WARPS,
+                    stream,
+                )
+        _compile_cache[key](partial_ct, output_ct, stream)
+        return output

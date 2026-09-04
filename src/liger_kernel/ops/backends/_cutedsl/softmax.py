@@ -90,6 +90,7 @@ from liger_kernel.ops.backends._cutedsl._cute_lib.compile_utils import make_fake
 from liger_kernel.ops.backends._cutedsl._cute_lib.dtype_map import torch2cute_dtype_map
 from liger_kernel.ops.backends._cutedsl._cute_lib.reduce import row_reduce
 from liger_kernel.ops.backends._cutedsl._cute_lib.reduction_base import ReductionBase
+from liger_kernel.ops.utils import device_context
 
 # Same ceiling reasoning as the RMSNorm-bwd sibling: beyond this width the
 # kernel relies on the cluster-reduce path. Surface a RuntimeError so the test
@@ -444,46 +445,48 @@ def _softmax_cutedsl_forward(x: Tensor) -> Tuple[Tensor, Tensor]:
     Returns ``(Y, Y)`` (the second copy is what backward needs saved). ``x`` is
     flattened to 2D; the output keeps the original shape.
     """
-    shape = x.shape
-    N = shape[-1]
-    if N > _MAX_TILE_CUTEDSL:
-        raise RuntimeError(
-            f"cuTeDSL softmax only supports hidden dim <= {_MAX_TILE_CUTEDSL}; "
-            f"got {N}. Use backend='triton' for wider rows. (Cluster-reduce "
-            f"path requires a newer cutlass-cute.)"
-        )
-    x_flat = x.view(-1, N).contiguous()
-    out = torch.empty_like(x_flat)
+    with device_context(x.device):
+        shape = x.shape
+        N = shape[-1]
+        if N > _MAX_TILE_CUTEDSL:
+            raise RuntimeError(
+                f"cuTeDSL softmax only supports hidden dim <= {_MAX_TILE_CUTEDSL}; "
+                f"got {N}. Use backend='triton' for wider rows. (Cluster-reduce "
+                f"path requires a newer cutlass-cute.)"
+            )
+        x_flat = x.view(-1, N).contiguous()
+        out = torch.empty_like(x_flat)
 
-    compiled = _get_fwd_kernel(x_flat.dtype, out.dtype, N)
-    # CuTe DSL compiled kernels read torch.cuda.current_stream() at launch via
-    # the tvm-ffi env stream; the ABI does not take a positional stream.
-    compiled(x_flat, out)
-    return out.view(shape), out
+        compiled = _get_fwd_kernel(x_flat.dtype, out.dtype, N)
+        # CuTe DSL compiled kernels read torch.cuda.current_stream() at launch via
+        # the tvm-ffi env stream; the ABI does not take a positional stream.
+        compiled(x_flat, out)
+        return out.view(shape), out
 
 
 def _softmax_cutedsl_backward(dy: Tensor, y: Tensor) -> Tensor:
     """Backward via the inline CuTe DSL kernel. Returns ``dX``."""
-    shape = dy.shape
-    N = shape[-1]
-    if N > _MAX_TILE_CUTEDSL:
-        raise RuntimeError(
-            f"cuTeDSL softmax backward only supports hidden dim <= {_MAX_TILE_CUTEDSL}; "
-            f"got {N}. Use backend='triton' for wider rows."
-        )
-    dy_flat = dy.view(-1, N).contiguous()
-    y_flat = y.view(-1, N).contiguous()
+    with device_context(y.device):
+        shape = dy.shape
+        N = shape[-1]
+        if N > _MAX_TILE_CUTEDSL:
+            raise RuntimeError(
+                f"cuTeDSL softmax backward only supports hidden dim <= {_MAX_TILE_CUTEDSL}; "
+                f"got {N}. Use backend='triton' for wider rows."
+            )
+        dy_flat = dy.view(-1, N).contiguous()
+        y_flat = y.view(-1, N).contiguous()
 
-    # The compiled kernel is keyed by dtype; Quack asserts dy.dtype == y.dtype.
-    # The autograd graph hands us dy in the same dtype as the forward output,
-    # so this holds for the common path. Bridge defensively if not.
-    if dy_flat.dtype != y_flat.dtype:
-        dy_flat = dy_flat.to(y_flat.dtype)
-    dx = torch.empty_like(dy_flat)
+        # The compiled kernel is keyed by dtype; Quack asserts dy.dtype == y.dtype.
+        # The autograd graph hands us dy in the same dtype as the forward output,
+        # so this holds for the common path. Bridge defensively if not.
+        if dy_flat.dtype != y_flat.dtype:
+            dy_flat = dy_flat.to(y_flat.dtype)
+        dx = torch.empty_like(dy_flat)
 
-    compiled = _get_bwd_kernel(dy_flat.dtype, y_flat.dtype, dx.dtype, N)
-    compiled(dy_flat, y_flat, dx)
-    return dx.view(shape)
+        compiled = _get_bwd_kernel(dy_flat.dtype, y_flat.dtype, dx.dtype, N)
+        compiled(dy_flat, y_flat, dx)
+        return dx.view(shape)
 
 
 class _LigerSoftmaxCuTeDSLFunction(torch.autograd.Function):

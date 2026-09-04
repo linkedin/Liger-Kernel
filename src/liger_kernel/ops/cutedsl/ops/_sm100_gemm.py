@@ -56,6 +56,7 @@ from cutlass.utils.blackwell_helpers import get_smem_store_op
 from cutlass.utils.blackwell_helpers import get_tmem_load_op
 
 from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
+from liger_kernel.ops.utils import device_context
 
 try:
     import tvm_ffi  # noqa: F401
@@ -890,71 +891,72 @@ def _select_epilogue_config(a):
 
 
 def _run_epilogue_gemm(a, b, out, epilogue):
-    _validate_epilogue_inputs(a, b, out)
-    epilogue_key = _validate_epilogue_callback(epilogue)
-    current_stream = _current_stream(a.device)
-    num_ab_stages, swizzle_size = _select_epilogue_config(a)
-    use_tma_output = out.stride(0) * out.element_size() % 16 == 0
-    max_active_clusters = _max_active_clusters(a.device.index)
+    with device_context(a.device):
+        _validate_epilogue_inputs(a, b, out)
+        epilogue_key = _validate_epilogue_callback(epilogue)
+        current_stream = _current_stream(a.device)
+        num_ab_stages, swizzle_size = _select_epilogue_config(a)
+        use_tma_output = out.stride(0) * out.element_size() % 16 == 0
+        max_active_clusters = _max_active_clusters(a.device.index)
 
-    key = (
-        a.device,
-        a.dtype,
-        b.dtype,
-        out.dtype,
-        epilogue_key,
-        use_tma_output,
-        swizzle_size,
-        num_ab_stages,
-        max_active_clusters,
-    )
-    compiled = _COMPILE_CACHE.get(key)
-    if compiled is None:
-        if _TVM_FFI_AVAILABLE:
-            # TVM-FFI is only the Python ABI used to pass torch tensors and the
-            # current stream directly; cute.compile still produces a CUDA kernel.
-            m_a = _fake_matrix(a.dtype)
-            m_b = _fake_matrix(b.dtype)
-            m_out = _fake_dynamic_tensor(
-                out,
-                leading_dim=1,
-                assumed_align=16,
-                stride_divisibility=8 if use_tma_output else 1,
+        key = (
+            a.device,
+            a.dtype,
+            b.dtype,
+            out.dtype,
+            epilogue_key,
+            use_tma_output,
+            swizzle_size,
+            num_ab_stages,
+            max_active_clusters,
+        )
+        compiled = _COMPILE_CACHE.get(key)
+        if compiled is None:
+            if _TVM_FFI_AVAILABLE:
+                # TVM-FFI is only the Python ABI used to pass torch tensors and the
+                # current stream directly; cute.compile still produces a CUDA kernel.
+                m_a = _fake_matrix(a.dtype)
+                m_b = _fake_matrix(b.dtype)
+                m_out = _fake_dynamic_tensor(
+                    out,
+                    leading_dim=1,
+                    assumed_align=16,
+                    stride_divisibility=8 if use_tma_output else 1,
+                )
+                stream = cute.runtime.make_fake_stream()
+                options = "--enable-tvm-ffi"
+            else:
+                m_a = _matrix_tensor(a)
+                m_b = _matrix_tensor(b)
+                m_out = _dynamic_tensor(out, leading_dim=1, assumed_align=16)
+                stream = _driver_stream(current_stream)
+                options = None
+            compile_args = (
+                m_a,
+                m_b,
+                m_out,
+                num_ab_stages,
+                epilogue,
+                use_tma_output,
+                swizzle_size,
+                max_active_clusters,
+                stream,
             )
-            stream = cute.runtime.make_fake_stream()
-            options = "--enable-tvm-ffi"
+            with _compile_guard():
+                if options is None:
+                    compiled = cute.compile(_host, *compile_args)
+                else:
+                    compiled = cute.compile(_host, *compile_args, options=options)
+            _COMPILE_CACHE[key] = compiled
+
+        if _TVM_FFI_AVAILABLE:
+            compiled(a, b, out, current_stream)
         else:
             m_a = _matrix_tensor(a)
             m_b = _matrix_tensor(b)
             m_out = _dynamic_tensor(out, leading_dim=1, assumed_align=16)
             stream = _driver_stream(current_stream)
-            options = None
-        compile_args = (
-            m_a,
-            m_b,
-            m_out,
-            num_ab_stages,
-            epilogue,
-            use_tma_output,
-            swizzle_size,
-            max_active_clusters,
-            stream,
-        )
-        with _compile_guard():
-            if options is None:
-                compiled = cute.compile(_host, *compile_args)
-            else:
-                compiled = cute.compile(_host, *compile_args, options=options)
-        _COMPILE_CACHE[key] = compiled
-
-    if _TVM_FFI_AVAILABLE:
-        compiled(a, b, out, current_stream)
-    else:
-        m_a = _matrix_tensor(a)
-        m_b = _matrix_tensor(b)
-        m_out = _dynamic_tensor(out, leading_dim=1, assumed_align=16)
-        stream = _driver_stream(current_stream)
-        compiled(m_a, m_b, m_out, stream)
+            compiled(m_a, m_b, m_out, stream)
 
 
 def run_epilogue_gemm(a, b, out, epilogue):

@@ -12,6 +12,7 @@ import triton
 import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 ```
 
@@ -85,13 +86,14 @@ def {kernel}_forward(X, ...):
     Y = torch.empty_like(X)
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-    _{kernel}_forward_kernel[(n_rows,)](
-        Y, Y.stride(-2),
-        X, X.stride(-2),
-        n_cols=n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(X.device):
+        _{kernel}_forward_kernel[(n_rows,)](
+            Y, Y.stride(-2),
+            X, X.stride(-2),
+            n_cols=n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
     return Y.view(*ori_shape)
 
 
@@ -104,15 +106,40 @@ def {kernel}_backward(dY, ...saved):
     dX = torch.empty_like(dY)
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-    _{kernel}_backward_kernel[(n_rows,)](
-        dY, dY.stride(-2),
-        dX, dX.stride(-2),
-        n_cols=n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(dY.device):
+        _{kernel}_backward_kernel[(n_rows,)](
+            dY, dY.stride(-2),
+            dX, dX.stride(-2),
+            n_cols=n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
     return dX.view(*ori_shape)
 ```
+
+### Device Context
+
+Every host-side Triton launch must be wrapped in `device_context(<tensor>.device)`.
+
+Triton picks the launch stream, compilation target, and kernel cache entry from the
+*active* device, not from the tensor arguments. Under `device_map="auto"` a module can
+receive tensors on `cuda:1` while the process' active device is still `cuda:0`, so an
+unguarded launch compiles and runs against the wrong GPU. See issue #1303.
+
+Rules:
+- Guard with the primary input tensor's device (`X`, `_input`, `a`, `q`, ...). Use the
+  output device only when input ownership is ambiguous.
+- Put the guard *outside* a dispatch branch so both variants are covered:
+  ```python
+  with device_context(X.device):
+      if BLOCK_SIZE > 256 or n_rows < 4096 * 8:
+          _{kernel}_forward_kernel[(n_rows,)](...)
+      else:
+          _block_{kernel}_forward_kernel[(triton.cdiv(n_rows, BLOCK_ROW),)](...)
+  ```
+- One guard can cover several launches in the same function when they share a device.
+- The same rule applies to cuTile/CuTeDSL paths: enter the context *before* acquiring
+  the stream, since `torch.cuda.current_stream()` also reads the active device.
 
 ### Autograd Function
 
@@ -167,3 +194,4 @@ class Liger{Kernel}Function(torch.autograd.Function):
 4. Use stride parameters from tensors, never hardcode memory layout
 5. Cast precision-sensitive ops to `tl.float32`, cast back for storage
 6. Return `None` for each non-tensor parameter in backward
+7. Wrap every kernel launch in `with device_context(<tensor>.device):` (see above)

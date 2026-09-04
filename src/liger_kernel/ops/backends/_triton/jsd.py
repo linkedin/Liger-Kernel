@@ -28,6 +28,7 @@ from liger_kernel.backends import Capability
 from liger_kernel.backends import register_op
 from liger_kernel.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.jsd import _jsd_kernel
+from liger_kernel.ops.utils import device_context
 
 _TRITON_JSD_TOLERANCES = {
     torch.float16: {"atol_fwd": 5e-3, "atol_bwd": 5e-3, "rtol_fwd": 1e-3, "rtol_bwd": 1e-3},
@@ -122,33 +123,34 @@ def jsd_loss_and_grad_triton(
         ``(loss, dx)`` where ``loss.shape == (BT, V)`` (fp32, summed elsewhere)
         and ``dx is student_prob`` (the in-place write).
     """
-    if mode not in (None, "default"):
-        raise ValueError(f"jsd_loss_and_grad_triton: only mode='default'; got {mode!r}")
+    with device_context(student_prob.device):
+        if mode not in (None, "default"):
+            raise ValueError(f"jsd_loss_and_grad_triton: only mode='default'; got {mode!r}")
 
-    BT, V = student_prob.shape
-    BLOCK_SIZE = min(_JSD_TRITON_BLOCK_SIZE, _next_pow2(V))
-    has_label = shift_labels is not None
+        BT, V = student_prob.shape
+        BLOCK_SIZE = min(_JSD_TRITON_BLOCK_SIZE, _next_pow2(V))
+        has_label = shift_labels is not None
 
-    loss = torch.zeros((BT, V), dtype=torch.float32, device=student_prob.device)
-    label_arg = shift_labels if has_label else torch.empty(1, device=student_prob.device)
+        loss = torch.zeros((BT, V), dtype=torch.float32, device=student_prob.device)
+        label_arg = shift_labels if has_label else torch.empty(1, device=student_prob.device)
 
-    _jsd_kernel[(BT,)](
-        X_ptr=student_prob,
-        X_stride=student_prob.stride(-2),
-        Y_ptr=teacher_prob,
-        Y_stride=teacher_prob.stride(-2),
-        loss_ptr=loss,
-        loss_stride=loss.stride(-2),
-        dX_ptr=student_prob,  # write in place
-        dX_stride=student_prob.stride(-2),
-        label_ptr=label_arg,
-        beta=beta,
-        # Triton kernel expects n_non_ignore as int; helper API takes float
-        # for cross-impl portability (cuTile uses 1/n in fp32 internally).
-        n_non_ignore=int(round(n_non_ignore)),
-        ignore_index=ignore_index,
-        n_cols=V,
-        BLOCK_SIZE=BLOCK_SIZE,
-        HAS_LABEL=has_label,
-    )
-    return loss, student_prob
+        _jsd_kernel[(BT,)](
+            X_ptr=student_prob,
+            X_stride=student_prob.stride(-2),
+            Y_ptr=teacher_prob,
+            Y_stride=teacher_prob.stride(-2),
+            loss_ptr=loss,
+            loss_stride=loss.stride(-2),
+            dX_ptr=student_prob,  # write in place
+            dX_stride=student_prob.stride(-2),
+            label_ptr=label_arg,
+            beta=beta,
+            # Triton kernel expects n_non_ignore as int; helper API takes float
+            # for cross-impl portability (cuTile uses 1/n in fp32 internally).
+            n_non_ignore=int(round(n_non_ignore)),
+            ignore_index=ignore_index,
+            n_cols=V,
+            BLOCK_SIZE=BLOCK_SIZE,
+            HAS_LABEL=has_label,
+        )
+        return loss, student_prob

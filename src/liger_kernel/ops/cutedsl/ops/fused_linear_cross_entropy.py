@@ -10,6 +10,7 @@ from liger_kernel.ops.cutedsl.ops.cross_entropy import _launch_ce_fwd
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.utils import infer_device_arch
 
 _SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
@@ -249,66 +250,67 @@ def fused_linear_cross_entropy_forward(
     return_predicted_tokens=False,
 ):
     """Run the native SM100 CuTe DSL path."""
-    ctx = _FlceState()
-    _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index)
-    needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
+    with device_context(_input.device):
+        ctx = _FlceState()
+        _validate_inputs(_input, weight, target, bias, ce_weight, reduction, ignore_index)
+        needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
 
-    if (
-        not _native_sm100_supported(_input)
-        or _input.dtype not in (torch.bfloat16, torch.float16)
-        or reduction not in ("mean", "sum")
-    ):
-        raise RuntimeError(
-            "Native CuTe DSL FLCE requires exact SM100 hardware, FP16/BF16 input and weight, and mean/sum reduction."
+        if (
+            not _native_sm100_supported(_input)
+            or _input.dtype not in (torch.bfloat16, torch.float16)
+            or reduction not in ("mean", "sum")
+        ):
+            raise RuntimeError(
+                "Native CuTe DSL FLCE requires exact SM100 hardware, FP16/BF16 input and weight, and mean/sum reduction."
+            )
+
+        h_orig = None
+        if weight.shape[1] % K_ALIGNMENT != 0:
+            pad = (-weight.shape[1]) % K_ALIGNMENT
+            _input = torch.nn.functional.pad(_input, (0, pad))
+            weight = torch.nn.functional.pad(weight, (0, pad))
+            h_orig = weight.shape[1] - pad
+        ctx.h_orig = h_orig
+
+        X = _input.detach().contiguous()
+        W = weight.detach().contiguous()
+        native_bias = bias.detach().contiguous() if bias is not None else None
+        native_ce_weight = ce_weight.detach().float().contiguous() if ce_weight is not None else None
+        native_kwargs = {
+            "ignore_index": ignore_index,
+            "lse_square_scale": lse_square_scale,
+            "label_smoothing": label_smoothing,
+            "reduction": reduction,
+            "softcap": softcap,
+            "return_z_loss": return_z_loss,
+            "accum_dtype": accum_dtype,
+            "use_token_scaling": use_token_scaling,
+            "return_token_accuracy": return_token_accuracy,
+            "return_predicted_tokens": return_predicted_tokens,
+        }
+        loss, z_out, acc_out, pred_out, gX, gW, gb = _native_forward(
+            X,
+            W,
+            target,
+            native_bias,
+            native_ce_weight,
+            needs_grad=needs_grad,
+            **native_kwargs,
         )
-
-    h_orig = None
-    if weight.shape[1] % K_ALIGNMENT != 0:
-        pad = (-weight.shape[1]) % K_ALIGNMENT
-        _input = torch.nn.functional.pad(_input, (0, pad))
-        weight = torch.nn.functional.pad(weight, (0, pad))
-        h_orig = weight.shape[1] - pad
-    ctx.h_orig = h_orig
-
-    X = _input.detach().contiguous()
-    W = weight.detach().contiguous()
-    native_bias = bias.detach().contiguous() if bias is not None else None
-    native_ce_weight = ce_weight.detach().float().contiguous() if ce_weight is not None else None
-    native_kwargs = {
-        "ignore_index": ignore_index,
-        "lse_square_scale": lse_square_scale,
-        "label_smoothing": label_smoothing,
-        "reduction": reduction,
-        "softcap": softcap,
-        "return_z_loss": return_z_loss,
-        "accum_dtype": accum_dtype,
-        "use_token_scaling": use_token_scaling,
-        "return_token_accuracy": return_token_accuracy,
-        "return_predicted_tokens": return_predicted_tokens,
-    }
-    loss, z_out, acc_out, pred_out, gX, gW, gb = _native_forward(
-        X,
-        W,
-        target,
-        native_bias,
-        native_ce_weight,
-        needs_grad=needs_grad,
-        **native_kwargs,
-    )
-    if needs_grad:
-        ctx._native = True
-        ctx._native_gradients_consumed = False
-        ctx._repeated_grad_input = None
-        ctx._repeated_grad_weight = None
-        ctx._repeated_grad_bias = None
-        ctx.grad_input = gX
-        ctx.grad_weight = gW
-        ctx.grad_bias = gb
-        ctx.save_for_backward(X, W, target)
-        ctx.native_bias = native_bias
-        ctx.native_ce_weight = native_ce_weight
-        ctx.native_kwargs = native_kwargs
-    return loss, z_out, acc_out, pred_out, ctx
+        if needs_grad:
+            ctx._native = True
+            ctx._native_gradients_consumed = False
+            ctx._repeated_grad_input = None
+            ctx._repeated_grad_weight = None
+            ctx._repeated_grad_bias = None
+            ctx.grad_input = gX
+            ctx.grad_weight = gW
+            ctx.grad_bias = gb
+            ctx.save_for_backward(X, W, target)
+            ctx.native_bias = native_bias
+            ctx.native_ce_weight = native_ce_weight
+            ctx.native_kwargs = native_kwargs
+        return loss, z_out, acc_out, pred_out, ctx
 
 
 def _scale_gradients(grads, grad_output, in_place):

@@ -116,6 +116,7 @@ from liger_kernel.ops.backends._cutedsl._cute_lib.dtype_map import torch2cute_dt
 from liger_kernel.ops.backends._cutedsl._cute_lib.reduce import row_reduce
 from liger_kernel.ops.backends._cutedsl._cute_lib.reduction_base import ReductionBase
 from liger_kernel.ops.backends._cutedsl._cute_lib.rmsnorm_fwd import layernorm_fwd as _cutedsl_layernorm_fwd
+from liger_kernel.ops.utils import device_context
 
 # Beyond this hidden dim the backward kernel enters its multi-cluster
 # (``cluster_n >= 2``) path AND switches ``reload_wdy`` to smem staging. On
@@ -647,60 +648,61 @@ def _layer_norm_cutedsl_backward(
     allocated as fp32 ``(sm_count, N)`` and reduced to the final ``dW`` /
     ``dB`` host-side. This matches Liger's Triton and cuTile backends.
     """
-    shape = dy.shape
-    N = shape[-1]
-    # Cap N at the last verified-healthy single-cluster (cluster_n == 1)
-    # hidden dim; wider rows fault at runtime on B200 (see the constant's
-    # comment above) and surface as the "only supports hidden dim"
-    # RuntimeError that the test framework auto-skips.
-    if N > _BWD_MAX_TILE_CUTEDSL:
-        raise RuntimeError(
-            f"cuTeDSL layer_norm backward only supports hidden dim <= "
-            f"{_BWD_MAX_TILE_CUTEDSL}; got {N}. Use backend='triton' for "
-            f"wider rows. (Cluster-reduce path requires a newer cutlass-cute.)"
+    with device_context(x_flat.device):
+        shape = dy.shape
+        N = shape[-1]
+        # Cap N at the last verified-healthy single-cluster (cluster_n == 1)
+        # hidden dim; wider rows fault at runtime on B200 (see the constant's
+        # comment above) and surface as the "only supports hidden dim"
+        # RuntimeError that the test framework auto-skips.
+        if N > _BWD_MAX_TILE_CUTEDSL:
+            raise RuntimeError(
+                f"cuTeDSL layer_norm backward only supports hidden dim <= "
+                f"{_BWD_MAX_TILE_CUTEDSL}; got {N}. Use backend='triton' for "
+                f"wider rows. (Cluster-reduce path requires a newer cutlass-cute.)"
+            )
+        dy_flat = dy.view(-1, N).contiguous()
+        M = dy_flat.shape[0]
+
+        dx = torch.empty_like(dy_flat)
+        sm_count = _bwd_sm_count(N, x_flat.device)
+        # Saturate the grid: don't launch more SMs than there are rows. ``ceil``
+        # gives an SM per chunk of ``ceil(M / sm_count)`` rows; we clamp so each
+        # SM has at least one row.
+        sm_count = min(sm_count, max(M, 1))
+
+        has_bias = bias_f32 is not None
+        dw_partial = torch.empty((sm_count, N), dtype=torch.float32, device=x_flat.device)
+        db_partial = torch.empty((sm_count, N), dtype=torch.float32, device=x_flat.device) if has_bias else None
+
+        compiled = _get_bwd_kernel(
+            x_dtype=x_flat.dtype,
+            weight_dtype=weight_f32.dtype,
+            dx_dtype=dx.dtype,
+            N=N,
+            has_bias=has_bias,
         )
-    dy_flat = dy.view(-1, N).contiguous()
-    M = dy_flat.shape[0]
 
-    dx = torch.empty_like(dy_flat)
-    sm_count = _bwd_sm_count(N, x_flat.device)
-    # Saturate the grid: don't launch more SMs than there are rows. ``ceil``
-    # gives an SM per chunk of ``ceil(M / sm_count)`` rows; we clamp so each
-    # SM has at least one row.
-    sm_count = min(sm_count, max(M, 1))
+        # CuTe DSL compiled kernels read torch.cuda.current_stream() at launch;
+        # the kernel ABI does not take a stream positional. Passing `stream` here
+        # raised TypeError: Expects 9 parameters (...).
+        compiled(
+            x_flat,
+            weight_f32,
+            dy_flat,
+            mean,
+            rstd,
+            dx,
+            dw_partial,
+            db_partial,
+            sm_count,
+        )
 
-    has_bias = bias_f32 is not None
-    dw_partial = torch.empty((sm_count, N), dtype=torch.float32, device=x_flat.device)
-    db_partial = torch.empty((sm_count, N), dtype=torch.float32, device=x_flat.device) if has_bias else None
-
-    compiled = _get_bwd_kernel(
-        x_dtype=x_flat.dtype,
-        weight_dtype=weight_f32.dtype,
-        dx_dtype=dx.dtype,
-        N=N,
-        has_bias=has_bias,
-    )
-
-    # CuTe DSL compiled kernels read torch.cuda.current_stream() at launch;
-    # the kernel ABI does not take a stream positional. Passing `stream` here
-    # raised TypeError: Expects 9 parameters (...).
-    compiled(
-        x_flat,
-        weight_f32,
-        dy_flat,
-        mean,
-        rstd,
-        dx,
-        dw_partial,
-        db_partial,
-        sm_count,
-    )
-
-    # Host-side cross-SM reduction. Cast dW back to the *user's* weight
-    # dtype (we accepted fp16/bf16 weight by casting up in the forward).
-    dw = dw_partial.sum(dim=0)
-    db = db_partial.sum(dim=0) if has_bias else None
-    return dx.view(shape), dw, db
+        # Host-side cross-SM reduction. Cast dW back to the *user's* weight
+        # dtype (we accepted fp16/bf16 weight by casting up in the forward).
+        dw = dw_partial.sum(dim=0)
+        db = db_partial.sum(dim=0) if has_bias else None
+        return dx.view(shape), dw, db
 
 
 class _LigerLayerNormCuTeDSLFunction(torch.autograd.Function):

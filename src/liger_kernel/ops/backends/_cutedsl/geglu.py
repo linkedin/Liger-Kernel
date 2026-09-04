@@ -60,6 +60,7 @@ from liger_kernel.backends import register_op
 from liger_kernel.ops._nvidia_shared import to_local_if_dtensor as _to_local_if_dtensor
 from liger_kernel.ops.backends._cutedsl._cute_lib.compile_utils import make_fake_tensor as fake_tensor
 from liger_kernel.ops.backends._cutedsl._cute_lib.dtype_map import torch2cute_dtype_map
+from liger_kernel.ops.utils import device_context
 
 # sqrt(2 / pi) — the GELU tanh approximation constant.
 _SQRT_2_OVER_PI = 0.7978845608028654
@@ -441,16 +442,17 @@ def _geglu_cutedsl_forward(a: Tensor, b: Tensor) -> Tuple[Tensor, Tensor, Tensor
     Returns ``(a, b, c)`` where ``a`` and ``b`` are the contiguous inputs saved
     for the backward.
     """
-    shape = a.shape
-    N = shape[-1]
-    a_flat = a.view(-1, N).contiguous()
-    b_flat = b.view(-1, N).contiguous()
-    c_flat = torch.empty_like(a_flat)
+    with device_context(a.device):
+        shape = a.shape
+        N = shape[-1]
+        a_flat = a.view(-1, N).contiguous()
+        b_flat = b.view(-1, N).contiguous()
+        c_flat = torch.empty_like(a_flat)
 
-    compiled = _get_fwd_kernel(a_flat.dtype, b_flat.dtype, c_flat.dtype, N)
-    compiled(a_flat, b_flat, c_flat)
-    c = c_flat.view(shape)
-    return a_flat, b_flat, c
+        compiled = _get_fwd_kernel(a_flat.dtype, b_flat.dtype, c_flat.dtype, N)
+        compiled(a_flat, b_flat, c_flat)
+        c = c_flat.view(shape)
+        return a_flat, b_flat, c
 
 
 def _geglu_cutedsl_backward(dc: Tensor, a: Tensor, b: Tensor) -> Tuple[Tensor, Tensor]:
@@ -458,20 +460,21 @@ def _geglu_cutedsl_backward(dc: Tensor, a: Tensor, b: Tensor) -> Tuple[Tensor, T
 
     Returns ``(da, db)``.
     """
-    shape = dc.shape
-    N = shape[-1]
-    dc_flat = dc.view(-1, N).contiguous()
-    a_flat = a.view(-1, N).contiguous()
-    b_flat = b.view(-1, N).contiguous()
-    da_flat = torch.empty_like(a_flat)
-    db_flat = torch.empty_like(b_flat)
+    with device_context(a.device):
+        shape = dc.shape
+        N = shape[-1]
+        dc_flat = dc.view(-1, N).contiguous()
+        a_flat = a.view(-1, N).contiguous()
+        b_flat = b.view(-1, N).contiguous()
+        da_flat = torch.empty_like(a_flat)
+        db_flat = torch.empty_like(b_flat)
 
-    compiled = _get_bwd_kernel(dc_flat.dtype, a_flat.dtype, b_flat.dtype, da_flat.dtype, db_flat.dtype, N)
-    compiled(dc_flat, a_flat, b_flat, da_flat, db_flat)
+        compiled = _get_bwd_kernel(dc_flat.dtype, a_flat.dtype, b_flat.dtype, da_flat.dtype, db_flat.dtype, N)
+        compiled(dc_flat, a_flat, b_flat, da_flat, db_flat)
 
-    da = da_flat.view(shape)
-    db = db_flat.view(shape)
-    return da, db
+        da = da_flat.view(shape)
+        db = db_flat.view(shape)
+        return da, db
 
 
 class _LigerGeGLUCuTeDSLFunction(torch.autograd.Function):

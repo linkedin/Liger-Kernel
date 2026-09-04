@@ -18,6 +18,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 MAX_FUSED_SIZE = 65536
 
@@ -287,126 +288,128 @@ class LigerPolyNormFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, X, W, B, eps=1e-6, in_place=True):
-        shape = X.shape
-        dim = shape[-1]
-        X_2d = X.contiguous().view(-1, dim)
-        n_rows, n_cols = X_2d.shape
+        with device_context(X.device):
+            shape = X.shape
+            dim = shape[-1]
+            X_2d = X.contiguous().view(-1, dim)
+            n_rows, n_cols = X_2d.shape
 
-        # B is a scalar bias — accept 0-dim (torch.tensor(1.0)) or (1,); the kernel reads
-        # bias[0], so flatten to a 1-element tensor and restore B's shape for the dB gradient.
-        bias_shape = B.shape
-        B = B.reshape(1)
+            # B is a scalar bias — accept 0-dim (torch.tensor(1.0)) or (1,); the kernel reads
+            # bias[0], so flatten to a 1-element tensor and restore B's shape for the dB gradient.
+            bias_shape = B.shape
+            B = B.reshape(1)
 
-        # Per-shape BLOCK_SIZE & kernel variant chosen to match OAIT/NVT autotune
-        # picks. Single-chunk uses the SC kernel (re-gather, lower live-tile
-        # pressure); multi-chunk uses the fold-accumulator kernel.
-        # n_cols=2048 keeps BLOCK=1024 (multi-chunk) because BLOCK=2048 single-chunk
-        # spills the 3 fp32 accumulators (sum_sq_3/2/1).
-        if n_cols <= 1024:
-            BLOCK_SIZE = _next_power_of_2(n_cols)
-        elif n_cols == 2048:
-            BLOCK_SIZE = 1024
-        elif n_cols <= 8192:
-            BLOCK_SIZE = 4096
-        else:
-            BLOCK_SIZE = min(MAX_FUSED_SIZE, _next_power_of_2(n_cols))
-        aligned = (n_cols % BLOCK_SIZE) == 0
-        single_chunk = n_cols <= BLOCK_SIZE
+            # Per-shape BLOCK_SIZE & kernel variant chosen to match OAIT/NVT autotune
+            # picks. Single-chunk uses the SC kernel (re-gather, lower live-tile
+            # pressure); multi-chunk uses the fold-accumulator kernel.
+            # n_cols=2048 keeps BLOCK=1024 (multi-chunk) because BLOCK=2048 single-chunk
+            # spills the 3 fp32 accumulators (sum_sq_3/2/1).
+            if n_cols <= 1024:
+                BLOCK_SIZE = _next_power_of_2(n_cols)
+            elif n_cols == 2048:
+                BLOCK_SIZE = 1024
+            elif n_cols <= 8192:
+                BLOCK_SIZE = 4096
+            else:
+                BLOCK_SIZE = min(MAX_FUSED_SIZE, _next_power_of_2(n_cols))
+            aligned = (n_cols % BLOCK_SIZE) == 0
+            single_chunk = n_cols <= BLOCK_SIZE
 
-        if n_cols <= 1024:
-            fwd_kernel = _poly_norm_fwd_kernel_sc_large_occ16
-        elif n_cols == 2048:
-            fwd_kernel = _poly_norm_fwd_kernel
-        elif n_cols == 4096:
-            fwd_kernel = _poly_norm_fwd_kernel_sc_large_occ8
-        elif n_cols <= 8192:
-            fwd_kernel = _poly_norm_fwd_kernel_occ8
-        elif single_chunk:
-            fwd_kernel = _poly_norm_fwd_kernel_sc_large_occ4
-        else:
-            fwd_kernel = _poly_norm_fwd_kernel
+            if n_cols <= 1024:
+                fwd_kernel = _poly_norm_fwd_kernel_sc_large_occ16
+            elif n_cols == 2048:
+                fwd_kernel = _poly_norm_fwd_kernel
+            elif n_cols == 4096:
+                fwd_kernel = _poly_norm_fwd_kernel_sc_large_occ8
+            elif n_cols <= 8192:
+                fwd_kernel = _poly_norm_fwd_kernel_occ8
+            elif single_chunk:
+                fwd_kernel = _poly_norm_fwd_kernel_sc_large_occ4
+            else:
+                fwd_kernel = _poly_norm_fwd_kernel
 
-        Y = torch.empty_like(X_2d)
-        RSTD3 = torch.empty(n_rows, dtype=torch.float32, device=X.device)
-        RSTD2 = torch.empty(n_rows, dtype=torch.float32, device=X.device)
-        RSTD1 = torch.empty(n_rows, dtype=torch.float32, device=X.device)
+            Y = torch.empty_like(X_2d)
+            RSTD3 = torch.empty(n_rows, dtype=torch.float32, device=X.device)
+            RSTD2 = torch.empty(n_rows, dtype=torch.float32, device=X.device)
+            RSTD1 = torch.empty(n_rows, dtype=torch.float32, device=X.device)
 
-        grid = (n_rows, 1, 1)
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            fwd_kernel,
-            (
-                X_2d,
-                Y,
-                W.contiguous(),
-                B.contiguous(),
-                RSTD3,
-                RSTD2,
-                RSTD1,
-                int(n_cols),
-                float(eps),
-                int(BLOCK_SIZE),
-                bool(aligned),
-            ),
-        )
+            grid = (n_rows, 1, 1)
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                fwd_kernel,
+                (
+                    X_2d,
+                    Y,
+                    W.contiguous(),
+                    B.contiguous(),
+                    RSTD3,
+                    RSTD2,
+                    RSTD1,
+                    int(n_cols),
+                    float(eps),
+                    int(BLOCK_SIZE),
+                    bool(aligned),
+                ),
+            )
 
-        ctx.save_for_backward(X_2d, W, RSTD3, RSTD2, RSTD1)
-        ctx.BLOCK_SIZE = BLOCK_SIZE
-        ctx.aligned = aligned
-        ctx.shape = shape
-        ctx.bias_shape = bias_shape
+            ctx.save_for_backward(X_2d, W, RSTD3, RSTD2, RSTD1)
+            ctx.BLOCK_SIZE = BLOCK_SIZE
+            ctx.aligned = aligned
+            ctx.shape = shape
+            ctx.bias_shape = bias_shape
 
-        return Y.view(*shape)
+            return Y.view(*shape)
 
     @staticmethod
     def backward(ctx, dy):
-        X_2d, W, RSTD3, RSTD2, RSTD1 = ctx.saved_tensors
-        shape = ctx.shape
+        with device_context(dy.device):
+            X_2d, W, RSTD3, RSTD2, RSTD1 = ctx.saved_tensors
+            shape = ctx.shape
 
-        dim = shape[-1]
-        dY_2d = dy.contiguous().view(-1, dim)
-        n_rows, n_cols = dY_2d.shape
+            dim = shape[-1]
+            dY_2d = dy.contiguous().view(-1, dim)
+            n_rows, n_cols = dY_2d.shape
 
-        # Bwd has 4 fp32 accumulators (S_3, S_2, S_1, dB) of BLOCK_SIZE each.
-        # Cap BLOCK_SIZE at 4096 to keep accumulators in registers (16KB per tile)
-        # and avoid spills observed at BLOCK_SIZE >= 16384 on norm-like bwd kernels.
-        BWD_MAX_BLOCK = 4096
-        BLOCK_SIZE = min(BWD_MAX_BLOCK, _next_power_of_2(n_cols))
-        aligned = (n_cols % BLOCK_SIZE) == 0
+            # Bwd has 4 fp32 accumulators (S_3, S_2, S_1, dB) of BLOCK_SIZE each.
+            # Cap BLOCK_SIZE at 4096 to keep accumulators in registers (16KB per tile)
+            # and avoid spills observed at BLOCK_SIZE >= 16384 on norm-like bwd kernels.
+            BWD_MAX_BLOCK = 4096
+            BLOCK_SIZE = min(BWD_MAX_BLOCK, _next_power_of_2(n_cols))
+            aligned = (n_cols % BLOCK_SIZE) == 0
 
-        dx = torch.empty_like(dY_2d)
-        # The kernel atomically accumulates dW/dB contributions across all rows
-        # directly into this 4-element fp32 buffer — eliminates the host-side
-        # .sum(dim=1) + .to(W.dtype) launch chain.
-        dwdb_output = torch.zeros(4, dtype=torch.float32, device=W.device)
+            dx = torch.empty_like(dY_2d)
+            # The kernel atomically accumulates dW/dB contributions across all rows
+            # directly into this 4-element fp32 buffer — eliminates the host-side
+            # .sum(dim=1) + .to(W.dtype) launch chain.
+            dwdb_output = torch.zeros(4, dtype=torch.float32, device=W.device)
 
-        # Medium/large-N (n_cols>=8192) is latency-bound on the 2-pass multi-chunk
-        # IR; the occ=4/nww=8 variant closes the gap vs OAIT.
-        kernel_choice = _poly_norm_bwd_kernel_large if n_cols >= 8192 else _poly_norm_bwd_kernel
+            # Medium/large-N (n_cols>=8192) is latency-bound on the 2-pass multi-chunk
+            # IR; the occ=4/nww=8 variant closes the gap vs OAIT.
+            kernel_choice = _poly_norm_bwd_kernel_large if n_cols >= 8192 else _poly_norm_bwd_kernel
 
-        grid = (n_rows, 1, 1)
-        ct.launch(
-            torch.cuda.current_stream(),
-            grid,
-            kernel_choice,
-            (
-                dY_2d,
-                dx,
-                X_2d,
-                W,
-                RSTD3,
-                RSTD2,
-                RSTD1,
-                dwdb_output,
-                int(n_cols),
-                int(BLOCK_SIZE),
-                bool(aligned),
-            ),
-        )
+            grid = (n_rows, 1, 1)
+            ct.launch(
+                torch.cuda.current_stream(),
+                grid,
+                kernel_choice,
+                (
+                    dY_2d,
+                    dx,
+                    X_2d,
+                    W,
+                    RSTD3,
+                    RSTD2,
+                    RSTD1,
+                    dwdb_output,
+                    int(n_cols),
+                    int(BLOCK_SIZE),
+                    bool(aligned),
+                ),
+            )
 
-        sums = dwdb_output.to(W.dtype)  # (4,) cast to W.dtype
-        dW = sums[:3]
-        dB = sums[3:4].reshape(ctx.bias_shape)  # match B's original shape (scalar or (1,))
+            sums = dwdb_output.to(W.dtype)  # (4,) cast to W.dtype
+            dW = sums[:3]
+            dB = sums[3:4].reshape(ctx.bias_shape)  # match B's original shape (scalar or (1,))
 
-        return dx.view(*shape), dW, dB, None, None
+            return dx.view(*shape), dW, dB, None, None

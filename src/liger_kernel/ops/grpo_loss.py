@@ -2,6 +2,8 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
+
 # Loss type constants for Triton constexpr branching
 # GRPO/DAPO/BNPO/DR_GRPO all use the same per-token loss computation (standard PPO clipping)
 _LOSS_TYPE_GRPO: tl.constexpr = tl.constexpr(0)
@@ -74,9 +76,10 @@ def fused_selective_log_softmax(logits: torch.Tensor, input_ids: torch.Tensor, t
         mask = mask[:, -L:]
     log_p = torch.zeros(B, L, dtype=torch.float32, device=logits.device)
     kwargs = {"BLOCK_N": 2048, "num_stages": 4, "num_warps": 1}
-    _selective_log_softmax_kernel[(B, L)](
-        logits, input_ids, log_p, mask, temperature, input_ids.stride(0), L, N, **kwargs
-    )
+    with device_context(logits.device):
+        _selective_log_softmax_kernel[(B, L)](
+            logits, input_ids, log_p, mask, temperature, input_ids.stride(0), L, N, **kwargs
+        )
     return log_p
 
 
@@ -718,30 +721,31 @@ class GrpoLossFunction(torch.autograd.Function):
 
             # Step 3: Run Triton kernel with pre-computed coefficients
             kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
-            _grpo_loss_fwd_kernel_seq[(B, L)](
-                logits,
-                old_logp,
-                ref_logp,
-                completion_ids,
-                completion_mask,
-                advantages,
-                coef_1_for_loss.contiguous(),
-                coef_1.contiguous(),  # COEF_1_RAW: pre delta-clamp, for bias-corrected KL
-                coef_2.contiguous(),
-                is_clipped_seq.contiguous(),
-                vllm_is_ratio_ptr,
-                vllm_is_ratio_stride,
-                loss,
-                lse,
-                kl,
-                is_clipped,
-                temperature,
-                beta,
-                use_bias_correction_kl,
-                L,
-                N,
-                **kwargs,
-            )
+            with device_context(logits.device):
+                _grpo_loss_fwd_kernel_seq[(B, L)](
+                    logits,
+                    old_logp,
+                    ref_logp,
+                    completion_ids,
+                    completion_mask,
+                    advantages,
+                    coef_1_for_loss.contiguous(),
+                    coef_1.contiguous(),  # COEF_1_RAW: pre delta-clamp, for bias-corrected KL
+                    coef_2.contiguous(),
+                    is_clipped_seq.contiguous(),
+                    vllm_is_ratio_ptr,
+                    vllm_is_ratio_stride,
+                    loss,
+                    lse,
+                    kl,
+                    is_clipped,
+                    temperature,
+                    beta,
+                    use_bias_correction_kl,
+                    L,
+                    N,
+                    **kwargs,
+                )
 
             # Save extra tensors for backward
             ctx.save_for_backward(
@@ -760,33 +764,34 @@ class GrpoLossFunction(torch.autograd.Function):
         else:
             # Token-level: use optimized Triton kernel with LOSS_TYPE branching
             kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
-            _grpo_loss_fwd_kernel[(B, L)](
-                logits,
-                old_logp,
-                ref_logp,
-                completion_ids,
-                completion_mask,
-                advantages,
-                vllm_is_ratio_ptr,
-                vllm_is_ratio_stride,
-                phi_seq,  # PHI_SEQ (B,) for VESPO, None otherwise
-                loss,
-                lse,
-                kl,
-                is_clipped,
-                temperature,
-                beta,
-                eps_low,
-                eps_high,
-                loss_type_int,
-                sapo_temperature_pos,
-                sapo_temperature_neg,
-                delta_val,
-                use_bias_correction_kl,
-                L,
-                N,
-                **kwargs,
-            )
+            with device_context(logits.device):
+                _grpo_loss_fwd_kernel[(B, L)](
+                    logits,
+                    old_logp,
+                    ref_logp,
+                    completion_ids,
+                    completion_mask,
+                    advantages,
+                    vllm_is_ratio_ptr,
+                    vllm_is_ratio_stride,
+                    phi_seq,  # PHI_SEQ (B,) for VESPO, None otherwise
+                    loss,
+                    lse,
+                    kl,
+                    is_clipped,
+                    temperature,
+                    beta,
+                    eps_low,
+                    eps_high,
+                    loss_type_int,
+                    sapo_temperature_pos,
+                    sapo_temperature_neg,
+                    delta_val,
+                    use_bias_correction_kl,
+                    L,
+                    N,
+                    **kwargs,
+                )
             ctx.save_for_backward(
                 logits,
                 old_logp,
@@ -926,59 +931,61 @@ class GrpoLossFunction(torch.autograd.Function):
                     ratio = vllm_is_ratio
                 dloss_sum = (dloss * ratio).sum(-1).contiguous()
             # Sequence-level backward kernel
-            _grpo_loss_bwd_kernel_seq[(B, L)](
-                dloss,
-                dloss_sum,
-                dlogits,
-                logits,
-                old_logp,
-                ref_logp,
-                completion_ids,
-                advantages,
-                completion_mask,
-                lse,
-                coef_1,
-                seq_lens,
-                temperature,
-                beta,
-                use_bias_correction_kl,
-                eps_low,
-                eps_high,
-                delta_val,
-                *dloss.stride(),
-                L,
-                N,
-                **kwargs,
-            )
+            with device_context(logits.device):
+                _grpo_loss_bwd_kernel_seq[(B, L)](
+                    dloss,
+                    dloss_sum,
+                    dlogits,
+                    logits,
+                    old_logp,
+                    ref_logp,
+                    completion_ids,
+                    advantages,
+                    completion_mask,
+                    lse,
+                    coef_1,
+                    seq_lens,
+                    temperature,
+                    beta,
+                    use_bias_correction_kl,
+                    eps_low,
+                    eps_high,
+                    delta_val,
+                    *dloss.stride(),
+                    L,
+                    N,
+                    **kwargs,
+                )
         else:
             # Token-level backward kernel with LOSS_TYPE branching
-            _grpo_loss_bwd_kernel[(B, L)](
-                dloss,
-                dlogits,
-                logits,
-                old_logp,
-                ref_logp,
-                completion_ids,
-                advantages,
-                completion_mask,
-                lse,
-                vllm_is_ratio,
-                vllm_is_ratio_stride,
-                phi_seq,
-                temperature,
-                beta,
-                eps_low,
-                eps_high,
-                loss_type_int,
-                sapo_temperature_pos,
-                sapo_temperature_neg,
-                delta_val,
-                use_bias_correction_kl,
-                *dloss.stride(),
-                L,
-                N,
-                **kwargs,
-            )
+            with device_context(logits.device):
+                _grpo_loss_bwd_kernel[(B, L)](
+                    dloss,
+                    dlogits,
+                    logits,
+                    old_logp,
+                    ref_logp,
+                    completion_ids,
+                    advantages,
+                    completion_mask,
+                    lse,
+                    vllm_is_ratio,
+                    vllm_is_ratio_stride,
+                    phi_seq,
+                    temperature,
+                    beta,
+                    eps_low,
+                    eps_high,
+                    loss_type_int,
+                    sapo_temperature_pos,
+                    sapo_temperature_neg,
+                    delta_val,
+                    use_bias_correction_kl,
+                    *dloss.stride(),
+                    L,
+                    N,
+                    **kwargs,
+                )
 
         dlogits[:, -1, :] = 0
         # Return gradients for all forward inputs: dlogits + 21 None for non-differentiable params

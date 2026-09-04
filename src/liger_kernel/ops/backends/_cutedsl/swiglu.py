@@ -75,6 +75,7 @@ from liger_kernel.ops._nvidia_shared import is_dtensor as _is_dtensor
 from liger_kernel.ops._nvidia_shared import to_local_if_dtensor as _to_local_if_dtensor
 from liger_kernel.ops.backends._cutedsl._cute_lib.compile_utils import make_fake_tensor as fake_tensor
 from liger_kernel.ops.backends._cutedsl._cute_lib.dtype_map import torch2cute_dtype_map
+from liger_kernel.ops.utils import device_context
 
 
 # ===========================================================================
@@ -432,23 +433,24 @@ def _swiglu_cutedsl_forward(
     Returns ``(a_eff, b, c)`` where ``a_eff`` is the gate-multiplied ``a``
     saved for the backward.  ``c`` keeps the original shape.
     """
-    shape = a.shape
-    N = shape[-1]
-    # Pre-scale a by gate_multiplier so the kernel only sees silu(a') * b.
-    if gate_multiplier != 1.0:
-        a_eff = a * gate_multiplier
-    else:
-        a_eff = a
-    a_flat = a_eff.view(-1, N).contiguous()
-    b_flat = b.view(-1, N).contiguous()
-    c_flat = torch.empty_like(a_flat)
+    with device_context(a.device):
+        shape = a.shape
+        N = shape[-1]
+        # Pre-scale a by gate_multiplier so the kernel only sees silu(a') * b.
+        if gate_multiplier != 1.0:
+            a_eff = a * gate_multiplier
+        else:
+            a_eff = a
+        a_flat = a_eff.view(-1, N).contiguous()
+        b_flat = b.view(-1, N).contiguous()
+        c_flat = torch.empty_like(a_flat)
 
-    compiled = _get_fwd_kernel(a_flat.dtype, b_flat.dtype, c_flat.dtype, N)
-    compiled(a_flat, b_flat, c_flat)
-    c = c_flat.view(shape)
-    if down_multiplier != 1.0:
-        c = c * down_multiplier
-    return a_eff, b, c
+        compiled = _get_fwd_kernel(a_flat.dtype, b_flat.dtype, c_flat.dtype, N)
+        compiled(a_flat, b_flat, c_flat)
+        c = c_flat.view(shape)
+        if down_multiplier != 1.0:
+            c = c * down_multiplier
+        return a_eff, b, c
 
 
 def _swiglu_cutedsl_backward(
@@ -459,24 +461,25 @@ def _swiglu_cutedsl_backward(
     Returns ``(da, db)``.  ``dc`` is pre-scaled by ``down_multiplier``;
     ``da`` is post-scaled by ``gate_multiplier`` to complete the chain rule.
     """
-    shape = dc.shape
-    N = shape[-1]
-    if down_multiplier != 1.0:
-        dc = dc * down_multiplier
-    dc_flat = dc.view(-1, N).contiguous()
-    a_flat = a_eff.view(-1, N).contiguous()
-    b_flat = b.view(-1, N).contiguous()
-    da_flat = torch.empty_like(a_flat)
-    db_flat = torch.empty_like(b_flat)
+    with device_context(a_eff.device):
+        shape = dc.shape
+        N = shape[-1]
+        if down_multiplier != 1.0:
+            dc = dc * down_multiplier
+        dc_flat = dc.view(-1, N).contiguous()
+        a_flat = a_eff.view(-1, N).contiguous()
+        b_flat = b.view(-1, N).contiguous()
+        da_flat = torch.empty_like(a_flat)
+        db_flat = torch.empty_like(b_flat)
 
-    compiled = _get_bwd_kernel(dc_flat.dtype, a_flat.dtype, b_flat.dtype, da_flat.dtype, db_flat.dtype, N)
-    compiled(dc_flat, a_flat, b_flat, da_flat, db_flat)
+        compiled = _get_bwd_kernel(dc_flat.dtype, a_flat.dtype, b_flat.dtype, da_flat.dtype, db_flat.dtype, N)
+        compiled(dc_flat, a_flat, b_flat, da_flat, db_flat)
 
-    da = da_flat.view(shape)
-    db = db_flat.view(shape)
-    if gate_multiplier != 1.0:
-        da = da * gate_multiplier
-    return da, db
+        da = da_flat.view(shape)
+        db = db_flat.view(shape)
+        if gate_multiplier != 1.0:
+            da = da * gate_multiplier
+        return da, db
 
 
 class _LigerSwiGLUCuTeDSLFunction(torch.autograd.Function):
