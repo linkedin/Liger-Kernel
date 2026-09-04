@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.dyt import LigerDyT  # noqa: F401
 from liger_kernel.transformers.fused_add_rms_norm import LigerFusedAddRMSNorm  # noqa: F401
+from liger_kernel.transformers.fused_ce_tvd import LigerFusedCETVDLoss  # noqa: F401
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
@@ -181,6 +182,7 @@ __all__ = [
     "is_transformers_available",
     "LigerCrossEntropyLoss",
     "LigerDyT",
+    "LigerFusedCETVDLoss",
     "LigerFusedLinearCrossEntropyLoss",
     "LigerFusedLinearJSD",
     "LigerGEGLUMLP",
