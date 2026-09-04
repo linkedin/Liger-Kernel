@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM  # noqa: F401
     from liger_kernel.transformers.monkey_patch import _apply_liger_kernel  # noqa: F401
     from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_deepseek_v3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_deepseek_v4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_exaone4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_falcon_h1  # noqa: F401
@@ -165,6 +166,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_smolvlm",
         "apply_liger_kernel_to_hunyuan_v1_dense",
         "apply_liger_kernel_to_hunyuan_v1_moe",
+        "apply_liger_kernel_to_deepseek_v3",
         "apply_liger_kernel_to_deepseek_v4",
         "apply_liger_kernel_to_exaone4",
     }
@@ -262,6 +264,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_smolvlm",
             "apply_liger_kernel_to_hunyuan_v1_dense",
             "apply_liger_kernel_to_hunyuan_v1_moe",
+            "apply_liger_kernel_to_deepseek_v3",
             "apply_liger_kernel_to_deepseek_v4",
             "apply_liger_kernel_to_exaone4",
         ]
