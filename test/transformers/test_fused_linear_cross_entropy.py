@@ -7,6 +7,8 @@ from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 
+import liger_kernel.ops.fused_linear_cross_entropy as fused_linear_cross_entropy
+
 from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.transformers.functional import CrossEntropyOutput
 from liger_kernel.transformers.functional import liger_fused_linear_cross_entropy
@@ -98,6 +100,84 @@ class LigerLMHeadCE(torch.nn.Module):
 
     def forward(self, x, y):
         return self.ce_loss(self.lin.weight, x, y, self.lin.bias)
+
+
+def _run_grad_weight_accumulation(operand_dtype, accum_dtype):
+    N, H, V = 11, 41, 37
+    _input = torch.randn(N, H, device=device, dtype=operand_dtype, requires_grad=True)
+    weight = torch.randn(V, H, device=device, dtype=operand_dtype, requires_grad=True)
+    target = torch.randint(0, V, (N,), device=device)
+
+    ref_input = _input.detach().clone().requires_grad_(True)
+    ref_weight = weight.detach().clone().requires_grad_(True)
+    ref_loss = torch.nn.functional.cross_entropy(ref_input @ ref_weight.t(), target)
+    ref_loss.backward()
+
+    _, _, _, _, _, grad_weight, _ = fused_linear_cross_entropy.fused_linear_cross_entropy_forward(
+        _input,
+        weight,
+        target,
+        accum_dtype=accum_dtype,
+    )
+    return grad_weight, ref_weight.grad
+
+
+@pytest.mark.skipif(
+    not fused_linear_cross_entropy._ADDMM_SUPPORTS_OUT_DTYPE or device != "cuda" or torch.version.hip is not None,
+    reason="grad_weight addmm out_dtype requires PyTorch 2.8 or newer on NVIDIA CUDA",
+)
+@pytest.mark.parametrize(
+    "grad_weight_dtype, operand_dtype",
+    [
+        (torch.float16, torch.float16),
+        (torch.bfloat16, torch.bfloat16),
+        (torch.float32, torch.float32),
+        (torch.float32, torch.float16),
+        (torch.float32, torch.bfloat16),
+    ],
+)
+def test_accumulate_grad_weight_out_dtype(grad_weight_dtype, operand_dtype, monkeypatch):
+    requires_ampere = operand_dtype == torch.bfloat16 or grad_weight_dtype != operand_dtype
+    if requires_ampere and torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("this addmm dtype combination requires compute capability 8.0 or newer")
+
+    original_addmm = torch.addmm
+    observed_out_dtypes = []
+
+    def fail_mm(*args, **kwargs):
+        raise AssertionError("eligible accumulation unexpectedly used the allocating mm fallback")
+
+    def record_addmm(*args, **kwargs):
+        observed_out_dtypes.append(kwargs.get("out_dtype"))
+        return original_addmm(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "mm", fail_mm)
+    monkeypatch.setattr(torch, "addmm", record_addmm)
+    grad_weight, expected = _run_grad_weight_accumulation(operand_dtype, grad_weight_dtype)
+
+    assert observed_out_dtypes == [grad_weight_dtype]
+    torch.testing.assert_close(grad_weight, expected, atol=5e-3, rtol=5e-2)
+
+
+@pytest.mark.parametrize("operand_dtype", [torch.float16, torch.bfloat16])
+def test_accumulate_grad_weight_fallback_mixed_dtype(operand_dtype, monkeypatch):
+    original_mm = torch.mm
+    observed_operand_dtypes = []
+
+    def fail_addmm(*args, **kwargs):
+        raise AssertionError("fallback accumulation unexpectedly used addmm")
+
+    def record_mm(mat1, mat2, *args, **kwargs):
+        observed_operand_dtypes.append((mat1.dtype, mat2.dtype))
+        return original_mm(mat1, mat2, *args, **kwargs)
+
+    monkeypatch.setattr(fused_linear_cross_entropy, "_ADDMM_SUPPORTS_OUT_DTYPE", False)
+    monkeypatch.setattr(torch, "addmm", fail_addmm)
+    monkeypatch.setattr(torch, "mm", record_mm)
+    grad_weight, expected = _run_grad_weight_accumulation(operand_dtype, torch.float32)
+
+    assert observed_operand_dtypes == [(operand_dtype, operand_dtype)]
+    torch.testing.assert_close(grad_weight, expected, atol=5e-3, rtol=5e-2)
 
 
 #############################################################################
