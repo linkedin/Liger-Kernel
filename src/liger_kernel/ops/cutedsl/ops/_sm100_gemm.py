@@ -75,6 +75,12 @@ _EPI_TILE = (_CTA_M, _EPI_N)
 _CLUSTER_SHAPE_MN = (2, 1)
 
 _NUM_AB_STAGES = 6
+_NUM_AB_STAGES_GROUPED_LARGE_M = 4
+_NUM_AB_STAGES_GROUPED_SHORT_M = 5
+_SWIZZLE_SIZES_GROUPED = (8, 4, 2)
+_SWIZZLE_GROUPED_SHORT_M = 4
+_M_TILES_GROUPED_LARGE_M = 256
+_M_TILES_GROUPED_SHORT_M = 8
 _NUM_ACC_STAGES = 2
 _NUM_OUT_STAGES = 2
 _NUM_TMEM_COLS = 512
@@ -91,10 +97,13 @@ _TMEM_DEALLOC_BARRIER = 2
 _EPILOGUE_BARRIER = 3
 
 K_ALIGNMENT = _MMA_K
+EPILOGUE_TILE_SIZE = _EPI_N
 
 __all__ = [
+    "EPILOGUE_TILE_SIZE",
     "K_ALIGNMENT",
     "run_epilogue_gemm",
+    "run_grouped_epilogue_gemm",
 ]
 
 
@@ -280,6 +289,7 @@ def _kernel(
     num_ab_stages: cutlass.Constexpr,
     io_dtype: cutlass.Constexpr,
     epilogue: cutlass.Constexpr,
+    epilogue_fragments: cutlass.Constexpr,
     use_tma_output: cutlass.Constexpr,
 ):
     warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
@@ -419,11 +429,18 @@ def _kernel(
         (None, None, None),
     )
     t_cg_c = thr_mma.partition_C(g_c_mnl)
-    g_out_mnl = cute.local_tile(
-        m_out_mnl,
-        cute.slice_(_MMA_TILER, (None, None, 0)),
-        (None, None, None),
-    )
+    if const_expr(epilogue_fragments == 2):
+        g_out_mnl = cute.local_tile(
+            m_out_mnl,
+            (_MMA_M, _MMA_N // 2, 1),
+            (None, None, None),
+        )
+    else:
+        g_out_mnl = cute.local_tile(
+            m_out_mnl,
+            cute.slice_(_MMA_TILER, (None, None, 0)),
+            (None, None, None),
+        )
     t_cg_out = thr_mma.partition_C(g_out_mnl)
 
     a_cta_layout = cute.make_layout(cute.slice_(cluster_layout_vmnk, (0, 0, None, 0)).shape)
@@ -503,8 +520,16 @@ def _kernel(
             t_rs_r_out,
             t_rs_s_out,
         ) = _make_tma_epilogue_partitions(tidx, t_ct_acc_base, t_cg_c, s_out, io_dtype)
-        t_cg_out_transformed = utils.gemm.sm100.transform_partitioned_tensor_layout(t_cg_out)
-        t_cg_out_epi = cute.flat_divide(t_cg_out_transformed, _EPI_TILE)
+        if const_expr(epilogue_fragments == 2):
+            t_tr_r_lhs = cute.make_rmem_tensor(t_tr_r_acc.shape, Float32)
+            t_rs_r_lhs = tiled_copy_r2s.retile(t_tr_r_lhs)
+            t_cg_out_epi = cute.flat_divide(
+                t_cg_out[((None, None), 0, 0, 0, None, None, None)],
+                _EPI_TILE,
+            )
+        else:
+            t_cg_out_transformed = utils.gemm.sm100.transform_partitioned_tensor_layout(t_cg_out)
+            t_cg_out_epi = cute.flat_divide(t_cg_out_transformed, _EPI_TILE)
         b_sg_s_out, b_sg_g_out_partitioned = cpasync.tma_partition(
             tma_atom_out,
             0,
@@ -547,50 +572,105 @@ def _kernel(
             acc_pipeline.consumer_wait(acc_consumer_state)
             t_tr_t_acc = cute.group_modes(t_tr_t_acc, 3, cute.rank(t_tr_t_acc))
 
-            fragment_count = _MMA_N // _EPI_N
-            for fragment_idx in cutlass.range_constexpr(fragment_count):
-                cute.copy(
-                    tiled_copy_t2r,
-                    t_tr_t_acc[(None, None, None, fragment_idx)],
-                    t_tr_r_acc,
-                )
-                if fragment_idx == fragment_count - 1:
-                    with cute.arch.elect_one():
-                        acc_pipeline.consumer_release(acc_consumer_state)
-                    acc_consumer_state.advance()
-
-                epilogue(t_rs_r_acc, t_rs_r_out)
-                if const_expr(not use_tma_output):
-                    t_rs_g_c = tiled_copy_r2s.retile(t_tr_g_c[(None, None, None, fragment_idx)])
-                    for element in cutlass.range(
-                        cute.size(t_rs_r_acc),
-                        unroll_full=True,
-                    ):
-                        output_coord = t_rs_g_c[element]
-                        output_row = output_coord[0]
-                        output_col = output_coord[1]
-                        if output_row < m and output_col < n:
-                            m_out_direct_mnl[output_row, output_col, 0] = t_rs_r_out[element]
-
-                if const_expr(use_tma_output):
-                    out_buffer = fragment_idx % _NUM_OUT_STAGES
-                    if warp_idx == _EPILOGUE_WARPS[0]:
-                        out_pipeline.producer_acquire()
-                    epilogue_barrier.arrive_and_wait()
+            if const_expr(epilogue_fragments == 1):
+                fragment_count = _MMA_N // _EPI_N
+                for fragment_idx in cutlass.range_constexpr(fragment_count):
                     cute.copy(
-                        tiled_copy_r2s,
-                        t_rs_r_out,
-                        t_rs_s_out[(None, None, None, out_buffer)],
+                        tiled_copy_t2r,
+                        t_tr_t_acc[(None, None, None, fragment_idx)],
+                        t_tr_r_acc,
                     )
-                    cute.arch.fence_proxy("async.shared", space="cta")
-                    epilogue_barrier.arrive_and_wait()
-                    if warp_idx == _EPILOGUE_WARPS[0]:
+                    if fragment_idx == fragment_count - 1:
+                        with cute.arch.elect_one():
+                            acc_pipeline.consumer_release(acc_consumer_state)
+                        acc_consumer_state.advance()
+
+                    epilogue(t_rs_r_acc, t_rs_r_out)
+                    if const_expr(not use_tma_output):
+                        t_rs_g_c = tiled_copy_r2s.retile(t_tr_g_c[(None, None, None, fragment_idx)])
+                        for element in cutlass.range(
+                            cute.size(t_rs_r_acc),
+                            unroll_full=True,
+                        ):
+                            output_coord = t_rs_g_c[element]
+                            output_row = output_coord[0]
+                            output_col = output_coord[1]
+                            if output_row < m and output_col < n:
+                                m_out_direct_mnl[output_row, output_col, 0] = t_rs_r_out[element]
+
+                    if const_expr(use_tma_output):
+                        out_buffer = fragment_idx % _NUM_OUT_STAGES
+                        if warp_idx == _EPILOGUE_WARPS[0]:
+                            out_pipeline.producer_acquire()
+                        epilogue_barrier.arrive_and_wait()
                         cute.copy(
-                            tma_atom_out,
-                            b_sg_s_out[(None, out_buffer)],
-                            b_sg_g_out[(None, fragment_idx)],
+                            tiled_copy_r2s,
+                            t_rs_r_out,
+                            t_rs_s_out[(None, None, None, out_buffer)],
                         )
-                        out_pipeline.producer_commit()
+                        cute.arch.fence_proxy("async.shared", space="cta")
+                        epilogue_barrier.arrive_and_wait()
+                        if warp_idx == _EPILOGUE_WARPS[0]:
+                            cute.copy(
+                                tma_atom_out,
+                                b_sg_s_out[(None, out_buffer)],
+                                b_sg_g_out[(None, fragment_idx)],
+                            )
+                            out_pipeline.producer_commit()
+
+            if const_expr(epilogue_fragments == 2):
+                pair_count = _MMA_N // (2 * _EPI_N)
+                for pair_idx in cutlass.range_constexpr(pair_count):
+                    lhs_subtile = pair_idx * 2
+                    cute.copy(
+                        tiled_copy_t2r,
+                        t_tr_t_acc[(None, None, None, lhs_subtile + 1)],
+                        t_tr_r_acc,
+                    )
+                    cute.copy(
+                        tiled_copy_t2r,
+                        t_tr_t_acc[(None, None, None, lhs_subtile)],
+                        t_tr_r_lhs,
+                    )
+                    if pair_idx == pair_count - 1:
+                        with cute.arch.elect_one():
+                            acc_pipeline.consumer_release(acc_consumer_state)
+                        acc_consumer_state.advance()
+
+                    epilogue(t_rs_r_lhs, t_rs_r_acc, t_rs_r_out)
+                    if const_expr(not use_tma_output):
+                        t_rs_g_c = tiled_copy_r2s.retile(t_tr_g_c[(None, None, None, lhs_subtile)])
+                        for element in cutlass.range(
+                            cute.size(t_rs_r_acc),
+                            unroll_full=True,
+                        ):
+                            output_coord = t_rs_g_c[element]
+                            output_row = output_coord[0]
+                            physical_col = output_coord[1]
+                            physical_base = n_tile * _MMA_N + pair_idx * _EPI_N * 2
+                            logical_col = n_tile * (_MMA_N // 2) + pair_idx * _EPI_N + physical_col - physical_base
+                            if output_row < m and physical_col < n and logical_col < m_out_direct_mnl.shape[1]:
+                                m_out_direct_mnl[output_row, logical_col, 0] = t_rs_r_out[element]
+
+                    if const_expr(use_tma_output):
+                        out_buffer = pair_idx % _NUM_OUT_STAGES
+                        if warp_idx == _EPILOGUE_WARPS[0]:
+                            out_pipeline.producer_acquire()
+                        epilogue_barrier.arrive_and_wait()
+                        cute.copy(
+                            tiled_copy_r2s,
+                            t_rs_r_out,
+                            t_rs_s_out[(None, None, None, out_buffer)],
+                        )
+                        cute.arch.fence_proxy("async.shared", space="cta")
+                        epilogue_barrier.arrive_and_wait()
+                        if warp_idx == _EPILOGUE_WARPS[0]:
+                            cute.copy(
+                                tma_atom_out,
+                                b_sg_s_out[(None, out_buffer)],
+                                b_sg_g_out[(None, pair_idx)],
+                            )
+                            out_pipeline.producer_commit()
 
         if const_expr(use_tma_output) and warp_idx == _EPILOGUE_WARPS[0]:
             out_pipeline.producer_tail()
@@ -606,6 +686,7 @@ def _host(
     m_out: cute.Tensor,
     num_ab_stages: cutlass.Constexpr,
     epilogue: cutlass.Constexpr,
+    epilogue_fragments: cutlass.Constexpr,
     use_tma_output: cutlass.Constexpr,
     swizzle_size: cutlass.Constexpr,
     max_active_clusters: cutlass.Constexpr,
@@ -725,6 +806,7 @@ def _host(
         num_ab_stages,
         io_dtype,
         epilogue,
+        epilogue_fragments,
         use_tma_output,
     ).launch(
         grid=grid,
@@ -811,14 +893,14 @@ def _fake_dynamic_tensor(tensor, leading_dim, assumed_align, stride_divisibility
 
 
 @functools.cache
-def _validate_epilogue_callback(epilogue):
+def _validate_epilogue_callback(epilogue, expected_parameters):
     wrapped = getattr(epilogue, "__wrapped__", None)
     if wrapped is None or getattr(epilogue, "_dsl_cls", None) is None:
         raise TypeError("epilogue must be a module-level function decorated with @cute.jit.")
     if "<locals>" in wrapped.__qualname__ or wrapped.__closure__ or wrapped.__code__.co_freevars:
         raise ValueError("epilogue must be module-level and cannot close over local variables.")
-    if len(inspect.signature(wrapped).parameters) != 2:
-        raise TypeError("epilogue must accept exactly 2 parameters.")
+    if len(inspect.signature(wrapped).parameters) != expected_parameters:
+        raise TypeError(f"epilogue must accept exactly {expected_parameters} parameters.")
     return wrapped.__module__, wrapped.__qualname__, wrapped
 
 
@@ -831,6 +913,7 @@ def _validate_epilogue_signature(
     aligned,
     devices,
     dtypes,
+    epilogue_fragments,
 ):
     for name, shape, is_contiguous, is_aligned, device in zip(
         ("a", "b", "out"),
@@ -860,12 +943,14 @@ def _validate_epilogue_signature(
         raise ValueError(f"a and b K dimensions must match, got {a_shape[1]} and {b_shape[1]}.")
     if a_shape[1] % K_ALIGNMENT:
         raise ValueError(f"K must be divisible by {K_ALIGNMENT}, got {a_shape[1]}.")
-    expected_shape = (a_shape[0], b_shape[0])
+    if epilogue_fragments == 2 and b_shape[0] % (2 * EPILOGUE_TILE_SIZE):
+        raise ValueError(f"Grouped b rows must be divisible by {2 * EPILOGUE_TILE_SIZE}, got {b_shape[0]}.")
+    expected_shape = (a_shape[0], b_shape[0] // epilogue_fragments)
     if out_shape != expected_shape:
         raise ValueError(f"out must have shape {expected_shape}, got {out_shape}.")
 
 
-def _validate_epilogue_inputs(a, b, out):
+def _validate_epilogue_inputs(a, b, out, epilogue_fragments):
     if out.stride(1) != 1 or out.stride(0) < out.shape[1]:
         raise ValueError("out must be a dense row-major tensor or row-padded row-major view.")
     tensors = (a, b, out)
@@ -875,6 +960,7 @@ def _validate_epilogue_inputs(a, b, out):
         tuple(tensor.data_ptr() % 16 == 0 for tensor in tensors),
         tuple(tensor.device for tensor in tensors),
         tuple(tensor.dtype for tensor in tensors),
+        epilogue_fragments,
     )
 
 
@@ -889,11 +975,20 @@ def _select_epilogue_config(a):
     return _NUM_AB_STAGES, 1
 
 
-def _run_epilogue_gemm(a, b, out, epilogue):
-    _validate_epilogue_inputs(a, b, out)
-    epilogue_key = _validate_epilogue_callback(epilogue)
+def _run_epilogue_gemm(a, b, out, epilogue, epilogue_fragments):
+    _validate_epilogue_inputs(a, b, out, epilogue_fragments)
+    epilogue_key = _validate_epilogue_callback(epilogue, epilogue_fragments + 1)
     current_stream = _current_stream(a.device)
-    num_ab_stages, swizzle_size = _select_epilogue_config(a)
+    if epilogue_fragments == 2:
+        m_tiles = (a.shape[0] + _CTA_M - 1) // _CTA_M
+        if m_tiles == _M_TILES_GROUPED_SHORT_M:
+            num_ab_stages = _NUM_AB_STAGES_GROUPED_SHORT_M
+            swizzle_size = _SWIZZLE_GROUPED_SHORT_M
+        else:
+            num_ab_stages = _NUM_AB_STAGES_GROUPED_LARGE_M if m_tiles >= _M_TILES_GROUPED_LARGE_M else _NUM_AB_STAGES
+            swizzle_size = next((size for size in _SWIZZLE_SIZES_GROUPED if m_tiles % size == 0), 1)
+    else:
+        num_ab_stages, swizzle_size = _select_epilogue_config(a)
     use_tma_output = out.stride(0) * out.element_size() % 16 == 0
     max_active_clusters = _max_active_clusters(a.device.index)
 
@@ -903,6 +998,7 @@ def _run_epilogue_gemm(a, b, out, epilogue):
         b.dtype,
         out.dtype,
         epilogue_key,
+        epilogue_fragments,
         use_tma_output,
         swizzle_size,
         num_ab_stages,
@@ -935,6 +1031,7 @@ def _run_epilogue_gemm(a, b, out, epilogue):
             m_out,
             num_ab_stages,
             epilogue,
+            epilogue_fragments,
             use_tma_output,
             swizzle_size,
             max_active_clusters,
@@ -960,4 +1057,14 @@ def _run_epilogue_gemm(a, b, out, epilogue):
 def run_epilogue_gemm(a, b, out, epilogue):
     """Run ``a @ b.T`` and apply ``epilogue(accumulator, output)`` per fragment."""
     with _device_guard(a.device):
-        _run_epilogue_gemm(a, b, out, epilogue)
+        _run_epilogue_gemm(a, b, out, epilogue, epilogue_fragments=1)
+
+
+def run_grouped_epilogue_gemm(a, packed_b, out, epilogue):
+    """Apply ``epilogue(first, second, output)`` to adjacent packed fragments.
+
+    ``packed_b`` interleaves two logical matrices in 32-row tiles, allowing the
+    callback to fuse arbitrary binary projection math without materialization.
+    """
+    with _device_guard(a.device):
+        _run_epilogue_gemm(a, packed_b, out, epilogue, epilogue_fragments=2)
