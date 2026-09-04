@@ -22,7 +22,8 @@ from liger_kernel.utils import infer_device
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536 // 2
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
-_ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
+# torch 2.8 added ``out_dtype=`` to both ``torch.mm`` and ``torch.addmm``.
+_MM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
 def _max_capability() -> int:
@@ -36,6 +37,40 @@ def _max_capability() -> int:
             return 0
         return 10 * maj + minor
     return 0
+
+
+def _project_to_float32(inputs, weight):
+    """Project ``inputs @ weight.t()`` into float32 logits without rounding them first.
+
+    A ``bfloat16``/``float16`` product of same-dtype operands is exactly representable in float32
+    (8+8 and 11+11 mantissa bits both fit in 24) and cuBLAS already accumulates in float32, so
+    asking the GEMM for a float32 output is numerically equivalent to casting both operands up and
+    running a float32 GEMM -- but it keeps the low-precision tensor cores. Casting *after* the
+    matmul, as this used to do, is precision-inert: the logits are already rounded to the input
+    dtype by then, and JSD is a difference of nearly-equal distributions where that rounding
+    cancels catastrophically in ``dx``.
+
+    Falls back to the historical cast-after-matmul on configurations without ``out_dtype`` support.
+    The accurate alternative there needs a float32 copy of the head (V x H x 4 bytes, 2.1 GB at
+    llama shapes), which is not worth an OOM on platforms that previously worked.
+
+    Deliberately also falls back when the operands disagree, which is the autocast case: with a
+    float32 head under ``autocast(bfloat16)`` it is autocast that harmonizes the operands, and
+    ``aten::mm.dtype`` is not on its promotion list, so passing ``out_dtype`` there raises rather
+    than helping. Recovering that case means either rounding the float32 head ourselves once per
+    chunk -- duplicating autocast's weight cache -- or refusing the downcast and paying a float32
+    GEMM, which overrides the low-precision matmul the user asked autocast for. Both are trade-offs
+    rather than the free win this function makes, so they are left to a follow-up.
+    """
+    if (
+        _MM_SUPPORTS_OUT_DTYPE
+        and inputs.device.type == "cuda"
+        and torch.cuda.get_device_capability(inputs.device)[0] >= 8
+        and inputs.dtype in (torch.float16, torch.bfloat16)
+        and weight.dtype == inputs.dtype
+    ):
+        return torch.mm(inputs, weight.t(), out_dtype=torch.float32)
+    return (inputs @ weight.t()).to(torch.float32)
 
 
 # Chunk-memory constants: the chunked forward below sizes its BT chunks so
@@ -132,10 +167,11 @@ def fused_linear_jsd_forward(
         teacher_input_chunk = teacher_input[start_idx:end_idx]
 
         # shape: chunk_size x V
-        # For anything starting from logits to the final JSD loss, we do computation
-        # in FP32 to avoid losing numerical stability.
-        student_logits_chunk = (student_input_chunk @ student_weight.t()).to(torch.float32)
-        teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(torch.float32)
+        # Everything from the logits to the final JSD loss runs in FP32. The float32 output is
+        # requested from the projection GEMM itself rather than cast afterwards -- a cast after a
+        # low-precision matmul cannot recover bits the matmul already threw away.
+        student_logits_chunk = _project_to_float32(student_input_chunk, student_weight)
+        teacher_logits_chunk = _project_to_float32(teacher_input_chunk, teacher_weight)
 
         # log-softmax with temperature
         student_logits_chunk = student_logits_chunk / temperature
@@ -200,7 +236,7 @@ def fused_linear_jsd_forward(
             else:
                 grad_logits_t = student_logits_chunk.t()
                 if (
-                    _ADDMM_SUPPORTS_OUT_DTYPE
+                    _MM_SUPPORTS_OUT_DTYPE
                     and grad_weight.device.type == "cuda"
                     and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
                     and grad_weight.dtype == torch.float32
