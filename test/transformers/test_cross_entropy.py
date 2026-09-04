@@ -1008,7 +1008,9 @@ def test_float32_internal():
     # Set up test parameters
     batch_size = 4
     n_cols = 128256
-    n_non_ignore = batch_size
+    # n_non_ignore is passed to the kernel as a 0-D device tensor (pointer) to avoid a
+    # device->host sync; the kernel loads and casts it internally.
+    n_non_ignore = torch.tensor(batch_size, device=device)
     ignore_index = -100
     label_smoothing = 0.0
     lse_square_scale = 0.0
