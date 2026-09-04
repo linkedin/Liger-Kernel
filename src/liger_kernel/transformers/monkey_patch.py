@@ -41,6 +41,9 @@ from liger_kernel.transformers.swiglu import LigerExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLPForMuseGlimmer
+from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP
+from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP
+from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLPForMuseGlimmer
 
 try:
     import peft
@@ -173,6 +176,161 @@ def _patch_layer_norm_module(module, eps=1e-6):
 def _patch_swiglu_module(module, liger_module):
     _bind_method_to_module(module, "forward", liger_module.forward)
     _bind_method_to_module(module, "_get_name", lambda self: liger_module.__name__)
+
+
+# The activation each tiled MLP hardcodes in its fused kernel, as substrings of the activation's class
+# or function name (SiLU, GELUActivation, PytorchGELUTanh, ...).
+def _tiled_mlp_activation_name(module):
+    """The name of the activation an MLP instance applies, or None if it exposes none.
+
+    Model MLPs disagree on the attribute name: most use ``act_fn``, Llama4 uses ``activation_fn``.
+    """
+    for attr in ("act_fn", "activation_fn"):
+        act = getattr(module, attr, None)
+        if act is not None:
+            return getattr(act, "__name__", type(act).__name__)
+    return None
+
+
+# Everything a gate/up/down MLP is allowed to own. The tiled replacement computes exactly
+# down_proj(act(gate_proj(x)) * up_proj(x)), so anything else the module holds would be dropped.
+_TILED_MLP_ALLOWED_CHILDREN = frozenset({"gate_proj", "up_proj", "down_proj", "act_fn", "activation_fn"})
+
+
+def _check_tiled_mlp_activation(module, liger_tiled_module):
+    """Reject an MLP whose activation the tiled replacement would silently change.
+
+    The tiled modules validate this in ``__init__``, but instance patching rebinds methods onto an
+    already-built module so that never runs. Without this the fused kernel would apply its own
+    activation and quietly produce different numerics.
+    """
+    from liger_kernel.transformers.tiled_mlp import _REQUIRED_FUSED_MUL
+    from liger_kernel.transformers.tiled_mlp import _fused_mul_for
+
+    required = _REQUIRED_FUSED_MUL.get(liger_tiled_module)
+    name = _tiled_mlp_activation_name(module)
+    if required is None or name is None:
+        return
+    # compared by fused kernel rather than by activation name: the tanh-approximation kernel must not
+    # pick up exact (erf) gelu, and transformers renames these classes between versions
+    if _fused_mul_for(module) is not required:
+        raise ValueError(
+            f"{module.__class__.__name__} uses the {name} activation, which {liger_tiled_module.__name__} "
+            "does not implement. Map it to LigerTiledGLUMLP to keep the tiling with this activation."
+        )
+
+
+def _check_tiled_mlp_layout(module, liger_tiled_module):
+    """Reject an MLP that computes more than the gate/up/down product.
+
+    Replacing ``forward`` discards whatever the original did beyond that product, so an extra scale
+    (Inkling's ``global_scale``) or an intermediate dropout (T5Gemma) would vanish without a trace.
+    """
+    extra_children = sorted(set(dict(module.named_children())) - _TILED_MLP_ALLOWED_CHILDREN)
+    extra_params = sorted(name for name, _ in module.named_parameters(recurse=False))
+    if extra_children or extra_params:
+        raise ValueError(
+            f"{module.__class__.__name__} owns {extra_children + extra_params}, which "
+            f"{liger_tiled_module.__name__} does not compute; replacing forward would silently drop it. "
+            "Drop it from the tiled MLP mapping instead."
+        )
+
+
+def _warn_if_hub_kernel_dispatch_eligible(module):
+    """Warn when instance-patching a class transformers can also dispatch to a hub kernel.
+
+    transformers decorates MLPs like LlamaMLP with `@use_kernel_forward_from_hub(...)` (see
+    huggingface/transformers#48335), which sets `kernel_layer_name` on the class. `kernels.kernelize()`
+    walks a model by class and unconditionally rebinds `forward` on every instance of a class carrying
+    that attribute -- including one already instance-patched here -- even when no kernel mapping is
+    registered, in which case it falls back to the class's own original forward. It records no marker of
+    having done so, so nothing here can detect or undo a kernelize() call made afterward; the only way to
+    avoid the race is to always call kernelize()/load hub kernels *before* apply_liger_tiled_mlp on an
+    already-built model. The registration path (`apply_liger_tiled_mlp()` with no `model`) is unaffected:
+    it swaps the class outright, and kernelize() only ever touches classes carrying `kernel_layer_name`.
+    """
+    if hasattr(type(module), "kernel_layer_name"):
+        logger.warning(
+            f"{module.__class__.__name__} is registered for transformers' hub-kernel dispatch via "
+            f"kernel_layer_name={module.__class__.kernel_layer_name!r}. If you also call kernelize() or "
+            "load hub kernels on this model, do so before apply_liger_tiled_mlp: kernelize() walks "
+            "modules by class and will silently overwrite this patch if it runs afterward."
+        )
+
+
+def _patch_tiled_mlp_module(module, liger_tiled_module, num_shards=None):
+    _check_tiled_mlp_activation(module, liger_tiled_module)
+    _check_tiled_mlp_layout(module, liger_tiled_module)
+    _warn_if_hub_kernel_dispatch_eligible(module)
+    module.num_shards = num_shards
+    _bind_method_to_module(module, "_mlp_forward", liger_tiled_module._mlp_forward)
+    _bind_method_to_module(module, "forward", liger_tiled_module.forward)
+    _bind_method_to_module(module, "_get_name", lambda self: liger_tiled_module.__name__)
+
+
+# Maps the transformers MLP class name to the Liger tiled MLP that replaces it. Only models whose MLP
+# matches the gate/up/down SwiGLU or GEGLU layout are listed; MoE expert stacks, fused gate_up (phi3,
+# glm4), the Qwen vision MLPs (linear_fc1/linear_fc2) and MLPs carrying an extra scale or dropout
+# (deepseek_v4, falcon_h1, inkling, t5gemma) use bespoke layouts and stay excluded. _patch_tiled_mlp_module
+# re-checks each instance, so an entry added here in error is rejected rather than silently miscomputed.
+LIGER_TILED_MLP_PATCH_MAPPING = {
+    "LlamaMLP": LigerTiledSwiGLUMLP,
+    "GraniteMLP": LigerTiledSwiGLUMLP,
+    "Qwen2_5_VLMLP": LigerTiledSwiGLUMLP,
+    "Qwen3_5MLP": LigerTiledSwiGLUMLP,
+    "Qwen3VLTextMLP": LigerTiledSwiGLUMLP,
+    "Qwen3VLMoeTextMLP": LigerTiledSwiGLUMLP,
+    "MllamaTextMLP": LigerTiledSwiGLUMLP,
+    "Llama4TextMLP": LigerTiledSwiGLUMLP,
+    "MistralMLP": LigerTiledSwiGLUMLP,
+    "MinistralMLP": LigerTiledSwiGLUMLP,
+    "PixtralMLP": LigerTiledSwiGLUMLP,
+    "Qwen2MLP": LigerTiledSwiGLUMLP,
+    "Qwen3MLP": LigerTiledSwiGLUMLP,
+    "SmolLM3MLP": LigerTiledSwiGLUMLP,
+    "Exaone4MLP": LigerTiledSwiGLUMLP,
+    "Olmo2MLP": LigerTiledSwiGLUMLP,
+    "Olmo3MLP": LigerTiledSwiGLUMLP,
+    "MuseGlimmerTextMLP": LigerTiledSwiGLUMLPForMuseGlimmer,
+    "GemmaMLP": LigerTiledGEGLUMLP,
+    "Gemma2MLP": LigerTiledGEGLUMLP,
+    "Gemma3MLP": LigerTiledGEGLUMLP,
+}
+
+
+def apply_liger_tiled_mlp(model=None, num_shards=None, mapping=LIGER_TILED_MLP_PATCH_MAPPING) -> None:
+    """
+    Apply Liger's memory-efficient tiled MLP to the supported models.
+
+    When `model` is None the replacement is registered through the official transformers patch mapping
+    (`register_patch_mapping`) and applied automatically to any model later built with `from_pretrained`
+    or `from_config`. When `model` is provided, every already-instantiated MLP whose class name is in
+    `mapping` is patched in place, reusing its existing weights.
+
+    Tiled MLP recomputes the MLP forward during the backward to trade compute for a large activation
+    memory saving on long sequences. It is opt-in. Gradients have been verified to match a non-tiled
+    reference under DDP, FSDP2 (`torch.distributed.fsdp.fully_shard`) and DeepSpeed ZeRO-3. Each weight
+    is accumulated once per backward, except under ZeRO-3 where the reduction is instead deferred to the
+    last shard.
+
+    Args:
+        model (PreTrainedModel): An already-loaded model to patch in place. If None, the replacement is
+            registered for future model construction instead. Default is None.
+        num_shards (Optional[int]): Number of sequence shards used when patching an existing model
+            instance. If None, it is computed automatically per forward. Default is None.
+        mapping (dict): Mapping from transformers MLP class name to the Liger tiled MLP class to use.
+            Defaults to all models that share the SwiGLU or GEGLU layout.
+    """
+    if model is None:
+        from transformers.monkey_patching import register_patch_mapping
+
+        register_patch_mapping(mapping, overwrite=True)
+        return
+
+    for module in model.modules():
+        liger_tiled_module = mapping.get(module.__class__.__name__)
+        if liger_tiled_module is not None:
+            _patch_tiled_mlp_module(module, liger_tiled_module, num_shards=num_shards)
 
 
 def _patch_geglu_module(module):
@@ -3775,12 +3933,19 @@ def _apply_liger_kernel(model_type: str, **kwargs) -> None:
     apply_fn(**applicable_kwargs)
 
 
-def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
+def _apply_liger_kernel_to_instance(
+    model: PreTrainedModel, tiled_mlp: bool = False, tiled_mlp_num_shards: Optional[int] = None, **kwargs
+) -> None:
     """
     Applies Liger kernels to the provided model instance.
 
     Args:
         - model: the model instance to apply Liger kernels to
+        - tiled_mlp: whether to additionally replace the model's MLP with Liger's tiled MLP for
+          activation-memory savings on long sequences. Opt-in; see `apply_liger_tiled_mlp` for the
+          distributed-backend caveats.
+        - tiled_mlp_num_shards: number of sequence shards used by the tiled MLP, computed automatically
+          when None.
         - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
     """
     model_type = getattr(model, "config", None) and getattr(model.config, "model_type", None)
@@ -3803,3 +3968,6 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
     )
 
     apply_fn(model=model, **applicable_kwargs)
+
+    if tiled_mlp:
+        apply_liger_tiled_mlp(model=model, num_shards=tiled_mlp_num_shards)

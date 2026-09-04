@@ -1,5 +1,7 @@
 import inspect
+import logging
 
+from contextlib import contextmanager
 from inspect import signature
 from unittest.mock import MagicMock
 from unittest.mock import Mock
@@ -23,6 +25,9 @@ from liger_kernel.transformers import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers import LigerQwen3MoeSwiGLUMLP
 from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
+from liger_kernel.transformers import LigerTiledGEGLUMLP
+from liger_kernel.transformers import LigerTiledSwiGLUMLP
+from liger_kernel.transformers import LigerTiledSwiGLUMLPForMuseGlimmer
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
@@ -533,6 +538,302 @@ def test_apply_liger_kernel_to_instance_for_llama():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+def _unregister_liger_tiled_mlp():
+    """Drop only Liger's tiled MLP registrations, leaving anything else registered untouched.
+
+    unregister_patch_mapping raises on a key it does not hold, and the instance patching path registers
+    nothing at all, so the currently registered subset is what gets removed.
+    """
+    from transformers.monkey_patching import get_patch_mapping
+    from transformers.monkey_patching import unregister_patch_mapping
+
+    registered = [key for key in monkey_patch.LIGER_TILED_MLP_PATCH_MAPPING if key in get_patch_mapping()]
+    if registered:
+        unregister_patch_mapping(registered)
+
+
+def test_apply_liger_kernel_to_instance_for_llama_with_tiled_mlp():
+
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.llama.modeling_llama"):
+        config = transformers.models.llama.configuration_llama.LlamaConfig(
+            dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLP.forward)
+
+        try:
+            _apply_liger_kernel_to_instance(
+                model=dummy_model_instance,
+                rope=False,
+                rms_norm=False,
+                fused_linear_cross_entropy=False,
+                swiglu=False,
+                tiled_mlp=True,
+                tiled_mlp_num_shards=4,
+            )
+
+            for layer in dummy_model_instance.model.layers:
+                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
+                assert layer.mlp.num_shards == 4
+        finally:
+            _unregister_liger_tiled_mlp()
+
+
+def test_apply_liger_tiled_mlp_to_instance():
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=2,
+    )
+    model = AutoModelForCausalLM.from_config(config)
+
+    for layer in model.model.layers:
+        assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLP.forward)
+
+    monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=4)
+
+    for layer in model.model.layers:
+        assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
+        assert layer.mlp.num_shards == 4
+
+
+@pytest.mark.skipif(not is_muse_glimmer_available(), reason="muse_glimmer module not available")
+def test_apply_liger_tiled_mlp_to_instance_for_muse_glimmer():
+    """MuseGlimmerTextMLP has the plain gate/up/down SwiGLU layout but names its activation field
+    hidden_activation (Gemma-style), so it needs its own tiled wrapper -- see
+    LigerTiledSwiGLUMLPForMuseGlimmer."""
+    from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerTextModel
+
+    config = transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerTextConfig(
+        vocab_size=512,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        max_position_embeddings=128,
+        sliding_window=16,
+    )
+    model = MuseGlimmerTextModel(config)
+
+    for layer in model.layers:
+        assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLPForMuseGlimmer.forward)
+
+    monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=2)
+
+    for layer in model.layers:
+        assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLPForMuseGlimmer.forward)
+        assert layer.mlp.num_shards == 2
+
+
+def test_apply_liger_tiled_mlp_rejects_mismatched_activation():
+    """Instance patching rebinds methods onto an already-built module, so the tiled MLP's own __init__
+    check never runs. A model whose activation the fused kernel would silently replace must be rejected
+    rather than quietly given different numerics."""
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="gelu_pytorch_tanh",
+        num_hidden_layers=2,
+    )
+    model = AutoModelForCausalLM.from_config(config)
+
+    with pytest.raises(ValueError, match="does not implement"):
+        monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=4)
+
+    # the rejected model must be left exactly as it was
+    for layer in model.model.layers:
+        assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLP.forward)
+
+
+def test_apply_liger_tiled_mlp_rejects_extra_computation():
+    """The tiled replacement computes only down_proj(act(gate(x)) * up(x)), so an MLP holding anything
+    else — Inkling's global_scale, T5Gemma's intermediate dropout — must be refused rather than have
+    that computation silently dropped."""
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=2,
+    )
+    model = AutoModelForCausalLM.from_config(config)
+    for layer in model.model.layers:
+        layer.mlp.global_scale = torch.nn.Parameter(torch.ones(1))
+
+    with pytest.raises(ValueError, match="global_scale"):
+        monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=4)
+
+
+def test_apply_liger_tiled_mlp_registers_supported_models():
+
+    llama_config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=2,
+    )
+    gemma2_config = transformers.models.gemma2.configuration_gemma2.Gemma2Config(
+        dtype=torch.bfloat16,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=16,
+    )
+
+    try:
+        monkey_patch.apply_liger_tiled_mlp()
+
+        llama_model = AutoModelForCausalLM.from_config(llama_config)
+        gemma2_model = AutoModelForCausalLM.from_config(gemma2_config)
+
+        for layer in llama_model.model.layers:
+            assert isinstance(layer.mlp, LigerTiledSwiGLUMLP)
+        for layer in gemma2_model.model.layers:
+            assert isinstance(layer.mlp, LigerTiledGEGLUMLP)
+    finally:
+        _unregister_liger_tiled_mlp()
+
+
+@pytest.mark.skipif(not is_muse_glimmer_available(), reason="muse_glimmer module not available")
+def test_apply_liger_tiled_mlp_registers_muse_glimmer():
+    from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerForConditionalGeneration
+
+    config = transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerConfig(
+        attn_implementation="sdpa",
+        out_hidden_size=128,
+        projector_hidden_size=64,
+        vision_config=transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerVisionConfig(
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            patch_size=14,
+            pos_emb_height=4,
+            pos_emb_width=4,
+            max_position_embeddings=16,
+        ),
+        text_config=transformers.models.muse_glimmer.configuration_muse_glimmer.MuseGlimmerTextConfig(
+            vocab_size=512,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            max_position_embeddings=128,
+            sliding_window=16,
+        ),
+    )
+
+    try:
+        monkey_patch.apply_liger_tiled_mlp()
+
+        model = MuseGlimmerForConditionalGeneration._from_config(config)
+
+        for layer in model.model.language_model.layers:
+            assert isinstance(layer.mlp, LigerTiledSwiGLUMLPForMuseGlimmer)
+    finally:
+        _unregister_liger_tiled_mlp()
+
+
+@contextmanager
+def _decorated_for_hub_kernel_dispatch(cls, layer_name):
+    """Simulate transformers decorating `cls` with `@use_kernel_forward_from_hub(layer_name)`, as
+    LlamaMLP is expected to be once huggingface/transformers#48335 lands, then undo it."""
+    from kernels import use_kernel_forward_from_hub
+
+    had_attr = "kernel_layer_name" in cls.__dict__
+    prev_value = cls.__dict__.get("kernel_layer_name")
+    use_kernel_forward_from_hub(layer_name)(cls)
+    try:
+        yield
+    finally:
+        if had_attr:
+            cls.kernel_layer_name = prev_value
+        else:
+            del cls.kernel_layer_name
+
+
+def test_apply_liger_tiled_mlp_warns_when_instance_is_hub_kernel_eligible(caplog):
+    """A class transformers has decorated with `use_kernel_forward_from_hub` (as LlamaMLP will be, per
+    huggingface/transformers#48335) is walked by `kernels.kernelize()` regardless of any instance patch
+    already applied to it, so patching such an instance must say so."""
+    pytest.importorskip("kernels")
+
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=1,
+    )
+    LlamaMLP = transformers.models.llama.modeling_llama.LlamaMLP
+
+    with _decorated_for_hub_kernel_dispatch(LlamaMLP, "SwiGLUMLP"):
+        model = AutoModelForCausalLM.from_config(config)
+        with caplog.at_level(logging.WARNING, logger="liger_kernel.transformers.monkey_patch"):
+            monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=2)
+
+    assert "hub-kernel dispatch" in caplog.text
+    assert "kernel_layer_name='SwiGLUMLP'" in caplog.text
+
+
+def test_kernelize_after_tiled_mlp_patch_silently_reverts_it():
+    """Demonstrates the exact hazard `_warn_if_hub_kernel_dispatch_eligible` warns about: `kernelize()`
+    rebinds `forward` on every instance of a decorated class, even with no kernel mapping registered, so
+    calling it after `apply_liger_tiled_mlp` discards the tiled patch without raising anything."""
+    kernels = pytest.importorskip("kernels")
+
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=1,
+    )
+    LlamaMLP = transformers.models.llama.modeling_llama.LlamaMLP
+
+    with _decorated_for_hub_kernel_dispatch(LlamaMLP, "SwiGLUMLP"):
+        model = AutoModelForCausalLM.from_config(config)
+        monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=2)
+        mlp = model.model.layers[0].mlp
+        assert inspect.getsource(mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
+
+        with pytest.warns(UserWarning, match="No kernel mapping found"):
+            kernels.kernelize(model, mode=kernels.Mode.INFERENCE)
+
+        # kernelize() found no mapping for "SwiGLUMLP" and fell back -- to LlamaMLP's own forward, not
+        # the tiled one, silently undoing the patch above.
+        assert inspect.getsource(mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLP.forward)
+        assert inspect.getsource(mlp.forward) == inspect.getsource(LlamaMLP.forward)
+
+        # Applying the tiled patch again, after kernelize(), is the correct order and sticks.
+        monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=2)
+        assert inspect.getsource(mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
 
 
 @pytest.mark.skipif(not is_muse_glimmer_available(), reason="muse_glimmer module not available")
