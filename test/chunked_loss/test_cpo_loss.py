@@ -300,3 +300,31 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
     assert_verbose_allclose(weight1.grad, weight2.grad, atol=atol, rtol=rtol)
     if bias:
         assert_verbose_allclose(bias1.grad, bias2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_cpo_frozen_weight(compiled):
+    B, T, H, V = 4, 16, 32, 64
+    torch.manual_seed(42)
+    _input = torch.randn(2 * B, T, H, device=device, dtype=torch.float32)
+    _target = torch.randint(0, V, (2 * B, T), device=device, dtype=torch.long)
+    _weight = torch.randn(V, H, device=device, dtype=torch.float32)
+
+    input_full = _input.clone().detach().requires_grad_(True)
+    weight_full = _weight.clone().detach().requires_grad_(True)
+
+    loss_fn_full = LigerFusedLinearCPOLoss(beta=0.1, chunk_size=2, compiled=compiled)
+    loss_full, *aux_full = loss_fn_full(weight_full, input_full, _target)
+    loss_full.backward()
+    assert weight_full.grad is not None
+
+    input_lora = _input.clone().detach().requires_grad_(True)
+    weight_lora = _weight.clone().detach().requires_grad_(False)
+
+    loss_fn_lora = LigerFusedLinearCPOLoss(beta=0.1, chunk_size=2, compiled=compiled)
+    loss_lora, *aux_lora = loss_fn_lora(weight_lora, input_lora, _target)
+    loss_lora.backward()
+
+    assert weight_lora.grad is None
+    assert_verbose_allclose(loss_full, loss_lora, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(input_full.grad, input_lora.grad, atol=1e-5, rtol=1e-5)
