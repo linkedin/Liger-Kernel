@@ -1,6 +1,10 @@
-# LigerCute — native MoE kernels (CUTLASS + NVSHMEM)
+# LigerCute — native CUTLASS + NVSHMEM kernels
 
 ## Overview
+
+`liger_cute_kernels` is the native CUTLASS + NVSHMEM kernel package for Liger.
+It currently provides expert-parallel MoE and tensor-parallel fused scaled
+linear cross entropy, with a Torch-ABI-independent core exposed through TVM FFI.
 
 Liger MoE is a fused expert-parallel MoE implementation for NVIDIA Hopper and
 Blackwell GPUs. A persistent kernel uses warp specialization to overlap
@@ -8,6 +12,11 @@ NVSHMEM communication with CUTLASS matrix multiplication: communication warps
 move remote token tiles while the remaining warps execute the expert MLP. Both
 the forward and backward passes are fused, use statically sized symmetric
 buffers, and support CUDA Graph execution without a token-capacity limit.
+
+The tensor-parallel fused scaled linear cross-entropy implementation fuses the
+classifier projection with per-token NLL and optional entropy. Local MAX/SUM
+reductions run in the WGMMA epilogue through NVLS or DirectPeer, with a sharded
+IBRC follow-up for two-host execution.
 
 ### Hopper results
 
@@ -19,6 +28,7 @@ model or system.
 |---|---|
 | Standalone MoE kernels | Up to **32% lower forward latency** and **7% lower backward latency** than the strongest compared implementation |
 | Communication-intensive H200 cases | **10–35% higher forward throughput** than Comet; selected backward cases reach up to **~108% higher throughput** than DeepEP |
+| Tensor-parallel fused scaled linear cross entropy | **783.5 TFLOP/s/GPU at TP1**, **762.3 at TP8**, and **662.9 at two-host TP16** for M8192/H4096/V131072 |
 | Qwen3-30B-A3B training on 8 H100 GPUs | **2.35× speedup / 57% lower step time** than Megatron and **~17% lower step time** than Transformer Engine |
 | End-to-end convergence | **5.06% final-loss improvement** over the Megatron baseline |
 
@@ -48,15 +58,43 @@ global batch size 512, and sequence length 4,096. Left: cross-entropy loss.
 Right: per-step wall time. The paper excludes the initial CUDA Graph build from
 its aggregate step-time statistics.
 
+## Fused linear scaled cross entropy
+
+The Hopper native core also provides
+`fused_linear_scaled_cross_entropy_forward` and
+`fused_linear_scaled_cross_entropy_backward`. The backward path uses a
+three-stage cluster-2 dZ handoff followed by a four-stage combined dX+dW
+cluster kernel. dX uses split-K=2 only for hidden size 2,048; hidden size 4,096
+uses split-K=1. Direct-peer and hierarchical two-host transports remain
+available when the single-host NVLS path is not selected.
+
+The `liger_cute_kernels.tvm_ffi` facade exposes configuration plus forward and
+backward entry points. Both accept the NVSHMEM team configured for the same
+tensor-parallel ranks and take inverse temperature.
+Capacities for tokens, hidden size, local vocabulary, and reduction grouping
+must be configured before capture or execution.
+
+Hierarchical NVLS+remote backward currently requires the configured
+tensor-parallel team to cover the full NVSHMEM world. Single-host NVLS
+subgroups remain supported; a multi-host subgroup that is only part of a
+larger world fails explicitly rather than communicating with nonmembers.
+
+Tensor-parallel reduction transport is implemented in `liger_cute::detail`.
+Host setup selects either the NVLS or DirectPeer local backend and passes only
+that backend's compact device view to the kernel. Forward performs local MAX
+and corrected SUM reductions in its WGMMA epilogue; the RDC follow-up exchanges
+one unique token shard per local GPU over IBRC, gathers the merged shards with
+NVLS, and writes NLL/LSE/entropy. Backward retains its local reduce-scatter,
+remote reduction, and local all-gather/scatter pipeline.
+
 ## Package architecture
 
-Native CUDA build for the MoE port (from `LigerCommKernels`). The lck wheel
-packages one native core shared library that also exports the Python-facing TVM
-FFI functions:
+The native wheel packages one shared core library containing the CUTLASS +
+NVSHMEM operators and Python-facing TVM FFI functions:
 
 | Artifact | Sources | Links | Boundary | Built |
 |---|---|---|---|---|
-| `libliger_cute_kernels.so` (the "core", aka *lck*) | `csrc/core` + `liger_cute_kernels/tvm_ffi_bindings.cpp` | CUTLASS + NVSHMEM + CUDA + TVM FFI — **no torch** | flat `extern "C"` (`liger_cute.h`) and TVM FFI exports (`__tvm_ffi_*`) | **once** |
+| `libliger_cute_kernels.so` (the core) | `csrc/core` + `liger_cute_kernels/tvm_ffi_bindings.cpp` | CUTLASS + NVSHMEM + CUDA + TVM FFI — **no torch** | flat `extern "C"` (`liger_cute.h`) and TVM FFI exports (`__tvm_ffi_*`) | **once** |
 
 The core's public ABI is `extern "C"` only (no `std::`/torch types cross it),
 symbols are hidden except `liger_cute_*` and `__tvm_ffi_*`, and libstdc++/libgcc
@@ -68,18 +106,18 @@ compile.
 
 The top-level **`liger_kernel` wheel is pure Python/Triton** and does **not**
 build or contain any of this native code. The native libraries ship as a
-**separate, CUDA/torch-version-prefixed `lck` wheel** that installs its own
+**separate, CUDA/torch-version-prefixed wheel** that installs its own
 standalone top-level package **`liger_cute_kernels`** (kept separate from
 `liger_kernel` so the native libs don't mix in). `liger_kernel.ops.cute` imports
 `liger_cute_kernels.tvm_ffi` at runtime. Intended order:
 
 1. Install the top-level `liger_kernel` wheel (pure Python).
-2. *Optionally* install the matching `lck` wheel (package `liger_cute_kernels`)
+2. *Optionally* install the matching native wheel (package `liger_cute_kernels`)
    for the local CUDA + torch environment.
 
-The lck wheel is built by this module's `setup.py` (see **Building the lck
-wheel** below). Selecting/installing the right lck wheel automatically for the
-local CUDA + torch environment is a separate follow-up.
+The native wheel is built by this module's `setup.py` (see **Building the
+native wheel** below). Selecting/installing the right wheel automatically for
+the local CUDA + torch environment is a separate follow-up.
 
 ## Layout
 
@@ -91,14 +129,14 @@ in-liger entry point) lives separately, under `src/liger_kernel/ops/cute/`.
 liger_cute_kernels/             # ← standalone native build module (repo root)
 ├── README.md
 ├── assets/                     # README benchmark figures
-├── setup.py                    # builds the lck wheel (package liger_cute_kernels)
+├── setup.py                    # builds the native wheel (package liger_cute_kernels)
 ├── pyproject.toml
-├── cute_build.py               # build_core() helper + LckBuildExt
-├── liger_cute_kernels/         # the lck wheel's package source
+├── cute_build.py               # build_core() helper + native wheel build extension
+├── liger_cute_kernels/         # native package source
 │   ├── __init__.py             # (.so are added here at build time)
 │   ├── tvm_ffi.py              # Python facade over the TVM FFI exports
 │   └── tvm_ffi_bindings.cpp    # TVM FFI C++ exports compiled into the core
-├── test/                       # the lck package's own unit tests
+├── test/                       # native package unit tests
 │   └── test_moe_bindings.py
 ├── CMakeLists.txt              # core with TVM FFI exports
 ├── cmake/
@@ -111,10 +149,10 @@ liger_cute_kernels/             # ← standalone native build module (repo root)
     │   │   ├── {check.h, moe.h}             # core control/config surface
     │   │   └── detail/symmetric_memory.h    # core-internal (nvshmem+STL); not ABI
     │   ├── src/                 # *.{cu,cpp} compiled INTO the core …
-    │   │   └── moe/             #   … fused MoE kernels (moe.cu, moe_bwd.cu, mlp*.cu)
-    │   │       └── tune/        # standalone offline autotuner — NOT a core source
-    │   │           ├── CMakeLists.txt        #   its own project; links torch
-    │   │           └── tune_moe_fwd_bwd.cu   #   (excluded from the core glob)
+    │   │   ├── moe/             # expert-parallel MoE kernels
+    │   │   │   └── tune/        # standalone offline autotuner — NOT a core source
+    │   │   └── fused_scaled_linear_cross_entropy/
+    │   │                        # tensor-parallel fused loss kernels
     │   └── liger_cute.version   # exports only liger_cute_* and __tvm_ffi_*
 
 src/liger_kernel/ops/cute/
@@ -265,10 +303,10 @@ router distribution. `MOE_FWDBWD_TUNE_EXACT=1` runs exactly one arbitrary
 shape and requires the `T`, `D`, `I`, and local-`E` overrides (plus optional
 `K`).
 
-## Building the lck wheel
+## Building the native wheel
 
 This module's `setup.py` packages the native libraries into the independent
-**lck wheel**, whose package is the standalone top-level **`liger_cute_kernels`**.
+wheel whose package is the standalone top-level **`liger_cute_kernels`**.
 It builds the core and ships
 `liger_cute_kernels/{libliger_cute_kernels.so, libnvshmem_host.so,
 tvm_ffi.py, tvm_ffi_bindings.cpp}`. Build against the **local** CUDA/NVSHMEM
@@ -305,7 +343,7 @@ LIGER_CUTE_CORE_DIR=/abs/dir-with-core \
 ```
 
 Install order at the consumer side: the `liger_kernel` wheel first, then
-optionally the matching lck wheel.
+optionally the matching native wheel.
 
 ## Source-tree Python verification
 
