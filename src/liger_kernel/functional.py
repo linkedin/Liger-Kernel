@@ -36,6 +36,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.rms_norm",
         "liger_kernel.ops.backends._cutedsl.rms_norm",
+        "liger_kernel.ops.backends._ascend.rms_norm",
     ),
 )
 
@@ -74,34 +75,33 @@ declare_op_locations(
     ),
 )
 
-# SwiGLU: Triton (universal) + CuTe DSL (Hopper+). SwiGLU is a purely
-# elementwise op (silu(a) * b) so the CuTe DSL kernel avoids Triton launch
-# overhead and uses native exp2 for the sigmoid.
+# SwiGLU: Triton (universal) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
 declare_op_locations(
     "swiglu",
     (
         "liger_kernel.ops.backends._triton.swiglu",
         "liger_kernel.ops.backends._cutedsl.swiglu",
+        "liger_kernel.ops.backends._ascend.swiglu",
     ),
 )
 
-# RoPE: Triton (universal) + CuTe DSL (Hopper+). RoPE is an elementwise
-# rotation; the CuTe DSL kernel shares one rotate primitive for fwd+bwd.
+# RoPE: Triton (universal) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
 declare_op_locations(
     "rope",
     (
         "liger_kernel.ops.backends._triton.rope",
         "liger_kernel.ops.backends._cutedsl.rope",
+        "liger_kernel.ops.backends._ascend.rope",
     ),
 )
 
-# CrossEntropy: Triton (universal) + CuTe DSL (Hopper+). The CuTe DSL kernel
-# uses an online-softmax reduction adapted from Quack.
+# CrossEntropy: NVIDIA Triton fallback + Ascend Triton on NPU.
 declare_op_locations(
     "cross_entropy",
     (
         "liger_kernel.ops.backends._triton.cross_entropy",
         "liger_kernel.ops.backends._cutedsl.cross_entropy",
+        "liger_kernel.ops.backends._ascend.cross_entropy",
     ),
 )
 
@@ -158,15 +158,16 @@ declare_op_locations(
     ),
 )
 
-# fused_linear_cross_entropy: Triton (universal) + CuTe DSL (Hopper+). The
-# CuTe DSL variant delegates to LigerFusedLinearCrossEntropyFunction which
-# internally dispatches the cross_entropy_loss_and_grad primitive (picking up
-# the CuTe DSL kernel on Hopper+).
+# fused_linear_cross_entropy: Triton (universal) + Ascend Triton on NPU.
+# On NVIDIA, the CuTe DSL acceleration is inside the composed op via
+# ``cross_entropy_loss_and_grad``. On Ascend the dedicated FLCE Function
+# is selected by preference_rank.
 declare_op_locations(
     "fused_linear_cross_entropy",
     (
         "liger_kernel.ops.backends._triton.fused_linear_cross_entropy",
         "liger_kernel.ops.backends._cutedsl.fused_linear_cross_entropy",
+        "liger_kernel.ops.backends._ascend.fused_linear_cross_entropy",
     ),
 )
 

@@ -1,3 +1,15 @@
+"""Ascend RMSNorm: UB-aware fused row / 2D / column-tiled Triton kernels.
+
+Profiling on 910B (BT=8192, H=4096, bf16) showed the previous two-pass tiled
+forward spent 350us at aiv_mte2_ratio=0.69 because it reloaded X after the
+rstd reduction. torch_npu.npu_rms_norm finishes in 107us at vec_ratio=0.81.
+Full-width single-pass kernels (same pattern as Ascend LayerNorm) keep X in UB
+and cut that extra HBM round-trip. Column tiling remains only when a full row
+does not fit UB.
+"""
+
+import functools
+
 import torch
 import triton
 import triton.language as tl
@@ -13,133 +25,21 @@ _CASTING_MODE_NONE: tl.constexpr = tl.constexpr(-1)
 _CASTING_MODE_LLAMA: tl.constexpr = tl.constexpr(0)
 _CASTING_MODE_GEMMA: tl.constexpr = tl.constexpr(1)
 
-
-def torch_dtype_to_triton(dtype):
-    mapping = {
-        torch.float32: tl.float32,
-        torch.bfloat16: tl.bfloat16,
-    }
-    return mapping.get(dtype, tl.float32)
-
-
-# -----------------------------------------------------------------------------
-# Forward Kernel - No Tiling (for n_cols <= 2048)
-# -----------------------------------------------------------------------------
-
-
-@triton.jit
-def _rms_norm_forward_kernel_no_tiling(
-    Y_ptr,
-    Y_row_stride,
-    X_ptr,
-    X_row_stride,
-    W_ptr,
-    RSTD_ptr,
-    RSTD_row_stride,
-    n_rows: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps,
-    offset,
-    casting_mode: tl.constexpr,
-    elementwise_affine: tl.constexpr,
-    X_DTYPE: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-):
-    """
-    NPU-optimized rms_norm forward kernel for small n_cols (< 2048).
-
-    Performance optimizations:
-    1. Use 2D vector loading to maximize UB utilization (e.g., (1,2048), (2,1024), (4,512))
-    2. Process multiple rows at once using 2D indexing
-    3. Keep data in registers, minimize conversions
-    4. Use optimal cache policies
-
-    Used when n_cols < 2048 to avoid the overhead of column blocking.
-    """
-    pid = tl.program_id(0)
-    num_progs = tl.num_programs(0)
-
-    if casting_mode == _CASTING_MODE_NONE:
-        eps = eps.to(X_DTYPE)
-        offset = offset.to(X_DTYPE)
-
-    # Grid-stride loop setup for 2D blocks
-    grid_stride = num_progs * BLOCK_SIZE_M
-    num_iterations = tl.cdiv(n_rows, grid_stride)
-
-    col_offsets = tl.arange(0, BLOCK_SIZE_N)
-    col_mask = col_offsets < n_cols
-    row_offsets = tl.arange(0, BLOCK_SIZE_M)
-
-    if elementwise_affine:
-        W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
-
-    # Grid-stride loop over row blocks
-    for i in range(num_iterations):
-        row_idx = i * grid_stride + pid * BLOCK_SIZE_M + row_offsets
-        row_mask = row_idx < n_rows
-        block_mask = row_mask[:, None] & col_mask[None, :]
-
-        # Load multiple rows at once using 2D indexing
-        X_rows = tl.load(
-            X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
-            mask=block_mask,
-            other=0.0,
-        )
-
-        # Compute sum_square for all rows
-        if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
-            X_rows = X_rows.to(tl.float32)
-
-        sum_squares = tl.sum(tl.where(block_mask, X_rows * X_rows, 0.0), axis=1)
-
-        # Compute rstd for all rows
-        mean_squares = sum_squares / n_cols
-        rstd_rows = rsqrt(mean_squares + eps)
-
-        # Store rstd_rows
-        tl.store(RSTD_ptr + row_idx * RSTD_row_stride, rstd_rows, mask=row_mask)
-
-        # Apply casting based on mode
-        if casting_mode == _CASTING_MODE_GEMMA:
-            X_rows = X_rows.to(tl.float32)
-            if elementwise_affine:
-                W_row_fp32 = W_row.to(tl.float32)
-        elif casting_mode == _CASTING_MODE_LLAMA:
-            X_rows = X_rows.to(tl.float32)
-
-        # Normalize
-        X_rows = X_rows * rstd_rows[:, None]
-
-        # Cast back for Llama mode before weight multiplication
-        if casting_mode == _CASTING_MODE_LLAMA:
-            X_rows = X_rows.to(X_DTYPE)
-
-        # Apply weight
-        if elementwise_affine:
-            if casting_mode == _CASTING_MODE_GEMMA:
-                Y_rows = X_rows * (offset + W_row_fp32[None, :])
-            else:
-                Y_rows = X_rows * (offset + W_row[None, :])
-        else:
-            Y_rows = X_rows
-
-        # Cast back for Gemma mode
-        if casting_mode == _CASTING_MODE_GEMMA:
-            Y_rows = Y_rows.to(X_DTYPE)
-
-        # Store results
-        tl.store(Y_ptr + row_idx[:, None] * Y_row_stride + col_offsets[None, :], Y_rows, mask=block_mask)
+# Peak live fp32 tiles. Wide rows keep fewer copies so a full 4096/8192 vector fits.
+_FUSED_FWD_MEM_MULT = 5.0
+_FUSED_FWD_MEM_MULT_WIDE = 4.0
+_FUSED_BWD_MEM_MULT = 7.0
+_TILED_MEM_MULT = 8.0
+_UB_SAFETY_MARGIN = 0.85
 
 
 # -----------------------------------------------------------------------------
-# Forward Kernel - With Tiling (for n_cols > 2048)
+# Forward kernels
 # -----------------------------------------------------------------------------
 
 
 @triton.jit
-def _rms_norm_forward_kernel_tiled(
+def _rms_norm_forward_row(
     Y_ptr,
     Y_row_stride,
     X_ptr,
@@ -156,71 +56,192 @@ def _rms_norm_forward_kernel_tiled(
     X_DTYPE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """
-    NPU-optimized rms_norm forward kernel for large n_cols (>= 2048).
-
-    This kernel processes rows using a grid-stride loop pattern:
-    1. Each program handles multiple rows
-    2. For each row, we process it in column chunks of BLOCK_SIZE
-    3. Grid size is limited to NPU core count to avoid resource overflow
-
-    This solves two problems:
-    1. UB overflow when n_cols is too large (original kernel used n_cols as BLOCK_SIZE)
-    2. Efficient multi-row processing within a single kernel launch
-    """
+    """Grid-stride full-width row forward. One vector load of X per row."""
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
-    num_col_blocks = tl.cdiv(n_cols, BLOCK_SIZE)
-
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    col_mask = col_offsets < n_cols
+    n_cols_inv = 1.0 / n_cols
+    # Python float scalars can specialize to fp64 (#1358). Pin so rsqrt / W+offset stay fp32.
     if casting_mode == _CASTING_MODE_NONE:
         eps = eps.to(X_DTYPE)
         offset = offset.to(X_DTYPE)
+    else:
+        eps = eps.to(tl.float32)
+        offset = offset.to(tl.float32)
 
+    if elementwise_affine:
+        W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
+
+    row_chunk = (n_rows + num_progs - 1) // num_progs
+    row_start = pid * row_chunk
+    row_end = tl.minimum(row_start + row_chunk, n_rows)
+
+    for row_idx in tl.range(row_start, row_end):
+        row_X_ptr = X_ptr + row_idx * X_row_stride
+        row_Y_ptr = Y_ptr + row_idx * Y_row_stride
+
+        X_row = tl.load(row_X_ptr + col_offsets, mask=col_mask, other=0.0)
+        if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
+            X_f32 = X_row.to(tl.float32)
+        else:
+            X_f32 = X_row
+
+        sum_sq = tl.sum(tl.where(col_mask, X_f32 * X_f32, 0.0), axis=0)
+        rstd = rsqrt(sum_sq * n_cols_inv + eps)
+        tl.store(RSTD_ptr + row_idx * RSTD_row_stride, rstd)
+
+        X_hat = X_f32 * rstd
+        if casting_mode == _CASTING_MODE_LLAMA:
+            X_hat = X_hat.to(X_DTYPE)
+        if elementwise_affine:
+            if casting_mode == _CASTING_MODE_GEMMA:
+                Y_row = X_hat * (offset + W_row.to(tl.float32))
+            else:
+                Y_row = X_hat * (offset + W_row)
+        else:
+            Y_row = X_hat
+        if casting_mode == _CASTING_MODE_GEMMA:
+            Y_row = Y_row.to(X_DTYPE)
+        tl.store(row_Y_ptr + col_offsets, Y_row, mask=col_mask)
+
+
+@triton.jit
+def _rms_norm_forward_fused_2d(
+    Y_ptr,
+    Y_row_stride,
+    X_ptr,
+    X_row_stride,
+    W_ptr,
+    RSTD_ptr,
+    RSTD_row_stride,
+    n_rows: tl.constexpr,
+    n_cols: tl.constexpr,
+    eps,
+    offset,
+    casting_mode: tl.constexpr,
+    elementwise_affine: tl.constexpr,
+    X_DTYPE: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    ROWS_PER_BLOCK: tl.constexpr,
+):
+    """2D fused forward: ROWS_PER_BLOCK rows x full n_cols in one load."""
+    pid = tl.program_id(0)
+    num_progs = tl.num_programs(0)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    row_offsets = tl.arange(0, ROWS_PER_BLOCK)
+    col_mask = col_offsets < n_cols
+    n_cols_inv = 1.0 / n_cols
+    if casting_mode == _CASTING_MODE_NONE:
+        eps = eps.to(X_DTYPE)
+        offset = offset.to(X_DTYPE)
+    else:
+        eps = eps.to(tl.float32)
+        offset = offset.to(tl.float32)
+
+    if elementwise_affine:
+        W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
+
+    n_row_blocks = tl.cdiv(n_rows, ROWS_PER_BLOCK)
+    blocks_per_prog = (n_row_blocks + num_progs - 1) // num_progs
+    block_start = pid * blocks_per_prog
+    block_end = tl.minimum(block_start + blocks_per_prog, n_row_blocks)
+
+    for block_i in tl.range(block_start, block_end):
+        row_idx = block_i * ROWS_PER_BLOCK + row_offsets
+        row_mask = row_idx < n_rows
+        block_mask = row_mask[:, None] & col_mask[None, :]
+
+        X_rows = tl.load(
+            X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
+            mask=block_mask,
+            other=0.0,
+        )
+        if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
+            X_f32 = X_rows.to(tl.float32)
+        else:
+            X_f32 = X_rows
+
+        sum_sq = tl.sum(tl.where(block_mask, X_f32 * X_f32, 0.0), axis=1)
+        rstd = rsqrt(sum_sq * n_cols_inv + eps)
+        tl.store(RSTD_ptr + row_idx * RSTD_row_stride, rstd, mask=row_mask)
+
+        X_hat = X_f32 * rstd[:, None]
+        if casting_mode == _CASTING_MODE_LLAMA:
+            X_hat = X_hat.to(X_DTYPE)
+        if elementwise_affine:
+            if casting_mode == _CASTING_MODE_GEMMA:
+                Y_rows = X_hat * (offset + W_row.to(tl.float32))[None, :]
+            else:
+                Y_rows = X_hat * (offset + W_row)[None, :]
+        else:
+            Y_rows = X_hat
+        if casting_mode == _CASTING_MODE_GEMMA:
+            Y_rows = Y_rows.to(X_DTYPE)
+        tl.store(
+            Y_ptr + row_idx[:, None] * Y_row_stride + col_offsets[None, :],
+            Y_rows,
+            mask=block_mask,
+        )
+
+
+@triton.jit
+def _rms_norm_forward_tiled(
+    Y_ptr,
+    Y_row_stride,
+    X_ptr,
+    X_row_stride,
+    W_ptr,
+    RSTD_ptr,
+    RSTD_row_stride,
+    n_rows: tl.constexpr,
+    n_cols: tl.constexpr,
+    eps,
+    offset,
+    casting_mode: tl.constexpr,
+    elementwise_affine: tl.constexpr,
+    X_DTYPE: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """Two-pass column-tiled forward when a full row does not fit UB."""
+    pid = tl.program_id(0)
+    num_progs = tl.num_programs(0)
+    num_col_blocks = tl.cdiv(n_cols, BLOCK_SIZE)
     offsets = tl.arange(0, BLOCK_SIZE)
-    # Grid-stride loop over rows
-    for row_idx in tl.range(pid, n_rows, num_progs):
+    n_cols_inv = 1.0 / n_cols
+    if casting_mode == _CASTING_MODE_NONE:
+        eps = eps.to(X_DTYPE)
+        offset = offset.to(X_DTYPE)
+    else:
+        eps = eps.to(tl.float32)
+        offset = offset.to(tl.float32)
+
+    row_chunk = (n_rows + num_progs - 1) // num_progs
+    row_start = pid * row_chunk
+    row_end = tl.minimum(row_start + row_chunk, n_rows)
+
+    for row_idx in tl.range(row_start, row_end):
         Y_row_ptr = Y_ptr + row_idx * Y_row_stride
         X_row_ptr = X_ptr + row_idx * X_row_stride
-        RSTD_row_ptr = RSTD_ptr + row_idx * RSTD_row_stride
 
-        # Accumulator for mean_square computation across all column blocks
         sum_square = 0.0
-
-        # First pass: accumulate sum of squares
         for col_block_idx in range(num_col_blocks):
-            col_start = col_block_idx * BLOCK_SIZE
-            col_offsets = col_start + offsets
+            col_offsets = col_block_idx * BLOCK_SIZE + offsets
             mask = col_offsets < n_cols
-
             X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0)
-
             if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
                 X_block = X_block.to(tl.float32)
+            sum_square += tl.sum(tl.where(mask, X_block * X_block, 0.0))
 
-            # Accumulate sum of squares (only for valid elements)
-            sum_square += tl.sum(X_block * X_block)
+        rstd = rsqrt(sum_square * n_cols_inv + eps)
+        tl.store(RSTD_ptr + row_idx * RSTD_row_stride, rstd)
 
-        # Compute rstd for this row
-        mean_square = sum_square / n_cols
-
-        rstd = rsqrt(mean_square + eps)
-
-        # Store rstd
-        tl.store(RSTD_row_ptr, rstd)
-
-        # Second pass: normalize and multiply by weight
         for col_block_idx in range(num_col_blocks):
-            col_start = col_block_idx * BLOCK_SIZE
-            col_offsets = col_start + offsets
+            col_offsets = col_block_idx * BLOCK_SIZE + offsets
             mask = col_offsets < n_cols
-
-            # Load X_block
             X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0)
-
             if elementwise_affine:
                 W_block = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
-
-            # Apply casting based on mode
             if casting_mode == _CASTING_MODE_GEMMA:
                 X_block = X_block.to(tl.float32)
                 if elementwise_affine:
@@ -228,34 +249,25 @@ def _rms_norm_forward_kernel_tiled(
             elif casting_mode == _CASTING_MODE_LLAMA:
                 X_block = X_block.to(tl.float32)
 
-            # Normalize
             X_block = X_block * rstd
-
-            # Cast back for Llama mode before weight multiplication
             if casting_mode == _CASTING_MODE_LLAMA:
                 X_block = X_block.to(X_DTYPE)
-
-            # Apply weight
             if elementwise_affine:
                 Y_block = X_block * (offset + W_block)
             else:
                 Y_block = X_block
-
-            # Cast back for Gemma mode
             if casting_mode == _CASTING_MODE_GEMMA:
                 Y_block = Y_block.to(X_DTYPE)
-
-            # Store result
             tl.store(Y_row_ptr + col_offsets, Y_block, mask=mask)
 
 
 # -----------------------------------------------------------------------------
-# Backward Kernel - No Tiling (for n_cols <= 2048)
+# Backward kernels
 # -----------------------------------------------------------------------------
 
 
 @triton.jit
-def _rms_norm_backward_kernel_no_tiling(
+def _rms_norm_backward_row(
     dY_ptr,
     dY_row_stride,
     dX_ptr,
@@ -273,38 +285,104 @@ def _rms_norm_backward_kernel_no_tiling(
     offset,
     casting_mode: tl.constexpr,
     elementwise_affine: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
 ):
-    """
-    NPU-optimized rms_norm backward kernel for small n_cols (< 2048).
-
-    Performance optimizations:
-    1. Keep all data in registers, minimize conversions
-    2. Reuse X_normalized (X * rstd) for both dX and dW
-    3. Optimize computation order to reduce register pressure
-    4. Combine operations where possible
-    5. Use 2D vector loading to maximize UB utilization (e.g., (1,2048), (2,1024), (4,512))
-    """
+    """Full-width row backward. Per-program dW is reduced on the host."""
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
-
-    # Grid-stride loop setup for 2D blocks
-    grid_stride = num_progs * BLOCK_SIZE_M
-    num_iterations = tl.cdiv(n_rows, grid_stride)
-
-    col_offsets = tl.arange(0, BLOCK_SIZE_N)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
     col_mask = col_offsets < n_cols
-    row_offsets = tl.arange(0, BLOCK_SIZE_M)
+    n_cols_inv = 1.0 / n_cols
+    offset = offset.to(tl.float32)
 
-    # Load W once for all iterations
     if elementwise_affine:
         W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
         W_offset = W_row + offset
+        dW_acc = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
-    # Grid-stride loop over row blocks
-    for i in range(num_iterations):
-        row_idx = i * grid_stride + pid * BLOCK_SIZE_M + row_offsets
+    row_chunk = (n_rows + num_progs - 1) // num_progs
+    row_start = pid * row_chunk
+    row_end = tl.minimum(row_start + row_chunk, n_rows)
+
+    for row_idx in tl.range(row_start, row_end):
+        dY_row = tl.load(dY_ptr + row_idx * dY_row_stride + col_offsets, mask=col_mask, other=0.0)
+        X_row = tl.load(X_ptr + row_idx * X_row_stride + col_offsets, mask=col_mask, other=0.0)
+        rstd = tl.load(RSTD_ptr + row_idx * RSTD_row_stride)
+        X_f32 = X_row.to(tl.float32)
+        X_hat = X_f32 * rstd
+
+        if elementwise_affine:
+            if casting_mode == _CASTING_MODE_LLAMA:
+                m = (dY_row * W_offset).to(tl.float32)
+                X_hat_dw = X_hat.to(X_dtype)
+            elif casting_mode == _CASTING_MODE_GEMMA:
+                m = dY_row.to(tl.float32) * W_offset
+                X_hat_dw = X_hat
+            else:
+                m = dY_row * W_offset
+                X_hat_dw = X_hat
+        else:
+            if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
+                m = dY_row.to(tl.float32)
+            else:
+                m = dY_row
+            X_hat_dw = X_hat
+
+        sum_m_X = tl.sum(tl.where(col_mask, m * X_f32, 0.0), axis=0)
+        correction = -n_cols_inv * rstd * rstd * sum_m_X
+        dX = rstd * m + rstd * correction * X_f32
+        tl.store(dX_ptr + row_idx * dX_row_stride + col_offsets, dX.to(X_dtype), mask=col_mask)
+
+        if elementwise_affine:
+            dW_acc += tl.where(col_mask, (dY_row * X_hat_dw).to(tl.float32), 0.0)
+
+    if elementwise_affine:
+        tl.store(dW_ptr + pid * dW_row_stride + col_offsets, dW_acc, mask=col_mask)
+
+
+@triton.jit
+def _rms_norm_backward_fused_2d(
+    dY_ptr,
+    dY_row_stride,
+    dX_ptr,
+    dX_row_stride,
+    X_ptr,
+    X_row_stride,
+    X_dtype: tl.constexpr,
+    W_ptr,
+    RSTD_ptr,
+    RSTD_row_stride,
+    dW_ptr,
+    dW_row_stride,
+    n_rows: tl.constexpr,
+    n_cols: tl.constexpr,
+    offset,
+    casting_mode: tl.constexpr,
+    elementwise_affine: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    ROWS_PER_BLOCK: tl.constexpr,
+):
+    """2D fused backward: several rows x full n_cols."""
+    pid = tl.program_id(0)
+    num_progs = tl.num_programs(0)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    row_offsets = tl.arange(0, ROWS_PER_BLOCK)
+    col_mask = col_offsets < n_cols
+    n_cols_inv = 1.0 / n_cols
+    offset = offset.to(tl.float32)
+
+    if elementwise_affine:
+        W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
+        W_offset = W_row + offset
+        dW_acc = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+
+    n_row_blocks = tl.cdiv(n_rows, ROWS_PER_BLOCK)
+    blocks_per_prog = (n_row_blocks + num_progs - 1) // num_progs
+    block_start = pid * blocks_per_prog
+    block_end = tl.minimum(block_start + blocks_per_prog, n_row_blocks)
+
+    for block_i in tl.range(block_start, block_end):
+        row_idx = block_i * ROWS_PER_BLOCK + row_offsets
         row_mask = row_idx < n_rows
         block_mask = row_mask[:, None] & col_mask[None, :]
 
@@ -318,62 +396,44 @@ def _rms_norm_backward_kernel_no_tiling(
             mask=block_mask,
             other=0.0,
         )
+        rstd = tl.load(RSTD_ptr + row_idx * RSTD_row_stride, mask=row_mask, other=0.0)
+        X_f32 = X_rows.to(tl.float32)
+        X_hat = X_f32 * rstd[:, None]
 
-        # Load rstd for all rows in the block
-        rstd_rows = tl.load(RSTD_ptr + row_idx * RSTD_row_stride, mask=row_mask, other=0.0)
-
-        # Convert X to fp32 once
-        X_rows = X_rows.to(tl.float32)
-
-        # Compute X_normalized (reused in dX and dW)
-        X_normalized = X_rows * rstd_rows[:, None]
-
-        # Compute m based on casting mode and elementwise_affine
         if elementwise_affine:
             if casting_mode == _CASTING_MODE_LLAMA:
-                m_rows = (dY_rows * W_offset[None, :]).to(tl.float32)
-                # For dW in Llama mode, we need X_normalized in original dtype
-                X_normalized = X_normalized.to(X_dtype)
+                m = (dY_rows * W_offset[None, :]).to(tl.float32)
+                X_hat_dw = X_hat.to(X_dtype)
             elif casting_mode == _CASTING_MODE_GEMMA:
-                m_rows = dY_rows.to(tl.float32) * W_offset[None, :]
+                m = dY_rows.to(tl.float32) * W_offset[None, :]
+                X_hat_dw = X_hat
             else:
-                m_rows = dY_rows * W_offset[None, :]
+                m = dY_rows * W_offset[None, :]
+                X_hat_dw = X_hat
         else:
             if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
-                m_rows = dY_rows.to(tl.float32)
+                m = dY_rows.to(tl.float32)
             else:
-                m_rows = dY_rows
+                m = dY_rows
+            X_hat_dw = X_hat
 
-        # Compute sum(m * X) for correction factor
-        sum_m_X = tl.sum(tl.where(block_mask, m_rows * X_rows, 0.0), axis=1)
-
-        # Compute correction factor
-        correction_factors = -(1.0 / n_cols) * rstd_rows * rstd_rows * sum_m_X
-
-        # Compute dX = rstd * m + rstd * correction_factor * X
-        dX_rows = rstd_rows[:, None] * m_rows + rstd_rows[:, None] * correction_factors[:, None] * X_rows
-
-        # Store dX
-        tl.store(dX_ptr + row_idx[:, None] * dX_row_stride + col_offsets[None, :], dX_rows.to(X_dtype), mask=block_mask)
-
+        sum_m_X = tl.sum(tl.where(block_mask, m * X_f32, 0.0), axis=1)
+        correction = -n_cols_inv * rstd * rstd * sum_m_X
+        dX = rstd[:, None] * m + rstd[:, None] * correction[:, None] * X_f32
+        tl.store(
+            dX_ptr + row_idx[:, None] * dX_row_stride + col_offsets[None, :],
+            dX.to(X_dtype),
+            mask=block_mask,
+        )
         if elementwise_affine:
-            # Compute dW contribution: dY * X_normalized
-            dW_rows = (dY_rows * X_normalized).to(tl.float32)
+            dW_acc += tl.sum(tl.where(block_mask, (dY_rows * X_hat_dw).to(tl.float32), 0.0), axis=0)
 
-            # Accumulate to per-program dW buffer
-            dW_row_ptr = dW_ptr + pid * dW_row_stride
-            existing_dW = tl.load(dW_row_ptr + col_offsets, mask=col_mask, other=0.0)
-            new_dW = existing_dW + tl.sum(tl.where(block_mask, dW_rows, 0.0), axis=0)
-            tl.store(dW_row_ptr + col_offsets, new_dW, mask=col_mask)
-
-
-# -----------------------------------------------------------------------------
-# Backward Kernel - With Tiling (for n_cols > 2048)
-# -----------------------------------------------------------------------------
+    if elementwise_affine:
+        tl.store(dW_ptr + pid * dW_row_stride + col_offsets, dW_acc, mask=col_mask)
 
 
 @triton.jit
-def _rms_norm_backward_kernel_tiled(
+def _rms_norm_backward_tiled(
     dY_ptr,
     dY_row_stride,
     dX_ptr,
@@ -393,174 +453,147 @@ def _rms_norm_backward_kernel_tiled(
     elementwise_affine: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """
-    NPU-optimized rms_norm backward kernel for large n_cols (>= 2048).
-
-    Each program processes multiple rows using grid-stride loop.
-    For each row, we process columns in blocks to avoid UB overflow.
-    """
+    """Two-pass column-tiled backward when a full row does not fit UB."""
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
-
-    # Initialize dW accumulator (per-program, will be reduced later)
     num_col_blocks = tl.cdiv(n_cols, BLOCK_SIZE)
     offsets = tl.arange(0, BLOCK_SIZE)
+    n_cols_inv = 1.0 / n_cols
+    offset = offset.to(tl.float32)
 
-    # Grid-stride loop over rows
-    for row_idx in tl.range(pid, n_rows, num_progs):
-        # Base pointers for this row
+    row_chunk = (n_rows + num_progs - 1) // num_progs
+    row_start = pid * row_chunk
+    row_end = tl.minimum(row_start + row_chunk, n_rows)
+
+    for row_idx in tl.range(row_start, row_end):
         dY_row_ptr = dY_ptr + row_idx * dY_row_stride
         dX_row_ptr = dX_ptr + row_idx * dX_row_stride
         X_row_ptr = X_ptr + row_idx * X_row_stride
-        RSTD_row_ptr = RSTD_ptr + row_idx * RSTD_row_stride
+        rstd = tl.load(RSTD_ptr + row_idx * RSTD_row_stride)
 
-        # Load rstd for this row
-        rstd = tl.load(RSTD_row_ptr)
-
-        # First pass: compute sum(m * X) for the correction term
         sum_m_X = 0.0
-
         for col_block_idx in range(num_col_blocks):
-            col_start = col_block_idx * BLOCK_SIZE
-            col_offsets = col_start + offsets
+            col_offsets = col_block_idx * BLOCK_SIZE + offsets
             mask = col_offsets < n_cols
-
             dY_block = tl.load(dY_row_ptr + col_offsets, mask=mask, other=0.0)
-            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0)
-
-            # Convert to fp32 for computation
-            X_block = X_block.to(tl.float32)
-
+            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
             if elementwise_affine:
                 W_block = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
                 W_offset = W_block + offset
-
-                # Compute m based on casting mode
                 if casting_mode == _CASTING_MODE_LLAMA:
                     m = (dY_block * W_offset).to(tl.float32)
                 elif casting_mode == _CASTING_MODE_GEMMA:
-                    dY_block = dY_block.to(tl.float32)
-                    m = dY_block * W_offset
+                    m = dY_block.to(tl.float32) * W_offset
                 else:
                     m = dY_block * W_offset
             else:
-                # Compute m based on casting mode
-                if casting_mode == _CASTING_MODE_LLAMA:
-                    m = dY_block.to(tl.float32)
-                elif casting_mode == _CASTING_MODE_GEMMA:
+                if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
                     m = dY_block.to(tl.float32)
                 else:
                     m = dY_block
+            sum_m_X += tl.sum(tl.where(mask, m * X_block, 0.0))
 
-            # Accumulate sum(m * X)
-            sum_m_X += tl.sum(m * X_block)
+        correction = -n_cols_inv * rstd * rstd * sum_m_X
 
-        # Compute the correction factor
-        correction_factor = -(1.0 / n_cols) * rstd * rstd * sum_m_X
-
-        # Second pass: compute gradients
         for col_block_idx in range(num_col_blocks):
-            col_start = col_block_idx * BLOCK_SIZE
-            col_offsets = col_start + offsets
+            col_offsets = col_block_idx * BLOCK_SIZE + offsets
             mask = col_offsets < n_cols
-
             dY_block = tl.load(dY_row_ptr + col_offsets, mask=mask, other=0.0)
-            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0)
-
-            X_block = X_block.to(tl.float32)
-
+            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
             if elementwise_affine:
                 W_block = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
                 W_offset = W_block + offset
-
-                # Compute m based on casting mode
                 if casting_mode == _CASTING_MODE_LLAMA:
                     m = (dY_block * W_offset).to(tl.float32)
+                    dW_block = dY_block * (X_block * rstd).to(X_dtype)
                 elif casting_mode == _CASTING_MODE_GEMMA:
-                    dY_block = dY_block.to(tl.float32)
-                    m = dY_block * W_offset
+                    m = dY_block.to(tl.float32) * W_offset
+                    dW_block = dY_block * (X_block * rstd)
                 else:
                     m = dY_block * W_offset
+                    dW_block = dY_block * (X_block * rstd)
             else:
-                # Compute m based on casting mode
-                if casting_mode == _CASTING_MODE_LLAMA:
-                    m = dY_block.to(tl.float32)
-                elif casting_mode == _CASTING_MODE_GEMMA:
+                if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
                     m = dY_block.to(tl.float32)
                 else:
                     m = dY_block
+                dW_block = None
 
-            # Compute dX
-            dX_block = rstd * m + rstd * correction_factor * X_block
-
-            # Store dX
+            dX_block = rstd * m + rstd * correction * X_block
             tl.store(dX_row_ptr + col_offsets, dX_block.to(X_dtype), mask=mask)
 
             if elementwise_affine:
-                # Compute dW contribution (accumulate per program)
-                if casting_mode == _CASTING_MODE_LLAMA:
-                    dW_block = dY_block * (X_block * rstd).to(X_dtype)
-                else:
-                    dW_block = dY_block * (X_block * rstd)
-
-                # Atomic add to dW_ptr (each program writes to its own row)
                 dW_row_ptr = dW_ptr + pid * dW_row_stride
-
-                # Load existing dW, add contribution, store back
-                existing_dW = tl.load(dW_row_ptr + col_offsets, mask=mask, other=0.0)
-                new_dW = existing_dW + dW_block.to(tl.float32)
-                tl.store(dW_row_ptr + col_offsets, new_dW, mask=mask)
+                existing = tl.load(dW_row_ptr + col_offsets, mask=mask, other=0.0)
+                tl.store(dW_row_ptr + col_offsets, existing + dW_block.to(tl.float32), mask=mask)
 
 
 # -----------------------------------------------------------------------------
-# Helper Functions
+# Tiling helpers
 # -----------------------------------------------------------------------------
 
 
-def get_optimal_block_size(n_cols, is_forward: bool):
-    """
-    Calculate optimal block size for forward pass using compute_default_tiling_strategy.
-
-    Memory analysis for forward pass (per row):
-    - Load: X_block, W_block (2 blocks)
-    - Compute: X_block (fp32), Y_block (1-2 blocks)
-    - Total: conservative estimate 6 blocks of memory
-
-    Memory analysis for backward pass (per row):
-    - Load: dY_block, X_block, W_block (3 blocks)
-    - Compute: m, dX_block, dW_block (3 blocks)
-    - Store: dX_block, accumulated dW (2 blocks)
-    - Total: conservative estimate 8 blocks of memory
-
-    Args:
-        n_cols: Number of columns in the tensor
-        is_forward: Whether this is for forward pass
-
-    Returns:
-        Optimal block size
-    """
-    if n_cols <= 2048:
-        return triton.next_power_of_2(n_cols)
-
-    memory_multiplier = 6.0 if is_forward else 8.0
-
+def _safe_column_block(n_cols: int, memory_multiplier: float) -> int:
     tile_shapes = compute_default_tiling_strategy(
-        safety_margin=0.9,
+        safety_margin=_UB_SAFETY_MARGIN,
         dtype_size=4,
         memory_multiplier=memory_multiplier,
         shapes=((n_cols,),),
         tiling_dims=(0,),
     )
+    if tile_shapes:
+        return max(128, tile_shapes[0][0])
+    return 1024
 
-    if tile_shapes and len(tile_shapes) > 0:
-        block_size = tile_shapes[0][0]
-        return max(2048, block_size)
-    else:
-        return 2048
+
+def _safe_fused_rows_per_block(n_cols: int, col_block: int, memory_multiplier: float) -> int:
+    desired_rows = 8
+    tile_shapes = compute_default_tiling_strategy(
+        safety_margin=_UB_SAFETY_MARGIN,
+        dtype_size=4,
+        memory_multiplier=memory_multiplier,
+        shapes=((desired_rows, col_block),),
+        tiling_dims=(0,),
+    )
+    if tile_shapes:
+        return max(1, tile_shapes[0][0])
+    return 1
+
+
+@functools.lru_cache(maxsize=64)
+def _fused_tile(n_cols: int, is_forward: bool) -> tuple[int, int, bool]:
+    """Return (col_block, rows_per_block, use_fused_full_width)."""
+    mem_mult = _FUSED_FWD_MEM_MULT if is_forward else _FUSED_BWD_MEM_MULT
+    if is_forward and n_cols >= 2048:
+        mem_mult = _FUSED_FWD_MEM_MULT_WIDE
+    safe_col = _safe_column_block(n_cols, mem_mult)
+    col_pow2 = triton.next_power_of_2(n_cols)
+    col_block = min(col_pow2, safe_col)
+    if col_block < n_cols:
+        return _safe_column_block(n_cols, _TILED_MEM_MULT), 1, False
+    wide_mult = _FUSED_FWD_MEM_MULT_WIDE if is_forward else _FUSED_BWD_MEM_MULT
+    rows_per_block = _safe_fused_rows_per_block(n_cols, col_block, wide_mult)
+    return col_block, rows_per_block, True
+
+
+def _forward_grid_size(n_rows: int, num_cores: int) -> int:
+    if n_rows <= 1024:
+        return min(num_cores * 2, n_rows)
+    if n_rows >= 8192:
+        return min(num_cores * 4, n_rows)
+    if n_rows >= 4096:
+        return min(num_cores * 2, n_rows)
+    return min(num_cores, n_rows)
+
+
+def _backward_grid_size(n_rows: int, num_cores: int) -> int:
+    if n_rows >= 8192:
+        return min(num_cores * 2, n_rows)
+    return min(num_cores, n_rows)
 
 
 # -----------------------------------------------------------------------------
-# Forward and Backward Functions
+# Launchers
 # -----------------------------------------------------------------------------
 
 
@@ -581,69 +614,52 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     dim = shape[-1]
     X = X.view(-1, dim)
     n_rows, n_cols = X.shape
-    X_DTYPE = torch_dtype_to_triton(X.dtype)
-
-    # Get optimal block size for column processing
-    BLOCK_SIZE = get_optimal_block_size(n_cols, True)
-    BLOCK_SIZE_M = 2048 // BLOCK_SIZE
+    X_DTYPE = torch_to_triton_dtype[X.dtype]
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-
-    # RSTD is always fp32 for Llama/Gemma modes
     rstd_dtype = torch.float32 if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value) else X.dtype
     RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
 
     if W is not None:
-        # Check constraints
         assert X.shape[1] == W.shape[0], "Incompatible hidden size dimension"
         elementwise_affine = True
+        w_arg = W
     else:
         elementwise_affine = False
+        w_arg = X
 
-    # Grid size limited to NPU core count
     num_cores = get_npu_core_count()
-    grid_size = min(num_cores * 2, n_rows)
+    col_block, rows_per_block, use_fused = _fused_tile(n_cols, True)
 
-    # Choose kernel based on n_cols
-    if n_cols <= 2048:
-        # Use no-tiling kernel for small n_cols
-        _rms_norm_forward_kernel_no_tiling[(grid_size,)](
-            Y,
-            Y.stride(0),
-            X,
-            X.stride(0),
-            W,
-            RSTD,
-            RSTD.stride(0),
-            n_rows,
-            n_cols,
-            eps,
-            offset,
-            casting_mode,
-            elementwise_affine,
-            X_DTYPE,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE,
-        )
+    common = dict(
+        Y_ptr=Y,
+        Y_row_stride=Y.stride(0),
+        X_ptr=X,
+        X_row_stride=X.stride(0),
+        W_ptr=w_arg,
+        RSTD_ptr=RSTD,
+        RSTD_row_stride=RSTD.stride(0),
+        n_rows=n_rows,
+        n_cols=n_cols,
+        eps=eps,
+        offset=offset,
+        casting_mode=casting_mode,
+        elementwise_affine=elementwise_affine,
+        X_DTYPE=X_DTYPE,
+        BLOCK_SIZE=col_block,
+    )
+
+    if use_fused:
+        if rows_per_block <= 1:
+            grid_size = _forward_grid_size(n_rows, num_cores)
+            _rms_norm_forward_row[(grid_size,)](**common)
+        else:
+            num_row_blocks = triton.cdiv(n_rows, rows_per_block)
+            grid_size = min(num_cores, num_row_blocks)
+            _rms_norm_forward_fused_2d[(grid_size,)](**common, ROWS_PER_BLOCK=rows_per_block)
     else:
-        # Use tiled kernel for large n_cols
-        _rms_norm_forward_kernel_tiled[(grid_size,)](
-            Y,
-            Y.stride(0),
-            X,
-            X.stride(0),
-            W,
-            RSTD,
-            RSTD.stride(0),
-            n_rows,
-            n_cols,
-            eps,
-            offset,
-            casting_mode,
-            elementwise_affine,
-            X_DTYPE,
-            BLOCK_SIZE=BLOCK_SIZE,
-        )
+        grid_size = min(num_cores * 2, n_rows)
+        _rms_norm_forward_tiled[(grid_size,)](**common)
 
     return Y.view(*shape), X, RSTD, casting_mode
 
@@ -654,81 +670,61 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, in_place):
     dY = dY.view(-1, dim)
     n_rows, n_cols = dY.shape
 
-    # Get NPU core count for grid size
     num_cores = get_npu_core_count()
-    grid_size = min(num_cores * 2, n_rows)
+    col_block, rows_per_block, use_fused = _fused_tile(n_cols, False)
 
-    # Get optimal block size for backward pass
-    BLOCK_SIZE = get_optimal_block_size(n_cols, False)
-    BLOCK_SIZE_M = 2048 // BLOCK_SIZE
+    if use_fused:
+        grid_size = _backward_grid_size(n_rows, num_cores)
+        if rows_per_block > 1:
+            num_row_blocks = triton.cdiv(n_rows, rows_per_block)
+            grid_size = min(num_cores, num_row_blocks)
+    else:
+        grid_size = min(num_cores * 2, n_rows)
 
     if W is not None:
-        # fp32 for numerical stability
         _dW = torch.zeros((grid_size, n_cols), dtype=torch.float32, device=W.device)
         elementwise_affine = True
+        w_arg = W
+        dw_stride = _dW.stride(0)
     else:
-        _dW = None
+        _dW = X
         elementwise_affine = False
+        w_arg = X
+        dw_stride = 0
 
-    if in_place:
-        dX = dY
-    else:
-        dX = torch.empty_like(dY)
+    dX = dY if in_place else torch.empty_like(dY)
 
-    # Choose kernel based on n_cols
-    if n_cols <= 2048:
-        # Use no-tiling kernel for small n_cols
-        _rms_norm_backward_kernel_no_tiling[(grid_size,)](
-            dY,
-            dY.stride(0),
-            dX,
-            dX.stride(0),
-            X,
-            X.stride(0),
-            torch_to_triton_dtype[X.dtype],
-            W,
-            RSTD,
-            RSTD.stride(0),
-            _dW,
-            _dW.stride(0) if elementwise_affine else 0,
-            n_rows,
-            n_cols,
-            offset,
-            casting_mode,
-            elementwise_affine,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE,
-        )
+    common = dict(
+        dY_ptr=dY,
+        dY_row_stride=dY.stride(0),
+        dX_ptr=dX,
+        dX_row_stride=dX.stride(0),
+        X_ptr=X,
+        X_row_stride=X.stride(0),
+        X_dtype=torch_to_triton_dtype[X.dtype],
+        W_ptr=w_arg,
+        RSTD_ptr=RSTD,
+        RSTD_row_stride=RSTD.stride(0),
+        dW_ptr=_dW,
+        dW_row_stride=dw_stride,
+        n_rows=n_rows,
+        n_cols=n_cols,
+        offset=offset,
+        casting_mode=casting_mode,
+        elementwise_affine=elementwise_affine,
+        BLOCK_SIZE=col_block,
+    )
+
+    if use_fused:
+        if rows_per_block <= 1:
+            _rms_norm_backward_row[(grid_size,)](**common)
+        else:
+            _rms_norm_backward_fused_2d[(grid_size,)](**common, ROWS_PER_BLOCK=rows_per_block)
     else:
-        # Use tiled kernel for large n_cols
-        _rms_norm_backward_kernel_tiled[(grid_size,)](
-            dY,
-            dY.stride(0),
-            dX,
-            dX.stride(0),
-            X,
-            X.stride(0),
-            torch_to_triton_dtype[X.dtype],
-            W,
-            RSTD,
-            RSTD.stride(0),
-            _dW,
-            _dW.stride(0) if elementwise_affine else 0,
-            n_rows,
-            n_cols,
-            offset,
-            casting_mode,
-            elementwise_affine,
-            BLOCK_SIZE=BLOCK_SIZE,
-        )
+        _rms_norm_backward_tiled[(grid_size,)](**common)
 
     dX = dX.view(*shape)
-
-    if elementwise_affine:
-        dW = _dW.sum(dim=0).to(W.dtype)
-    else:
-        dW = None
-
+    dW = _dW.sum(dim=0).to(W.dtype) if elementwise_affine else None
     return dX, dW
 
 
@@ -741,10 +737,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
         W: (H,)
         """
         if isinstance(X, torch.distributed.tensor.DTensor):
-            # Input tensor is output of a tensor parallel module and
-            # needs to be gathered to a local tensor to compute
-            # RMSE layer norm on each TP worker.
-            # TODO: support CP.
             X = X.full_tensor()
 
         Y, X, RSTD, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode)
@@ -770,9 +762,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
             X, RSTD = ctx.saved_tensors
             W = None
         if isinstance(dY, torch.distributed.tensor.DTensor):
-            # Gradients are output of a tensor parallel module and
-            # needs to be gathered to a local tensor for computing RMSE layer.
-            # TODO: support CP.
             dY = dY.full_tensor()
 
         dX, dW = rms_norm_backward(dY, X, W, RSTD, ctx.offset, ctx.casting_mode, ctx.in_place)
