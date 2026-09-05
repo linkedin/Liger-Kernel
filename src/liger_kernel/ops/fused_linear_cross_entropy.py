@@ -39,17 +39,17 @@ MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 65536 // 2
 # all devices.
 #
 # The budget is C x BT x H, so the transient [chunk_size, V] logits slab grows
-# linearly with BT: at V=262144, H=5376 it is ~1.07 GiB at BT=8192 but ~4.3 GiB
-# at BT=32768. On memory-tight runs that headroom does not exist -- e.g. a
-# 262k-vocab model trained with DeepSpeed ZeRO-3 on 80 GB devices at seq 12k
-# has <3 GiB of transient headroom, and with direct weight-gradient
-# accumulation applied (as proposed in #1324/#1429, which removes the larger
-# per-chunk temporaries) this slab becomes the failing allocation at C=16
-# while the pre-#1414 geometry (C=1) clears it. LIGER_FLCE_CHUNK_MEM_CONST
-# lets such deployments trade the loop collapse back for bounded transients
-# (C=1 restores the historical floor) without patching the module; the
-# default is unchanged.
-_CHUNK_MEM_CONST = max(1, int(os.environ.get("LIGER_FLCE_CHUNK_MEM_CONST", "16")))
+# linearly with BT (V=262144, H=5376: ~1.07 GiB at BT=8192, ~4.3 GiB at 32768)
+# and on memory-tight runs can become the binding allocation (measurements in
+# #1439). LIGER_FLCE_CHUNK_SIZE sets chunk_size directly (rows; floored to a
+# power of two, clamped to BT per call), replacing the heuristic: set below its
+# choice it bounds the slab at chunk_size x V x itemsize bytes independent of
+# BT; set above, it trades a larger slab for fewer loop iterations. Unset
+# (default) leaves the geometry unchanged.
+_CHUNK_MEM_CONST = 16
+_CHUNK_SIZE_OVERRIDE = int(os.environ.get("LIGER_FLCE_CHUNK_SIZE") or "0")
+if _CHUNK_SIZE_OVERRIDE > 0:
+    _CHUNK_SIZE_OVERRIDE = 1 << (_CHUNK_SIZE_OVERRIDE.bit_length() - 1)  # floor to a power of two
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
@@ -105,6 +105,8 @@ def fused_linear_cross_entropy_forward(
     # widen the transient logits budget to C x BT x H (C=1 is a memory floor, not a perf target)
     inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
+    if _CHUNK_SIZE_OVERRIDE > 0:
+        chunk_size = _CHUNK_SIZE_OVERRIDE  # opt-in direct control of the [chunk_size, V] slab
     chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
