@@ -15,7 +15,6 @@ def _jsd_kernel(
     Y_ptr,  # ground truth in logspace, Y = log P
     Y_stride,
     loss_ptr,
-    loss_stride,
     dX_ptr,
     dX_stride,
     label_ptr,
@@ -34,7 +33,7 @@ def _jsd_kernel(
     X_ptr += pid * X_stride
     dX_ptr += pid * dX_stride
     Y_ptr += pid * Y_stride
-    loss_ptr += pid * loss_stride
+    loss_ptr += pid
     label_ptr += pid
 
     if HAS_LABEL:
@@ -44,6 +43,9 @@ def _jsd_kernel(
                 offsets = i + tl.arange(0, BLOCK_SIZE)
                 tl.store(dX_ptr + offsets, 0.0, mask=offsets < n_cols)
             return
+
+    loss_acc = 0.0
+    scale = 1.0 / n_non_ignore
 
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + tl.arange(0, BLOCK_SIZE)
@@ -84,13 +86,15 @@ def _jsd_kernel(
             loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
             dX = one_minus_beta_Q * (X - log_M)
 
-        # Pre-compute scaling factor
-        scale = 1.0 / n_non_ignore
-        loss = loss * scale
+        # Keep one loss value per row. The previous path stored a full [BT, V]
+        # loss tensor and immediately reduced it, adding a vocabulary-sized
+        # allocation and an extra global-memory pass.
+        loss_acc += tl.sum(tl.where(mask, loss, 0.0), axis=0)
         dX = dX * scale
 
-        tl.store(loss_ptr + offsets, loss, mask=mask)
         tl.store(dX_ptr + offsets, dX, mask=mask)
+
+    tl.store(loss_ptr, loss_acc * scale)
 
 
 MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536
@@ -101,7 +105,7 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     # non reduction loss
-    loss = torch.zeros(_input.shape, dtype=torch.float32, device=_input.device)
+    loss = torch.zeros(BT, dtype=torch.float32, device=_input.device)
     dX = torch.empty_like(_input)
 
     if has_label:
@@ -115,7 +119,6 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
         Y_ptr=target,  # ground truth in logspace, Y = log P
         Y_stride=target.stride(-2),
         loss_ptr=loss,
-        loss_stride=loss.stride(-2),
         dX_ptr=dX,
         dX_stride=dX.stride(-2),
         label_ptr=(shift_labels if has_label else torch.empty(1, device=_input.device)),  # dummy ptr if no label
