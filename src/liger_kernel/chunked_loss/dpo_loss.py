@@ -3,6 +3,24 @@ import torch.nn.functional as F
 
 from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
 
+# BF16/FP16 row-selective autograd wins in time and memory through 268M logits on MI325X and H100.
+# Dispatch by logical-logits size rather than model or backend so batch, sequence, and vocabulary
+# changes move automatically to the memory-efficient chunked path.
+_NATIVE_DPO_MAX_LOGIT_ELEMENTS = 268_435_456
+
+
+def _should_use_native_dpo(_input, weight, use_ref_model=False):
+    if _input.dtype not in (torch.float16, torch.bfloat16):
+        return False
+    projection_count = 2 if use_ref_model else 1
+    total_logit_elements = (_input.numel() // _input.shape[-1]) * weight.shape[0] * projection_count
+    return total_logit_elements <= _NATIVE_DPO_MAX_LOGIT_ELEMENTS
+
+
+def _is_zero3_parameter(weight):
+    """Return whether ``weight`` is managed by DeepSpeed ZeRO-3."""
+    return hasattr(weight, "ds_id")
+
 
 class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
     @staticmethod
@@ -228,6 +246,55 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         return *grads, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
+class _LigerCachedReferenceDPOFunction(LigerFusedLinearDPOFunction):
+    """Compute and stash cached-reference gradients while ZeRO-3 has gathered the LM head."""
+
+    @classmethod
+    def forward(cls, ctx, _input, weight, target, bias, ref_chosen_logps, ref_rejected_logps, settings):
+        (
+            ignore_index,
+            beta,
+            compute_nll_loss,
+            _compiled,
+            average_log_prob,
+            chunk_size,
+            loss_type,
+            label_smoothing,
+            discopop_tau,
+            alpha,
+        ) = settings
+        # torch.compile cannot trace a Triton custom-autograd backward nested under torch.func.grad.
+        # Keep this rare bounded-memory path eager; the native small-shape fast path remains compiled.
+        return LigerFusedLinearPreferenceBase.forward(
+            cls=cls,
+            ctx=ctx,
+            _input=_input,
+            weight=weight,
+            target=target,
+            bias=bias,
+            ignore_index=ignore_index,
+            beta=beta,
+            alpha=alpha,
+            compute_nll_loss=compute_nll_loss,
+            compiled=False,
+            use_ref_model=False,
+            average_log_prob=average_log_prob,
+            chunk_size=chunk_size,
+            selective_log_softmax=True,
+            loss_type=loss_type,
+            label_smoothing=label_smoothing,
+            discopop_tau=discopop_tau,
+            ref_chosen_logps=ref_chosen_logps,
+            ref_rejected_logps=ref_rejected_logps,
+            _use_storage_backed_autograd=True,
+        )
+
+    @staticmethod
+    def backward(ctx, *grad_output):
+        grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
+        return *grads, None, None, None
+
+
 class LigerFusedLinearDPOLoss(torch.nn.Module):
     """
     Fused linear layer with DPO loss.
@@ -308,7 +375,86 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        ref_chosen_logps=None,
+        ref_rejected_logps=None,
     ):
+        has_precomputed_ref = ref_chosen_logps is not None or ref_rejected_logps is not None
+        if (ref_chosen_logps is None) != (ref_rejected_logps is None):
+            raise ValueError("ref_chosen_logps and ref_rejected_logps must be provided together")
+        if has_precomputed_ref and any(value is not None for value in (ref_input, ref_weight, ref_bias)):
+            raise ValueError(
+                "provide either precomputed reference log-probs or reference model inputs and weights, not both"
+            )
+
+        use_native = (has_precomputed_ref or self.loss_type == "sigmoid") and _should_use_native_dpo(
+            _input, lin_weight, use_ref_model=self.use_ref_model and not has_precomputed_ref
+        )
+
+        # ZeRO-3 re-shards direct-access LM-head parameters as soon as the caller's gather context exits.
+        # Compute and stash gradients inside that context. The same bounded path protects large cached-reference
+        # workloads on every backend once materialized policy logits cross the measured dispatch threshold.
+        if has_precomputed_ref and (_is_zero3_parameter(lin_weight) or not use_native):
+            settings = (
+                self.ignore_index,
+                self.beta,
+                self.compute_nll_loss,
+                self.compiled,
+                self.average_log_prob,
+                self.chunk_size,
+                self.loss_type,
+                self.label_smoothing,
+                self.discopop_tau,
+                self.alpha,
+            )
+            return _LigerCachedReferenceDPOFunction.apply(
+                _input,
+                lin_weight,
+                target,
+                bias,
+                ref_chosen_logps,
+                ref_rejected_logps,
+                settings,
+            )
+
+        # Native autograd has lower fixed overhead and no memory disadvantage below the measured crossover.
+        if use_native:
+            loss, outputs = LigerFusedLinearPreferenceBase._compute_loss(
+                _input,
+                lin_weight,
+                target,
+                bias,
+                preference_loss_fn=LigerFusedLinearDPOFunction.preference_loss_fn,
+                full_target=target,
+                ignore_index=self.ignore_index,
+                alpha=self.alpha,
+                beta=self.beta,
+                compute_nll_loss=self.compute_nll_loss,
+                use_ref_model=self.use_ref_model and not has_precomputed_ref,
+                ref_input_chunk=ref_input,
+                ref_weight=ref_weight,
+                ref_bias=ref_bias,
+                full_nll_target=None,
+                chosen_nll_target_chunk=None,
+                average_log_prob=self.average_log_prob,
+                detach_logits_mean=True,
+                selective_log_softmax=True,
+                loss_type=self.loss_type,
+                label_smoothing=self.label_smoothing,
+                discopop_tau=self.discopop_tau,
+                ref_chosen_logps=ref_chosen_logps,
+                ref_rejected_logps=ref_rejected_logps,
+            )
+            # Match the established native/reference contract: mean-logit metrics are logging-only and
+            # must not retain the full logits graph, while loss-relevant logps, NLL, and rewards remain live.
+            outputs = (
+                outputs[0],
+                outputs[1],
+                outputs[2].detach(),
+                outputs[3].detach(),
+                *outputs[4:],
+            )
+            return loss, outputs
+
         return LigerFusedLinearDPOFunction.apply(
             _input,
             lin_weight,

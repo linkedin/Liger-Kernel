@@ -2,6 +2,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+import liger_kernel.chunked_loss.dpo_loss as dpo_loss_module
+
 from liger_kernel.chunked_loss import LigerFusedLinearDPOLoss
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 from liger_kernel.chunked_loss.functional import liger_fused_linear_dpo
@@ -1351,6 +1353,32 @@ def test_alpha_scales_nll_loss(dtype):
     )
 
 
+def test_no_nll_loss_is_finite_when_chosen_targets_are_all_ignored():
+    """Preference-only DPO must not normalize its disabled NLL component."""
+    B, T, H, V = 4, 8, 16, 32
+    dtype = torch.float32
+    ignore_index = -100
+
+    inputs = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=True)
+    weight = torch.randn(V, H, device=device, dtype=dtype, requires_grad=True)
+    ref_inputs = torch.randn(B, T, H, device=device, dtype=dtype)
+    ref_weight = torch.randn(V, H, device=device, dtype=dtype)
+    targets = torch.randint(0, V, (B, T), device=device, dtype=torch.long)
+    targets[: B // 2] = ignore_index
+
+    loss, _ = LigerFusedLinearDPOLoss(
+        ignore_index=ignore_index,
+        compute_nll_loss=False,
+        compiled=False,
+        use_ref_model=True,
+    )(weight, inputs, targets, None, ref_inputs, ref_weight, None)
+
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert torch.isfinite(inputs.grad).all()
+    assert torch.isfinite(weight.grad).all()
+
+
 def test_functional_positional_arg_contract():
     """
     Pin the positional-argument contract of the public functional alias.
@@ -1424,3 +1452,178 @@ def test_label_smoothing_validation():
 
     with pytest.raises(ValueError, match=r"label_smoothing must lie in \[0\.0, 0\.5\) for loss_type='robust'"):
         LigerFusedLinearDPOLoss(loss_type="robust", label_smoothing=-0.1)
+
+
+def test_shape_aware_dispatch_boundary():
+    """Dispatch counts every live logits projection at the measured 268M boundary."""
+    weight = torch.empty((65536, 1), device="meta", dtype=torch.bfloat16)
+
+    assert dpo_loss_module._should_use_native_dpo(
+        torch.empty((2, 2048, 1), device="meta", dtype=torch.bfloat16), weight
+    )
+    assert not dpo_loss_module._should_use_native_dpo(
+        torch.empty((2, 2048, 1), device="meta", dtype=torch.bfloat16), weight, use_ref_model=True
+    )
+    assert not dpo_loss_module._should_use_native_dpo(
+        torch.empty((2, 2049, 1), device="meta", dtype=torch.bfloat16), weight
+    )
+    assert dpo_loss_module._should_use_native_dpo(
+        torch.empty((4, 1024, 1), device="meta", dtype=torch.bfloat16), weight
+    )
+    assert not dpo_loss_module._should_use_native_dpo(
+        torch.empty((4, 1025, 1), device="meta", dtype=torch.bfloat16), weight
+    )
+    assert not dpo_loss_module._should_use_native_dpo(
+        torch.empty((2, 128, 1), device="meta", dtype=torch.float32), weight.float()
+    )
+
+
+def test_shape_aware_native_and_chunked_paths_match(monkeypatch):
+    """Forced native and chunked paths preserve loss, metrics, and gradients."""
+    B, T, H, V = 4, 7, 16, 31
+    target = torch.randint(0, V, (B, T), device=device, dtype=torch.long)
+    target[0, :2] = -100
+    base_input = torch.randn(B, T, H, device=device, dtype=torch.float32)
+    base_weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    base_bias = torch.randn(V, device=device, dtype=torch.float32)
+    ref_input = torch.randn(B, T, H, device=device, dtype=torch.float32)
+    ref_weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    ref_bias = torch.randn(V, device=device, dtype=torch.float32)
+
+    def run(use_native):
+        monkeypatch.setattr(
+            dpo_loss_module,
+            "_should_use_native_dpo",
+            lambda _input, weight, **_kwargs: use_native,
+        )
+        _input = base_input.detach().clone().requires_grad_(True)
+        weight = base_weight.detach().clone().requires_grad_(True)
+        bias = base_bias.detach().clone().requires_grad_(True)
+        loss_module = LigerFusedLinearDPOLoss(
+            alpha=0.7,
+            beta=0.1,
+            compute_nll_loss=True,
+            compiled=False,
+            use_ref_model=True,
+            average_log_prob=False,
+            chunk_size=1,
+        )
+        loss, outputs = loss_module(
+            weight,
+            _input,
+            target,
+            bias,
+            ref_input,
+            ref_weight,
+            ref_bias,
+        )
+        loss.backward()
+        return (
+            loss.detach(),
+            tuple(output.detach() for output in outputs),
+            _input.grad.detach(),
+            weight.grad.detach(),
+            bias.grad.detach(),
+        )
+
+    native = run(True)
+    chunked = run(False)
+
+    assert_verbose_allclose(native[0], chunked[0], atol=1e-5, rtol=1e-4)
+    assert len(native[1]) == len(chunked[1])
+    for native_output, chunked_output in zip(native[1], chunked[1]):
+        assert_verbose_allclose(native_output, chunked_output, atol=1e-5, rtol=1e-4)
+    assert_verbose_allclose(native[2], chunked[2], atol=1e-5, rtol=1e-4)
+    assert_verbose_allclose(native[3], chunked[3], atol=1e-5, rtol=1e-4)
+    assert_verbose_allclose(native[4], chunked[4], atol=1e-5, rtol=1e-4)
+
+
+@pytest.mark.parametrize("loss_type", ["sigmoid", "apo_zero"])
+@pytest.mark.parametrize("average_log_prob", [False, True])
+@pytest.mark.parametrize("zero3_parameter", [False, True])
+def test_precomputed_reference_logps_parity(loss_type, average_log_prob, zero3_parameter, monkeypatch):
+    """Cached reference log-probs must exactly replace the reference LM-head computation."""
+    monkeypatch.setattr(dpo_loss_module, "_should_use_native_dpo", lambda *_args, **_kwargs: True)
+    B, T, H, V = 4, 7, 11, 29
+    ignore_index = -100
+    policy_input = torch.randn(B, T, H, device=device)
+    input_with_ref = policy_input.detach().clone().requires_grad_(True)
+    input_with_cache = policy_input.detach().clone().requires_grad_(True)
+    policy_weight = torch.randn(V, H, device=device)
+    weight_with_ref = policy_weight.detach().clone().requires_grad_(True)
+    weight_with_cache = policy_weight.detach().clone().requires_grad_(True)
+    if zero3_parameter:
+        weight_with_cache.ds_id = 0
+    policy_bias = torch.randn(V, device=device)
+    bias_with_ref = policy_bias.detach().clone().requires_grad_(True)
+    bias_with_cache = policy_bias.detach().clone().requires_grad_(True)
+
+    ref_input = torch.randn(B, T, H, device=device)
+    ref_weight = torch.randn(V, H, device=device)
+    ref_bias = torch.randn(V, device=device)
+    target = torch.randint(0, V, (B, T), device=device)
+    target[0, :2] = ignore_index
+    target[3, -1] = ignore_index
+
+    with torch.no_grad():
+        ref_logits = F.linear(ref_input, ref_weight, ref_bias)
+        valid = target != ignore_index
+        safe_target = target.masked_fill(~valid, 0)
+        ref_token_logps = torch.gather(F.log_softmax(ref_logits, dim=-1), -1, safe_target.unsqueeze(-1)).squeeze(-1)
+        ref_token_logps = ref_token_logps.masked_fill(~valid, 0.0)
+        ref_logps = ref_token_logps.sum(dim=-1)
+        if average_log_prob:
+            ref_logps = ref_logps / valid.sum(dim=-1)
+        ref_chosen_logps, ref_rejected_logps = ref_logps.chunk(2)
+
+    loss_fn = LigerFusedLinearDPOLoss(average_log_prob=average_log_prob, loss_type=loss_type)
+    loss_with_ref, outputs_with_ref = loss_fn(
+        weight_with_ref,
+        input_with_ref,
+        target,
+        bias_with_ref,
+        ref_input,
+        ref_weight,
+        ref_bias,
+    )
+    loss_with_cache, outputs_with_cache = loss_fn(
+        weight_with_cache,
+        input_with_cache,
+        target,
+        bias_with_cache,
+        ref_chosen_logps=ref_chosen_logps,
+        ref_rejected_logps=ref_rejected_logps,
+    )
+
+    assert_verbose_allclose(loss_with_ref, loss_with_cache, atol=1e-5, rtol=5e-4)
+    for output_with_ref, output_with_cache in zip(outputs_with_ref, outputs_with_cache):
+        assert_verbose_allclose(output_with_ref, output_with_cache, atol=1e-5, rtol=5e-4)
+
+    loss_with_ref.backward()
+    loss_with_cache.backward()
+    assert_verbose_allclose(input_with_ref.grad, input_with_cache.grad, atol=1e-5, rtol=5e-4)
+    assert_verbose_allclose(weight_with_ref.grad, weight_with_cache.grad, atol=1e-5, rtol=5e-4)
+    assert_verbose_allclose(bias_with_ref.grad, bias_with_cache.grad, atol=1e-5, rtol=5e-4)
+
+
+def test_precomputed_reference_logps_validation():
+    B, T, H, V = 4, 3, 5, 7
+    policy_input = torch.randn(B, T, H, device=device)
+    policy_weight = torch.randn(V, H, device=device)
+    target = torch.randint(0, V, (B, T), device=device)
+    cached_logps = torch.randn(B // 2, device=device)
+    loss_fn = LigerFusedLinearDPOLoss(compiled=False)
+
+    with pytest.raises(ValueError, match="must be provided together"):
+        loss_fn(policy_weight, policy_input, target, ref_chosen_logps=cached_logps)
+
+    with pytest.raises(ValueError, match="either precomputed reference log-probs or reference model"):
+        loss_fn(
+            policy_weight,
+            policy_input,
+            target,
+            ref_input=policy_input,
+            ref_weight=policy_weight,
+            ref_chosen_logps=cached_logps,
+            ref_rejected_logps=cached_logps,
+        )
