@@ -689,3 +689,49 @@ def test_ce_functional_structured_output_matches_triton(
             assert torch.equal(c, t), "predicted_tokens mismatch vs Triton"
         else:
             _assert_close(c.detach().float(), t.detach().float(), 1e-4, 1e-3, field)
+
+
+# =============================================================================
+# E. Confident-prediction true-class gradient precision (CuTe DSL analogue of Triton #1329)
+# =============================================================================
+@cuda_required
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+@pytest.mark.parametrize("reduction", ["mean", "sum"])
+@pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
+def test_ce_true_class_grad_confident_predictions(dtype, reduction, label_smoothing):
+    """``dx_y = softmax(x_y) - (1 - ls)`` cancels catastrophically once the model is confident
+    (``softmax(x_y) -> 1``), so the CuTe DSL backward must fold the ``-(1 - ls)`` term in fp32
+    *before* rounding to the low-precision gradient buffer (mirrors the Triton fix in #1329).
+    Drive ``softmax(x_y) -> 1`` and require the true-class gradient to be no less accurate than
+    torch's own low-precision backward on the same logits."""
+    torch.manual_seed(0)
+    device = "cuda"
+    B, T, V = 2, 64, 4096
+    logits = torch.randn(B * T, V, device=device, dtype=torch.float32)
+    target = torch.randint(0, V, (B * T,), device=device)
+    # Push the true-class logit far above the rest so softmax(x_y) is ~1 and the true-class
+    # gradient is a tiny difference of comparatively large terms.
+    logits[torch.arange(B * T, device=device), target] = logits.max(dim=-1).values + 10.0
+    base = logits.to(dtype)
+
+    xi = base.clone().detach().requires_grad_(True)  # cutedsl
+    xr = base.clone().detach().float().requires_grad_(True)  # fp32 reference
+    xt = base.clone().detach().requires_grad_(True)  # torch low-precision
+
+    loss = _run_or_skip(lambda: _apply(_cutedsl_ce(), xi, target, reduction=reduction, label_smoothing=label_smoothing))
+    if isinstance(loss, tuple):
+        loss = loss[0]
+    loss.backward()
+    F.cross_entropy(xr, target, reduction=reduction, label_smoothing=label_smoothing).backward()
+    F.cross_entropy(xt, target, reduction=reduction, label_smoothing=label_smoothing).backward()
+
+    rows = torch.arange(B * T, device=device)
+    ref = xr.grad[rows, target].double()
+    torch_err = (xt.grad[rows, target].double() - ref).abs().max().item()
+    cutedsl_err = (xi.grad[rows, target].double() - ref).abs().max().item()
+    # Rounding the softmax term before the subtraction inflates the error by ~1/(1 - softmax(x_y)),
+    # so a small constant factor over torch is a wide margin.
+    assert cutedsl_err <= max(4 * torch_err, torch.finfo(dtype).tiny), (
+        f"cutedsl true-class grad error {cutedsl_err:.3e} exceeds torch's {torch_err:.3e} "
+        f"(reduction={reduction}, label_smoothing={label_smoothing}, dtype={dtype})"
+    )
