@@ -49,6 +49,9 @@ def get_optional_dependencies():
         # per-call cost dominates: RMSNorm forward measured 53us -> 15us on B200.
         "apache-tvm-ffi>=0.1.0",
     ]
+    flydsl_deps = [
+        "flydsl",
+    ]
     dev_deps = [
         "transformers>=4.52.0",
         "matplotlib>=3.7.2",
@@ -68,6 +71,7 @@ def get_optional_dependencies():
         "cutile": cutile_deps,
         "cutile-tileiras": cutile_tileiras_deps,
         "cutedsl": cutedsl_deps,
+        "flydsl": flydsl_deps,
         "dev": dev_deps,
     }
 
