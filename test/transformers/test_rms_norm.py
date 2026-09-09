@@ -6,6 +6,14 @@ import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
 
+# torch.distributed.tensor is a lazy submodule on torch 2.12+; bind it once so
+# downstream ``torch.distributed.tensor.distribute_tensor`` / ``.Shard`` access
+# doesn't AttributeError before any explicit import has happened.
+try:
+    import torch.distributed.tensor  # noqa: F401
+except Exception:
+    pass
+
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16

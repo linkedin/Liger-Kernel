@@ -1,20 +1,21 @@
-"""LigerCute — fused MoE + NVSHMEM kernels (ported from LigerCommKernels).
+"""LigerCute — native CUTLASS + NVSHMEM kernels.
 
 The native kernels live in a SEPARATE top-level package ``liger_cute_kernels``,
-shipped by its own CUDA/torch-version prefixed **lck wheel** — not by the
+shipped by its own CUDA/torch-version-prefixed wheel — not by the
 top-level ``liger_kernel`` wheel, which stays pure Python/Triton. This module is
 just the entry point that loads ``liger_cute_kernels.tvm_ffi`` when it is installed::
 
-    liger_cute_kernels/           # the lck wheel (optional, separate package)
+    liger_cute_kernels/           # optional, separate native package
       __init__.py
       tvm_ffi.py                  # TVM FFI facade over the native core
       libliger_cute_kernels.so    # torch-free CUTLASS + NVSHMEM core
       libnvshmem_host.so          # bundled nvshmem
 
-The fused MoE op (``moe_fused``) lives in ``cute/ops/`` and is wired up as the
-opt-in ``cute`` implementation (``LIGER_KERNEL_IMPL=cute``). The lck wheel is
-optional, so the rest of ``liger_kernel`` keeps working without it — the ops
-module is imported only when the ``cute`` implementation is actively selected.
+The package currently backs the expert-parallel fused MoE op and the Hopper
+tensor-parallel fused scaled linear cross-entropy path. MoE is wired up as the
+opt-in ``cute`` implementation (``LIGER_KERNEL_IMPL=cute``); the scaled-loss
+frontend loads its native adapter lazily. The package remains optional, so the
+rest of ``liger_kernel`` works without it.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ def _load_tvm_ffi():
             raise ImportError("liger_cute_kernels.tvm_ffi could not load the native core")
     except ImportError as exc:  # pragma: no cover - depends on a CUDA build
         raise ImportError(
-            "liger_cute_kernels is not installed. Install the matching lck wheel "
+            "liger_cute_kernels is not installed. Install the matching native package "
             "for your CUDA/torch environment, or build it locally (see the "
             "liger_cute_kernels/ module at the repo root)."
         ) from exc
@@ -62,7 +63,7 @@ __all__ = ["is_available"]
 # default_devices, so it is never auto-applied — users select it explicitly via
 # ``LIGER_KERNEL_IMPL=cute``. Registration is pure metadata and must not import
 # the native extension: this __init__ is imported during impl discovery even when
-# the lck wheel is absent. The ops module (``cute.ops``) — which does load the
+# the native package is absent. The ops module (``cute.ops``) — which does load the
 # extension — is imported only when this implementation is actively selected.
 register_impl(
     ImplInfo(

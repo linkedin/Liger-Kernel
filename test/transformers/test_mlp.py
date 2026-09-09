@@ -19,6 +19,8 @@ except ImportError:
 
 device = infer_device()
 
+pytest.importorskip("triton.tools.tensor_descriptor", reason="LigerMLP requires triton.tools.tensor_descriptor")
+
 DIFF_THRESHOLD = 1e-5
 # Why the FalconH1 tests use a looser tolerance only for bf16.
 #

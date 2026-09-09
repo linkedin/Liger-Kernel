@@ -2,6 +2,16 @@ import torch
 import triton
 import triton.language as tl
 
+# torch.distributed.tensor is a lazy submodule on torch 2.12+; bind it once at
+# import so downstream ``torch.distributed.tensor.DTensor`` /
+# ``distribute_tensor`` attribute access never raises AttributeError. Only
+# ImportError is expected (torch built without distributed); let other
+# failures surface.
+try:
+    import torch.distributed.tensor  # noqa: F401
+except ImportError:
+    pass
+
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous

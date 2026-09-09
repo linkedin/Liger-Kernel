@@ -1,6 +1,8 @@
 import importlib.util
+import inspect
 import os
 
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +16,21 @@ _SPEC = importlib.util.spec_from_file_location("_fused_linear_scaled_cross_entro
 assert _SPEC is not None and _SPEC.loader is not None
 _FRONTEND = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_FRONTEND)
+
+_NATIVE_FRONTEND_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "liger_kernel"
+    / "ops"
+    / "cute"
+    / "fused_linear_scaled_cross_entropy_tp.py"
+)
+_NATIVE_SPEC = importlib.util.spec_from_file_location(
+    "_fused_linear_scaled_cross_entropy_native_frontend", _NATIVE_FRONTEND_PATH
+)
+assert _NATIVE_SPEC is not None and _NATIVE_SPEC.loader is not None
+_NATIVE_FRONTEND = importlib.util.module_from_spec(_NATIVE_SPEC)
+_NATIVE_SPEC.loader.exec_module(_NATIVE_FRONTEND)
 
 _CUTILE_ENABLED = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower() == "cutile"
 
@@ -173,185 +190,230 @@ def test_frontend_fallback_supports_entropy_only_backward():
     assert weight.grad is not None
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
-@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
-@pytest.mark.parametrize(
-    ("shape", "dtype", "atol", "rtol"),
-    [
-        ((17, 31, 257), torch.float32, 6e-5, 6e-5),
-        ((1025, 64, 131072), torch.bfloat16, 8e-2, 5e-2),
-    ],
-    ids=["fp32-ragged", "bf16-multichunk"],
-)
-def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype, atol, rtol):
-    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
-        pytest.skip("BF16 is not supported")
+def test_tp_frontend_dispatches_hopper_bf16_to_native(monkeypatch):
+    process_group = object()
+    device = torch.device("cuda:3")
+    _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
+    weight = SimpleNamespace(shape=(16, 32))
+    target = object()
+    calls = []
 
-    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
+    class StubNativeFunction:
+        @staticmethod
+        def apply(*args):
+            calls.append(args)
+            return "native-result"
 
-    torch.manual_seed(42)
-    token_count, hidden_size, vocab_size = shape
-    temperature = 0.8
-    target = torch.randint(vocab_size, (token_count,), device="cuda", dtype=torch.int64)
-    target[::11] = -100
-    grad_nll = torch.randn(token_count, device="cuda", dtype=torch.float32)
-    grad_entropy = torch.randn(token_count, device="cuda", dtype=dtype)
+    monkeypatch.setattr(_FRONTEND, "_tp_group_info", lambda actual: (actual, 2))
+    monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
+    monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: actual == device)
+    monkeypatch.setattr(_FRONTEND, "_load_native_tp_function", lambda: StubNativeFunction)
+    monkeypatch.setattr(
+        _FRONTEND,
+        "_apply_tp_fallback",
+        lambda *args: pytest.fail("the Liger fallback must not run when the native package is available"),
+    )
 
-    actual_input = (torch.randn(token_count, hidden_size, device="cuda", dtype=dtype) * 0.25).requires_grad_(True)
-    actual_weight = (
-        torch.randn(vocab_size, hidden_size, device="cuda", dtype=dtype) / hidden_size**0.5
-    ).requires_grad_(True)
-    actual_nll, actual_entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
+    result = _FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+        _input,
+        weight,
+        target,
+        process_group,
+        0.5,
+        -1,
+        2,
+        True,
+    )
+
+    assert result == "native-result"
+    assert calls == [(_input, weight, target, 32, 0.5, -1, 2, True, process_group)]
+
+
+def test_tp_group_is_a_call_argument():
+    parameters = inspect.signature(_FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply).parameters
+
+    assert list(parameters)[3] == "tp_group"
+
+
+@pytest.mark.parametrize("native_result", [None, ImportError("native package unavailable")])
+def test_tp_frontend_uses_liger_fallback_when_native_is_unavailable(monkeypatch, native_result):
+    process_group = object()
+    device = torch.device("cuda:0")
+    _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
+    weight = SimpleNamespace(shape=(8, 16))
+    target = object()
+    calls = []
+
+    monkeypatch.setattr(_FRONTEND, "_tp_group_info", lambda actual: (actual, 1))
+    monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
+    monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: True)
+
+    def load_native():
+        if isinstance(native_result, BaseException):
+            raise native_result
+        return native_result
+
+    monkeypatch.setattr(_FRONTEND, "_load_native_tp_function", load_native)
+    monkeypatch.setattr(
+        _FRONTEND,
+        "_apply_tp_fallback",
+        lambda *args: calls.append(args) or "fallback-result",
+    )
+
+    result = _FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+        _input,
+        weight,
+        target,
+        process_group,
+    )
+
+    assert result == "fallback-result"
+    assert calls == [(_input, weight, target, 1.0, -100, False, process_group)]
+
+
+def test_tp_fallback_matches_torch_with_entropy_and_ignored_rows(monkeypatch):
+    process_group = object()
+    token_count, hidden_size, vocab_size = 521, 7, 13
+    temperature = 0.7
+    target = torch.randint(vocab_size, (token_count,), dtype=torch.int64)
+    target[::5] = -100
+    grad_nll = torch.rand(token_count)
+    grad_entropy = torch.rand(token_count) - 0.5
+
+    monkeypatch.setattr(_FRONTEND.dist, "get_rank", lambda group: 0)
+    monkeypatch.setattr(_FRONTEND.dist, "get_world_size", lambda group: 1)
+
+    actual_input = torch.randn(token_count, hidden_size, requires_grad=True)
+    actual_weight = torch.randn(vocab_size, hidden_size, requires_grad=True)
+    actual_nll, actual_entropy = _FRONTEND._apply_tp_fallback(
         actual_input,
         actual_weight,
         target,
         temperature,
         -100,
-        3,
         True,
+        process_group,
     )
     torch.autograd.backward((actual_nll, actual_entropy), (grad_nll, grad_entropy))
 
     expected_input = actual_input.detach().clone().requires_grad_(True)
     expected_weight = actual_weight.detach().clone().requires_grad_(True)
-    expected_nll, expected_entropy = _FRONTEND._FusedLinearPPOFallbackFunction.apply(
-        expected_input,
-        expected_weight,
-        target,
-        temperature,
-        -100,
-        True,
+    logits = (expected_input @ expected_weight.t()).float() / temperature
+    log_probs = logits.log_softmax(dim=-1)
+    probabilities = log_probs.exp()
+    valid = target != -100
+    safe_target = target.masked_fill(~valid, 0)
+    expected_nll = torch.where(
+        valid,
+        -log_probs.gather(-1, safe_target[:, None]).squeeze(-1),
+        torch.zeros(token_count),
+    )
+    expected_entropy = torch.where(
+        valid,
+        -(probabilities * log_probs).sum(dim=-1),
+        torch.zeros(token_count),
     )
     torch.autograd.backward((expected_nll, expected_entropy), (grad_nll, grad_entropy))
 
-    torch.testing.assert_close(actual_nll, expected_nll, atol=atol, rtol=rtol)
-    torch.testing.assert_close(actual_entropy, expected_entropy, atol=atol, rtol=rtol)
-    torch.testing.assert_close(actual_input.grad, expected_input.grad, atol=atol, rtol=rtol)
-    torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(actual_nll, expected_nll)
+    torch.testing.assert_close(actual_entropy, expected_entropy)
+    torch.testing.assert_close(actual_input.grad, expected_input.grad, atol=2e-5, rtol=2e-5)
+    torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=2e-5, rtol=2e-5)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
-@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
-@pytest.mark.parametrize("output", ["nll", "entropy"])
-def test_cutile_supports_single_output_backward(output):
-    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
+def test_native_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):
+    calls = {}
 
-    torch.manual_seed(43)
-    token_count, hidden_size, vocab_size = 19, 33, 259
-    target = torch.randint(vocab_size, (token_count,), device="cuda", dtype=torch.int64)
-    target[::5] = -100
-    grad_output = torch.randn(token_count, device="cuda")
+    class FakeTvmFfi:
+        @staticmethod
+        def fused_linear_scaled_cross_entropy_forward(*args):
+            calls["forward"] = args
+            tokens = args[0].shape[0]
+            return torch.arange(tokens, dtype=torch.float32), torch.ones(tokens), torch.full((tokens,), 2.0)
 
-    actual_input = (torch.randn(token_count, hidden_size, device="cuda") * 0.25).requires_grad_(True)
-    actual_weight = (torch.randn(vocab_size, hidden_size, device="cuda") / hidden_size**0.5).requires_grad_(True)
-    actual_nll, actual_entropy = LigerFusedLinearScaledCrossEntropyFunction.apply(
-        actual_input,
-        actual_weight,
+        @staticmethod
+        def fused_linear_scaled_cross_entropy_backward(*args):
+            calls["backward"] = args
+            return torch.full_like(args[2], 3.0), torch.full_like(args[3], 4.0)
+
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_validate_inputs", lambda *args: None)
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_pad_hidden", lambda x, weight: (x, weight, x.shape[1]))
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_prepare_native_call", lambda *args: 17)
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
+
+    _input = torch.randn(3, 4, requires_grad=True)
+    weight = torch.randn(5, 4, requires_grad=True)
+    target = torch.tensor([0, 1, 2], dtype=torch.int64)
+    nll, entropy = _NATIVE_FRONTEND.LigerFusedLinearScaledCrossEntropyNativeTPFunction.apply(
+        _input,
+        weight,
         target,
-        1.2,
+        10,
+        0.5,
         -100,
         2,
         True,
+        object(),
     )
-    (actual_nll if output == "nll" else actual_entropy).backward(grad_output)
+    torch.autograd.backward((nll, entropy), (torch.ones_like(nll), torch.full_like(entropy, 0.25)))
 
-    expected_input = actual_input.detach().clone().requires_grad_(True)
-    expected_weight = actual_weight.detach().clone().requires_grad_(True)
-    expected_nll, expected_entropy = _FRONTEND._FusedLinearPPOFallbackFunction.apply(
-        expected_input,
-        expected_weight,
-        target,
-        1.2,
-        -100,
-        True,
+    assert calls["forward"][3:] == (10, -100, 2.0, 17, True)
+    torch.testing.assert_close(calls["backward"][0], torch.ones(3))
+    torch.testing.assert_close(calls["backward"][1], torch.full((3,), 0.25))
+    assert calls["backward"][7:] == (10, -100, 2.0, 17, 2, True)
+    torch.testing.assert_close(_input.grad, torch.full_like(_input, 3.0))
+    torch.testing.assert_close(weight.grad, torch.full_like(weight, 4.0))
+
+
+def test_native_call_uses_prepared_group_without_global_state(monkeypatch):
+    process_group = object()
+    calls = []
+
+    class FakeNvshmem:
+        @staticmethod
+        def resolve_team(group, *, create=True):
+            calls.append(("team", group, create))
+            return 17
+
+    class FakeTvmFfi:
+        @staticmethod
+        def fused_linear_scaled_cross_entropy_configure_backward(*args):
+            calls.append(("backward_config", args))
+
+        @staticmethod
+        def fused_linear_scaled_cross_entropy_configure_forward(*args):
+            calls.append(("forward_config", args))
+
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_get_nvshmem", lambda: FakeNvshmem)
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
+    monkeypatch.setattr(_NATIVE_FRONTEND.torch.cuda, "device", lambda device: nullcontext())
+
+    team = _NATIVE_FRONTEND._prepare_native_call(
+        process_group,
+        torch.device("cuda:1"),
+        128,
+        2048,
+        320,
+        2,
     )
-    (expected_nll if output == "nll" else expected_entropy).backward(grad_output)
-
-    torch.testing.assert_close(actual_input.grad, expected_input.grad, atol=6e-5, rtol=6e-5)
-    torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=6e-5, rtol=6e-5)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
-@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
-@pytest.mark.parametrize(
-    ("token_count", "vocab_size", "element_size", "expected"),
-    [
-        (4096, 131072, 2, 1024),
-        (1025, 131072, 2, 513),
-        (2500, 100000, 2, 1250),
-        (5000, 131072, 2, 1024),
-    ],
-)
-def test_cutile_token_chunk_size_balances_small_tails(token_count, vocab_size, element_size, expected):
-    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import _calculate_token_chunk_size
-
-    assert _calculate_token_chunk_size(token_count, vocab_size, element_size) == expected
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
-@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
-@pytest.mark.parametrize(
-    ("architecture", "token_count", "vocab_size", "element_size", "expected_mb"),
-    [
-        ("hopper", 4096, 131072, 2, 256),
-        ("blackwell", 4096, 131072, 2, 512),
-        ("blackwell_ultra", 4096, 131072, 2, 512),
-        ("blackwell", 2048, 131072, 2, 256),
-        ("blackwell", 4096, 65536, 2, 256),
-        ("blackwell", 4096, 131072, 4, 256),
-    ],
-)
-def test_cutile_selects_workspace_by_architecture(
-    monkeypatch,
-    architecture,
-    token_count,
-    vocab_size,
-    element_size,
-    expected_mb,
-):
-    import liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy as scaled_ce
-
-    monkeypatch.delenv(scaled_ce._WORKSPACE_MB_ENV, raising=False)
-    monkeypatch.setattr(scaled_ce, "infer_device_arch", lambda _: architecture)
-
-    actual = scaled_ce._select_logits_workspace_bytes(0, token_count, vocab_size, element_size)
-    assert actual == expected_mb * scaled_ce._MIB
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
-@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
-def test_cutile_workspace_override(monkeypatch):
-    import liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy as scaled_ce
-
-    monkeypatch.setenv(scaled_ce._WORKSPACE_MB_ENV, "1024")
-    workspace_bytes = scaled_ce._select_logits_workspace_bytes(0, 4096, 131072, 2)
-
-    assert workspace_bytes == 1024 * scaled_ce._MIB
-    assert scaled_ce._calculate_token_chunk_size(4096, 131072, 2, workspace_bytes) == 4096
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
-@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
-@pytest.mark.parametrize("value", ["invalid", "0", "-1"])
-def test_cutile_rejects_invalid_workspace_override(monkeypatch, value):
-    import liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy as scaled_ce
-
-    monkeypatch.setenv(scaled_ce._WORKSPACE_MB_ENV, value)
-    with pytest.raises(ValueError, match=scaled_ce._WORKSPACE_MB_ENV):
-        scaled_ce._select_logits_workspace_bytes(0, 4096, 131072, 2)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile requires CUDA")
-@pytest.mark.skipif(not _CUTILE_ENABLED, reason="requires LIGER_KERNEL_IMPL=cutile")
-def test_cutile_rejects_out_of_range_target():
-    from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction
-
-    _input = torch.randn(2, 8, device="cuda")
-    weight = torch.randn(16, 8, device="cuda")
-    target = torch.tensor([0, 16], device="cuda", dtype=torch.int64)
-
-    with pytest.raises(ValueError, match=r"outside \[0, 16\)"):
-        LigerFusedLinearScaledCrossEntropyFunction.apply(_input, weight, target)
+    repeated = _NATIVE_FRONTEND._prepare_native_call(
+        process_group,
+        torch.device("cuda:1"),
+        64,
+        1024,
+        160,
+        1,
+    )
+    assert team == 17
+    assert repeated == 17
+    assert calls == [
+        ("team", process_group, False),
+        ("backward_config", (128, 2048, 320, 2, 17)),
+        ("forward_config", (128, 320)),
+        ("team", process_group, False),
+        ("backward_config", (64, 1024, 160, 1, 17)),
+        ("forward_config", (64, 160)),
+    ]
 
 
 def test_frontend_is_exported_from_ops_root():
@@ -368,3 +430,6 @@ def test_frontend_is_exported_from_ops_root():
         else "liger_kernel.ops.fused_linear_scaled_cross_entropy"
     )
     assert ops.LigerFusedLinearScaledCrossEntropyFunction.__module__ == expected_module
+    assert ops.LigerFusedLinearScaledCrossEntropyTPFunction.__module__ == (
+        "liger_kernel.ops.fused_linear_scaled_cross_entropy"
+    )

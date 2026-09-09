@@ -1,8 +1,8 @@
 """CUDA-graph capture/replay tests for the fused MoE fwd/bwd kernels.
 
-Ported from LigerCommKernels' ``tests/python/test_autograd.py`` (the
+Adapted from LigerCuteKernels' CUDA Graph tests (the
 ``test_moe_fused_cuda_graph`` / fwd+bwd graph tests). Those upstream tests drove
-the kernels through the ``lck.moe_fused`` autograd wrapper and ``moe_router_fwd``;
+the kernels through the LigerCuteKernels autograd wrapper and ``moe_router_fwd``;
 neither is in scope for this package yet, so here we drive the **raw TVM FFI
 bindings** directly — which is exactly what the graph tests are about: proving the
 *kernel itself* is CUDA-graph-safe (no host syncs, no non-capturable NVSHMEM calls,

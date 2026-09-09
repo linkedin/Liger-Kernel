@@ -31,11 +31,15 @@ def get_default_dependencies():
 
 def get_optional_dependencies():
     """Get optional dependency groups."""
+    # cuTile kernels use CompilerOptions.num_worker_warps (replace_hints / @ct.kernel),
+    # which only exists in cuda-tile >= 1.4.0. Pin the floor to 1.5.0 (validated) so the
+    # resolver can't backtrack to an older cuda-tile whose CompilerOptions lacks that
+    # field (which raises "unexpected keyword argument 'num_worker_warps'" at import).
     cutile_deps = [
-        "cuda-tile",
+        "cuda-tile>=1.5.0",
     ]
     cutile_tileiras_deps = [
-        "cuda-tile[tileiras]",
+        "cuda-tile[tileiras]>=1.5.0",
     ]
     cutedsl_deps = [
         "nvidia-cutlass-dsl>=4.6.0",
