@@ -352,6 +352,11 @@ std::size_t backward_dx_configured_durable_bytes() {
 	return g_durable_bytes;
 }
 
+std::size_t backward_dx_configured_packed_durable_bytes() {
+	ensure_configured();
+	return g_packed_durable_bytes;
+}
+
 void validate_backward_tp_shape(
 		int tokens, int hidden, int local_vocab) {
 	ensure_configured();

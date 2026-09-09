@@ -1289,7 +1289,7 @@ def apply_liger_kernel_to_gemma3_text(
             for decoder_layer in base_model.layers:
                 decoder_layer: Gemma3DecoderLayer
                 if geglu:
-                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                    _patch_geglu_module(decoder_layer.mlp)
                 if rms_norm:
                     _patch_rms_norm_module_for_gemma3(decoder_layer.input_layernorm)
                     _patch_rms_norm_module_for_gemma3(decoder_layer.post_attention_layernorm)
@@ -1526,7 +1526,7 @@ def apply_liger_kernel_to_gemma4_text(
                 decoder_layer: Gemma4TextDecoderLayer
                 # Defensive: skip MLP rebind if a future variant flips MoE on.
                 if geglu and not getattr(decoder_layer, "enable_moe_block", False):
-                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                    _patch_geglu_module(decoder_layer.mlp)
                 if rms_norm:
                     _maybe_patch_scaled_norm(decoder_layer.input_layernorm)
                     _maybe_patch_scaled_norm(decoder_layer.post_attention_layernorm)
@@ -3676,7 +3676,7 @@ def apply_liger_kernel_to_exaone4(
             _patch_rms_norm_module(base_model.norm, in_place=False)
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm, in_place=False)
                 _patch_rms_norm_module(decoder_layer.post_feedforward_layernorm, in_place=False)

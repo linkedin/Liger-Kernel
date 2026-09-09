@@ -1,4 +1,4 @@
-"""Build helpers for the LigerCute native core (the "lck" library).
+"""Build helpers for the LigerCute native CUTLASS + NVSHMEM core.
 
 This module lives in the standalone ``liger_cute_kernels`` module at the repo
 root and is self-contained: it knows how to compile the torch-free core
@@ -6,7 +6,7 @@ root and is self-contained: it knows how to compile the torch-free core
 
 It is deliberately decoupled from the top-level ``liger_kernel`` wheel — that
 wheel is pure Python/Triton and never builds native code. The separate,
-CUDA/torch-version-prefixed **lck wheel** (its own setup.py + optional install)
+CUDA/torch-version-prefixed native wheel (its own setup.py + optional install)
 is handled separately; see this module's README.md.
 
 Phase 3.1 — build the torch-free core (no torch required)::
@@ -34,7 +34,7 @@ CMAKE_DIR = HERE  # CMakeLists.txt sits beside this module
 CORE_SO = "libliger_cute_kernels.so"
 NVSHMEM_SO = "libnvshmem_host.so"
 
-# In-wheel location of the native libraries: the lck wheel's own top-level
+# In-wheel location of the native libraries: the native wheel's own top-level
 # package, kept separate from liger_kernel so it doesn't mix with it.
 PKG_REL = Path("liger_cute_kernels")
 
@@ -126,7 +126,7 @@ def _stage_nvshmem(out_dir: Path) -> None:
                 shutil.copy2(versioned_plugin, out_dir / versioned_plugin.name)
     else:
         print(
-            f"WARNING: {NVSHMEM_SO} not found under NVSHMEM_HOME; the lck wheel will not bundle nvshmem",
+            f"WARNING: {NVSHMEM_SO} not found under NVSHMEM_HOME; the native wheel will not bundle nvshmem",
             file=sys.stderr,
         )
 
@@ -157,7 +157,7 @@ def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Pat
     return out_dir / CORE_SO
 
 
-# ── lck wheel build (used by backend/setup.py) ───────────────────────────────
+# ── native wheel build (used by setup.py) ────────────────────────────────────
 
 
 class CMakeExtension(Extension):
@@ -168,7 +168,7 @@ class CMakeExtension(Extension):
 
 
 class LckBuildExt(build_ext):
-    """Build the lck wheel: compile the core plus TVM FFI shim.
+    """Build the native wheel: compile the core plus TVM FFI shim.
 
     If ``LIGER_CUTE_CORE_DIR`` points at a prebuilt core, it is linked as an
     imported lib (no core recompile); otherwise the core is built from source.
@@ -193,7 +193,7 @@ class LckBuildExt(build_ext):
                 ["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", "liger_cute_kernels"]
             )
 
-        # Place native artifacts into the lck wheel's own liger_cute_kernels package.
+        # Place native artifacts into the wheel's own liger_cute_kernels package.
         dest = Path(self.build_lib) / PKG_REL
         dest.mkdir(parents=True, exist_ok=True)
         if use_prebuilt:
@@ -201,7 +201,7 @@ class LckBuildExt(build_ext):
         else:
             shutil.copy2(next(build_temp.rglob(CORE_SO)), dest / CORE_SO)
         _stage_nvshmem(dest)
-        print(f"staged lck artifacts -> {dest}")
+        print(f"staged native artifacts -> {dest}")
 
 
 def lck_local_version() -> str:
@@ -215,7 +215,7 @@ def lck_local_version() -> str:
         import torch
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "building the lck wheel needs torch importable to tag the wheel "
+            "building the native wheel needs torch importable to tag the wheel "
             "with the CUDA/torch version; install torch or set "
             "LIGER_CUTE_LOCAL_VERSION"
         ) from exc

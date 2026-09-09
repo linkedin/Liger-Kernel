@@ -55,12 +55,10 @@ target_compile_definitions(liger_cute_fslce_forward_sm90 PRIVATE
 target_include_directories(liger_cute_fslce_forward_sm90 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/moe
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy
-    ${NCCL_INCLUDE_DIR})
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy)
 target_link_libraries(liger_cute_fslce_forward_sm90 PRIVATE
     CUTLASS::CUTLASS
-    CUDA::cudart
-    ${NCCL_LIBRARY})
+    CUDA::cudart)
 
 add_library(liger_cute_fslce_forward_reduce OBJECT
     "${LIGER_CUTE_FSLCE_FORWARD_REDUCE_SOURCE}")
@@ -155,7 +153,6 @@ target_include_directories(liger_cute_kernels
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/moe
         ${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy
-        ${NCCL_INCLUDE_DIR}
 )
 
 # Deliberately NO torch here — that is the entire point of the split.
@@ -168,7 +165,6 @@ target_link_libraries(liger_cute_kernels PUBLIC
     NVSHMEM::nvshmem_device
     CUDA::cudart
     CUDA::cuda_driver
-    ${NCCL_LIBRARY}
     ${TVM_FFI_LDFLAGS}
     tvm_ffi
 )

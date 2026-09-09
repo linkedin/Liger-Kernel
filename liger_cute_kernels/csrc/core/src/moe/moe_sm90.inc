@@ -1,6 +1,6 @@
 // Fused MoE: sort+dispatch → MLP+combine — torch-free core (liger_cute).
 //
-// Ported from LigerCommKernels' moe.cu. The device kernels and the templated
+// Adapted from LigerCuteKernels' MoE forward. The device kernels and the templated
 // host launcher are upstream-verbatim (namespace liger, internal to the .so);
 // only the boundary changed: the remaining public entry points here are flat
 // extern "C" control/configuration APIs. Tensor-carrying MoE calls are exposed

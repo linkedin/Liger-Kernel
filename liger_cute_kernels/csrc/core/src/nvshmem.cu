@@ -7,7 +7,7 @@
 // LIGER_CHECK / a non-zero NVSHMEM return code becomes a liger_cute_status_t +
 // a last-error string instead of unwinding across the .so boundary.
 //
-// Ported from LigerCommKernels' nvshmem_helpers.cu; the throw-based error model
+// Adapted from LigerCuteKernels' NVSHMEM helpers; the throw-based error model
 // (std::runtime_error) becomes the status-code model, and the explicit
 // clear_global_pools()/finalize ordering is preserved.
 #define LIGER_CUTE_BUILDING 1

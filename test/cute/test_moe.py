@@ -4,11 +4,11 @@ Two layers of coverage, mirroring ``test_cute_moe_autograd.py``:
 
   * ``test_frontend_import_guard`` — pure-Python, always runs. The frontend
     imports the fused-MoE backend op eagerly, so importing
-    ``liger_kernel.transformers.moe`` must succeed iff the lck wheel is present
+    ``liger_kernel.transformers.moe`` must succeed iff the native package is present
     and raise a clear ``ImportError`` otherwise. When it does import, the module
     is a weightless ``nn.Module`` op-wrapper. Needs neither a GPU nor the wheel.
 
-  * ``test_frontend_module_forward`` — functional, **skipped unless the lck wheel
+  * ``test_frontend_module_forward`` — functional, **skipped unless the native package
     is installed and >= 2 CUDA devices are present**. Drives the module end to
     end across real PEs and checks the behaviour the wrapper adds on top of the
     raw ``moe_fused`` op: the ``(B, S, D)`` reshape round-trip, the int32 cast of
@@ -42,7 +42,7 @@ try:
 
     from liger_kernel.ops import cute as _cute
 
-    _LCK_AVAILABLE = _cute.is_available()
+    _NATIVE_AVAILABLE = _cute.is_available()
 except ImportError:  # torch missing, or liger_kernel import failure
     torch = None
     dist = None
@@ -50,7 +50,7 @@ except ImportError:  # torch missing, or liger_kernel import failure
     nn = None
     Fnn = None
     _cute = None
-    _LCK_AVAILABLE = False
+    _NATIVE_AVAILABLE = False
 
 _NDEV = torch.cuda.device_count() if (torch is not None and torch.cuda.is_available()) else 0
 
@@ -64,14 +64,14 @@ _B, _S = 4, _T // 4  # (batch, seq) view that flattens back to T tokens
 
 
 def test_frontend_import_guard():
-    """Importing the frontend tracks lck availability; the module is weightless.
+    """Importing the frontend tracks native package availability; the module is weightless.
 
     The op is imported eagerly at module import, so the import itself is the
     backend-availability gate: it succeeds with the wheel and raises a clear
     ``ImportError`` without it. When present, ``LigerExpertParallelFusedMoe`` is
     an ``nn.Module`` op-wrapper that owns no parameters of its own.
     """
-    if _LCK_AVAILABLE:
+    if _NATIVE_AVAILABLE:
         mod = importlib.import_module("liger_kernel.transformers.moe")
         layer_cls = mod.LigerExpertParallelFusedMoe
         assert issubclass(layer_cls, nn.Module)
@@ -89,7 +89,7 @@ def test_frontend_import_guard():
             importlib.import_module("liger_kernel.transformers.moe")
 
 
-# ── functional test (needs the lck wheel + GPUs) ──────────────────────────────
+# ── functional test (needs the native package + GPUs) ────────────────────────
 
 
 def _world_size() -> int:
@@ -257,7 +257,7 @@ def _module_worker(rank, world_size, init_file):
         raise
 
 
-@pytest.mark.skipif(not _LCK_AVAILABLE, reason="liger_cute_kernels (lck wheel) not installed")
+@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="liger_cute_kernels native package not installed")
 @pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
 def test_frontend_module_forward():
     """``LigerExpertParallelFusedMoe`` runs end to end and matches the reference.
@@ -269,7 +269,7 @@ def test_frontend_module_forward():
     import shutil
 
     world_size = _world_size()
-    rdzv = tempfile.mkdtemp(prefix="lck_frontend_")
+    rdzv = tempfile.mkdtemp(prefix="liger_cute_frontend_")
     init_file = os.path.join(rdzv, "store")
     try:
         mp.spawn(_module_worker, args=(world_size, init_file), nprocs=world_size, join=True)

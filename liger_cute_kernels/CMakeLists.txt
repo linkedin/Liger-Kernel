@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# LigerCute — native build harness (ported from LigerCommKernels)
+# LigerCuteKernels — native build harness
 #
 # Target split:
 #
@@ -15,9 +15,9 @@
 #     cmake -S . -B build -DLIGER_CUTE_BUILD_BINDINGS=OFF
 #     cmake --build build --target liger_cute_kernels
 #
-# The fused MoE kernels (csrc/core/src/moe/{moe,moe_bwd,mlp*}.cu) are wired into
-# the core; csrc/core/src/moe/tune/ is a separate standalone autotuner project
-# (see README "Offline autotuner"), excluded from the core target.
+# The core includes CUTLASS + NVSHMEM operators such as expert-parallel MoE and
+# tensor-parallel fused scaled linear cross entropy. csrc/core/src/moe/tune/ is
+# a separate standalone autotuner project, excluded from the core target.
 # ─────────────────────────────────────────────────────────────────────────────
 cmake_minimum_required(VERSION 3.24)
 project(LigerCute LANGUAGES CXX CUDA)
@@ -29,7 +29,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(LIGER_CUTE_BUILD_BINDINGS
-    "Deprecated compatibility option. The lck wheel now exposes tensor APIs through TVM FFI only." OFF)
+    "Deprecated compatibility option. The native wheel exposes tensor APIs through TVM FFI only." OFF)
 
 # Core-reuse knob: when set to a directory containing a prebuilt
 # libliger_cute_kernels.so, the core is NOT compiled from source — it is linked
@@ -49,21 +49,6 @@ option(LIGER_CUTE_TESTS_ONLY
 
 # ---------- Common CUDA / device dependencies (needed by core AND bindings) --
 find_package(CUDAToolkit REQUIRED)
-
-if(NOT LIGER_CUTE_TESTS_ONLY)
-    if(NOT DEFINED NCCL_HOME AND DEFINED ENV{NCCL_HOME})
-        set(NCCL_HOME "$ENV{NCCL_HOME}")
-    endif()
-    find_path(NCCL_INCLUDE_DIR NAMES nccl.h
-        HINTS "${NCCL_HOME}/include"
-        PATHS /usr/include /usr/local/cuda/include)
-    find_library(NCCL_LIBRARY NAMES nccl
-        HINTS "${NCCL_HOME}/lib" "${NCCL_HOME}/lib64"
-        PATHS /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu)
-    if(NOT NCCL_INCLUDE_DIR OR NOT NCCL_LIBRARY)
-        message(FATAL_ERROR "NCCL not found (set NCCL_HOME=<prefix>)")
-    endif()
-endif()
 
 # The 'a' suffix enables architecture-accelerated features (WGMMA/TMA/multicast
 # on sm_90a; tcgen05/UMMA on sm_100a). Override with -DLIGER_CUTE_CUDA_ARCH=100a

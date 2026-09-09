@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 import tempfile
 
 from datetime import timedelta
@@ -37,8 +36,6 @@ def test_fslce_forward_binding_is_exposed():
         pytest.skip("requires the native core")
     module = tvm_ffi._load_module()
     for name in (
-        "nccl_get_unique_id",
-        "nccl_comm_init_rank",
         "fused_linear_scaled_cross_entropy_configure_forward",
         "fused_linear_scaled_cross_entropy_forward",
     ):
@@ -62,7 +59,7 @@ def test_forward_returns_zero_entropy_when_disabled(monkeypatch):
         vocab_start=0,
         ignore_index=-100,
         inverse_temperature=1.0,
-        nccl_comm_handle=1,
+        team_handle=1,
         return_entropy=False,
     )
     torch.testing.assert_close(entropy, torch.zeros_like(entropy))
@@ -94,7 +91,6 @@ def _worker(rank: int, world_size: int, init_file: str, subgroup: bool):
     )
 
     team = None
-    nccl_comm = 0
     try:
         nvshmem.init_from_pg()
         pg = dist.group.WORLD
@@ -112,16 +108,6 @@ def _worker(rank: int, world_size: int, init_file: str, subgroup: bool):
 
         local_rank = group_ranks.index(rank)
         team_size = len(group_ranks)
-        unique_id_payload = [tvm_ffi.nccl_get_unique_id().tolist() if local_rank == 0 else None]
-        dist.broadcast_object_list(
-            unique_id_payload,
-            src=group_ranks[0],
-            group=pg,
-            device=torch.device("cuda", rank),
-        )
-        unique_id = torch.tensor(unique_id_payload[0], dtype=torch.uint8)
-        nccl_comm = tvm_ffi.nccl_comm_init_rank(local_rank, team_size, unique_id)
-
         tokens = 128
         hidden = 2048
         local_vocab = 320
@@ -160,7 +146,7 @@ def _worker(rank: int, world_size: int, init_file: str, subgroup: bool):
             local_rank * local_vocab,
             -100,
             1.0 / temperature,
-            nccl_comm,
+            team,
             True,
         )
         actual_dx, actual_dw = tvm_ffi.fused_linear_scaled_cross_entropy_backward(
@@ -182,6 +168,40 @@ def _worker(rank: int, world_size: int, init_file: str, subgroup: bool):
         torch.testing.assert_close(actual_nll, expected_nll, atol=2e-4, rtol=2e-4)
         torch.testing.assert_close(lse, expected_lse, atol=2e-4, rtol=2e-4)
         torch.testing.assert_close(entropy, expected_entropy, atol=2e-4, rtol=2e-4)
+
+        replay_nll = torch.empty_like(actual_nll)
+        replay_lse = torch.empty_like(lse)
+        replay_entropy = torch.empty_like(entropy)
+        module = tvm_ffi._load_module()
+        forward_graph = torch.cuda.CUDAGraph()
+        dist.barrier()
+        with torch.cuda.graph(forward_graph):
+            module.fused_linear_scaled_cross_entropy_forward(
+                x,
+                weight,
+                target,
+                local_rank * local_vocab,
+                -100,
+                1.0 / temperature,
+                team,
+                True,
+                replay_nll,
+                replay_lse,
+                replay_entropy,
+            )
+        dist.barrier()
+        for _ in range(2):
+            replay_nll.fill_(float("nan"))
+            replay_lse.fill_(float("nan"))
+            replay_entropy.fill_(float("nan"))
+            torch.cuda.synchronize()
+            forward_graph.replay()
+            torch.cuda.synchronize()
+            torch.testing.assert_close(replay_nll, expected_nll, atol=2e-4, rtol=2e-4)
+            torch.testing.assert_close(replay_lse, expected_lse, atol=2e-4, rtol=2e-4)
+            torch.testing.assert_close(replay_entropy, expected_entropy, atol=2e-4, rtol=2e-4)
+        del forward_graph
+
         torch.testing.assert_close(actual_dx.float(), expected_dx, atol=8e-3, rtol=4e-2)
         torch.testing.assert_close(actual_dw.float(), expected_dw, atol=8e-3, rtol=4e-2)
 
@@ -189,7 +209,6 @@ def _worker(rank: int, world_size: int, init_file: str, subgroup: bool):
         tvm_ffi.fused_linear_scaled_cross_entropy_configure_backward(tokens, hidden, local_vocab, 1, team)
         replay_dx = torch.empty_like(x)
         replay_dw = torch.empty_like(weight)
-        module = tvm_ffi._load_module()
         graph = torch.cuda.CUDAGraph()
         dist.barrier()
         with torch.cuda.graph(graph):
@@ -224,8 +243,6 @@ def _worker(rank: int, world_size: int, init_file: str, subgroup: bool):
         torch.testing.assert_close(replay_dx.float(), expected_dx, atol=8e-3, rtol=4e-2)
         torch.testing.assert_close(replay_dw.float(), expected_dw, atol=8e-3, rtol=4e-2)
 
-        tvm_ffi.nccl_comm_destroy(nccl_comm)
-        nccl_comm = 0
         nvshmem.pool_clear_all()
         if subgroup and team != nvshmem.team_world():
             nvshmem.team_destroy(team)
@@ -234,11 +251,6 @@ def _worker(rank: int, world_size: int, init_file: str, subgroup: bool):
         nvshmem.finalize()
         dist.destroy_process_group()
     except BaseException:
-        if nccl_comm:
-            try:
-                tvm_ffi.nccl_comm_destroy(nccl_comm)
-            except Exception as cleanup_error:
-                print(f"NCCL communicator cleanup failed: {cleanup_error}", file=sys.stderr)
         try:
             dist.destroy_process_group()
         except Exception:

@@ -27,12 +27,10 @@
 
 #include <nvshmem.h>
 #include <nvshmemx.h>
-#include <nccl.h>
 
 #include <cuda_runtime.h>
 
 #include <cmath>
-#include <cstring>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -42,6 +40,7 @@
 #include "buffer_pool.cuh"
 #include "forward_gemm_sm90.cuh"
 #include "forward_reduce.cuh"
+#include "workspace.cuh"
 
 namespace {
 
@@ -52,7 +51,6 @@ using Element = __nv_bfloat16;
 int g_pe = 0;
 int g_n_pes = 1;
 int g_failures = 0;
-ncclComm_t g_nccl_comm = nullptr;
 
 #define CUDA_OK(expr)                                                        \
 	do {                                                                     \
@@ -64,42 +62,6 @@ ncclComm_t g_nccl_comm = nullptr;
 			std::exit(1);                                                    \
 		}                                                                    \
 	} while (0)
-
-#define NCCL_OK(expr)                                                        \
-	do {                                                                     \
-		ncclResult_t status = (expr);                                         \
-		if (status != ncclSuccess) {                                         \
-			std::printf("[pe %d] NCCL error %s at %s:%d: %s\n",              \
-				g_pe, #expr, __FILE__, __LINE__, ncclGetErrorString(status)); \
-			std::exit(1);                                                    \
-		}                                                                    \
-	} while (0)
-
-ncclComm_t bootstrap_nccl() {
-	ncclUniqueId id;
-	std::memset(&id, 0, sizeof(id));
-	if (g_pe == 0) NCCL_OK(ncclGetUniqueId(&id));
-
-	void* source = nvshmem_malloc(sizeof(id));
-	void* destination = nvshmem_malloc(sizeof(id));
-	CUDA_OK(cudaMemcpy(source, &id, sizeof(id), cudaMemcpyHostToDevice));
-	nvshmem_barrier_all();
-	nvshmem_broadcastmem(
-		NVSHMEM_TEAM_WORLD,
-		destination,
-		source,
-		sizeof(id),
-		0);
-	nvshmem_barrier_all();
-	CUDA_OK(cudaMemcpy(
-		&id, destination, sizeof(id), cudaMemcpyDeviceToHost));
-	nvshmem_free(destination);
-	nvshmem_free(source);
-
-	ncclComm_t comm = nullptr;
-	NCCL_OK(ncclCommInitRank(&comm, g_n_pes, id, g_pe));
-	return comm;
-}
 
 float next_random(std::uint64_t& state) {
 	state = state * 6364136223846793005ULL + 1442695040888963407ULL;
@@ -271,8 +233,8 @@ void run_case(
 	params.nll = device_out + 0 * tokens;
 	params.lse = device_out + 1 * tokens;
 	params.entropy = device_out + 2 * tokens;
-	params.nccl_comm_handle =
-		reinterpret_cast<std::int64_t>(g_nccl_comm);
+	params.team_handle =
+		static_cast<std::int64_t>(NVSHMEM_TEAM_WORLD);
 
 	fslce::fused_linear_scaled_cross_entropy_forward<
 		ReturnEntropy, 90>(params, nullptr);
@@ -377,12 +339,18 @@ int main() {
 	if (g_pe == 0) {
 		std::printf("tensor-parallel forward over %d PEs\n", g_n_pes);
 	}
-	g_nccl_comm = bootstrap_nccl();
-
 	// Capacities are immutable once allocated, so configure for the largest
 	// shape used below before any launch.
 	constexpr int kMaxTokens = 1024;
+	constexpr int kMaxHidden = 192;
 	constexpr int kMaxLocalVocab = 2560;
+	fslce::configure_backward_tp_symmetric(
+		kMaxTokens,
+		kMaxHidden,
+		kMaxLocalVocab,
+		1,
+		1,
+		static_cast<std::int64_t>(NVSHMEM_TEAM_WORLD));
 	fslce::configure_forward_tp_workspace(kMaxTokens, kMaxLocalVocab);
 
 	try {
@@ -393,7 +361,6 @@ int main() {
 		run_case<true>("tp large split", 1024, 128, 2560, 1.0f, 105);
 	} catch (const std::exception& error) {
 		std::printf("[pe %d] exception: %s\n", g_pe, error.what());
-		ncclCommDestroy(g_nccl_comm);
 		nvshmem_finalize();
 		return 1;
 	}
@@ -417,8 +384,7 @@ int main() {
 		std::printf("%s: %d comparison failures across %d PEs\n",
 			host_total == 0 ? "OK" : "FAILED", host_total, g_n_pes);
 	}
-	NCCL_OK(ncclCommDestroy(g_nccl_comm));
-	fslce::reset_forward_tp_workspace_configuration();
+	fslce::reset_fslce_tp_configuration();
 	liger::global_buffer_pool().clear();
 	nvshmem_finalize();
 	return host_total == 0 ? 0 : 1;

@@ -78,28 +78,6 @@ def init_pmi() -> None:
     _load_module().init_pmi()
 
 
-def nccl_unique_id_nbytes() -> int:
-    out = _int64_out()
-    _load_module().nccl_unique_id_nbytes(out)
-    return int(out.item())
-
-
-def nccl_get_unique_id() -> torch.Tensor:
-    out = torch.empty(nccl_unique_id_nbytes(), dtype=torch.uint8, device="cpu")
-    _load_module().nccl_get_unique_id(out)
-    return out
-
-
-def nccl_comm_init_rank(rank: int, nranks: int, unique_id: torch.Tensor) -> int:
-    out = _int64_out()
-    _load_module().nccl_comm_init_rank(int(rank), int(nranks), unique_id, out)
-    return int(out.item())
-
-
-def nccl_comm_destroy(comm_handle: int) -> None:
-    _load_module().nccl_comm_destroy(int(comm_handle))
-
-
 def finalize() -> None:
     _load_module().finalize()
 
@@ -306,10 +284,10 @@ def fused_linear_scaled_cross_entropy_forward(
     vocab_start: int,
     ignore_index: int,
     inverse_temperature: float,
-    nccl_comm_handle: int,
+    team_handle: int,
     return_entropy: bool,
 ):
-    """Run the complete tensor-parallel forward using a caller-owned NCCL communicator."""
+    """Run the complete tensor-parallel forward on a prepared NVSHMEM team."""
     tokens = x.shape[0]
     nll = torch.empty(tokens, dtype=torch.float32, device=x.device)
     lse = torch.empty(tokens, dtype=torch.float32, device=x.device)
@@ -325,7 +303,7 @@ def fused_linear_scaled_cross_entropy_forward(
         int(vocab_start),
         int(ignore_index),
         float(inverse_temperature),
-        int(nccl_comm_handle),
+        int(team_handle),
         bool(return_entropy),
         nll,
         lse,

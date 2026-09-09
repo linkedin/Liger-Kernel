@@ -15,6 +15,11 @@ enum class LocalReduceBackend : std::uint8_t {
 	kDirectPeer,
 };
 
+enum class ReduceOp : std::uint8_t {
+	kSum,
+	kMax,
+};
+
 // Minimal device view for the local NVLS reduce-scatter/all-gather path.
 struct NvlsReduceView {
 	float* multicast_partial;

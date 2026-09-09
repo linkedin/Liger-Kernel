@@ -1,9 +1,10 @@
-"""Build script for the **lck wheel** — the native CUTLASS + NVSHMEM MoE
-kernels, shipped as the standalone top-level package ``liger_cute_kernels``.
+"""Build script for the native CUTLASS + NVSHMEM kernel wheel.
+
+The wheel installs the standalone top-level package ``liger_cute_kernels``.
 
 This is a SEPARATE distribution from the top-level ``liger_kernel`` wheel (which
 is pure Python/Triton) and is intentionally its OWN package so it does not mix
-into ``liger_kernel``. The lck wheel:
+into ``liger_kernel``. The native wheel:
 
   * builds the torch-free core ``libliger_cute_kernels.so`` with TVM FFI exports
     compiled into that same shared library,
@@ -35,7 +36,7 @@ BASE_VERSION = "0.1.0"
 setup(
     name="liger_cute_kernels",
     version=f"{BASE_VERSION}+{lck_local_version()}",
-    description="Native CUTLASS + NVSHMEM MoE kernels (lck) for liger_kernel.ops.cute",
+    description="Native CUTLASS + NVSHMEM kernels for liger_kernel.ops.cute",
     python_requires=">=3.9",
     install_requires=["torch", "apache-tvm-ffi"],
     extras_require={"nvshmem-pypi": ["nvidia-nvshmem-cu13"]},
