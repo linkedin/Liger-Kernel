@@ -9,6 +9,7 @@ import torch
 from liger_kernel.ops.cutile.ops.utils import LOG2E
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.cutile.ops.utils import _select_cross_entropy_block_size
+from liger_kernel.ops.utils import device_context
 from liger_kernel.utils import infer_device_arch
 
 ConstInt = ct.Constant[int]
@@ -205,23 +206,24 @@ def fused_scaled_cross_entropy_forward(
         logits_chunk = (_input[start:end] @ weight.t()).contiguous()
         entropy_arg = entropy[start:end] if return_entropy else dummy_entropy
 
-        ct.launch(
-            torch.cuda.current_stream(),
-            (end - start, 1, 1),
-            _fused_scaled_cross_entropy_forward_kernel_ct,
-            (
-                logits_chunk,
-                target[start:end],
-                nll[start:end],
-                entropy_arg,
-                lse[start:end],
-                int(V),
-                float(1.0 / temperature),
-                int(ignore_index),
-                int(block_size),
-                int(return_entropy),
-            ),
-        )
+        with device_context(_input.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                (end - start, 1, 1),
+                _fused_scaled_cross_entropy_forward_kernel_ct,
+                (
+                    logits_chunk,
+                    target[start:end],
+                    nll[start:end],
+                    entropy_arg,
+                    lse[start:end],
+                    int(V),
+                    float(1.0 / temperature),
+                    int(ignore_index),
+                    int(block_size),
+                    int(return_entropy),
+                ),
+            )
 
     return nll, entropy, lse
 
@@ -353,25 +355,26 @@ def fused_scaled_cross_entropy_backward(
         grad_logits_chunk = grad_logits_workspace[: end - start]
         torch.mm(input_chunk, weight.t(), out=grad_logits_chunk)
 
-        ct.launch(
-            torch.cuda.current_stream(),
-            (end - start, 1, 1),
-            _fused_scaled_cross_entropy_backward_kernel_ct,
-            (
-                grad_logits_chunk,
-                target[start:end],
-                lse[start:end],
-                entropy[start:end] if entropy is not None else dummy_input_dtype,
-                grad_nll[start:end] if grad_nll is not None else dummy_f32,
-                grad_entropy[start:end] if grad_entropy is not None else dummy_input_dtype,
-                int(V),
-                float(1.0 / temperature),
-                int(ignore_index),
-                int(block_size),
-                int(grad_nll is not None),
-                int(grad_entropy is not None),
-            ),
-        )
+        with device_context(_input.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                (end - start, 1, 1),
+                _fused_scaled_cross_entropy_backward_kernel_ct,
+                (
+                    grad_logits_chunk,
+                    target[start:end],
+                    lse[start:end],
+                    entropy[start:end] if entropy is not None else dummy_input_dtype,
+                    grad_nll[start:end] if grad_nll is not None else dummy_f32,
+                    grad_entropy[start:end] if grad_entropy is not None else dummy_input_dtype,
+                    int(V),
+                    float(1.0 / temperature),
+                    int(ignore_index),
+                    int(block_size),
+                    int(grad_nll is not None),
+                    int(grad_entropy is not None),
+                ),
+            )
 
         if grad_input is not None:
             torch.mm(grad_logits_chunk, weight, out=grad_input[start:end])

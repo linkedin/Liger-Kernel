@@ -122,6 +122,7 @@ from liger_kernel.ops.backends._cutedsl._cute_lib.dtype_map import torch2cute_dt
 from liger_kernel.ops.backends._cutedsl._cute_lib.reduce import row_reduce
 from liger_kernel.ops.backends._cutedsl._cute_lib.reduction_base import ReductionBase
 from liger_kernel.ops.backends._cutedsl._cute_lib.rmsnorm_fwd import rmsnorm_fwd as _cutedsl_rmsnorm_fwd
+from liger_kernel.ops.utils import device_context
 
 # Same ceiling as the LayerNorm sibling — beyond this the kernel triggers
 # the cluster-reduce path which uses ``cute.arch.ProxyKind`` (missing on
@@ -662,86 +663,87 @@ def _rms_norm_cutedsl_backward(
     the absent-arg specialization compiles dead-code-eliminated to the
     same kernel body as before the fold was added.
     """
-    shape = dy.shape
-    N = shape[-1]
-    if N > _BWD_MAX_TILE_CUTEDSL:
-        raise RuntimeError(
-            f"cuTeDSL rms_norm backward only supports hidden dim <= "
-            f"{_BWD_MAX_TILE_CUTEDSL}; got {N}. Use backend='triton' for "
-            f"wider rows. (Cluster-reduce path requires a newer cutlass-cute.)"
+    with device_context(x_flat.device):
+        shape = dy.shape
+        N = shape[-1]
+        if N > _BWD_MAX_TILE_CUTEDSL:
+            raise RuntimeError(
+                f"cuTeDSL rms_norm backward only supports hidden dim <= "
+                f"{_BWD_MAX_TILE_CUTEDSL}; got {N}. Use backend='triton' for "
+                f"wider rows. (Cluster-reduce path requires a newer cutlass-cute.)"
+            )
+        dy_flat = dy.view(-1, N).contiguous()
+        M = dy_flat.shape[0]
+
+        # The mixed-dtype gemma route pre-casts x to fp32 in the forward, so
+        # x_flat.dtype can be fp32 while dy comes in at the original input dtype
+        # (uniform-dtype gemma no longer bridges — see the forward). The
+        # compiled kernel is keyed by x_flat.dtype, so all in/out tensors it
+        # touches must match. Promote dy and (later) demote dx accordingly.
+        original_dy_dtype = dy_flat.dtype
+        needs_dtype_bridge = dy_flat.dtype != x_flat.dtype
+        if needs_dtype_bridge:
+            dy_flat = dy_flat.to(x_flat.dtype)
+
+        # ``in_place`` lets the caller reuse dY's storage as dX — Liger Triton
+        # does the same. Safe here because each row is processed atomically by
+        # one block; no aliasing tile is read after being written.
+        if in_place and not needs_dtype_bridge:
+            dx = dy_flat
+        else:
+            # Allocate in x_flat's dtype so the kernel signature matches.
+            dx = torch.empty(dy_flat.shape, dtype=x_flat.dtype, device=dy_flat.device)
+
+        sm_count = _bwd_sm_count(N, x_flat.device)
+        # Saturate the grid: never launch more SMs than rows.
+        sm_count = min(sm_count, max(M, 1))
+
+        has_weight = w_eff is not None
+        dw_partial = torch.empty((sm_count, N), dtype=torch.float32, device=x_flat.device) if has_weight else None
+
+        ds_flat = None
+        if ds is not None:
+            ds_flat = ds.view(-1, N).contiguous()
+            # Must match the kernel's compile-keyed dtype stream (x_flat.dtype);
+            # FARN keeps dy-store dtype == x dtype through the gemma route, but
+            # bridge defensively the same way dy is bridged above.
+            if ds_flat.dtype != x_flat.dtype:
+                ds_flat = ds_flat.to(x_flat.dtype)
+
+        compiled = _get_bwd_kernel(
+            x_dtype=x_flat.dtype,
+            weight_dtype=w_eff.dtype if w_eff is not None else None,
+            dx_dtype=dx.dtype,
+            N=N,
+            has_weight=has_weight,
+            casting_mode=casting_mode,
+            has_ds=ds_flat is not None,
         )
-    dy_flat = dy.view(-1, N).contiguous()
-    M = dy_flat.shape[0]
 
-    # The mixed-dtype gemma route pre-casts x to fp32 in the forward, so
-    # x_flat.dtype can be fp32 while dy comes in at the original input dtype
-    # (uniform-dtype gemma no longer bridges — see the forward). The
-    # compiled kernel is keyed by x_flat.dtype, so all in/out tensors it
-    # touches must match. Promote dy and (later) demote dx accordingly.
-    original_dy_dtype = dy_flat.dtype
-    needs_dtype_bridge = dy_flat.dtype != x_flat.dtype
-    if needs_dtype_bridge:
-        dy_flat = dy_flat.to(x_flat.dtype)
+        # CuTe DSL compiled kernels read torch.cuda.current_stream() at launch;
+        # the kernel ABI does NOT take a stream positional. Mirrors the
+        # LayerNorm sibling's launch call.
+        compiled(
+            x_flat,
+            w_eff,
+            dy_flat,
+            rstd,
+            dx,
+            dw_partial,
+            sm_count,
+            ds_flat,
+        )
 
-    # ``in_place`` lets the caller reuse dY's storage as dX — Liger Triton
-    # does the same. Safe here because each row is processed atomically by
-    # one block; no aliasing tile is read after being written.
-    if in_place and not needs_dtype_bridge:
-        dx = dy_flat
-    else:
-        # Allocate in x_flat's dtype so the kernel signature matches.
-        dx = torch.empty(dy_flat.shape, dtype=x_flat.dtype, device=dy_flat.device)
+        if has_weight:
+            dw = dw_partial.sum(dim=0)
+        else:
+            dw = None
 
-    sm_count = _bwd_sm_count(N, x_flat.device)
-    # Saturate the grid: never launch more SMs than rows.
-    sm_count = min(sm_count, max(M, 1))
+        # Cast dx back to the autograd-graph's original dtype (gemma promoted).
+        if needs_dtype_bridge:
+            dx = dx.to(original_dy_dtype)
 
-    has_weight = w_eff is not None
-    dw_partial = torch.empty((sm_count, N), dtype=torch.float32, device=x_flat.device) if has_weight else None
-
-    ds_flat = None
-    if ds is not None:
-        ds_flat = ds.view(-1, N).contiguous()
-        # Must match the kernel's compile-keyed dtype stream (x_flat.dtype);
-        # FARN keeps dy-store dtype == x dtype through the gemma route, but
-        # bridge defensively the same way dy is bridged above.
-        if ds_flat.dtype != x_flat.dtype:
-            ds_flat = ds_flat.to(x_flat.dtype)
-
-    compiled = _get_bwd_kernel(
-        x_dtype=x_flat.dtype,
-        weight_dtype=w_eff.dtype if w_eff is not None else None,
-        dx_dtype=dx.dtype,
-        N=N,
-        has_weight=has_weight,
-        casting_mode=casting_mode,
-        has_ds=ds_flat is not None,
-    )
-
-    # CuTe DSL compiled kernels read torch.cuda.current_stream() at launch;
-    # the kernel ABI does NOT take a stream positional. Mirrors the
-    # LayerNorm sibling's launch call.
-    compiled(
-        x_flat,
-        w_eff,
-        dy_flat,
-        rstd,
-        dx,
-        dw_partial,
-        sm_count,
-        ds_flat,
-    )
-
-    if has_weight:
-        dw = dw_partial.sum(dim=0)
-    else:
-        dw = None
-
-    # Cast dx back to the autograd-graph's original dtype (gemma promoted).
-    if needs_dtype_bridge:
-        dx = dx.to(original_dy_dtype)
-
-    return dx.view(shape), dw
+        return dx.view(shape), dw
 
 
 class _LigerRMSNormCuTeDSLFunction(torch.autograd.Function):

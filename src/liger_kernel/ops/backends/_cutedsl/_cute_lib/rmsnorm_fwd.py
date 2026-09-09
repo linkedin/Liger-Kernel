@@ -41,6 +41,8 @@ from cutlass import Float32
 from cutlass import const_expr
 from torch import Tensor
 
+from liger_kernel.ops.utils import device_context
+
 from . import copy_utils
 from . import layout_utils
 from .compile_utils import make_fake_tensor as fake_tensor
@@ -424,31 +426,33 @@ def _run_fwd(
     drops the ``torch.library.custom_op`` registration — we are always
     invoked from inside an ``autograd.Function``, never traced by Dynamo.
     """
-    supported_types = {torch.float16, torch.bfloat16, torch.float32}
-    assert x.dtype in supported_types, "Unsupported dtype"
-    if weight is not None:
-        assert weight.dtype in supported_types, "Weight must be float32, float16 or bfloat16"
-    if residual is not None:
-        assert residual.dtype in supported_types, "Residual must be float16, bfloat16, or float32"
+    with device_context(x.device):
+        supported_types = {torch.float16, torch.bfloat16, torch.float32}
+        assert x.dtype in supported_types, "Unsupported dtype"
+        if weight is not None:
+            assert weight.dtype in supported_types, "Weight must be float32, float16 or bfloat16"
+        if residual is not None:
+            assert residual.dtype in supported_types, "Residual must be float16, bfloat16, or float32"
 
-    N = x.size(-1)
-    per_head = (weight is not None and weight.dim() == 2) or (bias is not None and bias.dim() == 2)
-    dtype, out_dtype, weight_dtype, bias_dtype, res_dtype, res_out_dtype = [
-        torch2cute_dtype_map[t.dtype] if t is not None else None for t in [x, out, weight, bias, residual, residual_out]
-    ]
-    _compile_fwd(
-        dtype,
-        out_dtype,
-        res_dtype,
-        weight_dtype,
-        bias_dtype,
-        res_out_dtype,
-        N,
-        rstd is not None,
-        mean is not None,
-        is_layernorm,
-        per_head,
-    )(x, weight, bias, residual, out, residual_out, rstd, mean, eps)
+        N = x.size(-1)
+        per_head = (weight is not None and weight.dim() == 2) or (bias is not None and bias.dim() == 2)
+        dtype, out_dtype, weight_dtype, bias_dtype, res_dtype, res_out_dtype = [
+            torch2cute_dtype_map[t.dtype] if t is not None else None
+            for t in [x, out, weight, bias, residual, residual_out]
+        ]
+        _compile_fwd(
+            dtype,
+            out_dtype,
+            res_dtype,
+            weight_dtype,
+            bias_dtype,
+            res_out_dtype,
+            N,
+            rstd is not None,
+            mean is not None,
+            is_layernorm,
+            per_head,
+        )(x, weight, bias, residual, out, residual_out, rstd, mean, eps)
 
 
 # ===========================================================================

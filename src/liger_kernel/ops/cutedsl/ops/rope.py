@@ -53,6 +53,7 @@ from cutlass.cute.runtime import from_dlpack
 
 from liger_kernel.ops.cutedsl.ops.utils import _COMPILE_CACHE
 from liger_kernel.ops.cutedsl.ops.utils import _dyn
+from liger_kernel.ops.utils import device_context
 
 # Cache the CUstream wrapper keyed on torch's raw stream handle so we don't
 # rebuild the cuda.CUstream object every launch. The kernels MUST run on
@@ -62,8 +63,13 @@ from liger_kernel.ops.cutedsl.ops.utils import _dyn
 _stream_cache: dict = {}
 
 
-def _cute_stream():
-    raw = torch.cuda.current_stream().cuda_stream
+def _cute_stream(device=None):
+    """Return a CUstream for the current CUDA stream, optionally on ``device``."""
+    if device is None:
+        raw = torch.cuda.current_stream().cuda_stream
+    else:
+        with device_context(device):
+            raw = torch.cuda.current_stream().cuda_stream
     s = _stream_cache.get(raw)
     if s is None:
         s = cuda.CUstream(raw)
@@ -883,95 +889,97 @@ def _apply_qk_tma(q, k, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast
 # Public functional API
 # ---------------------------------------------------------------------------
 def rope_forward(q, k, cos, sin):
-    # q,k arrive as (bsz, n_head, seq, hd) but are physically stored as
-    # (bsz, seq, n_head, hd) (they come from a projection's .transpose(1,2)).
-    # Transposing back exposes that NATIVE contiguous storage for free, so the
-    # following .contiguous() is a no-op for the standard layout -- exactly like
-    # the Triton kernel, avoiding an 80MB transpose copy. We then run the fast
-    # token-per-CTA kernel (cos/sin once per token, q+k in one launch).
-    q = q.transpose(1, 2)
-    k = k.transpose(1, 2)
+    with device_context(q.device):
+        # q,k arrive as (bsz, n_head, seq, hd) but are physically stored as
+        # (bsz, seq, n_head, hd) (they come from a projection's .transpose(1,2)).
+        # Transposing back exposes that NATIVE contiguous storage for free, so the
+        # following .contiguous() is a no-op for the standard layout -- exactly like
+        # the Triton kernel, avoiding an 80MB transpose copy. We then run the fast
+        # token-per-CTA kernel (cos/sin once per token, q+k in one launch).
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
 
-    batch_size, seq_len, n_q_head, head_dim = q.shape
-    n_kv_head = k.shape[2]
-    hd_half = head_dim // 2
+        batch_size, seq_len, n_q_head, head_dim = q.shape
+        n_kv_head = k.shape[2]
+        hd_half = head_dim // 2
 
-    q = q.contiguous()
-    k = k.contiguous()
-    cos = cos.contiguous()
-    sin = sin.contiguous()
+        q = q.contiguous()
+        k = k.contiguous()
+        cos = cos.contiguous()
+        sin = sin.contiguous()
 
-    # The vision rotary helper (liger_rotary_pos_emb_vision) passes 2-D
-    # (seq_len, head_dim) tables; add a leading batch dim so the reshape and the
-    # cos_bcast broadcast path below apply, matching the Triton reference.
-    if cos.dim() == 2:
-        cos = cos.unsqueeze(0)
-        sin = sin.unsqueeze(0)
+        # The vision rotary helper (liger_rotary_pos_emb_vision) passes 2-D
+        # (seq_len, head_dim) tables; add a leading batch dim so the reshape and the
+        # cos_bcast broadcast path below apply, matching the Triton reference.
+        if cos.dim() == 2:
+            cos = cos.unsqueeze(0)
+            sin = sin.unsqueeze(0)
 
-    cos_batch_size = cos.shape[0]
-    cos_bcast = cos_batch_size == 1
+        cos_batch_size = cos.shape[0]
+        cos_bcast = cos_batch_size == 1
 
-    cos3 = cos.view(cos_batch_size, seq_len, head_dim)
-    sin3 = sin.view(cos_batch_size, seq_len, head_dim)
+        cos3 = cos.view(cos_batch_size, seq_len, head_dim)
+        sin3 = sin.view(cos_batch_size, seq_len, head_dim)
 
-    # storage is (bsz, seq, n_head, hd): token=(b, s, :, :) -> seq NOT innermost.
-    if _tma_supported(q.dtype, head_dim, q.device):
-        vec = max(1, 128 // torch.finfo(q.dtype).bits)
-        _apply_qk_tma(q, k, cos3, sin3, n_q_head, n_kv_head, hd_half, vec, False, cos_bcast, seq_len, False)
-    else:
-        _apply_token(q, k, cos3, sin3, n_q_head, n_kv_head, hd_half, False, cos_bcast, seq_len, False)
+        # storage is (bsz, seq, n_head, hd): token=(b, s, :, :) -> seq NOT innermost.
+        if _tma_supported(q.dtype, head_dim, q.device):
+            vec = max(1, 128 // torch.finfo(q.dtype).bits)
+            _apply_qk_tma(q, k, cos3, sin3, n_q_head, n_kv_head, hd_half, vec, False, cos_bcast, seq_len, False)
+        else:
+            _apply_token(q, k, cos3, sin3, n_q_head, n_kv_head, hd_half, False, cos_bcast, seq_len, False)
 
-    return q.transpose(1, 2), k.transpose(1, 2), cos, sin
+        return q.transpose(1, 2), k.transpose(1, 2), cos, sin
 
 
 def rope_backward(dq, dk, cos, sin):
-    # dq,dk arrive as (bsz, n_head, seq, hd) -- grads of the forward outputs.
-    #
-    # Fast path: an already-contiguous grad (eager attn, or a .contiguous() after
-    # RoPE) is head-major/seq-innermost, so rotate it in place via SEQ_INNER
-    # (kernel derives seq as row % seq_len) -- no copy, ~2-5x faster backward.
-    #
-    # Standard path (SDPA): grad is a transpose view of (bsz, seq, n_head, hd)
-    # storage. Return it as a transpose view of that same storage so AccumulateGrad
-    # stays coalesced (a head-major grad would make add_ ~2.9x slower). Like Triton.
-    batch_size, n_q_head, seq_len, head_dim = dq.shape
-    n_kv_head = dk.shape[1]
-    hd_half = head_dim // 2
+    with device_context(dq.device):
+        # dq,dk arrive as (bsz, n_head, seq, hd) -- grads of the forward outputs.
+        #
+        # Fast path: an already-contiguous grad (eager attn, or a .contiguous() after
+        # RoPE) is head-major/seq-innermost, so rotate it in place via SEQ_INNER
+        # (kernel derives seq as row % seq_len) -- no copy, ~2-5x faster backward.
+        #
+        # Standard path (SDPA): grad is a transpose view of (bsz, seq, n_head, hd)
+        # storage. Return it as a transpose view of that same storage so AccumulateGrad
+        # stays coalesced (a head-major grad would make add_ ~2.9x slower). Like Triton.
+        batch_size, n_q_head, seq_len, head_dim = dq.shape
+        n_kv_head = dk.shape[1]
+        hd_half = head_dim // 2
 
-    cos = cos.contiguous()
-    sin = sin.contiguous()
-    # 2-D (seq_len, head_dim) rotary tables (vision RoPE) -> add the batch dim.
-    if cos.dim() == 2:
-        cos = cos.unsqueeze(0)
-        sin = sin.unsqueeze(0)
-    cos_batch_size = cos.shape[0]
-    cos_bcast = cos_batch_size == 1
-    cos3 = cos.view(cos_batch_size, seq_len, head_dim)
-    sin3 = sin.view(cos_batch_size, seq_len, head_dim)
+        cos = cos.contiguous()
+        sin = sin.contiguous()
+        # 2-D (seq_len, head_dim) rotary tables (vision RoPE) -> add the batch dim.
+        if cos.dim() == 2:
+            cos = cos.unsqueeze(0)
+            sin = sin.unsqueeze(0)
+        cos_batch_size = cos.shape[0]
+        cos_bcast = cos_batch_size == 1
+        cos3 = cos.view(cos_batch_size, seq_len, head_dim)
+        sin3 = sin.view(cos_batch_size, seq_len, head_dim)
 
-    if dq.is_contiguous() and dk.is_contiguous():
-        # native (bsz, n_head, seq, hd) storage: seq IS innermost -> SEQ_INNER=True.
-        # Both kernels rotate it in place; the token kernel indexes with the tensor's
-        # own strides, so this fast path applies even when TMA isn't supported.
+        if dq.is_contiguous() and dk.is_contiguous():
+            # native (bsz, n_head, seq, hd) storage: seq IS innermost -> SEQ_INNER=True.
+            # Both kernels rotate it in place; the token kernel indexes with the tensor's
+            # own strides, so this fast path applies even when TMA isn't supported.
+            if _tma_supported(dq.dtype, head_dim, dq.device):
+                tvec = max(1, 128 // torch.finfo(dq.dtype).bits)
+                _apply_qk_tma(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, tvec, True, cos_bcast, seq_len, True)
+            else:
+                _apply_token(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, True, cos_bcast, seq_len, True)
+            return dq, dk
+
+        # transpose(1,2) exposes the (bsz, seq, n_head, hd) storage; .contiguous() is a
+        # no-op for the standard transpose-view grad (zero copy) and a safety net so the
+        # kernel's flat .view(-1, head_dim) stays valid for any other incoming layout.
+        dq = dq.transpose(1, 2).contiguous()
+        dk = dk.transpose(1, 2).contiguous()
         if _tma_supported(dq.dtype, head_dim, dq.device):
             tvec = max(1, 128 // torch.finfo(dq.dtype).bits)
-            _apply_qk_tma(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, tvec, True, cos_bcast, seq_len, True)
+            _apply_qk_tma(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, tvec, False, cos_bcast, seq_len, True)
         else:
-            _apply_token(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, True, cos_bcast, seq_len, True)
-        return dq, dk
+            _apply_token(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, False, cos_bcast, seq_len, True)
 
-    # transpose(1,2) exposes the (bsz, seq, n_head, hd) storage; .contiguous() is a
-    # no-op for the standard transpose-view grad (zero copy) and a safety net so the
-    # kernel's flat .view(-1, head_dim) stays valid for any other incoming layout.
-    dq = dq.transpose(1, 2).contiguous()
-    dk = dk.transpose(1, 2).contiguous()
-    if _tma_supported(dq.dtype, head_dim, dq.device):
-        tvec = max(1, 128 // torch.finfo(dq.dtype).bits)
-        _apply_qk_tma(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, tvec, False, cos_bcast, seq_len, True)
-    else:
-        _apply_token(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, False, cos_bcast, seq_len, True)
-
-    return dq.transpose(1, 2), dk.transpose(1, 2)
+        return dq.transpose(1, 2), dk.transpose(1, 2)
 
 
 class LigerRopeCuteDSLFunction(torch.autograd.Function):

@@ -7,6 +7,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 from liger_kernel.ops.utils import set_large_grf_mode
@@ -256,28 +257,29 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
         set_large_grf_mode(kernel_args)
 
     # TODO: add _block_fused_add_rms_norm_forward_kernel
-    _fused_add_rms_norm_forward_kernel[(n_rows,)](
-        Y,
-        Y.stride(0),
-        S,
-        S.stride(0),
-        X,
-        X.stride(0),
-        R,
-        R.stride(0),
-        W,
-        W.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        n_cols,
-        eps,
-        offset,
-        casting_mode,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        **kernel_args,  # XPU-specific optimization
-    )
+    with device_context(X.device):
+        _fused_add_rms_norm_forward_kernel[(n_rows,)](
+            Y,
+            Y.stride(0),
+            S,
+            S.stride(0),
+            X,
+            X.stride(0),
+            R,
+            R.stride(0),
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            n_cols,
+            eps,
+            offset,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            **kernel_args,  # XPU-specific optimization
+        )
 
     return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, num_warps, num_stages, casting_mode
 
@@ -319,33 +321,34 @@ def fused_add_rms_norm_backward(
         set_large_grf_mode(kernel_args)
 
     # TODO: add _block_fused_add_rms_norm_backward_kernel
-    _fused_add_rms_norm_backward_kernel[grid](
-        dY,
-        dY.stride(0),
-        dS_out,
-        dS_out.stride(0),
-        dX,
-        dX.stride(0),
-        S,
-        S.stride(0),
-        torch_to_triton_dtype[S.dtype],
-        W,
-        W.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        _dW,
-        _dW.stride(0),
-        n_rows,
-        n_cols,
-        offset,
-        rows_per_program,
-        casting_mode,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        has_dS_out=dS_out is not None,
-        **kernel_args,  # XPU-specific optimization
-    )
+    with device_context(S.device):
+        _fused_add_rms_norm_backward_kernel[grid](
+            dY,
+            dY.stride(0),
+            dS_out,
+            dS_out.stride(0),
+            dX,
+            dX.stride(0),
+            S,
+            S.stride(0),
+            torch_to_triton_dtype[S.dtype],
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            _dW,
+            _dW.stride(0),
+            n_rows,
+            n_cols,
+            offset,
+            rows_per_program,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            has_dS_out=dS_out is not None,
+            **kernel_args,  # XPU-specific optimization
+        )
 
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)

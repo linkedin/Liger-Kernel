@@ -18,6 +18,18 @@ make checkstyle
 
 If it still fails after auto-fix, identify and fix the remaining issues manually, then re-run.
 
+### Step 1b: Device Guard Check (Fast Gate)
+
+Every host-side launch in the new kernel must sit inside a `device_context(...)` block,
+otherwise it breaks under `device_map="auto"` (issue #1303). Confirm the counts match:
+
+```bash
+rg -c 'device_context\(' src/liger_kernel/ops/{kernel}.py
+rg -n '_kernel\[|\[grid\]|ct\.launch\(' src/liger_kernel/ops/{kernel}.py
+```
+
+Any launch without an enclosing guard is a bug — fix it before moving on.
+
 ### Step 2: Unit Tests (Hard Gate)
 
 ```bash

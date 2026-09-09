@@ -9,6 +9,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 
@@ -158,27 +159,28 @@ def mhc_mm_norm_fwd(
 
     use_tc = (x.dtype == phi.dtype) and (x.dtype in (torch.float16, torch.bfloat16))
 
-    _mhc_mm_norm_fwd_kernel[grid](
-        x,
-        phi,
-        out_mix,
-        out_invr,
-        N=N,
-        K=K,
-        M=M,
-        stride_xn=x.stride(0),
-        stride_xk=x.stride(1),
-        stride_phik=phi.stride(0),
-        stride_phim=phi.stride(1),
-        stride_mn=out_mix.stride(0),
-        stride_mm=out_mix.stride(1),
-        eps=eps,
-        BLOCK_N=block_n,
-        BLOCK_K=block_k,
-        BLOCK_M=block_m,
-        CAST_FP32=not use_tc,
-        num_warps=num_warps,
-    )
+    with device_context(x.device):
+        _mhc_mm_norm_fwd_kernel[grid](
+            x,
+            phi,
+            out_mix,
+            out_invr,
+            N=N,
+            K=K,
+            M=M,
+            stride_xn=x.stride(0),
+            stride_xk=x.stride(1),
+            stride_phik=phi.stride(0),
+            stride_phim=phi.stride(1),
+            stride_mn=out_mix.stride(0),
+            stride_mm=out_mix.stride(1),
+            eps=eps,
+            BLOCK_N=block_n,
+            BLOCK_K=block_k,
+            BLOCK_M=block_m,
+            CAST_FP32=not use_tc,
+            num_warps=num_warps,
+        )
     return out_mix, out_invr
 
 
@@ -358,36 +360,37 @@ def mhc_mm_norm_bwd(
     use_tc = (x.dtype == phi.dtype) and (x.dtype in (torch.float16, torch.bfloat16))
 
     grid = (triton.cdiv(N, block_n), triton.cdiv(K, block_k))
-    _mhc_mm_norm_bwd_fused_kernel[grid](
-        x,
-        phi,
-        mix,
-        invr,
-        grad_mix,
-        out_grad_x,
-        out_grad_phi,
-        N=N,
-        K=K,
-        M=M,
-        stride_xn=x.stride(0),
-        stride_xk=x.stride(1),
-        stride_phik=phi.stride(0),
-        stride_phim=phi.stride(1),
-        stride_mn=mix.stride(0),
-        stride_mm=mix.stride(1),
-        stride_invr=invr.stride(0),
-        stride_gmn=grad_mix.stride(0),
-        stride_gmm=grad_mix.stride(1),
-        stride_gxn=out_grad_x.stride(0),
-        stride_gxk=out_grad_x.stride(1),
-        stride_gpk=out_grad_phi.stride(0),
-        stride_gpm=out_grad_phi.stride(1),
-        BLOCK_N=block_n,
-        BLOCK_K=block_k,
-        BLOCK_M=block_m,
-        CAST_FP32=not use_tc,
-        num_warps=num_warps,
-    )
+    with device_context(x.device):
+        _mhc_mm_norm_bwd_fused_kernel[grid](
+            x,
+            phi,
+            mix,
+            invr,
+            grad_mix,
+            out_grad_x,
+            out_grad_phi,
+            N=N,
+            K=K,
+            M=M,
+            stride_xn=x.stride(0),
+            stride_xk=x.stride(1),
+            stride_phik=phi.stride(0),
+            stride_phim=phi.stride(1),
+            stride_mn=mix.stride(0),
+            stride_mm=mix.stride(1),
+            stride_invr=invr.stride(0),
+            stride_gmn=grad_mix.stride(0),
+            stride_gmm=grad_mix.stride(1),
+            stride_gxn=out_grad_x.stride(0),
+            stride_gxk=out_grad_x.stride(1),
+            stride_gpk=out_grad_phi.stride(0),
+            stride_gpm=out_grad_phi.stride(1),
+            BLOCK_N=block_n,
+            BLOCK_K=block_k,
+            BLOCK_M=block_m,
+            CAST_FP32=not use_tc,
+            num_warps=num_warps,
+        )
 
     if out_grad_phi.dtype != phi.dtype:
         out_grad_phi = out_grad_phi.to(phi.dtype)
@@ -723,39 +726,40 @@ def mhc_split_sinkhorn_fwd(
 
     grid = (N,)
 
-    _mhc_split_sinkhorn_fwd_kernel[grid](
-        mix,
-        b,
-        out_hpre,
-        out_hpost,
-        out_hres,
-        out_hist,
-        N=N,
-        HC=HC,
-        M=M,
-        stride_mn=mix.stride(0),
-        stride_mm=mix.stride(1),
-        stride_hp_n=out_hpre.stride(0),
-        stride_hp_h=out_hpre.stride(1),
-        stride_hq_n=out_hpost.stride(0),
-        stride_hq_h=out_hpost.stride(1),
-        stride_hr_n=out_hres.stride(0),
-        stride_hr_i=out_hres.stride(1),
-        stride_hr_j=out_hres.stride(2),
-        stride_hn=out_hist.stride(0) if out_hist.ndim > 1 else 0,
-        stride_ht=out_hist.stride(1) if out_hist.ndim > 1 else 0,
-        stride_hi=out_hist.stride(2) if out_hist.ndim > 1 else 0,
-        stride_hj=out_hist.stride(3) if out_hist.ndim > 1 else 0,
-        alpha_pre_ptr=alpha_pre.contiguous(),
-        alpha_post_ptr=alpha_post.contiguous(),
-        alpha_res_ptr=alpha_res.contiguous(),
-        pre_eps=pre_eps,
-        sinkhorn_eps=sinkhorn_eps,
-        post_mult=post_mult,
-        TMAX=tmax,
-        STORE_HIST=return_hist,
-        num_warps=num_warps,
-    )
+    with device_context(mix.device):
+        _mhc_split_sinkhorn_fwd_kernel[grid](
+            mix,
+            b,
+            out_hpre,
+            out_hpost,
+            out_hres,
+            out_hist,
+            N=N,
+            HC=HC,
+            M=M,
+            stride_mn=mix.stride(0),
+            stride_mm=mix.stride(1),
+            stride_hp_n=out_hpre.stride(0),
+            stride_hp_h=out_hpre.stride(1),
+            stride_hq_n=out_hpost.stride(0),
+            stride_hq_h=out_hpost.stride(1),
+            stride_hr_n=out_hres.stride(0),
+            stride_hr_i=out_hres.stride(1),
+            stride_hr_j=out_hres.stride(2),
+            stride_hn=out_hist.stride(0) if out_hist.ndim > 1 else 0,
+            stride_ht=out_hist.stride(1) if out_hist.ndim > 1 else 0,
+            stride_hi=out_hist.stride(2) if out_hist.ndim > 1 else 0,
+            stride_hj=out_hist.stride(3) if out_hist.ndim > 1 else 0,
+            alpha_pre_ptr=alpha_pre.contiguous(),
+            alpha_post_ptr=alpha_post.contiguous(),
+            alpha_res_ptr=alpha_res.contiguous(),
+            pre_eps=pre_eps,
+            sinkhorn_eps=sinkhorn_eps,
+            post_mult=post_mult,
+            TMAX=tmax,
+            STORE_HIST=return_hist,
+            num_warps=num_warps,
+        )
     if return_hist:
         return out_hpre, out_hpost, out_hres, out_hist
     return out_hpre, out_hpost, out_hres
@@ -797,52 +801,54 @@ def mhc_sinkhorn_bwd(
     if hist is not None:
         assert hist.is_contiguous()
         assert hist.shape == (N, tmax, HC, HC)
-        _mhc_sinkhorn_bwd_hist_kernel[grid](
-            mix,
-            b,
-            hist,
-            grad_hres,
-            out_grad_logits,
-            N=N,
-            HC=HC,
-            stride_mn=mix.stride(0),
-            stride_mm=mix.stride(1),
-            stride_hn=hist.stride(0),
-            stride_ht=hist.stride(1),
-            stride_hi=hist.stride(2),
-            stride_hj=hist.stride(3),
-            stride_go_n=grad_hres.stride(0),
-            stride_go_i=grad_hres.stride(1),
-            stride_go_j=grad_hres.stride(2),
-            stride_gl_n=out_grad_logits.stride(0),
-            stride_gl_i=out_grad_logits.stride(1),
-            stride_gl_j=out_grad_logits.stride(2),
-            alpha_res_ptr=alpha_res_c,
-            sinkhorn_eps=sinkhorn_eps,
-            TMAX=tmax,
-            num_warps=num_warps,
-        )
+        with device_context(mix.device):
+            _mhc_sinkhorn_bwd_hist_kernel[grid](
+                mix,
+                b,
+                hist,
+                grad_hres,
+                out_grad_logits,
+                N=N,
+                HC=HC,
+                stride_mn=mix.stride(0),
+                stride_mm=mix.stride(1),
+                stride_hn=hist.stride(0),
+                stride_ht=hist.stride(1),
+                stride_hi=hist.stride(2),
+                stride_hj=hist.stride(3),
+                stride_go_n=grad_hres.stride(0),
+                stride_go_i=grad_hres.stride(1),
+                stride_go_j=grad_hres.stride(2),
+                stride_gl_n=out_grad_logits.stride(0),
+                stride_gl_i=out_grad_logits.stride(1),
+                stride_gl_j=out_grad_logits.stride(2),
+                alpha_res_ptr=alpha_res_c,
+                sinkhorn_eps=sinkhorn_eps,
+                TMAX=tmax,
+                num_warps=num_warps,
+            )
     else:
-        _mhc_sinkhorn_bwd_kernel[grid](
-            mix,
-            b,
-            grad_hres,
-            out_grad_logits,
-            N=N,
-            HC=HC,
-            stride_mn=mix.stride(0),
-            stride_mm=mix.stride(1),
-            stride_go_n=grad_hres.stride(0),
-            stride_go_i=grad_hres.stride(1),
-            stride_go_j=grad_hres.stride(2),
-            stride_gl_n=out_grad_logits.stride(0),
-            stride_gl_i=out_grad_logits.stride(1),
-            stride_gl_j=out_grad_logits.stride(2),
-            alpha_res_ptr=alpha_res_c,
-            sinkhorn_eps=sinkhorn_eps,
-            TMAX=tmax,
-            num_warps=num_warps,
-        )
+        with device_context(mix.device):
+            _mhc_sinkhorn_bwd_kernel[grid](
+                mix,
+                b,
+                grad_hres,
+                out_grad_logits,
+                N=N,
+                HC=HC,
+                stride_mn=mix.stride(0),
+                stride_mm=mix.stride(1),
+                stride_go_n=grad_hres.stride(0),
+                stride_go_i=grad_hres.stride(1),
+                stride_go_j=grad_hres.stride(2),
+                stride_gl_n=out_grad_logits.stride(0),
+                stride_gl_i=out_grad_logits.stride(1),
+                stride_gl_j=out_grad_logits.stride(2),
+                alpha_res_ptr=alpha_res_c,
+                sinkhorn_eps=sinkhorn_eps,
+                TMAX=tmax,
+                num_warps=num_warps,
+            )
     return out_grad_logits
 
 
@@ -978,24 +984,25 @@ def mhc_pre_fwd(
         out = torch.empty((N, C), device=x.device, dtype=torch.float32)
 
     grid = (triton.cdiv(N, block_n), triton.cdiv(C, block_c))
-    _mhc_pre_fwd_kernel[grid](
-        x,
-        h_pre,
-        out,
-        N=N,
-        HC=HC,
-        C=C,
-        stride_xn=x.stride(0),
-        stride_xh=x.stride(1),
-        stride_xc=x.stride(2),
-        stride_hn=h_pre.stride(0),
-        stride_hh=h_pre.stride(1),
-        stride_on=out.stride(0),
-        stride_oc=out.stride(1),
-        BLOCK_N=block_n,
-        BLOCK_C=block_c,
-        num_warps=num_warps,
-    )
+    with device_context(x.device):
+        _mhc_pre_fwd_kernel[grid](
+            x,
+            h_pre,
+            out,
+            N=N,
+            HC=HC,
+            C=C,
+            stride_xn=x.stride(0),
+            stride_xh=x.stride(1),
+            stride_xc=x.stride(2),
+            stride_hn=h_pre.stride(0),
+            stride_hh=h_pre.stride(1),
+            stride_on=out.stride(0),
+            stride_oc=out.stride(1),
+            BLOCK_N=block_n,
+            BLOCK_C=block_c,
+            num_warps=num_warps,
+        )
     return out
 
 
@@ -1020,31 +1027,32 @@ def mhc_pre_bwd(
         out_grad_h = torch.zeros((N, HC), device=x.device, dtype=torch.float32)
 
     grid = (triton.cdiv(N, block_n), triton.cdiv(C, block_c))
-    _mhc_pre_bwd_kernel[grid](
-        x,
-        h_pre,
-        grad_out,
-        out_grad_x,
-        out_grad_h,
-        N=N,
-        HC=HC,
-        C=C,
-        stride_xn=x.stride(0),
-        stride_xh=x.stride(1),
-        stride_xc=x.stride(2),
-        stride_hn=h_pre.stride(0),
-        stride_hh=h_pre.stride(1),
-        stride_gon=grad_out.stride(0),
-        stride_goc=grad_out.stride(1),
-        stride_gxn=out_grad_x.stride(0),
-        stride_gxh=out_grad_x.stride(1),
-        stride_gxc=out_grad_x.stride(2),
-        stride_ghn=out_grad_h.stride(0),
-        stride_ghh=out_grad_h.stride(1),
-        BLOCK_N=block_n,
-        BLOCK_C=block_c,
-        num_warps=num_warps,
-    )
+    with device_context(x.device):
+        _mhc_pre_bwd_kernel[grid](
+            x,
+            h_pre,
+            grad_out,
+            out_grad_x,
+            out_grad_h,
+            N=N,
+            HC=HC,
+            C=C,
+            stride_xn=x.stride(0),
+            stride_xh=x.stride(1),
+            stride_xc=x.stride(2),
+            stride_hn=h_pre.stride(0),
+            stride_hh=h_pre.stride(1),
+            stride_gon=grad_out.stride(0),
+            stride_goc=grad_out.stride(1),
+            stride_gxn=out_grad_x.stride(0),
+            stride_gxh=out_grad_x.stride(1),
+            stride_gxc=out_grad_x.stride(2),
+            stride_ghn=out_grad_h.stride(0),
+            stride_ghh=out_grad_h.stride(1),
+            BLOCK_N=block_n,
+            BLOCK_C=block_c,
+            num_warps=num_warps,
+        )
     return out_grad_x, out_grad_h
 
 
@@ -1257,33 +1265,34 @@ def mhc_post_res_fwd(
     block_n, block_c, num_warps, num_stages = _post_res_meta(C, block_n, block_c, num_warps, num_stages)
 
     grid = (triton.cdiv(N, block_n), triton.cdiv(C, block_c))
-    _mhc_post_res_fwd_kernel[grid](
-        x,
-        f_out,
-        h_post,
-        h_res,
-        out,
-        N=N,
-        HC=HC,
-        C=C,
-        stride_xn=x.stride(0),
-        stride_xh=x.stride(1),
-        stride_xc=x.stride(2),
-        stride_fn=f_out.stride(0),
-        stride_fc=f_out.stride(1),
-        stride_hpn=h_post.stride(0),
-        stride_hph=h_post.stride(1),
-        stride_hrn=h_res.stride(0),
-        stride_hri=h_res.stride(1),
-        stride_hrj=h_res.stride(2),
-        stride_on=out.stride(0),
-        stride_oh=out.stride(1),
-        stride_oc=out.stride(2),
-        BLOCK_N=block_n,
-        BLOCK_C=block_c,
-        num_warps=num_warps,
-        num_stages=num_stages,
-    )
+    with device_context(x.device):
+        _mhc_post_res_fwd_kernel[grid](
+            x,
+            f_out,
+            h_post,
+            h_res,
+            out,
+            N=N,
+            HC=HC,
+            C=C,
+            stride_xn=x.stride(0),
+            stride_xh=x.stride(1),
+            stride_xc=x.stride(2),
+            stride_fn=f_out.stride(0),
+            stride_fc=f_out.stride(1),
+            stride_hpn=h_post.stride(0),
+            stride_hph=h_post.stride(1),
+            stride_hrn=h_res.stride(0),
+            stride_hri=h_res.stride(1),
+            stride_hrj=h_res.stride(2),
+            stride_on=out.stride(0),
+            stride_oh=out.stride(1),
+            stride_oc=out.stride(2),
+            BLOCK_N=block_n,
+            BLOCK_C=block_c,
+            num_warps=num_warps,
+            num_stages=num_stages,
+        )
     return out
 
 
@@ -1326,47 +1335,48 @@ def mhc_post_res_bwd(
     block_n, block_c, num_warps, num_stages = _post_res_meta(C, block_n, block_c, num_warps, num_stages)
 
     grid = (triton.cdiv(N, block_n), triton.cdiv(C, block_c))
-    _mhc_post_res_bwd_kernel[grid](
-        x,
-        f_out,
-        h_post,
-        h_res,
-        grad_out,
-        out_grad_x,
-        out_grad_f,
-        out_grad_hpost,
-        out_grad_hres,
-        N=N,
-        HC=HC,
-        C=C,
-        stride_xn=x.stride(0),
-        stride_xh=x.stride(1),
-        stride_xc=x.stride(2),
-        stride_fn=f_out.stride(0),
-        stride_fc=f_out.stride(1),
-        stride_hpn=h_post.stride(0),
-        stride_hph=h_post.stride(1),
-        stride_hrn=h_res.stride(0),
-        stride_hri=h_res.stride(1),
-        stride_hrj=h_res.stride(2),
-        stride_gon=grad_out.stride(0),
-        stride_goh=grad_out.stride(1),
-        stride_goc=grad_out.stride(2),
-        stride_gxn=out_grad_x.stride(0),
-        stride_gxh=out_grad_x.stride(1),
-        stride_gxc=out_grad_x.stride(2),
-        stride_gfn=out_grad_f.stride(0),
-        stride_gfc=out_grad_f.stride(1),
-        stride_ghpn=out_grad_hpost.stride(0),
-        stride_ghph=out_grad_hpost.stride(1),
-        stride_ghrn=out_grad_hres.stride(0),
-        stride_ghri=out_grad_hres.stride(1),
-        stride_ghrj=out_grad_hres.stride(2),
-        BLOCK_N=block_n,
-        BLOCK_C=block_c,
-        num_warps=num_warps,
-        num_stages=num_stages,
-    )
+    with device_context(x.device):
+        _mhc_post_res_bwd_kernel[grid](
+            x,
+            f_out,
+            h_post,
+            h_res,
+            grad_out,
+            out_grad_x,
+            out_grad_f,
+            out_grad_hpost,
+            out_grad_hres,
+            N=N,
+            HC=HC,
+            C=C,
+            stride_xn=x.stride(0),
+            stride_xh=x.stride(1),
+            stride_xc=x.stride(2),
+            stride_fn=f_out.stride(0),
+            stride_fc=f_out.stride(1),
+            stride_hpn=h_post.stride(0),
+            stride_hph=h_post.stride(1),
+            stride_hrn=h_res.stride(0),
+            stride_hri=h_res.stride(1),
+            stride_hrj=h_res.stride(2),
+            stride_gon=grad_out.stride(0),
+            stride_goh=grad_out.stride(1),
+            stride_goc=grad_out.stride(2),
+            stride_gxn=out_grad_x.stride(0),
+            stride_gxh=out_grad_x.stride(1),
+            stride_gxc=out_grad_x.stride(2),
+            stride_gfn=out_grad_f.stride(0),
+            stride_gfc=out_grad_f.stride(1),
+            stride_ghpn=out_grad_hpost.stride(0),
+            stride_ghph=out_grad_hpost.stride(1),
+            stride_ghrn=out_grad_hres.stride(0),
+            stride_ghri=out_grad_hres.stride(1),
+            stride_ghrj=out_grad_hres.stride(2),
+            BLOCK_N=block_n,
+            BLOCK_C=block_c,
+            num_warps=num_warps,
+            num_stages=num_stages,
+        )
     return out_grad_x, out_grad_f, out_grad_hpost, out_grad_hres
 
 

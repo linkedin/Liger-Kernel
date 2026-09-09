@@ -2,6 +2,8 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
+
 
 def unpack_weights(packed: torch.Tensor, bits: int = 2) -> torch.Tensor:
     values_per_item = 8 // bits
@@ -332,18 +334,19 @@ def matmul(a, b):
     # c is in int32 to avoid any overflows or underflows
     c = torch.empty((M, N), device=a.device, dtype=torch.int32)
     grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),)
-    matmul_kernel[grid](
-        a,
-        b,
-        c,
-        M,
-        N,
-        K,
-        a.stride(0),
-        a.stride(1),
-        b.stride(0),
-        b.stride(1),
-        c.stride(0),
-        c.stride(1),
-    )
+    with device_context(a.device):
+        matmul_kernel[grid](
+            a,
+            b,
+            c,
+            M,
+            N,
+            K,
+            a.stride(0),
+            a.stride(1),
+            b.stride(0),
+            b.stride(1),
+            c.stride(0),
+            c.stride(1),
+        )
     return c

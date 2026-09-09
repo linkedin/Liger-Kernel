@@ -28,6 +28,8 @@ try:
 except ModuleNotFoundError:
     TensorDescriptor = None
 
+from liger_kernel.ops.utils import device_context
+
 
 @triton.jit
 def _l2_swizzle(pid, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
@@ -477,65 +479,66 @@ def gemm_swiglu(
     store_preact=True (training): also stores G and U for backward, returns (AGU, fwd_best_config).
     store_preact=False (inference): returns (A, None).
     """
-    B, S, dim = input.shape
-    hidden_dim = gate_weight.shape[0]
-    bucket_M = get_bucket_m(B * S)
+    with device_context(input.device):
+        B, S, dim = input.shape
+        hidden_dim = gate_weight.shape[0]
+        bucket_M = get_bucket_m(B * S)
 
-    if store_preact:
-        # Optimization: merge 3 torch.empty calls into 1 to reduce allocator overhead.
-        AGU = torch.empty(B, S, 3 * hidden_dim, device=input.device, dtype=input.dtype)
-        # Slice out 3 independent 3D views.
-        A = AGU[..., :hidden_dim]
-        G = AGU[..., hidden_dim : 2 * hidden_dim]
-        U = AGU[..., 2 * hidden_dim :]
-    else:
-        A = torch.empty((B, S, hidden_dim), device=input.device, dtype=input.dtype)
+        if store_preact:
+            # Optimization: merge 3 torch.empty calls into 1 to reduce allocator overhead.
+            AGU = torch.empty(B, S, 3 * hidden_dim, device=input.device, dtype=input.dtype)
+            # Slice out 3 independent 3D views.
+            A = AGU[..., :hidden_dim]
+            G = AGU[..., hidden_dim : 2 * hidden_dim]
+            U = AGU[..., 2 * hidden_dim :]
+        else:
+            A = torch.empty((B, S, hidden_dim), device=input.device, dtype=input.dtype)
 
-    # Dummy block
-    dummy_block_3D = [1, 1, 1]
-    dummy_block_2D = [1, 1]
+        # Dummy block
+        dummy_block_3D = [1, 1, 1]
+        dummy_block_2D = [1, 1]
 
-    # Create TensorDescriptor
-    desc_input = TensorDescriptor.from_tensor(tensor=input, block_shape=dummy_block_3D, padding="zero")
-    desc_Wg = TensorDescriptor.from_tensor(tensor=gate_weight, block_shape=dummy_block_2D, padding="zero")
-    desc_Wu = TensorDescriptor.from_tensor(tensor=up_weight, block_shape=dummy_block_2D, padding="zero")
-    desc_A = TensorDescriptor.from_tensor(tensor=A, block_shape=dummy_block_3D, padding="zero")
+        # Create TensorDescriptor
+        desc_input = TensorDescriptor.from_tensor(tensor=input, block_shape=dummy_block_3D, padding="zero")
+        desc_Wg = TensorDescriptor.from_tensor(tensor=gate_weight, block_shape=dummy_block_2D, padding="zero")
+        desc_Wu = TensorDescriptor.from_tensor(tensor=up_weight, block_shape=dummy_block_2D, padding="zero")
+        desc_A = TensorDescriptor.from_tensor(tensor=A, block_shape=dummy_block_3D, padding="zero")
 
-    grid = lambda META: (
-        triton.cdiv(S, META["BLOCK_M"]) * triton.cdiv(hidden_dim, META["BLOCK_N"]),
-        B,
-    )
-
-    if store_preact:
-        desc_G = TensorDescriptor.from_tensor(tensor=G, block_shape=dummy_block_3D, padding="zero")
-        desc_U = TensorDescriptor.from_tensor(tensor=U, block_shape=dummy_block_3D, padding="zero")
-        _swiglu_kernel_forward[grid](
-            desc_input,
-            desc_Wg,
-            desc_Wu,
-            desc_A,
-            desc_G,
-            desc_U,
-            S,
-            dim,
-            hidden_dim,
-            bucket_M,
-            gate_multiplier=gate_multiplier,
+        grid = lambda META: (
+            triton.cdiv(S, META["BLOCK_M"]) * triton.cdiv(hidden_dim, META["BLOCK_N"]),
+            B,
         )
-        return AGU, _swiglu_kernel_forward.best_config
-    else:
-        _swiglu_kernel_forward_inference[grid](
-            desc_input,
-            desc_Wg,
-            desc_Wu,
-            desc_A,
-            S,
-            dim,
-            hidden_dim,
-            bucket_M,
-            gate_multiplier=gate_multiplier,
-        )
-        return A, None
+
+        if store_preact:
+            desc_G = TensorDescriptor.from_tensor(tensor=G, block_shape=dummy_block_3D, padding="zero")
+            desc_U = TensorDescriptor.from_tensor(tensor=U, block_shape=dummy_block_3D, padding="zero")
+            _swiglu_kernel_forward[grid](
+                desc_input,
+                desc_Wg,
+                desc_Wu,
+                desc_A,
+                desc_G,
+                desc_U,
+                S,
+                dim,
+                hidden_dim,
+                bucket_M,
+                gate_multiplier=gate_multiplier,
+            )
+            return AGU, _swiglu_kernel_forward.best_config
+        else:
+            _swiglu_kernel_forward_inference[grid](
+                desc_input,
+                desc_Wg,
+                desc_Wu,
+                desc_A,
+                S,
+                dim,
+                hidden_dim,
+                bucket_M,
+                gate_multiplier=gate_multiplier,
+            )
+            return A, None
 
 
 def swiglu_backward_dGU(
@@ -546,52 +549,53 @@ def swiglu_backward_dGU(
     gate_multiplier: float,
     down_multiplier: float,
 ) -> torch.Tensor:
-    B, S, dim = dO.shape
-    hidden_dim = down_weight.shape[1]
+    with device_context(dO.device):
+        B, S, dim = dO.shape
+        hidden_dim = down_weight.shape[1]
 
-    G = AGU[..., hidden_dim : 2 * hidden_dim]
-    U = AGU[..., 2 * hidden_dim :]
+        G = AGU[..., hidden_dim : 2 * hidden_dim]
+        U = AGU[..., 2 * hidden_dim :]
 
-    # Reuse the memory of GU to store dGU, in order to save memory.
-    dG, dU = G, U
+        # Reuse the memory of GU to store dGU, in order to save memory.
+        dG, dU = G, U
 
-    # Use forward best config.
-    BLOCK_M = fwd_best_config.kwargs["BLOCK_M"]
-    BLOCK_N = fwd_best_config.kwargs["BLOCK_N"]
-    BLOCK_K = fwd_best_config.kwargs["BLOCK_K"]
-    GROUP_SIZE_M = fwd_best_config.kwargs["GROUP_SIZE_M"]
+        # Use forward best config.
+        BLOCK_M = fwd_best_config.kwargs["BLOCK_M"]
+        BLOCK_N = fwd_best_config.kwargs["BLOCK_N"]
+        BLOCK_K = fwd_best_config.kwargs["BLOCK_K"]
+        GROUP_SIZE_M = fwd_best_config.kwargs["GROUP_SIZE_M"]
 
-    desc_dO = TensorDescriptor.from_tensor(tensor=dO, block_shape=[1, BLOCK_M, BLOCK_K], padding="zero")
-    desc_Wd = TensorDescriptor.from_tensor(tensor=down_weight, block_shape=[BLOCK_K, BLOCK_N], padding="zero")
-    desc_G = TensorDescriptor.from_tensor(tensor=G, block_shape=[1, BLOCK_M, BLOCK_N], padding="zero")
-    desc_U = TensorDescriptor.from_tensor(tensor=U, block_shape=[1, BLOCK_M, BLOCK_N], padding="zero")
-    desc_dG = TensorDescriptor.from_tensor(tensor=dG, block_shape=[1, BLOCK_M, BLOCK_N], padding="zero")
-    desc_dU = TensorDescriptor.from_tensor(tensor=dU, block_shape=[1, BLOCK_M, BLOCK_N], padding="zero")
+        desc_dO = TensorDescriptor.from_tensor(tensor=dO, block_shape=[1, BLOCK_M, BLOCK_K], padding="zero")
+        desc_Wd = TensorDescriptor.from_tensor(tensor=down_weight, block_shape=[BLOCK_K, BLOCK_N], padding="zero")
+        desc_G = TensorDescriptor.from_tensor(tensor=G, block_shape=[1, BLOCK_M, BLOCK_N], padding="zero")
+        desc_U = TensorDescriptor.from_tensor(tensor=U, block_shape=[1, BLOCK_M, BLOCK_N], padding="zero")
+        desc_dG = TensorDescriptor.from_tensor(tensor=dG, block_shape=[1, BLOCK_M, BLOCK_N], padding="zero")
+        desc_dU = TensorDescriptor.from_tensor(tensor=dU, block_shape=[1, BLOCK_M, BLOCK_N], padding="zero")
 
-    grid_dGU = lambda META: (
-        triton.cdiv(S, META["BLOCK_M"]) * triton.cdiv(hidden_dim, META["BLOCK_N"]),
-        B,
-    )
+        grid_dGU = lambda META: (
+            triton.cdiv(S, META["BLOCK_M"]) * triton.cdiv(hidden_dim, META["BLOCK_N"]),
+            B,
+        )
 
-    _swiglu_kernel_backward_dGU[grid_dGU](
-        desc_dO,
-        desc_Wd,
-        desc_G,
-        desc_U,
-        desc_dG,
-        desc_dU,
-        S,
-        dim,
-        hidden_dim,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        BLOCK_K=BLOCK_K,
-        GROUP_SIZE_M=GROUP_SIZE_M,
-        gate_multiplier=gate_multiplier,
-        down_multiplier=down_multiplier,
-        num_warps=fwd_best_config.num_warps,
-        num_stages=fwd_best_config.num_stages,
-    )
+        _swiglu_kernel_backward_dGU[grid_dGU](
+            desc_dO,
+            desc_Wd,
+            desc_G,
+            desc_U,
+            desc_dG,
+            desc_dU,
+            S,
+            dim,
+            hidden_dim,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_K=BLOCK_K,
+            GROUP_SIZE_M=GROUP_SIZE_M,
+            gate_multiplier=gate_multiplier,
+            down_multiplier=down_multiplier,
+            num_warps=fwd_best_config.num_warps,
+            num_stages=fwd_best_config.num_stages,
+        )
 
 
 def swiglu_backward_dI(
@@ -599,39 +603,40 @@ def swiglu_backward_dI(
     up_weight: torch.Tensor,
     AGU: torch.Tensor,
 ) -> torch.Tensor:
-    B, S, _ = AGU.shape
-    hidden_dim, dim = gate_weight.shape
-    bucket_M = get_bucket_m(B * S)
-    dI = torch.empty((B, S, dim), device=gate_weight.device, dtype=gate_weight.dtype)
-    dG = AGU[..., hidden_dim : 2 * hidden_dim]
-    dU = AGU[..., 2 * hidden_dim :]
+    with device_context(AGU.device):
+        B, S, _ = AGU.shape
+        hidden_dim, dim = gate_weight.shape
+        bucket_M = get_bucket_m(B * S)
+        dI = torch.empty((B, S, dim), device=gate_weight.device, dtype=gate_weight.dtype)
+        dG = AGU[..., hidden_dim : 2 * hidden_dim]
+        dU = AGU[..., 2 * hidden_dim :]
 
-    dummy_block_3D = [1, 1, 1]
-    dummy_block_2D = [1, 1]
-    desc_dG = TensorDescriptor.from_tensor(tensor=dG, block_shape=dummy_block_3D, padding="zero")
-    desc_dU = TensorDescriptor.from_tensor(tensor=dU, block_shape=dummy_block_3D, padding="zero")
-    desc_dI = TensorDescriptor.from_tensor(tensor=dI, block_shape=dummy_block_3D, padding="zero")
-    desc_Wg = TensorDescriptor.from_tensor(tensor=gate_weight, block_shape=dummy_block_2D, padding="zero")
-    desc_Wu = TensorDescriptor.from_tensor(tensor=up_weight, block_shape=dummy_block_2D, padding="zero")
+        dummy_block_3D = [1, 1, 1]
+        dummy_block_2D = [1, 1]
+        desc_dG = TensorDescriptor.from_tensor(tensor=dG, block_shape=dummy_block_3D, padding="zero")
+        desc_dU = TensorDescriptor.from_tensor(tensor=dU, block_shape=dummy_block_3D, padding="zero")
+        desc_dI = TensorDescriptor.from_tensor(tensor=dI, block_shape=dummy_block_3D, padding="zero")
+        desc_Wg = TensorDescriptor.from_tensor(tensor=gate_weight, block_shape=dummy_block_2D, padding="zero")
+        desc_Wu = TensorDescriptor.from_tensor(tensor=up_weight, block_shape=dummy_block_2D, padding="zero")
 
-    grid_dI = lambda META: (
-        triton.cdiv(S, META["BLOCK_M"]) * triton.cdiv(dim, META["BLOCK_N"]),
-        B,
-    )
+        grid_dI = lambda META: (
+            triton.cdiv(S, META["BLOCK_M"]) * triton.cdiv(dim, META["BLOCK_N"]),
+            B,
+        )
 
-    _swiglu_kernel_backward_dI[grid_dI](
-        desc_dG,
-        desc_Wg,
-        desc_dU,
-        desc_Wu,
-        desc_dI,
-        S,
-        dim,
-        hidden_dim,
-        bucket_M,
-    )
+        _swiglu_kernel_backward_dI[grid_dI](
+            desc_dG,
+            desc_Wg,
+            desc_dU,
+            desc_Wu,
+            desc_dI,
+            S,
+            dim,
+            hidden_dim,
+            bucket_M,
+        )
 
-    return dI
+        return dI
 
 
 class LigerMLPFunction(torch.autograd.Function):

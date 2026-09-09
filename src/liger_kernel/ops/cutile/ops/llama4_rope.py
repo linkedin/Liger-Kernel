@@ -23,6 +23,8 @@ freqs_cis is passed as (S, head_dim) after view_as_real + reshape.
 import cuda.tile as ct
 import torch
 
+from liger_kernel.ops.utils import device_context
+
 
 def _select_block_size(head_dim_half: int) -> int:
     if head_dim_half >= 256:
@@ -159,22 +161,23 @@ def _llama4_rope_forward_ct(q, k, freqs_cis, BLOCK_SIZE=None, imag_sign=1.0):
     n_heads_max = max(n_q_heads, n_k_heads)
     grid = (batch_size, seq_len, n_heads_max)
 
-    ct.launch(
-        torch.cuda.current_stream(),
-        grid,
-        _llama4_rope_kernel_ct,
-        (
-            q_2d,
-            k_2d,
-            freqs_cis,
-            int(seq_len),
-            int(head_dim_half),
-            int(n_q_heads),
-            int(n_k_heads),
-            float(imag_sign),
-            int(BLOCK_SIZE),
-        ),
-    )
+    with device_context(q.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            grid,
+            _llama4_rope_kernel_ct,
+            (
+                q_2d,
+                k_2d,
+                freqs_cis,
+                int(seq_len),
+                int(head_dim_half),
+                int(n_q_heads),
+                int(n_k_heads),
+                float(imag_sign),
+                int(BLOCK_SIZE),
+            ),
+        )
 
     q_out = q_2d.reshape(batch_size, seq_len, n_q_heads, head_dim)
     k_out = k_2d.reshape(batch_size, seq_len, n_k_heads, head_dim)

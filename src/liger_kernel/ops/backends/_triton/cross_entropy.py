@@ -23,6 +23,7 @@ from liger_kernel.backends import Capability
 from liger_kernel.backends import register_op
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device
 
@@ -132,51 +133,54 @@ def cross_entropy_loss_and_grad_triton(
         ``(loss_1d, z_loss_1d, token_accuracy_1d, predicted_tokens_1d, grad_logits)``
         where ``grad_logits is logits_chunk`` (the in-place write).
     """
-    if mode not in (None, "default"):
-        raise ValueError(f"cross_entropy_loss_and_grad_triton: only mode='default'; got {mode!r}")
+    with device_context(logits_chunk.device):
+        if mode not in (None, "default"):
+            raise ValueError(f"cross_entropy_loss_and_grad_triton: only mode='default'; got {mode!r}")
 
-    n_rows, V = logits_chunk.shape
-    BLOCK_SIZE = min(_MAX_FUSED_SIZE, triton.next_power_of_2(V))
+        n_rows, V = logits_chunk.shape
+        BLOCK_SIZE = min(_MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-    loss_1d = torch.zeros(n_rows, dtype=torch.float32, device=logits_chunk.device)
-    z_loss_1d = torch.zeros(n_rows, dtype=logits_chunk.dtype, device=logits_chunk.device) if return_z_loss else None
-    token_accuracy_1d = (
-        torch.zeros(n_rows, dtype=torch.float32, device=logits_chunk.device) if return_token_accuracy else None
-    )
-    predicted_tokens_1d = (
-        torch.full((n_rows,), -1, dtype=torch.int64, device=logits_chunk.device) if return_predicted_tokens else None
-    )
+        loss_1d = torch.zeros(n_rows, dtype=torch.float32, device=logits_chunk.device)
+        z_loss_1d = torch.zeros(n_rows, dtype=logits_chunk.dtype, device=logits_chunk.device) if return_z_loss else None
+        token_accuracy_1d = (
+            torch.zeros(n_rows, dtype=torch.float32, device=logits_chunk.device) if return_token_accuracy else None
+        )
+        predicted_tokens_1d = (
+            torch.full((n_rows,), -1, dtype=torch.int64, device=logits_chunk.device)
+            if return_predicted_tokens
+            else None
+        )
 
-    liger_cross_entropy_kernel[(n_rows,)](
-        X_ptr=logits_chunk,
-        X_stride=logits_chunk.stride(-2),
-        Y_ptr=target_chunk,
-        Y_stride=target_chunk.stride(-1),
-        weight_ptr=ce_weight,
-        loss_ptr=loss_1d,
-        z_loss_ptr=z_loss_1d,
-        loss_stride=loss_1d.stride(-1),
-        token_accuracy_ptr=token_accuracy_1d,
-        token_accuracy_stride=token_accuracy_1d.stride(-1) if return_token_accuracy else 0,
-        predicted_tokens_ptr=predicted_tokens_1d,
-        predicted_tokens_stride=predicted_tokens_1d.stride(-1) if return_predicted_tokens else 0,
-        n_cols=V,
-        n_non_ignore=n_non_ignore,
-        sum_non_ignore_weight=sum_non_ignore_weight,
-        weight_sum=weight_sum,
-        ignore_index=ignore_index,
-        lse_square_scale=lse_square_scale,
-        label_smoothing=label_smoothing,
-        reduction=reduction,
-        softcap=softcap,
-        RETURN_Z_LOSS=return_z_loss,
-        RETURN_TOKEN_ACCURACY=return_token_accuracy,
-        RETURN_PREDICTED_TOKENS=return_predicted_tokens,
-        HAS_WEIGHT=ce_weight is not None,
-        HAS_SOFTCAPPING=softcap is not None,
-        HAS_GRADIENTS=has_gradients,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=32 if not is_hip() else 16,
-    )
+        liger_cross_entropy_kernel[(n_rows,)](
+            X_ptr=logits_chunk,
+            X_stride=logits_chunk.stride(-2),
+            Y_ptr=target_chunk,
+            Y_stride=target_chunk.stride(-1),
+            weight_ptr=ce_weight,
+            loss_ptr=loss_1d,
+            z_loss_ptr=z_loss_1d,
+            loss_stride=loss_1d.stride(-1),
+            token_accuracy_ptr=token_accuracy_1d,
+            token_accuracy_stride=token_accuracy_1d.stride(-1) if return_token_accuracy else 0,
+            predicted_tokens_ptr=predicted_tokens_1d,
+            predicted_tokens_stride=predicted_tokens_1d.stride(-1) if return_predicted_tokens else 0,
+            n_cols=V,
+            n_non_ignore=n_non_ignore,
+            sum_non_ignore_weight=sum_non_ignore_weight,
+            weight_sum=weight_sum,
+            ignore_index=ignore_index,
+            lse_square_scale=lse_square_scale,
+            label_smoothing=label_smoothing,
+            reduction=reduction,
+            softcap=softcap,
+            RETURN_Z_LOSS=return_z_loss,
+            RETURN_TOKEN_ACCURACY=return_token_accuracy,
+            RETURN_PREDICTED_TOKENS=return_predicted_tokens,
+            HAS_WEIGHT=ce_weight is not None,
+            HAS_SOFTCAPPING=softcap is not None,
+            HAS_GRADIENTS=has_gradients,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=32 if not is_hip() else 16,
+        )
 
-    return loss_1d, z_loss_1d, token_accuracy_1d, predicted_tokens_1d, logits_chunk
+        return loss_1d, z_loss_1d, token_accuracy_1d, predicted_tokens_1d, logits_chunk

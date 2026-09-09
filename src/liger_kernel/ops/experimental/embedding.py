@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 
@@ -96,15 +97,16 @@ class LigerEmbeddingFunction(torch.autograd.Function):
             triton.cdiv(embedding_dim, BLOCK_SIZE_N),
         )
 
-        embedding_forward_kernel[grid](
-            embeddings,
-            indices,
-            output,
-            n_elements,
-            embedding_dim=embedding_dim,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-        )
+        with device_context(embeddings.device):
+            embedding_forward_kernel[grid](
+                embeddings,
+                indices,
+                output,
+                n_elements,
+                embedding_dim=embedding_dim,
+                BLOCK_SIZE_M=BLOCK_SIZE_M,
+                BLOCK_SIZE_N=BLOCK_SIZE_N,
+            )
 
         ctx.save_for_backward(indices, embeddings)
 
@@ -128,14 +130,15 @@ class LigerEmbeddingFunction(torch.autograd.Function):
             triton.cdiv(embedding_dim, BLOCK_SIZE_N),
         )
 
-        embedding_backward_kernel[grid](
-            grad_output,
-            grad_weight,
-            indices,
-            n_elements,
-            embedding_dim=embedding_dim,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-        )
+        with device_context(embedding_table.device):
+            embedding_backward_kernel[grid](
+                grad_output,
+                grad_weight,
+                indices,
+                n_elements,
+                embedding_dim=embedding_dim,
+                BLOCK_SIZE_M=BLOCK_SIZE_M,
+                BLOCK_SIZE_N=BLOCK_SIZE_N,
+            )
 
         return grad_weight, None

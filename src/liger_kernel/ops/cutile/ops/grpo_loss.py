@@ -29,6 +29,7 @@ from cuda.tile import ByTarget
 from cuda.tile.tune import exhaustive_search
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 LOG2E = 1.4426950408889634
 
@@ -398,84 +399,85 @@ def _grpo_loss_forward_ct(
     vllm_is_ratio_stride,
     phi_seq,
 ):
-    B, L_ADD_1, N = logits.shape
-    L = L_ADD_1 - 1
-    BLOCK_N = min(8192, _next_power_of_2(N))
+    with device_context(logits.device):
+        B, L_ADD_1, N = logits.shape
+        L = L_ADD_1 - 1
+        BLOCK_N = min(8192, _next_power_of_2(N))
 
-    logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
+        logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
 
-    loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
-    lse = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
-    is_clipped = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
+        loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
+        lse = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
+        is_clipped = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
 
-    has_beta = float(beta) != 0.0
-    kl = torch.zeros(B, L, device=logits.device, dtype=torch.float32) if has_beta else None
+        has_beta = float(beta) != 0.0
+        kl = torch.zeros(B, L, device=logits.device, dtype=torch.float32) if has_beta else None
 
-    dummy_f = torch.zeros(1, device=logits.device, dtype=torch.float32)
-    dummy_i = torch.zeros(1, device=logits.device, dtype=torch.int32)
+        dummy_f = torch.zeros(1, device=logits.device, dtype=torch.float32)
+        dummy_i = torch.zeros(1, device=logits.device, dtype=torch.int32)
 
-    old_logp_arg = old_logp.contiguous() if old_logp is not None else dummy_f
-    ref_logp_arg = ref_logp.contiguous() if ref_logp is not None else dummy_f
-    mask_arg = completion_mask.to(torch.int32).contiguous() if completion_mask is not None else dummy_i
-    kl_arg = kl if kl is not None else dummy_f
-    # Flatten to 1-D: the kernel gathers with a flat row*stride+col index, so the
-    # array must be rank-1 (strict tileiras rejects a rank-2 array with a 1-tuple index).
-    vllm_arg = vllm_is_ratio.contiguous().view(-1) if vllm_is_ratio is not None else dummy_f
-    phi_seq_arg = phi_seq.contiguous() if phi_seq is not None else dummy_f
+        old_logp_arg = old_logp.contiguous() if old_logp is not None else dummy_f
+        ref_logp_arg = ref_logp.contiguous() if ref_logp is not None else dummy_f
+        mask_arg = completion_mask.to(torch.int32).contiguous() if completion_mask is not None else dummy_i
+        kl_arg = kl if kl is not None else dummy_f
+        # Flatten to 1-D: the kernel gathers with a flat row*stride+col index, so the
+        # array must be rank-1 (strict tileiras rejects a rank-2 array with a 1-tuple index).
+        vllm_arg = vllm_is_ratio.contiguous().view(-1) if vllm_is_ratio is not None else dummy_f
+        phi_seq_arg = phi_seq.contiguous() if phi_seq is not None else dummy_f
 
-    has_mask = int(completion_mask is not None)
-    has_old_logp = int(old_logp is not None)
-    # VESPO (loss_type 3) folds the vLLM correction into phi_seq, so the kernel skips vllm.
-    has_vllm = int(vllm_is_ratio is not None and int(loss_type_int) != 3)
+        has_mask = int(completion_mask is not None)
+        has_old_logp = int(old_logp is not None)
+        # VESPO (loss_type 3) folds the vLLM correction into phi_seq, so the kernel skips vllm.
+        has_vllm = int(vllm_is_ratio is not None and int(loss_type_int) != 3)
 
-    grid = (B, L, 1)
-    stream = torch.cuda.current_stream()
-    fwd_args = (
-        logits_2d,
-        old_logp_arg,
-        ref_logp_arg,
-        completion_ids.contiguous(),
-        mask_arg,
-        advantages.contiguous(),
-        vllm_arg,
-        phi_seq_arg,
-        loss,
-        lse,
-        kl_arg,
-        is_clipped,
-        int(B),
-        int(L),
-        int(N),
-        int(BLOCK_N),
-        float(temperature),
-        float(beta),
-        float(eps_low),
-        float(eps_high),
-        int(loss_type_int),
-        float(sapo_temperature_pos),
-        float(sapo_temperature_neg),
-        float(delta),
-        int(use_bias_correction_kl),
-        int(has_mask),
-        int(has_old_logp),
-        int(has_vllm),
-        int(vllm_is_ratio_stride),
-    )
-    cache_key = (
-        int(B),
-        int(L),
-        int(N),
-        int(BLOCK_N),
-        int(loss_type_int),
-        int(has_mask),
-        int(has_old_logp),
-        int(has_vllm),
-        str(logits_2d.device),
-    )
-    kernel = _tuned_fwd_kernel(stream, cache_key, grid, fwd_args)
-    ct.launch(stream, grid, kernel, fwd_args)
+        grid = (B, L, 1)
+        stream = torch.cuda.current_stream()
+        fwd_args = (
+            logits_2d,
+            old_logp_arg,
+            ref_logp_arg,
+            completion_ids.contiguous(),
+            mask_arg,
+            advantages.contiguous(),
+            vllm_arg,
+            phi_seq_arg,
+            loss,
+            lse,
+            kl_arg,
+            is_clipped,
+            int(B),
+            int(L),
+            int(N),
+            int(BLOCK_N),
+            float(temperature),
+            float(beta),
+            float(eps_low),
+            float(eps_high),
+            int(loss_type_int),
+            float(sapo_temperature_pos),
+            float(sapo_temperature_neg),
+            float(delta),
+            int(use_bias_correction_kl),
+            int(has_mask),
+            int(has_old_logp),
+            int(has_vllm),
+            int(vllm_is_ratio_stride),
+        )
+        cache_key = (
+            int(B),
+            int(L),
+            int(N),
+            int(BLOCK_N),
+            int(loss_type_int),
+            int(has_mask),
+            int(has_old_logp),
+            int(has_vllm),
+            str(logits_2d.device),
+        )
+        kernel = _tuned_fwd_kernel(stream, cache_key, grid, fwd_args)
+        ct.launch(stream, grid, kernel, fwd_args)
 
-    return loss, lse, is_clipped, kl
+        return loss, lse, is_clipped, kl
 
 
 def _grpo_loss_backward_ct(
@@ -501,69 +503,70 @@ def _grpo_loss_backward_ct(
     vllm_is_ratio_stride,
     phi_seq,
 ):
-    B, L_ADD_1, N = logits.shape
-    L = L_ADD_1 - 1
-    BLOCK_N = min(4096, _next_power_of_2(N))
+    with device_context(logits.device):
+        B, L_ADD_1, N = logits.shape
+        L = L_ADD_1 - 1
+        BLOCK_N = min(4096, _next_power_of_2(N))
 
-    logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
-    dlogits_2d = logits.data.reshape(B * L_ADD_1, N) if inplace else torch.empty_like(logits_2d)
+        logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
+        dlogits_2d = logits.data.reshape(B * L_ADD_1, N) if inplace else torch.empty_like(logits_2d)
 
-    dummy_f = torch.zeros(1, device=logits.device, dtype=torch.float32)
-    dummy_i = torch.zeros(1, device=logits.device, dtype=torch.int32)
+        dummy_f = torch.zeros(1, device=logits.device, dtype=torch.float32)
+        dummy_i = torch.zeros(1, device=logits.device, dtype=torch.int32)
 
-    old_logp_arg = old_logp.contiguous() if old_logp is not None else dummy_f
-    ref_logp_arg = ref_logp.contiguous() if ref_logp is not None else dummy_f
-    mask_arg = completion_mask.to(torch.int32).contiguous() if completion_mask is not None else dummy_i
-    # Flatten to 1-D: the kernel gathers with a flat row*stride+col index, so the
-    # array must be rank-1 (strict tileiras rejects a rank-2 array with a 1-tuple index).
-    vllm_arg = vllm_is_ratio.contiguous().view(-1) if vllm_is_ratio is not None else dummy_f
-    phi_seq_arg = phi_seq.contiguous() if phi_seq is not None else dummy_f
+        old_logp_arg = old_logp.contiguous() if old_logp is not None else dummy_f
+        ref_logp_arg = ref_logp.contiguous() if ref_logp is not None else dummy_f
+        mask_arg = completion_mask.to(torch.int32).contiguous() if completion_mask is not None else dummy_i
+        # Flatten to 1-D: the kernel gathers with a flat row*stride+col index, so the
+        # array must be rank-1 (strict tileiras rejects a rank-2 array with a 1-tuple index).
+        vllm_arg = vllm_is_ratio.contiguous().view(-1) if vllm_is_ratio is not None else dummy_f
+        phi_seq_arg = phi_seq.contiguous() if phi_seq is not None else dummy_f
 
-    has_mask = int(completion_mask is not None)
-    has_old_logp = int(old_logp is not None)
-    has_vllm = int(vllm_is_ratio is not None and int(loss_type_int) != 3)
+        has_mask = int(completion_mask is not None)
+        has_old_logp = int(old_logp is not None)
+        has_vllm = int(vllm_is_ratio is not None and int(loss_type_int) != 3)
 
-    grid = (B, L, 1)
-    bwd_kernel = _bwd_occ_small if B <= 2 else _bwd_occ_large
-    ct.launch(
-        torch.cuda.current_stream(),
-        grid,
-        bwd_kernel,
-        (
-            dloss.contiguous(),
-            dlogits_2d,
-            logits_2d,
-            old_logp_arg,
-            ref_logp_arg,
-            completion_ids.contiguous(),
-            advantages.contiguous(),
-            mask_arg,
-            lse,
-            vllm_arg,
-            phi_seq_arg,
-            int(B),
-            int(L),
-            int(N),
-            int(BLOCK_N),
-            float(temperature),
-            float(beta),
-            float(eps_low),
-            float(eps_high),
-            int(loss_type_int),
-            float(sapo_temperature_pos),
-            float(sapo_temperature_neg),
-            float(delta),
-            int(use_bias_correction_kl),
-            int(has_mask),
-            int(has_old_logp),
-            int(has_vllm),
-            int(vllm_is_ratio_stride),
-        ),
-    )
+        grid = (B, L, 1)
+        bwd_kernel = _bwd_occ_small if B <= 2 else _bwd_occ_large
+        ct.launch(
+            torch.cuda.current_stream(),
+            grid,
+            bwd_kernel,
+            (
+                dloss.contiguous(),
+                dlogits_2d,
+                logits_2d,
+                old_logp_arg,
+                ref_logp_arg,
+                completion_ids.contiguous(),
+                advantages.contiguous(),
+                mask_arg,
+                lse,
+                vllm_arg,
+                phi_seq_arg,
+                int(B),
+                int(L),
+                int(N),
+                int(BLOCK_N),
+                float(temperature),
+                float(beta),
+                float(eps_low),
+                float(eps_high),
+                int(loss_type_int),
+                float(sapo_temperature_pos),
+                float(sapo_temperature_neg),
+                float(delta),
+                int(use_bias_correction_kl),
+                int(has_mask),
+                int(has_old_logp),
+                int(has_vllm),
+                int(vllm_is_ratio_stride),
+            ),
+        )
 
-    dlogits = dlogits_2d.reshape(B, L_ADD_1, N)
-    dlogits[:, -1, :] = 0
-    return dlogits
+        dlogits = dlogits_2d.reshape(B, L_ADD_1, N)
+        dlogits[:, -1, :] = 0
+        return dlogits
 
 
 # ---------------------------------------------------------------------------
@@ -828,76 +831,77 @@ def _grpo_loss_forward_seq_ct(
     vllm_is_ratio,
     vllm_is_ratio_stride,
 ):
-    B, L_ADD_1, N = logits.shape
-    L = L_ADD_1 - 1
-    BLOCK_N = min(4096, _next_power_of_2(N))
-    device = logits.device
-    mask = completion_mask.float() if completion_mask is not None else torch.ones(B, L, device=device)
+    with device_context(logits.device):
+        B, L_ADD_1, N = logits.shape
+        L = L_ADD_1 - 1
+        BLOCK_N = min(4096, _next_power_of_2(N))
+        device = logits.device
+        mask = completion_mask.float() if completion_mask is not None else torch.ones(B, L, device=device)
 
-    # Per-token log-probs (host) → per-sequence importance weights (GSPO).
-    lg = logits[:, :L, :].float() / temperature
-    lse_pt = torch.logsumexp(lg, dim=-1)
-    tgt = torch.gather(lg, -1, completion_ids.long().unsqueeze(-1)).squeeze(-1)
-    per_token_logps = tgt - lse_pt
-    log_ratio = torch.zeros_like(per_token_logps) if old_logp is None else (per_token_logps - old_logp)
-    seq_lens = mask.sum(-1).clamp(min=1.0)  # (B,)
-    coef_1 = torch.exp((log_ratio * mask).sum(-1) / seq_lens)  # (B,)
-    coef_2 = torch.clamp(coef_1, 1.0 - eps_low, 1.0 + eps_high)
-    is_clipped_seq = (
-        ((coef_1 < 1.0 - eps_low) & (advantages < 0)) | ((coef_1 > 1.0 + eps_high) & (advantages > 0))
-    ).float()
-    coef_1_for_loss = torch.clamp(coef_1, max=delta_val) if delta_val != 0.0 else coef_1
+        # Per-token log-probs (host) → per-sequence importance weights (GSPO).
+        lg = logits[:, :L, :].float() / temperature
+        lse_pt = torch.logsumexp(lg, dim=-1)
+        tgt = torch.gather(lg, -1, completion_ids.long().unsqueeze(-1)).squeeze(-1)
+        per_token_logps = tgt - lse_pt
+        log_ratio = torch.zeros_like(per_token_logps) if old_logp is None else (per_token_logps - old_logp)
+        seq_lens = mask.sum(-1).clamp(min=1.0)  # (B,)
+        coef_1 = torch.exp((log_ratio * mask).sum(-1) / seq_lens)  # (B,)
+        coef_2 = torch.clamp(coef_1, 1.0 - eps_low, 1.0 + eps_high)
+        is_clipped_seq = (
+            ((coef_1 < 1.0 - eps_low) & (advantages < 0)) | ((coef_1 > 1.0 + eps_high) & (advantages > 0))
+        ).float()
+        coef_1_for_loss = torch.clamp(coef_1, max=delta_val) if delta_val != 0.0 else coef_1
 
-    logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
-    loss = torch.zeros(B, L, device=device, dtype=torch.float32)
-    lse = torch.zeros(B, L, device=device, dtype=torch.float32)
-    is_clipped = torch.zeros(B, L, device=device, dtype=torch.float32)
-    has_beta = float(beta) != 0.0
-    kl = torch.zeros(B, L, device=device, dtype=torch.float32) if has_beta else None
+        logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
+        loss = torch.zeros(B, L, device=device, dtype=torch.float32)
+        lse = torch.zeros(B, L, device=device, dtype=torch.float32)
+        is_clipped = torch.zeros(B, L, device=device, dtype=torch.float32)
+        has_beta = float(beta) != 0.0
+        kl = torch.zeros(B, L, device=device, dtype=torch.float32) if has_beta else None
 
-    dummy_f = torch.zeros(1, device=device, dtype=torch.float32)
-    dummy_i = torch.zeros(1, device=device, dtype=torch.int32)
-    ref_arg = ref_logp.contiguous() if ref_logp is not None else dummy_f
-    mask_arg = completion_mask.to(torch.int32).contiguous() if completion_mask is not None else dummy_i
-    kl_arg = kl if kl is not None else dummy_f
-    # Flatten to 1-D: the kernel gathers with a flat row*stride+col index, so the
-    # array must be rank-1 (strict tileiras rejects a rank-2 array with a 1-tuple index).
-    vllm_arg = vllm_is_ratio.contiguous().view(-1) if vllm_is_ratio is not None else dummy_f
-    has_mask = int(completion_mask is not None)
-    has_vllm = int(vllm_is_ratio is not None)
+        dummy_f = torch.zeros(1, device=device, dtype=torch.float32)
+        dummy_i = torch.zeros(1, device=device, dtype=torch.int32)
+        ref_arg = ref_logp.contiguous() if ref_logp is not None else dummy_f
+        mask_arg = completion_mask.to(torch.int32).contiguous() if completion_mask is not None else dummy_i
+        kl_arg = kl if kl is not None else dummy_f
+        # Flatten to 1-D: the kernel gathers with a flat row*stride+col index, so the
+        # array must be rank-1 (strict tileiras rejects a rank-2 array with a 1-tuple index).
+        vllm_arg = vllm_is_ratio.contiguous().view(-1) if vllm_is_ratio is not None else dummy_f
+        has_mask = int(completion_mask is not None)
+        has_vllm = int(vllm_is_ratio is not None)
 
-    ct.launch(
-        torch.cuda.current_stream(),
-        (B, L, 1),
-        _grpo_loss_fwd_seq_ct,
-        (
-            logits_2d,
-            ref_arg,
-            completion_ids.contiguous(),
-            mask_arg,
-            advantages.contiguous(),
-            coef_1_for_loss.contiguous(),
-            coef_1.contiguous(),
-            coef_2.contiguous(),
-            is_clipped_seq.contiguous(),
-            vllm_arg,
-            loss,
-            lse,
-            kl_arg,
-            is_clipped,
-            int(B),
-            int(L),
-            int(N),
-            int(BLOCK_N),
-            float(temperature),
-            float(beta),
-            int(use_bias_correction_kl),
-            has_mask,
-            has_vllm,
-            int(vllm_is_ratio_stride),
-        ),
-    )
-    return loss, lse, is_clipped, kl, coef_1, seq_lens
+        ct.launch(
+            torch.cuda.current_stream(),
+            (B, L, 1),
+            _grpo_loss_fwd_seq_ct,
+            (
+                logits_2d,
+                ref_arg,
+                completion_ids.contiguous(),
+                mask_arg,
+                advantages.contiguous(),
+                coef_1_for_loss.contiguous(),
+                coef_1.contiguous(),
+                coef_2.contiguous(),
+                is_clipped_seq.contiguous(),
+                vllm_arg,
+                loss,
+                lse,
+                kl_arg,
+                is_clipped,
+                int(B),
+                int(L),
+                int(N),
+                int(BLOCK_N),
+                float(temperature),
+                float(beta),
+                int(use_bias_correction_kl),
+                has_mask,
+                has_vllm,
+                int(vllm_is_ratio_stride),
+            ),
+        )
+        return loss, lse, is_clipped, kl, coef_1, seq_lens
 
 
 def _grpo_loss_backward_seq_ct(
@@ -919,56 +923,57 @@ def _grpo_loss_backward_seq_ct(
     inplace,
     vllm_is_ratio,
 ):
-    B, L_ADD_1, N = logits.shape
-    L = L_ADD_1 - 1
-    BLOCK_N = min(4096, _next_power_of_2(N))
-    if vllm_is_ratio is None:
-        dloss_sum = dloss.sum(-1).contiguous()
-    else:
-        ratio = vllm_is_ratio.unsqueeze(-1) if vllm_is_ratio.dim() == 1 else vllm_is_ratio
-        dloss_sum = (dloss * ratio).sum(-1).contiguous()
+    with device_context(logits.device):
+        B, L_ADD_1, N = logits.shape
+        L = L_ADD_1 - 1
+        BLOCK_N = min(4096, _next_power_of_2(N))
+        if vllm_is_ratio is None:
+            dloss_sum = dloss.sum(-1).contiguous()
+        else:
+            ratio = vllm_is_ratio.unsqueeze(-1) if vllm_is_ratio.dim() == 1 else vllm_is_ratio
+            dloss_sum = (dloss * ratio).sum(-1).contiguous()
 
-    logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
-    dlogits_2d = logits.data.reshape(B * L_ADD_1, N) if inplace else torch.empty_like(logits_2d)
-    dummy_f = torch.zeros(1, device=logits.device, dtype=torch.float32)
-    dummy_i = torch.zeros(1, device=logits.device, dtype=torch.int32)
-    ref_arg = ref_logp.contiguous() if ref_logp is not None else dummy_f
-    mask_arg = completion_mask.to(torch.int32).contiguous() if completion_mask is not None else dummy_i
-    has_mask = int(completion_mask is not None)
+        logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
+        dlogits_2d = logits.data.reshape(B * L_ADD_1, N) if inplace else torch.empty_like(logits_2d)
+        dummy_f = torch.zeros(1, device=logits.device, dtype=torch.float32)
+        dummy_i = torch.zeros(1, device=logits.device, dtype=torch.int32)
+        ref_arg = ref_logp.contiguous() if ref_logp is not None else dummy_f
+        mask_arg = completion_mask.to(torch.int32).contiguous() if completion_mask is not None else dummy_i
+        has_mask = int(completion_mask is not None)
 
-    bwd_kernel = _bwd_seq_occ_small if B <= 2 else _bwd_seq_occ_large
-    ct.launch(
-        torch.cuda.current_stream(),
-        (B, L, 1),
-        bwd_kernel,
-        (
-            dloss.contiguous(),
-            dloss_sum,
-            dlogits_2d,
-            logits_2d,
-            ref_arg,
-            completion_ids.contiguous(),
-            advantages.contiguous(),
-            mask_arg,
-            lse,
-            coef_1.contiguous(),
-            seq_lens.contiguous(),
-            int(B),
-            int(L),
-            int(N),
-            int(BLOCK_N),
-            float(temperature),
-            float(beta),
-            int(use_bias_correction_kl),
-            float(eps_low),
-            float(eps_high),
-            float(delta_val),
-            has_mask,
-        ),
-    )
-    dlogits = dlogits_2d.reshape(B, L_ADD_1, N)
-    dlogits[:, -1, :] = 0
-    return dlogits
+        bwd_kernel = _bwd_seq_occ_small if B <= 2 else _bwd_seq_occ_large
+        ct.launch(
+            torch.cuda.current_stream(),
+            (B, L, 1),
+            bwd_kernel,
+            (
+                dloss.contiguous(),
+                dloss_sum,
+                dlogits_2d,
+                logits_2d,
+                ref_arg,
+                completion_ids.contiguous(),
+                advantages.contiguous(),
+                mask_arg,
+                lse,
+                coef_1.contiguous(),
+                seq_lens.contiguous(),
+                int(B),
+                int(L),
+                int(N),
+                int(BLOCK_N),
+                float(temperature),
+                float(beta),
+                int(use_bias_correction_kl),
+                float(eps_low),
+                float(eps_high),
+                float(delta_val),
+                has_mask,
+            ),
+        )
+        dlogits = dlogits_2d.reshape(B, L_ADD_1, N)
+        dlogits[:, -1, :] = 0
+        return dlogits
 
 
 class GrpoLossFunction(torch.autograd.Function):

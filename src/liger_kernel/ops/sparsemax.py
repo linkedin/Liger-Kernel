@@ -5,6 +5,7 @@ import triton
 import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 
@@ -117,17 +118,18 @@ def _sparsemax_forward(x: torch.Tensor, dim: int) -> Tuple[torch.Tensor, torch.T
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     out_flat = torch.empty_like(x_flat)
     grid = (n_rows,)
-    _sparsemax_forward_kernel[grid](
-        x_flat,
-        x_flat.stride(0),
-        x_sorted_flat,
-        x_sorted_flat.stride(0),
-        out_flat,
-        out_flat.stride(0),
-        n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(x.device):
+        _sparsemax_forward_kernel[grid](
+            x_flat,
+            x_flat.stride(0),
+            x_sorted_flat,
+            x_sorted_flat.stride(0),
+            out_flat,
+            out_flat.stride(0),
+            n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
 
     y = out_flat.view_as(x_sw).transpose(dim, -1)
     return y, out_flat
@@ -146,15 +148,16 @@ def _sparsemax_backward(
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     dx_flat = torch.empty_like(go_flat)
     grid = (n_rows,)
-    _sparsemax_backward_kernel[grid](
-        out_flat,
-        go_flat,
-        dx_flat,
-        out_flat.stride(0),
-        n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(grad_out.device):
+        _sparsemax_backward_kernel[grid](
+            out_flat,
+            go_flat,
+            dx_flat,
+            out_flat.stride(0),
+            n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
 
     dx = dx_flat.view_as(grad_sw).transpose(dim, -1)
     return dx

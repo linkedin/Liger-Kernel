@@ -65,6 +65,7 @@ from cutlass.pipeline import pipeline_init_wait
 
 from liger_kernel.ops.cutedsl.ops.utils import ensure_cuda_context
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.utils import device_context
 
 # Fixed tile configuration selected by the H200 parameter sweep.
 _TILE_SHAPE_MN = (128, 256)
@@ -868,32 +869,33 @@ def _persistent_gemm(
 ) -> None:
     """Run the fixed Hopper StaticPersistent WGMMA configuration."""
     # Convert 2-D torch tensors to 3-D CuTe tensors [row, col, L=1].
-    a_c = to_cute_tensor(a.unsqueeze(-1), leading_dim=a_leading, assumed_align=16)
-    b_c = to_cute_tensor(b.unsqueeze(-1), leading_dim=b_leading, assumed_align=16)
-    # C output: N dimension (dim 1 of the 3-D view) is the leading/contiguous dim.
-    c_c = to_cute_tensor(c.unsqueeze(-1), leading_dim=1, assumed_align=16)
-    scale_c = to_cute_tensor(output_scale.reshape(1), assumed_align=4) if output_scale is not None else None
-    scale_output = output_scale is not None
+    with device_context(a.device):
+        a_c = to_cute_tensor(a.unsqueeze(-1), leading_dim=a_leading, assumed_align=16)
+        b_c = to_cute_tensor(b.unsqueeze(-1), leading_dim=b_leading, assumed_align=16)
+        # C output: N dimension (dim 1 of the 3-D view) is the leading/contiguous dim.
+        c_c = to_cute_tensor(c.unsqueeze(-1), leading_dim=1, assumed_align=16)
+        scale_c = to_cute_tensor(output_scale.reshape(1), assumed_align=4) if output_scale is not None else None
+        scale_output = output_scale is not None
 
-    key = _persistent_gemm_key(a, b, c, output_scale)
-    compiled = _persistent_gemm_cache.get(key)
-    if compiled is None:
-        with torch.cuda.device(a.device):
-            ensure_cuda_context()
-            max_active_clusters = cutlass.utils.HardwareInfo().get_max_active_clusters(
-                _CLUSTER_SHAPE_MN[0] * _CLUSTER_SHAPE_MN[1]
+        key = _persistent_gemm_key(a, b, c, output_scale)
+        compiled = _persistent_gemm_cache.get(key)
+        if compiled is None:
+            with torch.cuda.device(a.device):
+                ensure_cuda_context()
+                max_active_clusters = cutlass.utils.HardwareInfo().get_max_active_clusters(
+                    _CLUSTER_SHAPE_MN[0] * _CLUSTER_SHAPE_MN[1]
+                )
+            gemm_obj = HopperWgmmaGemmPersistentKernel(
+                acc_dtype=cutlass.Float32,
+                tile_shape_mn=_TILE_SHAPE_MN,
+                cluster_shape_mn=_CLUSTER_SHAPE_MN,
+                swizzle_size=_SWIZZLE_SIZE,
+                raster_along_m=_RASTER_ALONG_M,
+                scale_output=scale_output,
             )
-        gemm_obj = HopperWgmmaGemmPersistentKernel(
-            acc_dtype=cutlass.Float32,
-            tile_shape_mn=_TILE_SHAPE_MN,
-            cluster_shape_mn=_CLUSTER_SHAPE_MN,
-            swizzle_size=_SWIZZLE_SIZE,
-            raster_along_m=_RASTER_ALONG_M,
-            scale_output=scale_output,
-        )
-        compiled = cute.compile(gemm_obj, a_c, b_c, c_c, scale_c, max_active_clusters, stream)
-        _persistent_gemm_cache[key] = compiled
-    compiled(a_c, b_c, c_c, scale_c, stream)
+            compiled = cute.compile(gemm_obj, a_c, b_c, c_c, scale_c, max_active_clusters, stream)
+            _persistent_gemm_cache[key] = compiled
+        compiled(a_c, b_c, c_c, scale_c, stream)
 
 
 def logits_persistent_gemm(

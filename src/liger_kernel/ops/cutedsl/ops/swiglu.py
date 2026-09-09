@@ -65,6 +65,7 @@ from cutlass.cute.runtime import make_fake_stream
 
 from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.utils import infer_device_arch
 
@@ -613,33 +614,35 @@ class _DynCaller:
         self._compiled = compiled
 
     def __call__(self, a, b, c, gm):
-        return self._compiled(_dyn(a), _dyn(b), _dyn(c), gm, _cute_stream())
+        with device_context(a.device):
+            return self._compiled(_dyn(a), _dyn(b), _dyn(c), gm, _cute_stream(a.device))
 
 
 def _get_compiled(kind: str, ref: torch.Tensor, vec: int, predicated: bool, packed_math: bool):
-    key = (ref.dtype, vec, predicated, packed_math, kind, ref.device.index)
-    fn = _COMPILE_CACHE.get(key)
-    if fn is not None:
+    with device_context(ref.device):
+        key = (ref.dtype, vec, predicated, packed_math, kind, ref.device.index)
+        fn = _COMPILE_CACHE.get(key)
+        if fn is not None:
+            return fn
+        gm = cutlass.Float32(1.0)
+        maker = _make_fwd(vec, predicated, packed_math) if kind == "fwd" else _make_bwd(vec, predicated, packed_math)
+        if _TVM_FFI_PRESENT:
+            # TVM-FFI: 1-D sym_int fake tensor; PyTorch tensors passed directly — no
+            # from_dlpack overhead. Divisibility=1 since the predicated path makes no
+            # alignment guarantee beyond element size. ``use_tvm_ffi_env_stream=True``
+            # drops the stream from the FFI signature: the compiled fn runs on the
+            # caller's env stream (torch.cuda.current_stream()), so the launch is
+            # CUDA-graph capturable with no per-call stream marshalling.
+            cute_dtype = torch2cute_dtype_map[ref.dtype]
+            fake = make_fake_tensor(cute_dtype, (cute.sym_int(),), 1)
+            fn = cute.compile(
+                maker, fake, fake, fake, gm, make_fake_stream(use_tvm_ffi_env_stream=True), options="--enable-tvm-ffi"
+            )
+        else:
+            compiled = cute.compile(maker, _dyn(ref), _dyn(ref), _dyn(ref), gm, _cute_stream(ref.device))
+            fn = _DynCaller(compiled)
+        _COMPILE_CACHE[key] = fn
         return fn
-    gm = cutlass.Float32(1.0)
-    maker = _make_fwd(vec, predicated, packed_math) if kind == "fwd" else _make_bwd(vec, predicated, packed_math)
-    if _TVM_FFI_PRESENT:
-        # TVM-FFI: 1-D sym_int fake tensor; PyTorch tensors passed directly — no
-        # from_dlpack overhead. Divisibility=1 since the predicated path makes no
-        # alignment guarantee beyond element size. ``use_tvm_ffi_env_stream=True``
-        # drops the stream from the FFI signature: the compiled fn runs on the
-        # caller's env stream (torch.cuda.current_stream()), so the launch is
-        # CUDA-graph capturable with no per-call stream marshalling.
-        cute_dtype = torch2cute_dtype_map[ref.dtype]
-        fake = make_fake_tensor(cute_dtype, (cute.sym_int(),), 1)
-        fn = cute.compile(
-            maker, fake, fake, fake, gm, make_fake_stream(use_tvm_ffi_env_stream=True), options="--enable-tvm-ffi"
-        )
-    else:
-        compiled = cute.compile(maker, _dyn(ref), _dyn(ref), _dyn(ref), gm, _cute_stream())
-        fn = _DynCaller(compiled)
-    _COMPILE_CACHE[key] = fn
-    return fn
 
 
 def _get_compiled_vec(kind: str, dtype: torch.dtype, vec: int, device_index: int):
@@ -690,69 +693,71 @@ def _get_compiled_vec(kind: str, dtype: torch.dtype, vec: int, device_index: int
 # Public functional API
 # ---------------------------------------------------------------------------
 def swiglu_forward(a, b, gate_multiplier: float = 1.0):
-    if a.dtype != b.dtype:
-        raise TypeError(f"a and b must have the same dtype, got {a.dtype} and {b.dtype}.")
-    _validate_supported_dtype(a.dtype)
+    with device_context(a.device):
+        if a.dtype != b.dtype:
+            raise TypeError(f"a and b must have the same dtype, got {a.dtype} and {b.dtype}.")
+        _validate_supported_dtype(a.dtype)
 
-    ori_shape = a.shape
-    n_cols = ori_shape[-1]
-    a = a.view(-1, n_cols).reshape(-1)
-    b = b.view(-1, n_cols).reshape(-1)
-    c = torch.empty_like(a)
+        ori_shape = a.shape
+        n_cols = ori_shape[-1]
+        a = a.view(-1, n_cols).reshape(-1)
+        b = b.view(-1, n_cols).reshape(-1)
+        c = torch.empty_like(a)
 
-    numel = a.numel()
-    vec = _vec_for_dtype(a.dtype)
-    tile = _NUM_THREADS * vec
-    aligned = _is_16b_aligned(a, b, c)
-    use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, a.device, aligned)
+        numel = a.numel()
+        vec = _vec_for_dtype(a.dtype)
+        tile = _NUM_THREADS * vec
+        aligned = _is_16b_aligned(a, b, c)
+        use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, a.device, aligned)
 
-    if use_fast:
-        fn = _get_compiled_vec("fwd", a.dtype, vec, a.device.index)
-        rows = numel // tile
-        fn(
-            a.view(rows, tile),
-            b.view(rows, tile),
-            c.view(rows, tile),
-            cutlass.Float32(float(gate_multiplier)),
-        )
-    else:
-        fn = _get_compiled("fwd", a, vec, predicated, packed_math)
-        fn(a, b, c, cutlass.Float32(float(gate_multiplier)))
+        if use_fast:
+            fn = _get_compiled_vec("fwd", a.dtype, vec, a.device.index)
+            rows = numel // tile
+            fn(
+                a.view(rows, tile),
+                b.view(rows, tile),
+                c.view(rows, tile),
+                cutlass.Float32(float(gate_multiplier)),
+            )
+        else:
+            fn = _get_compiled("fwd", a, vec, predicated, packed_math)
+            fn(a, b, c, cutlass.Float32(float(gate_multiplier)))
 
-    return a.view(-1, n_cols), b.view(-1, n_cols), c.view(*ori_shape)
+        return a.view(-1, n_cols), b.view(-1, n_cols), c.view(*ori_shape)
 
 
 def swiglu_backward(a, b, dc, gate_multiplier: float = 1.0):
-    if a.dtype != b.dtype or a.dtype != dc.dtype:
-        raise TypeError(f"a, b, and dc must have the same dtype, got {a.dtype}, {b.dtype}, and {dc.dtype}.")
-    _validate_supported_dtype(dc.dtype)
+    with device_context(a.device):
+        if a.dtype != b.dtype or a.dtype != dc.dtype:
+            raise TypeError(f"a, b, and dc must have the same dtype, got {a.dtype}, {b.dtype}, and {dc.dtype}.")
+        _validate_supported_dtype(dc.dtype)
 
-    ori_shape = dc.shape
-    n_cols = ori_shape[-1]
-    dc = dc.view(-1, n_cols).reshape(-1)
-    a = a.view(-1, n_cols).reshape(-1)
-    b = b.view(-1, n_cols).reshape(-1)
+        ori_shape = dc.shape
+        n_cols = ori_shape[-1]
+        dc = dc.view(-1, n_cols).reshape(-1)
+        a = a.view(-1, n_cols).reshape(-1)
+        b = b.view(-1, n_cols).reshape(-1)
 
-    numel = dc.numel()
-    vec = _vec_for_dtype(dc.dtype)
-    tile = _NUM_THREADS * vec
-    aligned = _is_16b_aligned(dc, a, b)
-    use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, dc.device, aligned)
+        numel = dc.numel()
+        vec = _vec_for_dtype(dc.dtype)
+        tile = _NUM_THREADS * vec
+        aligned = _is_16b_aligned(dc, a, b)
+        use_fast, predicated, packed_math = _dispatch_plan(numel, vec, tile, dc.device, aligned)
 
-    if use_fast:
-        fn = _get_compiled_vec("bwd", dc.dtype, vec, dc.device.index)
-        rows = numel // tile
-        fn(
-            dc.view(rows, tile),
-            a.view(rows, tile),
-            b.view(rows, tile),
-            cutlass.Float32(float(gate_multiplier)),
-        )
-    else:
-        fn = _get_compiled("bwd", dc, vec, predicated, packed_math)
-        fn(dc, a, b, cutlass.Float32(float(gate_multiplier)))
+        if use_fast:
+            fn = _get_compiled_vec("bwd", dc.dtype, vec, dc.device.index)
+            rows = numel // tile
+            fn(
+                dc.view(rows, tile),
+                a.view(rows, tile),
+                b.view(rows, tile),
+                cutlass.Float32(float(gate_multiplier)),
+            )
+        else:
+            fn = _get_compiled("bwd", dc, vec, predicated, packed_math)
+            fn(dc, a, b, cutlass.Float32(float(gate_multiplier)))
 
-    return a.view(*ori_shape), b.view(*ori_shape)
+        return a.view(*ori_shape), b.view(*ori_shape)
 
 
 class LigerSiLUMulCuteDSLFunction(torch.autograd.Function):

@@ -272,16 +272,20 @@ Grid: `(triton.cdiv(n_rows, BLOCK_ROW),)` instead of `(n_rows,)`.
 Use conditional dispatch to choose between row mode and block-row mode:
 
 ```python
-if BLOCK_SIZE > 256 or n_rows < 4096 * 8:
-    # Row mode: one row per program
-    kernel_row[(n_rows,)](...)
-else:
-    # Block-row mode: multiple rows per program
-    BLOCK_ROW = 16
-    kernel_block_row[(triton.cdiv(n_rows, BLOCK_ROW),)](
-        ..., BLOCK_ROW=BLOCK_ROW
-    )
+with device_context(X.device):
+    if BLOCK_SIZE > 256 or n_rows < 4096 * 8:
+        # Row mode: one row per program
+        kernel_row[(n_rows,)](...)
+    else:
+        # Block-row mode: multiple rows per program
+        BLOCK_ROW = 16
+        kernel_block_row[(triton.cdiv(n_rows, BLOCK_ROW),)](
+            ..., BLOCK_ROW=BLOCK_ROW
+        )
 ```
+
+Keep the `device_context` guard outside the branch so both variants launch on the
+tensor's device (see `rms_norm.py`).
 
 **Expected impact**: 10-30% for kernels with small `n_cols` and large `n_rows`.
 

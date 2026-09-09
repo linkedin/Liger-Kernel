@@ -6,6 +6,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 ConstBool = ct.Constant[bool]
@@ -98,12 +99,13 @@ def geglu_forward(a, b):
     c = torch.empty_like(a)
     BLOCK_SIZE = _calculate_block_size(n_cols, MAX_FUSED_SIZE_FWD)
     aligned = n_cols % BLOCK_SIZE == 0
-    ct.launch(
-        torch.cuda.current_stream(),
-        (n_rows, 1, 1),
-        _geglu_fwd_kernel_ct,
-        (a, b, c, int(n_cols), int(BLOCK_SIZE), not aligned),
-    )
+    with device_context(a.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            (n_rows, 1, 1),
+            _geglu_fwd_kernel_ct,
+            (a, b, c, int(n_cols), int(BLOCK_SIZE), not aligned),
+        )
     return a, b, c.view(*ori_shape)
 
 
@@ -114,12 +116,13 @@ def geglu_backward(a, b, dc):
     n_rows = dc.shape[0]
     BLOCK_SIZE = _calculate_block_size(n_cols, MAX_FUSED_SIZE_BWD)
     aligned = n_cols % BLOCK_SIZE == 0
-    ct.launch(
-        torch.cuda.current_stream(),
-        (n_rows, 1, 1),
-        _geglu_bwd_kernel_ct,
-        (dc, a, b, int(n_cols), int(BLOCK_SIZE), not aligned),
-    )
+    with device_context(a.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            (n_rows, 1, 1),
+            _geglu_bwd_kernel_ct,
+            (dc, a, b, int(n_cols), int(BLOCK_SIZE), not aligned),
+        )
     return a.view(*ori_shape), b.view(*ori_shape)
 
 

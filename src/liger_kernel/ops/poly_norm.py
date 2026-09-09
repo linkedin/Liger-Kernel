@@ -6,6 +6,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 from liger_kernel.ops.utils import set_large_grf_mode
@@ -239,21 +240,22 @@ def poly_norm_forward(X, W, B, eps=1e-6):
         set_large_grf_mode(kernel_args)
 
     # Launch kernel
-    _poly_norm_forward_kernel[(n_rows,)](
-        Y,
-        Y.stride(0),
-        X,
-        X.stride(0),
-        W,
-        B,
-        RSTD,
-        RSTD.stride(0),
-        n_cols,
-        eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        **kernel_args,
-    )
+    with device_context(X.device):
+        _poly_norm_forward_kernel[(n_rows,)](
+            Y,
+            Y.stride(0),
+            X,
+            X.stride(0),
+            W,
+            B,
+            RSTD,
+            RSTD.stride(0),
+            n_cols,
+            eps,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            **kernel_args,
+        )
 
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps
 
@@ -310,26 +312,27 @@ def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place):
         set_large_grf_mode(kernel_args)
 
     # Launch backward kernel
-    _poly_norm_backward_kernel[grid](
-        dY,
-        dY.stride(0),
-        dX,
-        dX.stride(0),
-        X,
-        X.stride(0),
-        W,
-        RSTD,
-        RSTD.stride(0),
-        _dW,
-        _dW.stride(0),
-        _dB,
-        n_rows,
-        n_cols,
-        rows_per_program,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        **kernel_args,
-    )
+    with device_context(X.device):
+        _poly_norm_backward_kernel[grid](
+            dY,
+            dY.stride(0),
+            dX,
+            dX.stride(0),
+            X,
+            X.stride(0),
+            W,
+            RSTD,
+            RSTD.stride(0),
+            _dW,
+            _dW.stride(0),
+            _dB,
+            n_rows,
+            n_cols,
+            rows_per_program,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            **kernel_args,
+        )
 
     # Reduce gradients across SMs
     dX = dX.view(*shape)

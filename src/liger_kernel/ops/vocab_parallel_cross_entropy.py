@@ -36,6 +36,7 @@ import torch.distributed as dist
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device
 
@@ -257,21 +258,22 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
         num_warps = _get_num_warps(block_size)
 
         x_2d = x.view(BT, v_local)
-        liger_vocab_parallel_ce_forward_kernel[(BT,)](
-            X_ptr=x_2d,
-            X_stride=x_2d.stride(0),
-            EXP_ptr=exp_buf,
-            EXP_stride=exp_buf.stride(0),
-            logits_max_ptr=logits_max,
-            Y_ptr=flat_target,
-            pred_ptr=predicted_local,
-            sum_exp_ptr=sum_exp_local,
-            vocab_start=vocab_start,
-            n_cols=v_local,
-            ignore_index=ignore_index,
-            BLOCK_SIZE=block_size,
-            num_warps=num_warps,
-        )
+        with device_context(x.device):
+            liger_vocab_parallel_ce_forward_kernel[(BT,)](
+                X_ptr=x_2d,
+                X_stride=x_2d.stride(0),
+                EXP_ptr=exp_buf,
+                EXP_stride=exp_buf.stride(0),
+                logits_max_ptr=logits_max,
+                Y_ptr=flat_target,
+                pred_ptr=predicted_local,
+                sum_exp_ptr=sum_exp_local,
+                vocab_start=vocab_start,
+                n_cols=v_local,
+                ignore_index=ignore_index,
+                BLOCK_SIZE=block_size,
+                num_warps=num_warps,
+            )
 
         # --- 4. AllReduces (no-ops at TP=1) ---
         if tp_distributed:
@@ -333,21 +335,22 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
         BT = exp_buf.size(0)
         num_warps = _get_num_warps(ctx.block_size)
 
-        liger_vocab_parallel_ce_backward_kernel[(BT,)](
-            EXP_ptr=exp_buf,
-            EXP_stride=exp_buf.stride(0),
-            sum_exp_ptr=sum_exp_global,
-            Y_ptr=flat_target,
-            grad_out_ptr=grad_out_flat,
-            vocab_start=ctx.vocab_start,
-            n_cols=ctx.v_local,
-            ignore_index=ctx.ignore_index,
-            alpha_eff=ctx.alpha_eff,
-            eps_eff=ctx.eps_eff,
-            HAS_LABEL_SMOOTHING=ctx.has_smoothing,
-            BLOCK_SIZE=ctx.block_size,
-            num_warps=num_warps,
-        )
+        with device_context(exp_buf.device):
+            liger_vocab_parallel_ce_backward_kernel[(BT,)](
+                EXP_ptr=exp_buf,
+                EXP_stride=exp_buf.stride(0),
+                sum_exp_ptr=sum_exp_global,
+                Y_ptr=flat_target,
+                grad_out_ptr=grad_out_flat,
+                vocab_start=ctx.vocab_start,
+                n_cols=ctx.v_local,
+                ignore_index=ctx.ignore_index,
+                alpha_eff=ctx.alpha_eff,
+                eps_eff=ctx.eps_eff,
+                HAS_LABEL_SMOOTHING=ctx.has_smoothing,
+                BLOCK_SIZE=ctx.block_size,
+                num_warps=num_warps,
+            )
 
         s, b = ctx.orig_shape
         grad_input = exp_buf.to(ctx.orig_dtype).view(s, b, ctx.v_local)

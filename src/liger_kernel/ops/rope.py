@@ -2,6 +2,8 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
+
 
 @triton.jit
 def _triton_rope(
@@ -134,27 +136,28 @@ def rope_forward(q, k, cos, sin):
     sin = sin.contiguous()
     cos_batch_size = cos.shape[0]
 
-    _triton_rope[(n_row,)](
-        q,
-        q.stride(1),
-        k,
-        k.stride(1),
-        cos,
-        cos.stride(-2),
-        sin,
-        sin.stride(-2),
-        seq_len,
-        batch_size,
-        cos_batch_size,
-        n_q_head,
-        n_kv_head,
-        head_dim,
-        pad_n_q_head,
-        pad_n_kv_head,
-        pad_hd,
-        BLOCK_SIZE=BLOCK_SIZE,
-        BACKWARD_PASS=False,
-    )
+    with device_context(q.device):
+        _triton_rope[(n_row,)](
+            q,
+            q.stride(1),
+            k,
+            k.stride(1),
+            cos,
+            cos.stride(-2),
+            sin,
+            sin.stride(-2),
+            seq_len,
+            batch_size,
+            cos_batch_size,
+            n_q_head,
+            n_kv_head,
+            head_dim,
+            pad_n_q_head,
+            pad_n_kv_head,
+            pad_hd,
+            BLOCK_SIZE=BLOCK_SIZE,
+            BACKWARD_PASS=False,
+        )
     return q.transpose(1, 2), k.transpose(1, 2), cos, sin
 
 
@@ -177,27 +180,28 @@ def rope_backward(dq, dk, cos, sin):
     dk = dk.contiguous()
 
     # backward is similar to forward except swapping few ops
-    _triton_rope[(n_row,)](
-        dq,
-        dq.stride(1),
-        dk,
-        dk.stride(1),
-        cos,
-        cos.stride(-2),
-        sin,
-        sin.stride(-2),
-        seq_len,
-        batch_size,
-        cos_batch_size,
-        n_q_head,
-        n_kv_head,
-        head_dim,
-        pad_n_q_head,
-        pad_n_kv_head,
-        pad_hd,
-        BLOCK_SIZE=BLOCK_SIZE,
-        BACKWARD_PASS=True,
-    )
+    with device_context(dq.device):
+        _triton_rope[(n_row,)](
+            dq,
+            dq.stride(1),
+            dk,
+            dk.stride(1),
+            cos,
+            cos.stride(-2),
+            sin,
+            sin.stride(-2),
+            seq_len,
+            batch_size,
+            cos_batch_size,
+            n_q_head,
+            n_kv_head,
+            head_dim,
+            pad_n_q_head,
+            pad_n_kv_head,
+            pad_hd,
+            BLOCK_SIZE=BLOCK_SIZE,
+            BACKWARD_PASS=True,
+        )
     return dq.transpose(1, 2), dk.transpose(1, 2)
 
 

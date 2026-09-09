@@ -5,6 +5,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 MAX_FUSED_SIZE = 65536 // 4
@@ -124,24 +125,25 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
     else:
         scale = 1.0
 
-    _tv_distance_kernel[grid](
-        p,
-        p.stride(0),
-        q,
-        q.stride(0),
-        output_tensor,
-        output_tensor.stride(0),
-        grads,
-        grads.stride(0),
-        shift_labels if has_label else torch.empty(1, device=p.device),
-        ignore_index,
-        V,
-        scale,
-        BLOCK_SIZE=BLOCK_SIZE,
-        HAS_LABEL=has_label,
-        num_warps=num_warps,
-        reduction=reduction,
-    )
+    with device_context(p.device):
+        _tv_distance_kernel[grid](
+            p,
+            p.stride(0),
+            q,
+            q.stride(0),
+            output_tensor,
+            output_tensor.stride(0),
+            grads,
+            grads.stride(0),
+            shift_labels if has_label else torch.empty(1, device=p.device),
+            ignore_index,
+            V,
+            scale,
+            BLOCK_SIZE=BLOCK_SIZE,
+            HAS_LABEL=has_label,
+            num_warps=num_warps,
+            reduction=reduction,
+        )
 
     # Loss and gradients are already scaled inside the kernel — no separate division needed
     if reduction in (_REDUCTION_MODE_BATCHMEAN.value, _REDUCTION_MODE_MEAN.value):

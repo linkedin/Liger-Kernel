@@ -22,6 +22,7 @@ import torch
 from cuda.tile import RoundingMode as RMd
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 
 MAX_FUSED_SIZE = 65536
 
@@ -145,72 +146,74 @@ _dyt_bwd_kernel_nww8 = _dyt_bwd_kernel.replace_hints(num_worker_warps=8)
 
 
 def _dyt_forward_ct(x, alpha, gamma, beta):
-    HAVE_BETA = beta is not None
-    input_shape = x.shape
-    x_2d = x.view(-1, input_shape[-1])
-    M, N = x_2d.shape
+    with device_context(x.device):
+        HAVE_BETA = beta is not None
+        input_shape = x.shape
+        x_2d = x.view(-1, input_shape[-1])
+        M, N = x_2d.shape
 
-    BLOCK_N = min(MAX_FUSED_SIZE, _next_power_of_2(N))
-    num_col_blocks = (N + BLOCK_N - 1) // BLOCK_N
-    # Aligned fast path: single col-block + N is power-of-2 → all gathers/scatters
-    # are in-bounds, kernel compiles with check_bounds=False (no predicate masks).
-    check_bounds = not ((BLOCK_N == N) and (num_col_blocks == 1))
+        BLOCK_N = min(MAX_FUSED_SIZE, _next_power_of_2(N))
+        num_col_blocks = (N + BLOCK_N - 1) // BLOCK_N
+        # Aligned fast path: single col-block + N is power-of-2 → all gathers/scatters
+        # are in-bounds, kernel compiles with check_bounds=False (no predicate masks).
+        check_bounds = not ((BLOCK_N == N) and (num_col_blocks == 1))
 
-    y = torch.empty_like(x_2d)
-    beta_tensor = beta if HAVE_BETA else torch.empty(1, device=x.device, dtype=x.dtype)
+        y = torch.empty_like(x_2d)
+        beta_tensor = beta if HAVE_BETA else torch.empty(1, device=x.device, dtype=x.dtype)
 
-    ct.launch(
-        torch.cuda.current_stream(),
-        (num_col_blocks, M, 1),
-        _dyt_fwd_kernel,
-        (x_2d, y, alpha, gamma, beta_tensor, int(HAVE_BETA), bool(check_bounds), int(BLOCK_N)),
-    )
-    return y.view(input_shape)
+        ct.launch(
+            torch.cuda.current_stream(),
+            (num_col_blocks, M, 1),
+            _dyt_fwd_kernel,
+            (x_2d, y, alpha, gamma, beta_tensor, int(HAVE_BETA), bool(check_bounds), int(BLOCK_N)),
+        )
+        return y.view(input_shape)
 
 
 def _dyt_backward_ct(dy, x, alpha, gamma, beta):
-    HAVE_BETA = beta is not None
-    input_shape = x.shape
-    x_2d = x.view(-1, input_shape[-1])
-    dy_2d = dy.view(-1, input_shape[-1])
-    M, N = x_2d.shape
+    with device_context(x.device):
+        HAVE_BETA = beta is not None
+        input_shape = x.shape
+        x_2d = x.view(-1, input_shape[-1])
+        dy_2d = dy.view(-1, input_shape[-1])
+        M, N = x_2d.shape
 
-    NUM_SMS = torch.cuda.get_device_properties(x.device).multi_processor_count
-    BLOCK_N = min(_next_power_of_2(N), 1024)
-    num_col_blocks = (N + BLOCK_N - 1) // BLOCK_N
+        NUM_SMS = torch.cuda.get_device_properties(x.device).multi_processor_count
+        BLOCK_N = min(_next_power_of_2(N), 1024)
+        num_col_blocks = (N + BLOCK_N - 1) // BLOCK_N
 
-    dx = torch.empty_like(dy_2d)
-    # Per-block partials (match Triton): host reduces over dim 0
-    da_partial = torch.zeros(NUM_SMS, num_col_blocks, dtype=torch.float32, device=x.device)
-    dg_partial = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device)
-    db_partial = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device) if HAVE_BETA else None
+        dx = torch.empty_like(dy_2d)
+        # Per-block partials (match Triton): host reduces over dim 0
+        da_partial = torch.zeros(NUM_SMS, num_col_blocks, dtype=torch.float32, device=x.device)
+        dg_partial = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device)
+        db_partial = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device) if HAVE_BETA else None
 
-    db_tensor = db_partial if HAVE_BETA else torch.empty(1, device=x.device, dtype=torch.float32)
+        db_tensor = db_partial if HAVE_BETA else torch.empty(1, device=x.device, dtype=torch.float32)
 
-    ct.launch(
-        torch.cuda.current_stream(),
-        (num_col_blocks, NUM_SMS, 1),
-        _dyt_bwd_kernel_nww8,
-        (
-            dy_2d,
-            dx,
-            da_partial,
-            dg_partial,
-            db_tensor,
-            x_2d,
-            alpha,
-            gamma,
-            int(HAVE_BETA),
-            int(M),
-            int(BLOCK_N),
-            int(NUM_SMS),
-        ),
-    )
+        ct.launch(
+            torch.cuda.current_stream(),
+            (num_col_blocks, NUM_SMS, 1),
+            _dyt_bwd_kernel_nww8,
+            (
+                dy_2d,
+                dx,
+                da_partial,
+                dg_partial,
+                db_tensor,
+                x_2d,
+                alpha,
+                gamma,
+                int(HAVE_BETA),
+                int(M),
+                int(BLOCK_N),
+                int(NUM_SMS),
+            ),
+        )
 
-    da = da_partial.sum().to(x.dtype).unsqueeze(0)
-    dg = dg_partial.sum(0).to(gamma.dtype)
-    db = db_partial.sum(0).to(x.dtype) if HAVE_BETA else None
-    return dx.view(input_shape), da, dg, db
+        da = da_partial.sum().to(x.dtype).unsqueeze(0)
+        dg = dg_partial.sum(0).to(gamma.dtype)
+        db = db_partial.sum(0).to(x.dtype) if HAVE_BETA else None
+        return dx.view(input_shape), da, dg, db
 
 
 class LigerDyTFunction(torch.autograd.Function):

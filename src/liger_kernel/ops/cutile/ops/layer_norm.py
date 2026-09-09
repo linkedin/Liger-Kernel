@@ -22,6 +22,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 
 ConstBool = ct.Constant[bool]
@@ -220,23 +221,24 @@ def _layer_norm_forward_ct(X, W, B, eps):
     RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
 
     grid = (n_rows, 1, 1)
-    ct.launch(
-        torch.cuda.current_stream(),
-        grid,
-        _layer_norm_fwd_kernel_ct,
-        (
-            X2d,
-            Y,
-            W.contiguous(),
-            B.contiguous(),
-            Mean,
-            RSTD,
-            int(n_cols),
-            float(eps),
-            int(BLOCK_SIZE),
-            bool(aligned),
-        ),
-    )
+    with device_context(X.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            grid,
+            _layer_norm_fwd_kernel_ct,
+            (
+                X2d,
+                Y,
+                W.contiguous(),
+                B.contiguous(),
+                Mean,
+                RSTD,
+                int(n_cols),
+                float(eps),
+                int(BLOCK_SIZE),
+                bool(aligned),
+            ),
+        )
 
     return Y.view(*shape), X2d, Mean, RSTD, BLOCK_SIZE
 
@@ -256,22 +258,23 @@ def _layer_norm_backward_ct(dY, X, W, B, Mean, RSTD, BLOCK_SIZE, compute_dW=True
 
     # Fast path: skip DW/DB entirely if neither W nor B needs gradients.
     if not compute_dW and not compute_dB:
-        ct.launch(
-            torch.cuda.current_stream(),
-            (n_rows, 1, 1),
-            _layer_norm_bwd_dx_kernel_ct,
-            (
-                X_contig,
-                dY2d,
-                W_contig,
-                Mean,
-                RSTD,
-                DX,
-                int(n_cols),
-                int(BLOCK_SIZE),
-                bool(aligned),
-            ),
-        )
+        with device_context(X.device):
+            ct.launch(
+                torch.cuda.current_stream(),
+                (n_rows, 1, 1),
+                _layer_norm_bwd_dx_kernel_ct,
+                (
+                    X_contig,
+                    dY2d,
+                    W_contig,
+                    Mean,
+                    RSTD,
+                    DX,
+                    int(n_cols),
+                    int(BLOCK_SIZE),
+                    bool(aligned),
+                ),
+            )
         DX = DX.view(*shape)
         DW = torch.zeros_like(W)
         DB = torch.zeros_like(B)
@@ -283,27 +286,28 @@ def _layer_norm_backward_ct(dY, X, W, B, Mean, RSTD, BLOCK_SIZE, compute_dW=True
     DW_partial = torch.empty((num_programs, n_cols), dtype=torch.float32, device=W.device)
     DB_partial = torch.empty((num_programs, n_cols), dtype=torch.float32, device=W.device)
 
-    ct.launch(
-        torch.cuda.current_stream(),
-        (num_programs, 1, 1),
-        _layer_norm_bwd_combined_kernel_ct,
-        (
-            X_contig,
-            dY2d,
-            W_contig,
-            Mean,
-            RSTD,
-            DX,
-            DW_partial,
-            DB_partial,
-            int(n_rows),
-            int(n_cols),
-            int(num_programs),
-            int(rows_per_program),
-            int(BLOCK_SIZE),
-            bool(aligned),
-        ),
-    )
+    with device_context(X.device):
+        ct.launch(
+            torch.cuda.current_stream(),
+            (num_programs, 1, 1),
+            _layer_norm_bwd_combined_kernel_ct,
+            (
+                X_contig,
+                dY2d,
+                W_contig,
+                Mean,
+                RSTD,
+                DX,
+                DW_partial,
+                DB_partial,
+                int(n_rows),
+                int(n_cols),
+                int(num_programs),
+                int(rows_per_program),
+                int(BLOCK_SIZE),
+                bool(aligned),
+            ),
+        )
 
     DX = DX.view(*shape)
     DW = DW_partial.sum(dim=0).to(W.dtype)

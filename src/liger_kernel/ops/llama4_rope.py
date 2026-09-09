@@ -2,6 +2,8 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import device_context
+
 
 def _cast_and_contiguous(q, k, freqs_complex):
     # Align dtype: fp32 only when q is fp32; otherwise keep q dtype for perf
@@ -134,25 +136,26 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
     grid = (batch_size * seq_len, n_heads_max)
 
     # Launch kernel
-    _llama4_rope_kernel[grid](
-        q,
-        k,
-        freqs_cis,
-        q.stride(1),
-        k.stride(1),
-        q.stride(2),
-        k.stride(2),
-        freqs_cis.stride(0),
-        seq_len,
-        batch_size,
-        imag_sign,
-        head_dim_half,
-        n_q_heads,
-        n_k_heads,
-        BLOCK_SIZE,
-        num_warps=num_warps,
-        num_stages=2,
-    )
+    with device_context(q.device):
+        _llama4_rope_kernel[grid](
+            q,
+            k,
+            freqs_cis,
+            q.stride(1),
+            k.stride(1),
+            q.stride(2),
+            k.stride(2),
+            freqs_cis.stride(0),
+            seq_len,
+            batch_size,
+            imag_sign,
+            head_dim_half,
+            n_q_heads,
+            n_k_heads,
+            BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=2,
+        )
 
     # Cast back to original dtype only if it differs from compute dtype
     if q.dtype != original_dtype:

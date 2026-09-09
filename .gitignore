@@ -28,3 +28,6 @@ benchmark/visualizations
 
 # Liger CUTE kernels build artifacts
 liger_cute_kernels/build*
+
+# CodeGraph local index
+.codegraph/

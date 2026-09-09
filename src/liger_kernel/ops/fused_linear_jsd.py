@@ -13,6 +13,7 @@ import liger_kernel.functional  # noqa: F401
 from liger_kernel.backends import dispatch
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import element_mul_kernel
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device
@@ -228,35 +229,36 @@ def fused_linear_jsd_forward(
 def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
     # Skip the elementwise scale when JSD is the final loss and its upstream
     # gradient is exactly 1.0.
-    if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        return grad_input, grad_weight
+    with device_context(grad_input.device):
+        if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
+            return grad_input, grad_weight
 
-    BT, H = grad_input.shape
-    n_rows = BT
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+        BT, H = grad_input.shape
+        n_rows = BT
+        BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
 
-    element_mul_kernel[(n_rows,)](
-        grad_input,
-        grad_input.stride(-2),
-        grad_output,
-        H,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=32 if not is_hip() else 16,
-    )
-
-    if grad_weight is not None:
-        V, H = grad_weight.shape
-        n_rows = V
         element_mul_kernel[(n_rows,)](
-            grad_weight,
-            grad_weight.stride(-2),
+            grad_input,
+            grad_input.stride(-2),
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
 
-    return grad_input, grad_weight
+        if grad_weight is not None:
+            V, H = grad_weight.shape
+            n_rows = V
+            element_mul_kernel[(n_rows,)](
+                grad_weight,
+                grad_weight.stride(-2),
+                grad_output,
+                H,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=32 if not is_hip() else 16,
+            )
+
+        return grad_input, grad_weight
 
 
 class LigerFusedLinearJSDFunction(torch.autograd.Function):
