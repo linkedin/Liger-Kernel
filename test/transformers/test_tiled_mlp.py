@@ -217,6 +217,37 @@ def test_tiled_swiglu_correctness(
     torch.testing.assert_close(x1.grad, x2.grad, atol=atol, rtol=rtol, msg="Input gradients don't match")
 
 
+@pytest.mark.parametrize(
+    "regular_mlp_cls, tiled_mlp_cls, hidden_act",
+    [
+        (LigerGEGLUMLP, LigerTiledGEGLUMLP, "gelu_pytorch_tanh"),
+        (LigerSwiGLUMLP, LigerTiledSwiGLUMLP, "silu"),
+    ],
+)
+def test_tiled_mlp_accumulates_parameter_gradients_across_microbatches(regular_mlp_cls, tiled_mlp_cls, hidden_act):
+    """Parameter gradients must accumulate when the input does not require gradients."""
+    torch.manual_seed(0)
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act=hidden_act)
+    regular_mlp = regular_mlp_cls(config=config).to(device)
+    tiled_mlp = tiled_mlp_cls(config=config, num_shards=4).to(device)
+    tiled_mlp.load_state_dict(regular_mlp.state_dict())
+
+    for seq_len in (127, 65):
+        x = torch.randn(1, seq_len, config.hidden_size, device=device) * 0.1
+        output_grad = torch.randn(1, seq_len, config.hidden_size, device=device)
+
+        regular_output = regular_mlp(x)
+        tiled_output = tiled_mlp(x)
+        assert tiled_output.requires_grad
+        torch.testing.assert_close(tiled_output, regular_output, atol=1e-5, rtol=1e-5)
+
+        regular_output.backward(output_grad)
+        tiled_output.backward(output_grad)
+
+    for regular_param, tiled_param in zip(regular_mlp.parameters(), tiled_mlp.parameters()):
+        torch.testing.assert_close(tiled_param.grad, regular_param.grad, atol=1e-5, rtol=1e-5)
+
+
 def _test_fsdp_tiled_mlp(
     rank, world_size, mlp_kind, num_shards, bsz, seq_len, hidden_size, intermediate_size, file_name
 ):
@@ -308,6 +339,36 @@ def test_fsdp_tiled_mlp(mlp_kind, world_size, num_shards, bsz, seq_len, hidden_s
         mp.spawn(
             _test_fsdp_tiled_mlp,
             args=(world_size, mlp_kind, num_shards, bsz, seq_len, hidden_size, intermediate_size, f.name),
+            nprocs=world_size,
+            join=True,
+        )
+
+
+def _test_fsdp_flat_backward(rank, world_size, file_name):
+    torch.distributed.init_process_group(
+        backend=infer_comm_backend(), init_method=f"file://{file_name}", rank=rank, world_size=world_size
+    )
+    torch.cuda.set_device(rank)
+    device = f"cuda:{rank}"
+    torch.manual_seed(42)
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act="silu")
+    model = FSDP(LigerTiledSwiGLUMLP(config=config, num_shards=4).to(device), use_orig_params=False, device_id=rank)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    x = torch.randn(2, 127, config.hidden_size, device=device, requires_grad=True)
+
+    model(x).sum().backward()
+    optimizer.step()
+    torch.distributed.destroy_process_group()
+
+
+@pytest.mark.skipif(_NDEV < 2, reason="requires at least 2 GPUs")
+def test_fsdp_flat_tiled_mlp_backward():
+    """Regression test for issue #893 with FSDP's default flat parameters."""
+    world_size = 2
+    with tempfile.NamedTemporaryFile() as f:
+        mp.spawn(
+            _test_fsdp_flat_backward,
+            args=(world_size, f.name),
             nprocs=world_size,
             join=True,
         )
