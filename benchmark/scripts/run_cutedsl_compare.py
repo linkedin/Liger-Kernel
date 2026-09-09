@@ -3,6 +3,7 @@
 Workflow:
     python scripts/run_cutedsl_compare.py --kernel cross_entropy [benchmark args...]
     python scripts/run_cutedsl_compare.py --kernel fused_linear_cross_entropy [benchmark args...]
+    python scripts/run_cutedsl_compare.py --kernel grpo_loss [benchmark args...]
 
 This driver spawns the per-kernel benchmark script in two subprocesses with
 different env vars, so all three series (liger_triton / liger_cutedsl /
@@ -22,6 +23,7 @@ import sys
 CUTEDSL_ENABLED_KERNELS = [
     "cross_entropy",
     "fused_linear_cross_entropy",
+    "grpo_loss",
     "rms_norm",
 ]
 

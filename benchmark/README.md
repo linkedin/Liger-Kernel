@@ -158,7 +158,7 @@ device) that is opt-in via the `LIGER_KERNEL_IMPL` environment variable:
 * **CuTile** (`LIGER_KERNEL_IMPL=cutile`) — for `cross_entropy`, `fused_linear_jsd`,
   `geglu`, `jsd`, `layer_norm`.
 * **CuTe-DSL** (`LIGER_KERNEL_IMPL=cutedsl`) — for `cross_entropy`,
-  `fused_linear_cross_entropy`, and `rms_norm`.
+  `fused_linear_cross_entropy`, `grpo_loss`, and `rms_norm`.
 
 To benchmark a kernel's Triton and alternative backend **side by side in one
 CSV**, use the corresponding compare driver. It runs the standard
@@ -175,6 +175,8 @@ python run_cutile_compare.py --kernel cross_entropy [--model llama_3_8b] [--over
 # Triton vs CuTe-DSL (writes data/all_benchmark_data_cutedsl.csv)
 python run_cutedsl_compare.py --kernel cross_entropy [--overwrite]
 python run_cutedsl_compare.py --kernel fused_linear_cross_entropy \
+    [--model llama_3_8b] [--overwrite]
+python run_cutedsl_compare.py --kernel grpo_loss \
     [--model llama_3_8b] [--overwrite]
 ```
 
