@@ -104,6 +104,7 @@ __all__ = [
     "K_ALIGNMENT",
     "run_epilogue_gemm",
     "run_grouped_epilogue_gemm",
+    "run_grouped_epilogue_gemm_stacked",
 ]
 
 
@@ -422,7 +423,7 @@ def _kernel(
     thr_mma = tiled_mma.get_slice(mma_tile_coord_v)
     t_cg_a = thr_mma.partition_A(g_a_mkl)
     t_cg_b = thr_mma.partition_B(g_b_nkl)
-    m_c_mnl = cute.make_identity_tensor((m_a_mkl.shape[0], m_b_nkl.shape[0], 1))
+    m_c_mnl = cute.make_identity_tensor((m_a_mkl.shape[0], cute.size(m_b_nkl, mode=[0]), 1))
     g_c_mnl = cute.local_tile(
         m_c_mnl,
         cute.slice_(_MMA_TILER, (None, None, 0)),
@@ -550,7 +551,7 @@ def _kernel(
             _NUM_ACC_STAGES,
         )
         m = m_a_mkl.shape[0]
-        n = m_b_nkl.shape[0]
+        n = cute.size(m_b_nkl, mode=[0])
 
         while work_tile.is_valid_tile:
             tile_coord = work_tile.tile_idx
@@ -687,6 +688,7 @@ def _host(
     num_ab_stages: cutlass.Constexpr,
     epilogue: cutlass.Constexpr,
     epilogue_fragments: cutlass.Constexpr,
+    b_stacked: cutlass.Constexpr,
     use_tma_output: cutlass.Constexpr,
     swizzle_size: cutlass.Constexpr,
     max_active_clusters: cutlass.Constexpr,
@@ -696,10 +698,27 @@ def _host(
         m_a.iterator,
         cute.append(m_a.layout, cute.make_layout(1)),
     )
-    m_b_nkl = cute.make_tensor(
-        m_b.iterator,
-        cute.append(m_b.layout, cute.make_layout(1)),
-    )
+    if const_expr(b_stacked):
+        # ``m_b`` is a plain row-major ``[2N', K]`` stack (gate rows ``[0:N']``,
+        # up rows ``[N':2N']``). Present it to the grouped kernel with a nested
+        # N-layout so that N-tile ``t`` gathers ``[gate 0:32, up 0:32, gate
+        # 32:64, up 32:64, ...]`` -- byte-identical to the interleaved packed
+        # tensor the epilogue expects, but WITHOUT any physical repack.
+        b_k = cute.size(m_b, mode=[1])
+        b_np = cute.size(m_b, mode=[0]) // 2
+        b_t = b_np // _EPI_N
+        m_b_nkl = cute.make_tensor(
+            m_b.iterator,
+            cute.make_layout(
+                ((_EPI_N, 2, b_t), b_k, 1),
+                stride=((b_k, b_np * b_k, _EPI_N * b_k), 1, 0),
+            ),
+        )
+    else:
+        m_b_nkl = cute.make_tensor(
+            m_b.iterator,
+            cute.append(m_b.layout, cute.make_layout(1)),
+        )
     m_out_mnl = cute.make_tensor(
         m_out.iterator,
         cute.append(m_out.layout, cute.make_layout(1)),
@@ -774,7 +793,7 @@ def _host(
         _EPI_TILE,
     )
 
-    m_c_mnl = cute.make_identity_tensor((m_a_mkl.shape[0], m_b_nkl.shape[0], 1))
+    m_c_mnl = cute.make_identity_tensor((m_a_mkl.shape[0], cute.size(m_b_nkl, mode=[0]), 1))
     g_c_mnl = cute.zipped_divide(
         m_c_mnl,
         tiler=(_CTA_M, _MMA_N),
@@ -975,7 +994,7 @@ def _select_epilogue_config(a):
     return _NUM_AB_STAGES, 1
 
 
-def _run_epilogue_gemm(a, b, out, epilogue, epilogue_fragments):
+def _run_epilogue_gemm(a, b, out, epilogue, epilogue_fragments, b_stacked=False):
     _validate_epilogue_inputs(a, b, out, epilogue_fragments)
     epilogue_key = _validate_epilogue_callback(epilogue, epilogue_fragments + 1)
     current_stream = _current_stream(a.device)
@@ -999,6 +1018,7 @@ def _run_epilogue_gemm(a, b, out, epilogue, epilogue_fragments):
         out.dtype,
         epilogue_key,
         epilogue_fragments,
+        b_stacked,
         use_tma_output,
         swizzle_size,
         num_ab_stages,
@@ -1032,6 +1052,7 @@ def _run_epilogue_gemm(a, b, out, epilogue, epilogue_fragments):
             num_ab_stages,
             epilogue,
             epilogue_fragments,
+            b_stacked,
             use_tma_output,
             swizzle_size,
             max_active_clusters,
@@ -1068,3 +1089,17 @@ def run_grouped_epilogue_gemm(a, packed_b, out, epilogue):
     """
     with _device_guard(a.device):
         _run_epilogue_gemm(a, packed_b, out, epilogue, epilogue_fragments=2)
+
+
+def run_grouped_epilogue_gemm_stacked(a, stacked_b, out, epilogue):
+    """Grouped epilogue GEMM over a plainly *stacked* ``[2N', K]`` weight.
+
+    Identical numerics to :func:`run_grouped_epilogue_gemm`, but ``stacked_b``
+    holds the two logical matrices as a simple concatenation (rows ``[0:N']``
+    then ``[N':2N']``) instead of the bespoke 32-row interleave. The kernel
+    reinterprets the strides on the fly (nested N-layout), so no pre-packing and
+    no extra weight copy is needed -- the epilogue still sees adjacent
+    ``(first, second)`` fragments.
+    """
+    with _device_guard(a.device):
+        _run_epilogue_gemm(a, stacked_b, out, epilogue, epilogue_fragments=2, b_stacked=True)
