@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
+import sys
 
 logger = logging.getLogger(__name__)
 
 _PATCH_MARKER = "__liger_patched__"
 
 
+def _replace_loaded_binding(module_name: str, symbol_name: str, original, replacement) -> None:
+    """Update a known by-name import without clobbering third-party patches."""
+    module = sys.modules.get(module_name)
+    if module is not None and getattr(module, symbol_name, None) is original:
+        setattr(module, symbol_name, replacement)
+
+
 def apply_liger_kernel_to_megatron(
     rms_norm: bool = True,
     cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = False,
     swiglu: bool = False,
 ) -> None:
     """Patch Megatron-Core to use Liger Triton kernels.
@@ -39,6 +50,11 @@ def apply_liger_kernel_to_megatron(
             wrapper additionally honors a runtime ``label_smoothing``
             argument, matching native's
             ``(logits, target, label_smoothing=0.0, tp_group=None)``.
+        fused_linear_cross_entropy: When ``True`` inject Liger's fused local
+            output projection and vocab-parallel cross-entropy through
+            ``GPTModel._postprocess`` for supported native
+            ``ColumnParallelLinear`` training configurations. This is opt-in
+            and independent of ``cross_entropy``.
         swiglu: When ``True`` replace
             ``megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction`` with Liger's
             Triton SiLU-multiply kernel, covering the dense ``MLP`` and the MoE
@@ -68,6 +84,8 @@ def apply_liger_kernel_to_megatron(
     if cross_entropy:
         _patch_fused_vocab_parallel_cross_entropy()
         _patch_vocab_parallel_cross_entropy()
+    if fused_linear_cross_entropy:
+        _patch_gpt_fused_linear_cross_entropy()
     if swiglu:
         _patch_swiglu_function()
 
@@ -183,7 +201,14 @@ def _patch_fused_vocab_parallel_cross_entropy() -> None:
         )
 
     if getattr(fused_ce.fused_vocab_parallel_cross_entropy, _PATCH_MARKER, False):
-        return  # already patched
+        replacement = fused_ce.fused_vocab_parallel_cross_entropy
+        _replace_loaded_binding(
+            "megatron.core.models.common.language_module.language_module",
+            "fused_vocab_parallel_cross_entropy",
+            replacement.__wrapped__,
+            replacement,
+        )
+        return
 
     original = fused_ce.fused_vocab_parallel_cross_entropy
 
@@ -197,10 +222,14 @@ def _patch_fused_vocab_parallel_cross_entropy() -> None:
     setattr(liger_fused_vocab_parallel_cross_entropy, _PATCH_MARKER, True)
     setattr(liger_fused_vocab_parallel_cross_entropy, "__wrapped__", original)
     fused_ce.fused_vocab_parallel_cross_entropy = liger_fused_vocab_parallel_cross_entropy
-
-    logger.info(
-        "Patched megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy with Liger cross-entropy."
+    _replace_loaded_binding(
+        "megatron.core.models.common.language_module.language_module",
+        "fused_vocab_parallel_cross_entropy",
+        original,
+        liger_fused_vocab_parallel_cross_entropy,
     )
+
+    logger.info("Patched Megatron's fused vocab-parallel cross-entropy definition and loaded LanguageModule binding.")
 
 
 def _patch_vocab_parallel_cross_entropy() -> None:
@@ -229,7 +258,14 @@ def _patch_vocab_parallel_cross_entropy() -> None:
         )
 
     if getattr(unfused_ce.vocab_parallel_cross_entropy, _PATCH_MARKER, False):
-        return  # already patched
+        replacement = unfused_ce.vocab_parallel_cross_entropy
+        _replace_loaded_binding(
+            "megatron.core.tensor_parallel",
+            "vocab_parallel_cross_entropy",
+            replacement.__wrapped__,
+            replacement,
+        )
+        return
 
     original = unfused_ce.vocab_parallel_cross_entropy
 
@@ -260,10 +296,57 @@ def _patch_vocab_parallel_cross_entropy() -> None:
     setattr(liger_vocab_parallel_cross_entropy, _PATCH_MARKER, True)
     setattr(liger_vocab_parallel_cross_entropy, "__wrapped__", original)
     unfused_ce.vocab_parallel_cross_entropy = liger_vocab_parallel_cross_entropy
-
-    logger.info(
-        "Patched megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy with Liger cross-entropy."
+    _replace_loaded_binding(
+        "megatron.core.tensor_parallel",
+        "vocab_parallel_cross_entropy",
+        original,
+        liger_vocab_parallel_cross_entropy,
     )
+
+    logger.info("Patched Megatron's unfused vocab-parallel cross-entropy definition and tensor_parallel export.")
+
+
+def _patch_gpt_fused_linear_cross_entropy() -> None:
+    """Inject Liger FLCE through Megatron's GPT output-processor hook."""
+    try:
+        import megatron.core.models.gpt.gpt_model as gpt_model
+    except ImportError as exc:
+        raise ImportError(
+            "apply_liger_kernel_to_megatron(fused_linear_cross_entropy=True) requires "
+            "megatron-core with megatron.core.models.gpt.gpt_model.GPTModel."
+        ) from exc
+
+    if not hasattr(gpt_model, "GPTModel") or not hasattr(gpt_model.GPTModel, "_postprocess"):
+        raise ImportError(
+            "megatron.core.models.gpt.gpt_model.GPTModel._postprocess was not found. "
+            "The symbol path may have changed in your Megatron-Core version."
+        )
+
+    current = gpt_model.GPTModel._postprocess
+    if getattr(current, _PATCH_MARKER, False):
+        return
+    signature = inspect.signature(current)
+    if not {"labels", "output_processor"} <= signature.parameters.keys():
+        raise ImportError(
+            "Megatron GPTModel._postprocess does not expose the labels and output_processor hooks "
+            "required by Liger FLCE. Upgrade to Megatron-Core 0.18 or newer."
+        )
+
+    from liger_kernel.megatron.fused_linear_cross_entropy import (
+        liger_megatron_fused_linear_cross_entropy_output_processor,
+    )
+
+    @functools.wraps(current)
+    def liger_postprocess(self, *args, **kwargs):
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        if bound.arguments["labels"] is not None and bound.arguments["output_processor"] is None:
+            bound.arguments["output_processor"] = liger_megatron_fused_linear_cross_entropy_output_processor
+        return current(*bound.args, **bound.kwargs)
+
+    setattr(liger_postprocess, _PATCH_MARKER, True)
+    gpt_model.GPTModel._postprocess = liger_postprocess
+    logger.info("Patched Megatron GPTModel._postprocess to inject Liger fused linear cross-entropy.")
 
 
 def _patch_swiglu_function() -> None:
