@@ -48,6 +48,16 @@ Requested vs. effective chunk size: a chunk larger than the token count ``N`` is
 clamped to ``N``; the table reports the ``chunk`` you asked for and the
 ``eff_chunk`` actually used, so a clamp is never mistaken for the request.
 
+Cross-chunk ``dW`` accumulator (``--accum-dtype``): ``fp32`` (the default, kept for
+backward compatibility) passes ``torch.float32`` to every backend so the ``dW``
+accumulation precision is matched across ``triton`` / ``cutedsl`` / ``cutile``.
+``default`` passes ``None`` and lets each backend apply its own policy: with the
+BF16 weights used here ``triton`` and the native ``cutedsl`` path store the
+cross-chunk ``dW`` in **BF16**, while ``cutile`` **always** retains an **FP32**
+accumulator even when ``None`` is requested. The header states the requested mode
+and the table's ``eff_accum`` column reports the effective accumulator per backend,
+so the ``default`` panel is never mislabelled as precision-matched.
+
 Results are printed to stdout only — no CSV is written into the repository.
 
 Example::
@@ -55,6 +65,10 @@ Example::
     .venv/bin/python benchmark/scripts/benchmark_flce_backends.py \\
         --backends all3 --tokens 4096 --hidden-size 2048 --vocab-size 32000 \\
         --chunk-sizes 256 1024 4096
+
+    # per-backend default accumulator policy (triton/cutedsl BF16, cutile FP32):
+    .venv/bin/python benchmark/scripts/benchmark_flce_backends.py \\
+        --backends all3 --accum-dtype default
 """
 
 from __future__ import annotations
@@ -67,6 +81,10 @@ import torch
 
 _ACCUM_DTYPE = torch.float32
 _DTYPE = torch.bfloat16
+
+# ``--accum-dtype`` maps a requested mode onto the value passed at Function slot 11:
+# ``fp32`` -> torch.float32 (matched precision), ``default`` -> None (per-backend policy).
+_ACCUM_DTYPE_CHOICES = {"fp32": torch.float32, "default": None}
 
 _MODULE_PATHS = {
     "triton": "liger_kernel.ops.fused_linear_cross_entropy",
@@ -144,6 +162,21 @@ def _resolve_backends(requested, cc):
     return list(requested)
 
 
+def _effective_accum(name, requested):
+    """Human label of the *effective* cross-chunk ``dW`` accumulator for BF16 weights.
+
+    ``fp32`` forces ``torch.float32`` on every backend. Under ``default`` (``None``
+    passed through) the native ``triton`` / ``cutedsl`` paths store the cross-chunk
+    ``dW`` in BF16 to match the BF16 weights, while ``cutile`` *always* retains an
+    FP32 accumulator regardless — so the two are not precision-matched.
+    """
+    if requested == "fp32":
+        return "fp32"
+    if name == "cutile":
+        return "fp32"
+    return "bf16"
+
+
 def _build_inputs(tokens, hidden, vocab, device, seed=0):
     """Deterministic BF16 inputs — identical values reused for every backend."""
     generator = torch.Generator(device=device).manual_seed(seed)
@@ -153,9 +186,11 @@ def _build_inputs(tokens, hidden, vocab, device, seed=0):
     return x, w, target
 
 
-def _apply(fn, x, w, target, chunk_size):
-    # 15 base positional args + (ce_impl, ce_mode, chunk_size); accum_dtype=float32
-    # so the dW accumulation precision matches across triton / cutedsl / cutile.
+def _apply(fn, x, w, target, chunk_size, accum_dtype=_ACCUM_DTYPE):
+    # 15 base positional args + (ce_impl, ce_mode, chunk_size). ``accum_dtype`` is the
+    # cross-chunk dW accumulator at slot 11: torch.float32 (matched precision) or None
+    # (per-backend policy — see _effective_accum). Threaded as a parameter, never a
+    # mutable global, so one process can compare modes without state leak.
     loss, _, _, _ = fn.apply(
         x,
         w,
@@ -168,7 +203,7 @@ def _apply(fn, x, w, target, chunk_size):
         "mean",  # reduction
         None,  # softcap
         False,  # return_z_loss
-        _ACCUM_DTYPE,  # accum_dtype
+        accum_dtype,  # accum_dtype
         False,  # use_token_scaling
         False,  # return_token_accuracy
         False,  # return_predicted_tokens
@@ -179,16 +214,16 @@ def _apply(fn, x, w, target, chunk_size):
     return loss
 
 
-def _one_iteration(fn, x, w, target, chunk_size, upstream):
+def _one_iteration(fn, x, w, target, chunk_size, upstream, accum_dtype=_ACCUM_DTYPE):
     x.grad = None
     w.grad = None
-    loss = _apply(fn, x, w, target, chunk_size)
+    loss = _apply(fn, x, w, target, chunk_size, accum_dtype=accum_dtype)
     loss.backward(upstream)
 
 
-def _loss_value(fn, x, w, target, chunk_size):
+def _loss_value(fn, x, w, target, chunk_size, accum_dtype=_ACCUM_DTYPE):
     """Return a representative loss as a Python float, keeping no autograd graph alive."""
-    loss = _apply(fn, x, w, target, chunk_size)
+    loss = _apply(fn, x, w, target, chunk_size, accum_dtype=accum_dtype)
     value = float(loss.detach())
     del loss
     x.grad = None
@@ -196,13 +231,13 @@ def _loss_value(fn, x, w, target, chunk_size):
     return value
 
 
-def _time_backend(fn, x, w, target, chunk_size, warmup, iters):
+def _time_backend(fn, x, w, target, chunk_size, warmup, iters, accum_dtype=_ACCUM_DTYPE):
     upstream = torch.ones((), device=x.device, dtype=torch.float32)
 
     # One unconditional compile pass (excluded) so warmup may legitimately be 0.
-    _one_iteration(fn, x, w, target, chunk_size, upstream)
+    _one_iteration(fn, x, w, target, chunk_size, upstream, accum_dtype=accum_dtype)
     for _ in range(warmup):
-        _one_iteration(fn, x, w, target, chunk_size, upstream)
+        _one_iteration(fn, x, w, target, chunk_size, upstream, accum_dtype=accum_dtype)
 
     # Baseline must be input-only: drop both leaf grads before snapshotting.
     x.grad = None
@@ -212,7 +247,7 @@ def _time_backend(fn, x, w, target, chunk_size, warmup, iters):
     # Dedicated memory probe (separate from the timed loop for a precise peak).
     torch.cuda.reset_peak_memory_stats(x.device)
     baseline = torch.cuda.memory_allocated(x.device)
-    _one_iteration(fn, x, w, target, chunk_size, upstream)
+    _one_iteration(fn, x, w, target, chunk_size, upstream, accum_dtype=accum_dtype)
     torch.cuda.synchronize()
     peak = torch.cuda.max_memory_allocated(x.device)
     incremental_peak_mb = max(0.0, (peak - baseline) / (1024**2))
@@ -223,7 +258,7 @@ def _time_backend(fn, x, w, target, chunk_size, warmup, iters):
     ends = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
     for i in range(iters):
         starts[i].record()
-        _one_iteration(fn, x, w, target, chunk_size, upstream)
+        _one_iteration(fn, x, w, target, chunk_size, upstream, accum_dtype=accum_dtype)
         ends[i].record()
     torch.cuda.synchronize()
 
@@ -240,26 +275,45 @@ def _run(args):
     for name in backends:
         _check_backend_supported(name, cc)
 
+    requested = args.accum_dtype
+    accum_value = _ACCUM_DTYPE_CHOICES[requested]
+    if requested == "fp32":
+        accum_note = "cross-chunk dW accumulator forced to FP32 on every backend (precision matched)"
+    else:
+        accum_note = (
+            "per-backend accumulator policy for BF16 weights: triton/cutedsl store cross-chunk dW in "
+            "BF16, cutile always retains an FP32 accumulator (NOT precision matched)"
+        )
+
     print(
         f"device={torch.cuda.get_device_name(device)} cc={cc} "
         f"tokens={args.tokens} hidden={args.hidden_size} vocab={args.vocab_size} "
-        f"dtype={_DTYPE} accum_dtype={_ACCUM_DTYPE}"
+        f"dtype={_DTYPE} accum_dtype_requested={requested} ({accum_note})"
     )
-    header = f"{'backend':<10} {'chunk':>8} {'eff_chunk':>10} {'median_ms':>12} {'peak_MiB':>12} {'loss':>12}"
+    header = (
+        f"{'backend':<10} {'chunk':>8} {'eff_chunk':>10} {'eff_accum':>10} "
+        f"{'median_ms':>12} {'peak_MiB':>12} {'loss':>12}"
+    )
     print(header)
     print("-" * len(header))
 
     for name in backends:
         fn = _load_backend(name)
+        eff_accum = _effective_accum(name, requested)
         for chunk_size in args.chunk_sizes:
             effective = min(chunk_size, args.tokens)
             x, w, target = _build_inputs(args.tokens, args.hidden_size, args.vocab_size, device, seed=args.seed)
             x.requires_grad_(True)
             w.requires_grad_(True)
             # Representative loss (recomputed cleanly, no graph retained into timing).
-            loss_val = _loss_value(fn, x, w, target, chunk_size)
-            median_ms, peak_mb = _time_backend(fn, x, w, target, chunk_size, args.warmup, args.iters)
-            print(f"{name:<10} {chunk_size:>8} {effective:>10} {median_ms:>12.4f} {peak_mb:>12.2f} {loss_val:>12.5f}")
+            loss_val = _loss_value(fn, x, w, target, chunk_size, accum_dtype=accum_value)
+            median_ms, peak_mb = _time_backend(
+                fn, x, w, target, chunk_size, args.warmup, args.iters, accum_dtype=accum_value
+            )
+            print(
+                f"{name:<10} {chunk_size:>8} {effective:>10} {eff_accum:>10} "
+                f"{median_ms:>12.4f} {peak_mb:>12.2f} {loss_val:>12.5f}"
+            )
             # Drop this shape's tensors before the next backend/chunk allocates.
             del x, w, target
 
@@ -301,6 +355,17 @@ def _build_parser():
         "--warmup", type=_non_negative_int, default=5, help="warmup iterations excluded from timing (default: 5)"
     )
     parser.add_argument("--iters", type=_positive_int, default=20, help="timed iterations, must be >= 1 (default: 20)")
+    parser.add_argument(
+        "--accum-dtype",
+        choices=sorted(_ACCUM_DTYPE_CHOICES),
+        default="fp32",
+        help=(
+            "cross-chunk dW accumulator policy: 'fp32' (default, backward-compatible) passes "
+            "torch.float32 to every backend so accumulation precision matches; 'default' passes None "
+            "so each backend uses its own policy — with BF16 weights triton/cutedsl accumulate dW in "
+            "BF16 while cutile always keeps an FP32 accumulator (default: fp32)"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0, help="RNG seed for the shared inputs (default: 0)")
     return parser
 

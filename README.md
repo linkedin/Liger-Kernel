@@ -263,9 +263,16 @@ This harness imports the backend `autograd.Function` classes **directly** (no di
     --chunk-sizes 256 1024 4096
 ```
 
+Pass `--accum-dtype default` to compare each backend's *native* accumulator policy instead of the FP32-matched default. **Warning:** the `default` panel is **not** precision-matched — with the BF16 weights used here `triton` and `cutedsl` accumulate the cross-chunk `dW` in **BF16** buffers while `cutile` **always** keeps an **FP32** accumulator:
+
+```bash
+.venv/bin/python benchmark/scripts/benchmark_flce_backends.py \
+    --backends all3 --accum-dtype default
+```
+
 - **Backends & arch policy.** `cutedsl` requires exactly SM100 (Blackwell, e.g. B200); `cutile` runs on SM90 (Hopper) **and** SM100. So on a B200 the default — and `--backends all3` — is all three (`triton`, `cutedsl`, `cutile`) in one process; on SM90 the default is `triton` + `cutile`; elsewhere `triton` only. Explicitly requesting a backend the GPU cannot run fails loudly rather than degrading, and a missing SDK surfaces its own `ImportError`.
 - **GEMM ownership differs per backend** (this is why the numbers are not apples-to-apples kernel isolation): `triton` runs the projection, `dX` and `dW` all through PyTorch/cuBLAS; `cutedsl`'s projection uses CuTe DSL SM100 GEMM; `dX`/`dW` use PyTorch/cuBLAS; `cutile` uses PyTorch BLAS for the projection and `dX` and only a cuTile MMA schedule for `dW`.
-- **Numerics.** Inputs are BF16 with `accum_dtype=torch.float32`, so the `dW` accumulation precision matches across backends. The `cutile` `dW` retains raw FP32 through accumulation and is cast to BF16 only after the combined upstream × global-mean scaling in backward, preserving the tiny-value range of the original path.
+- **Numerics & `--accum-dtype`.** Inputs are BF16. `--accum-dtype fp32` (the default, backward-compatible) forces `accum_dtype=torch.float32` on every backend so the cross-chunk `dW` accumulation precision matches, and the table's `eff_accum` column reads `fp32` for every row. `--accum-dtype default` instead passes `None` and lets each backend apply its own policy: with BF16 weights `triton` and the native `cutedsl` path store the cross-chunk `dW` in **BF16**, while `cutile` **always** retains an **FP32** accumulator — so that panel is **not** precision-matched (`eff_accum` reads `bf16` for `triton`/`cutedsl` and `fp32` for `cutile`). The requested mode is echoed in the header. The `cutile` `dW` retains raw FP32 through accumulation and is cast to BF16 only after the combined upstream × global-mean scaling in backward, preserving the tiny-value range of the original path.
 - **`chunk` vs `eff_chunk`.** A chunk larger than the token count is clamped to `B*T`; the table prints both the requested `chunk` and the `eff_chunk` actually used, so a clamp is never reported as the request.
 - **Peak memory** is the *incremental* peak **allocated** bytes (not reserved) above an input-only baseline: both leaf grads are cleared before the baseline is snapshotted, and a dedicated memory-probe iteration is kept separate from the timed loop.
 

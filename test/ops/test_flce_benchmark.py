@@ -202,6 +202,19 @@ class TestArgValidation:
         with pytest.raises(SystemExit):
             self._parse(["--warmup", "-1"])
 
+    def test_accum_dtype_defaults_to_fp32(self):
+        # Backward compatible: omitting the flag keeps the FP32-matched accumulator.
+        assert self._parse([]).accum_dtype == "fp32"
+
+    @pytest.mark.parametrize("mode", ["fp32", "default"])
+    def test_accum_dtype_choices_accepted(self, mode):
+        assert self._parse(["--accum-dtype", mode]).accum_dtype == mode
+
+    @pytest.mark.parametrize("bad", ["bf16", "none", "float32", "auto"])
+    def test_accum_dtype_rejects_unknown(self, bad):
+        with pytest.raises(SystemExit):
+            self._parse(["--accum-dtype", bad])
+
 
 class TestTimeBackendLifecycle:
     def _patch_cuda(self, monkeypatch, on_baseline=None):
@@ -278,6 +291,7 @@ class TestRunFailFast:
                 "warmup": 0,
                 "iters": 1,
                 "seed": 0,
+                "accum_dtype": "fp32",
             },
         )()
 
@@ -312,6 +326,132 @@ class TestRunFailFast:
         out = capsys.readouterr().out
         assert "triton" in out
         assert "eff_chunk" in out
+
+
+class _SlotRecFn(torch.autograd.Function):
+    """Records the value passed at FLCE Function slot 11 (``accum_dtype``)."""
+
+    seen = []
+
+    @staticmethod
+    def forward(ctx, x, w, target, *rest):
+        # rest = (bias, ce_weight, ignore_index, lse_square_scale, label_smoothing,
+        #         reduction, softcap, return_z_loss, accum_dtype, ...); slot 11 overall
+        # is accum_dtype, i.e. rest[8].
+        _SlotRecFn.seen.append(rest[8])
+        ctx.save_for_backward(x, w)
+        loss = (x.float() @ w.float().t()).sum()
+        return loss, None, None, None
+
+    @staticmethod
+    def backward(ctx, grad_loss, *rest):
+        x, w = ctx.saved_tensors
+        return (torch.ones_like(x) * grad_loss, torch.ones_like(w) * grad_loss) + (None,) * 16
+
+
+class TestAccumDtypeThreading:
+    def test_effective_accum_labels(self):
+        # fp32 forces FP32 everywhere; default keeps triton/cutedsl BF16 but cutile FP32.
+        for name in ("triton", "cutedsl", "cutile"):
+            assert bench._effective_accum(name, "fp32") == "fp32"
+        assert bench._effective_accum("triton", "default") == "bf16"
+        assert bench._effective_accum("cutedsl", "default") == "bf16"
+        assert bench._effective_accum("cutile", "default") == "fp32"
+
+    def test_apply_forwards_dtype_to_slot_11(self):
+        x, w, target = _cpu_inputs()
+        _SlotRecFn.seen = []
+        bench._apply(_SlotRecFn, x, w, target, None, accum_dtype=torch.float32)
+        bench._apply(_SlotRecFn, x, w, target, None, accum_dtype=None)
+        assert _SlotRecFn.seen == [torch.float32, None]
+
+    def test_apply_default_is_fp32(self):
+        # Drop-in default preserves the earlier hard-coded FP32 accumulator.
+        x, w, target = _cpu_inputs()
+        _SlotRecFn.seen = []
+        bench._apply(_SlotRecFn, x, w, target, None)
+        assert _SlotRecFn.seen == [torch.float32]
+
+    def _patch_cuda(self, monkeypatch):
+        _FakeEvent._clock = 0.0
+        monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+        monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda *a, **k: None)
+        monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 1000)
+        monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda *a, **k: 5000)
+        monkeypatch.setattr(torch.cuda, "Event", lambda *a, **k: _FakeEvent())
+
+    @pytest.mark.parametrize("accum", [torch.float32, None])
+    def test_both_modes_roundtrip_through_iterations(self, monkeypatch, accum):
+        # Every timed/warmup/probe iteration threads the same accum dtype to slot 11.
+        x, w, target = _cpu_inputs()
+        self._patch_cuda(monkeypatch)
+        _SlotRecFn.seen = []
+        bench._time_backend(_SlotRecFn, x, w, target, None, warmup=2, iters=3, accum_dtype=accum)
+        # 1 compile + 2 warmup + 1 memory-probe + 3 timed = 7 applies, all identical.
+        assert len(_SlotRecFn.seen) == 7
+        assert all(v is accum for v in _SlotRecFn.seen)
+
+    def _run_args(self, backends, accum_dtype):
+        return type(
+            "Args",
+            (),
+            {
+                "backends": backends,
+                "tokens": 8,
+                "hidden_size": 4,
+                "vocab_size": 6,
+                "chunk_sizes": [4],
+                "warmup": 0,
+                "iters": 1,
+                "seed": 0,
+                "accum_dtype": accum_dtype,
+            },
+        )()
+
+    def _patch_run(self, monkeypatch):
+        monkeypatch.setattr(bench, "_capability", lambda: (10, 0))
+        monkeypatch.setattr(bench, "_check_backend_supported", lambda *a, **k: None)
+        monkeypatch.setattr(bench, "_load_backend", lambda name: _CpuFLCE)
+        monkeypatch.setattr(bench, "_build_inputs", lambda *a, **k: _cpu_inputs())
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a, **k: "MockGPU")
+        self._patch_cuda(monkeypatch)
+
+    def test_default_mode_prints_requested_and_per_backend_effective(self, monkeypatch, capsys):
+        self._patch_run(monkeypatch)
+        bench._run(self._run_args(["triton", "cutedsl", "cutile"], "default"))
+        out = capsys.readouterr().out
+        # Header advertises the requested mode and refuses to call it precision-matched.
+        assert "accum_dtype_requested=default" in out
+        assert "NOT precision matched" in out
+        assert "eff_accum" in out
+        rows = {
+            line.split()[0]: line
+            for line in out.splitlines()
+            if line.split() and line.split()[0] in bench._MODULE_PATHS
+        }
+        # cutile keeps FP32 even under default; triton/cutedsl drop to BF16.
+        assert "fp32" in rows["cutile"].split()
+        assert "bf16" in rows["triton"].split()
+        assert "bf16" in rows["cutedsl"].split()
+
+    def test_fp32_mode_labels_precision_matched(self, monkeypatch, capsys):
+        self._patch_run(monkeypatch)
+        bench._run(self._run_args(["triton", "cutile"], "fp32"))
+        out = capsys.readouterr().out
+        assert "accum_dtype_requested=fp32" in out
+        assert "precision matched" in out
+        assert "NOT precision matched" not in out
+        for line in out.splitlines():
+            if line.split() and line.split()[0] in bench._MODULE_PATHS:
+                assert "fp32" in line.split()
+
+    def test_run_does_not_mutate_module_globals(self, monkeypatch):
+        self._patch_run(monkeypatch)
+        before = bench._ACCUM_DTYPE
+        bench._run(self._run_args(["triton"], "default"))
+        bench._run(self._run_args(["triton"], "fp32"))
+        # Modes flow purely as parameters; no state leak between runs.
+        assert bench._ACCUM_DTYPE is before is torch.float32
 
 
 # ===========================================================================
@@ -523,6 +663,7 @@ def test_benchmark_run_all3_smoke():
             "warmup": 0,
             "iters": 2,
             "seed": 0,
+            "accum_dtype": "fp32",
         },
     )()
     bench._run(args)  # must not raise
