@@ -42,9 +42,12 @@ def fused_linear_cross_entropy_ascend(
     return_predicted_tokens: bool = False,
     *,
     mode: Optional[str] = None,
+    chunk_size: Optional[int] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
     if mode not in (None, "default"):
         raise ValueError(f"Ascend fused_linear_cross_entropy has only mode='default'; got mode={mode!r}.")
+    if chunk_size is not None:
+        raise ValueError("Ascend fused_linear_cross_entropy does not support an explicit chunk_size override.")
     return LigerFusedLinearCrossEntropyFunction.apply(
         _input,
         weight,

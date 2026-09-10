@@ -231,6 +231,47 @@ Ops without a CuTe DSL kernel transparently fall back to the default Triton kern
 
 The `cutedsl` extra also pulls in `apache-tvm-ffi`, which lets compiled kernels take PyTorch tensors directly rather than marshalling each one per call. It is optional — every kernel falls back to the marshalling launch without it — but short kernels are dominated by that per-call cost, so installing it is strongly recommended.
 
+### Fused Linear Cross Entropy `chunk_size`
+
+The fused-linear-cross-entropy path partitions the `B*T` token dimension into row
+chunks to bound the transient `chunk_size x V` logits buffer. By default each backend
+derives that chunk size from its own memory heuristic; pass an explicit `chunk_size` to
+override it. The same keyword is threaded through all three public entry points:
+
+```python
+import liger_kernel.functional as LF
+from liger_kernel.transformers.functional import liger_fused_linear_cross_entropy
+from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+
+# top-level functional (keyword-only); always returns a 4-tuple
+loss, _z_loss, _token_accuracy, _predicted_tokens = LF.fused_linear_cross_entropy(x, weight, target, chunk_size=1024)
+
+# transformers functional
+loss = liger_fused_linear_cross_entropy(x, weight, target, chunk_size=1024)
+
+# nn.Module (set once at construction)
+loss_fn = LigerFusedLinearCrossEntropyLoss(chunk_size=1024)
+loss = loss_fn(weight, x, target)
+```
+
+Policy for an explicit override:
+
+- **Positive int or `None`.** `chunk_size` must be a positive Python `int`; `None` (the
+  default) keeps each backend's own heuristic. Zero, negative, `bool`, and non-int
+  values raise `ValueError`.
+- **No power-of-two rounding.** The value is honored exactly (e.g. `chunk_size=30` yields
+  a 30-row token loop), unlike the backends' default heuristics, which apply their own
+  backend-specific power-of-two policy (the shared Triton / shared CuTe-DSL orchestration
+  rounds up; the native SM100 CuTe DSL FLCE rounds down to a power of two and caps the chunk).
+- **Clamped to `B*T`.** A value larger than the token count is clamped so a single chunk
+  covers every row.
+- **Supported backends.** The shared Triton FLCE orchestration accepts `chunk_size` under both
+  of its public `impl=` selections -- `nvidia-triton` (Triton inner CE kernel) and `nvidia-cutedsl`
+  (the *same* shared orchestration with a CuTe DSL inner CE kernel, not a standalone native kernel).
+  The distinct, self-contained native SM100 CuTe DSL FLCE (selected via `LIGER_KERNEL_IMPL=cutedsl`)
+  also accepts it. The legacy cuTile FLCE backend does not yet advertise support and rejects an
+  explicit `chunk_size` (a later layer wires it through) rather than silently ignoring the override.
+
 ### Fused Scaled Cross Entropy
 
 `LigerFusedLinearScaledCrossEntropyFunction` is an additional per-token operator, not a replacement for the reduction-oriented Triton `LigerFusedLinearCrossEntropyFunction`. It takes `input[M, H]`, `weight[V, H]`, and `target[M]`, applies `logits / temperature`, and returns FP32 negative log-likelihood `[M]` plus optional differentiable vocabulary entropy `[M]` in the input dtype. Reductions remain in PyTorch, and rows whose target equals `ignore_index` contribute zero outputs and gradients.

@@ -61,10 +61,11 @@ def fused_linear_cross_entropy_triton(
     return_predicted_tokens: bool = False,
     *,
     mode: Optional[str] = None,
+    chunk_size: Optional[int] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
     """Triton fused_linear_cross_entropy. ``mode`` is accepted for API parity
     and must be one of ``None``/``"default"``; anything else is rejected with a
-    clear error.
+    clear error. ``chunk_size`` optionally overrides the token-chunk heuristic.
     """
     if mode not in (None, "default"):
         raise ValueError(
@@ -89,4 +90,5 @@ def fused_linear_cross_entropy_triton(
         return_predicted_tokens,
         "nvidia-triton",
         mode,
+        chunk_size,
     )

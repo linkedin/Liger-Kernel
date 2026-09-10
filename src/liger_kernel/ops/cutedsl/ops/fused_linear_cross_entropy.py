@@ -10,6 +10,7 @@ from liger_kernel.ops.cutedsl.ops.cross_entropy import _launch_ce_fwd
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import validate_flce_chunk_size
 from liger_kernel.utils import infer_device_arch
 
 _SUPPORTS_OUT_DTYPE = compare_version("torch", operator.ge, "2.8.0")
@@ -82,11 +83,13 @@ def _native_forward(
     return_token_accuracy,
     return_predicted_tokens,
     needs_grad,
+    chunk_size=None,
 ):
     """Compute every native output and gradient from one chunked logits pass."""
     BT, H = X.shape
     V = W.shape[0]
-    chunk = _forward_grad_chunk_size(BT)
+    explicit_chunk = validate_flce_chunk_size(chunk_size, BT)
+    chunk = explicit_chunk if explicit_chunk is not None else _forward_grad_chunk_size(BT)
     vector_width = 16 // X.element_size()
     storage_width = ((V + vector_width - 1) // vector_width) * vector_width
     logits_storage = torch.empty(chunk, storage_width, device=X.device, dtype=X.dtype)
@@ -247,6 +250,7 @@ def fused_linear_cross_entropy_forward(
     use_token_scaling=False,
     return_token_accuracy=False,
     return_predicted_tokens=False,
+    chunk_size=None,
 ):
     """Run the native SM100 CuTe DSL path."""
     ctx = _FlceState()
@@ -285,6 +289,10 @@ def fused_linear_cross_entropy_forward(
         "use_token_scaling": use_token_scaling,
         "return_token_accuracy": return_token_accuracy,
         "return_predicted_tokens": return_predicted_tokens,
+        # Persist the explicit chunk-size override so the repeated-backward recompute
+        # path (which re-invokes ``_native_forward(**native_kwargs)``) partitions the
+        # tokens identically to this forward pass. ``None`` keeps the default heuristic.
+        "chunk_size": chunk_size,
     }
     loss, z_out, acc_out, pred_out, gX, gW, gb = _native_forward(
         X,
@@ -349,7 +357,7 @@ def _flce_backward(ctx, grad_output):
             ctx._repeated_grad_bias = gb
         grads = (ctx._repeated_grad_input, ctx._repeated_grad_weight, ctx._repeated_grad_bias)
     gX, gW, gb = _scale_gradients(grads, grad_output, in_place=handoff)
-    return (gX, gW, None, gb, None, None, None, None, None, None, None, None, None, None, None)
+    return (gX, gW, None, gb, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
 
 
 def fused_linear_cross_entropy_backward(ctx, grad_output):
@@ -361,6 +369,12 @@ def fused_linear_cross_entropy_backward(ctx, grad_output):
 
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
+    # The native SM100 CuTe DSL FLCE is a self-contained implementation: it does not
+    # dispatch its inner CE through the multi-backend registry, so ``ce_impl``/``ce_mode``
+    # are accepted only as API-parity placeholders (``None`` or the identity selection of
+    # this very impl). It does support an explicit token ``chunk_size`` override.
+    supports_chunk_size = True
+
     @staticmethod
     @amp_custom_fwd
     def forward(
@@ -380,7 +394,17 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         use_token_scaling=False,
         return_token_accuracy=False,
         return_predicted_tokens=False,
+        ce_impl=None,
+        ce_mode=None,
+        chunk_size=None,
     ):
+        if ce_impl not in (None, "nvidia-cutedsl"):
+            raise ValueError(
+                "Native CuTe DSL FLCE does not dispatch an inner CE implementation; "
+                f"ce_impl must be None or 'nvidia-cutedsl'. Got: {ce_impl!r}"
+            )
+        if ce_mode not in (None, "default"):
+            raise ValueError(f"Native CuTe DSL FLCE only supports ce_mode=None or 'default'. Got: {ce_mode!r}")
         loss, z_loss, token_accuracy, predicted_tokens, state = fused_linear_cross_entropy_forward(
             _input,
             weight,
@@ -397,6 +421,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             use_token_scaling,
             return_token_accuracy,
             return_predicted_tokens,
+            chunk_size=chunk_size,
         )
         if getattr(state, "saved_tensors", None) is not None:
             ctx.save_for_backward(*state.saved_tensors)
