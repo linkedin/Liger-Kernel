@@ -70,6 +70,7 @@ def fused_linear_cross_entropy_cutedsl(
     return_predicted_tokens: bool = False,
     *,
     mode: Optional[str] = None,
+    chunk_size: Optional[int] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
     """CuTe DSL fused_linear_cross_entropy dispatch entry point.
 
@@ -78,7 +79,8 @@ def fused_linear_cross_entropy_cutedsl(
     dispatcher — picking up the CuTe DSL kernel on Hopper+.
 
     ``mode`` is accepted only for API parity with the other backends; the only
-    valid value is ``"default"`` (or ``None``).
+    valid value is ``"default"`` (or ``None``). ``chunk_size`` optionally
+    overrides the token-chunk heuristic of the shared Triton orchestration.
     """
     if mode not in (None, "default"):
         raise ValueError(f"CuTe DSL fused_linear_cross_entropy has only mode='default'; got mode={mode!r}.")
@@ -100,4 +102,5 @@ def fused_linear_cross_entropy_cutedsl(
         return_predicted_tokens,
         "nvidia-cutedsl",
         mode,
+        chunk_size,
     )

@@ -74,6 +74,32 @@ def calculate_settings(n):
     return BLOCK_SIZE, num_warps
 
 
+def validate_flce_chunk_size(chunk_size, total_rows: int):
+    """Validate and clamp an explicit fused-linear-cross-entropy chunk-size override.
+
+    The fused linear cross-entropy (FLCE) implementations partition the ``BT`` token
+    dimension into row chunks to bound the transient ``chunk_size x V`` logits buffer.
+    Every backend derives a default ``chunk_size`` from a memory heuristic; this helper
+    validates and normalizes a caller-supplied *explicit* override so all backends share
+    one contract:
+
+    * ``None`` -> return ``None`` (the caller keeps its own default heuristic).
+    * otherwise ``chunk_size`` must be a positive Python ``int`` (``bool`` is rejected,
+      since ``True``/``False`` are almost always a mistake here).
+    * the value is clamped to ``total_rows`` (a single chunk can cover every row); it is
+      **not** rounded to a power of two — the explicit request is honored exactly.
+
+    Returns the validated (and possibly clamped) ``chunk_size``.
+    """
+    if chunk_size is None:
+        return None
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
+        raise ValueError(f"chunk_size must be a positive int or None. Got: {chunk_size!r}")
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be a positive int or None. Got: {chunk_size}")
+    return min(chunk_size, total_rows)
+
+
 def compare_version(package: str, operator: Callable, target: str):
     try:
         pkg = importlib.import_module(package)

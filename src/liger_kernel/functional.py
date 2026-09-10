@@ -672,6 +672,7 @@ def fused_linear_cross_entropy(
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
     *,
+    chunk_size: Optional[int] = None,
     impl: Optional[str] = None,
     mode: Optional[str] = None,
     backend: Optional[str] = None,  # legacy back-compat alias for impl=
@@ -699,6 +700,10 @@ def fused_linear_cross_entropy(
         use_token_scaling: whether to scale each token's loss by its predicted probability.
         return_token_accuracy: if True, also return token-level accuracy.
         return_predicted_tokens: if True, also return predicted token indices.
+        chunk_size: optional explicit token-chunk size for the fused CE/GEMM loop. When
+            ``None`` (default) each backend uses its own memory heuristic. When set, it is
+            forwarded only to backends that advertise support (the Triton and shared
+            CuTe-DSL orchestration); an unsupported backend raises rather than ignoring it.
         impl: explicit implementation name (``"nvidia-cutedsl"``,
             ``"nvidia-triton"``). Legacy bare names accepted and translated.
         backend: Legacy back-compat alias for ``impl=``.
@@ -710,6 +715,9 @@ def fused_linear_cross_entropy(
     """
     if impl is None and backend is not None:
         impl = backend
+    # Only forward ``chunk_size`` when explicitly requested so legacy adapters that do not
+    # accept the kwarg (e.g. ascend-triton) keep working unchanged for the common None case.
+    extra_kwargs = {} if chunk_size is None else {"chunk_size": chunk_size}
     return dispatch(
         "fused_linear_cross_entropy",
         _input,
@@ -729,6 +737,7 @@ def fused_linear_cross_entropy(
         return_predicted_tokens,
         impl=impl,
         mode=mode,
+        **extra_kwargs,
     )
 
 

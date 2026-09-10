@@ -231,6 +231,46 @@ Ops without a CuTe DSL kernel transparently fall back to the default Triton kern
 
 The `cutedsl` extra also pulls in `apache-tvm-ffi`, which lets compiled kernels take PyTorch tensors directly rather than marshalling each one per call. It is optional — every kernel falls back to the marshalling launch without it — but short kernels are dominated by that per-call cost, so installing it is strongly recommended.
 
+### Fused Linear Cross Entropy `chunk_size`
+
+The fused-linear-cross-entropy (FLCE) backends partition the `B*T` token dimension into row chunks to bound the transient `chunk_size × V` logits buffer. By default each backend derives the chunk size from its own backend-specific policy (the native CuTe and cuTile paths cap the chunk at ≤1024 tokens, while Triton uses a `C16` shape-based formula). You can override it explicitly to trade memory for launch overhead, or to compare backends at identical geometry. The override is a positive `int` (a `bool` is rejected), is clamped to `B*T` (no power-of-two rounding), and is honored end to end — including the `reduction="none"` deferred-backward recomputation. Backends that cannot honor an explicit chunk (e.g. `ascend-triton`) raise rather than silently ignoring it.
+
+```python
+import torch
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+from liger_kernel.transformers.functional import liger_fused_linear_cross_entropy
+import liger_kernel.functional as F
+
+# nn.Module
+loss = LigerFusedLinearCrossEntropyLoss(chunk_size=1024)(weight, x, target)
+
+# transformers functional
+loss = liger_fused_linear_cross_entropy(x, weight, target, chunk_size=1024)
+
+# top-level functional (routes to the Triton / shared CuTe-DSL orchestration)
+out = F.fused_linear_cross_entropy(x, weight, target, chunk_size=1024, impl="nvidia-cutedsl")
+```
+
+`supports_chunk_size = True` on a backend's `LigerFusedLinearCrossEntropyFunction` advertises this capability.
+
+#### Comparing backends: `benchmark/scripts/benchmark_flce_backends.py`
+
+This harness imports the backend `autograd.Function` classes **directly** (no dispatcher, no `LIGER_KERNEL_IMPL` env) and times a full forward **and** backward at matched shapes and explicit chunk sizes. It is a *whole-pipeline* comparison, not a CE-only DSL-isolation measurement, and it does not go through the `impl="nvidia-cutedsl"` public route.
+
+```bash
+.venv/bin/python benchmark/scripts/benchmark_flce_backends.py \
+    --backends all3 --tokens 4096 --hidden-size 2048 --vocab-size 32000 \
+    --chunk-sizes 256 1024 4096
+```
+
+- **Backends & arch policy.** `cutedsl` requires exactly SM100 (Blackwell, e.g. B200); `cutile` runs on SM90 (Hopper) **and** SM100. So on a B200 the default — and `--backends all3` — is all three (`triton`, `cutedsl`, `cutile`) in one process; on SM90 the default is `triton` + `cutile`; elsewhere `triton` only. Explicitly requesting a backend the GPU cannot run fails loudly rather than degrading, and a missing SDK surfaces its own `ImportError`.
+- **GEMM ownership differs per backend** (this is why the numbers are not apples-to-apples kernel isolation): `triton` runs the projection, `dX` and `dW` all through PyTorch/cuBLAS; `cutedsl`'s projection uses CuTe DSL SM100 GEMM; `dX`/`dW` use PyTorch/cuBLAS; `cutile` uses PyTorch BLAS for the projection and `dX` and only a cuTile MMA schedule for `dW`.
+- **Numerics.** Inputs are BF16 with `accum_dtype=torch.float32`, so the `dW` accumulation precision matches across backends. The `cutile` `dW` retains raw FP32 through accumulation and is cast to BF16 only after the combined upstream × global-mean scaling in backward, preserving the tiny-value range of the original path.
+- **`chunk` vs `eff_chunk`.** A chunk larger than the token count is clamped to `B*T`; the table prints both the requested `chunk` and the `eff_chunk` actually used, so a clamp is never reported as the request.
+- **Peak memory** is the *incremental* peak **allocated** bytes (not reserved) above an input-only baseline: both leaf grads are cleared before the baseline is snapshotted, and a dedicated memory-probe iteration is kept separate from the timed loop.
+
+Reduction support is **not** universal, so the harness only exercises `reduction="mean"`: the native `cutedsl` and `cutile` paths support `mean`/`sum` only, while the composed Triton op additionally supports `reduction="none"` (via a deferred-backward recomputation that honors the explicit `chunk_size`).
+
 ### Fused Scaled Cross Entropy
 
 `LigerFusedLinearScaledCrossEntropyFunction` is an additional per-token operator, not a replacement for the reduction-oriented Triton `LigerFusedLinearCrossEntropyFunction`. It takes `input[M, H]`, `weight[V, H]`, and `target[M]`, applies `logits / temperature`, and returns FP32 negative log-likelihood `[M]` plus optional differentiable vocabulary entropy `[M]` in the input dtype. Reductions remain in PyTorch, and rows whose target equals `ignore_index` contribute zero outputs and gradients.

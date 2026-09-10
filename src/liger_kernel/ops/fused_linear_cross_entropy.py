@@ -14,6 +14,7 @@ from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import element_mul_kernel
 from liger_kernel.ops.utils import is_hip
+from liger_kernel.ops.utils import validate_flce_chunk_size
 from liger_kernel.utils import infer_device
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
@@ -61,6 +62,7 @@ def fused_linear_cross_entropy_forward(
     token_grad_output=None,
     compute_gradients=None,
     weight_requires_grad=None,
+    chunk_size=None,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
@@ -88,10 +90,17 @@ def fused_linear_cross_entropy_forward(
     BT, H = _input.shape
     V = weight.shape[0]
 
-    # widen the transient logits budget to C x BT x H (C=1 is a memory floor, not a perf target)
-    inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
-    chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
-    chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
+    # An explicit ``chunk_size`` override wins over the default memory heuristic; it is
+    # validated (positive int, not bool) and clamped to BT without power-of-two rounding.
+    # ``None`` preserves the historical C=16 transient-budget heuristic below.
+    explicit_chunk_size = validate_flce_chunk_size(chunk_size, BT)
+    if explicit_chunk_size is not None:
+        chunk_size = explicit_chunk_size
+    else:
+        # widen the transient logits budget to C x BT x H (C=1 is a memory floor, not a perf target)
+        inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
+        chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
+        chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
     grad_input = torch.zeros_like(_input, device=device)
@@ -387,6 +396,7 @@ def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, gr
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     supports_inner_impl_dispatch = True
+    supports_chunk_size = True
 
     @staticmethod
     @amp_custom_fwd
@@ -409,6 +419,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         return_predicted_tokens: bool = False,
         ce_impl=None,
         ce_mode=None,
+        chunk_size=None,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -434,6 +445,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             Default: False.
         return_token_accuracy (bool): When `return_token_accuracy` is `True`, computes and returns per-token accuracy without materializing logits. Default: `False`
         return_predicted_tokens (bool): When `return_predicted_tokens` is `True`, returns per-token predicted class indices (argmax) without materializing logits. Default: `False`
+        chunk_size (int): explicit override for the number of tokens processed per chunk. When `None`
+            (default) the memory heuristic (transient budget C=16) picks the chunk size. When set, it
+            must be a positive int; it is clamped to `B*T` and used verbatim (no power-of-two rounding).
         """
 
         # With reduction="none" the loss is per-token, so backward receives a
@@ -464,6 +478,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 return_predicted_tokens=return_predicted_tokens,
                 ce_impl=ce_impl,
                 ce_mode=ce_mode,
+                chunk_size=chunk_size,
                 compute_gradients=False if ctx.defer_grads else None,
             )
         )
@@ -483,6 +498,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 # reduction="none" path re-enters forward from backward to recompute grads.
                 ce_impl=ce_impl,
                 ce_mode=ce_mode,
+                # Persist the explicit chunk-size override so the reduction="none" backward
+                # recomputation partitions the tokens identically to the forward pass.
+                chunk_size=chunk_size,
             )
             ctx.weight_requires_grad = weight.requires_grad
         else:
@@ -545,4 +563,5 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             None,  # return_predicted_tokens
             None,  # ce_impl
             None,  # ce_mode
+            None,  # chunk_size
         )

@@ -40,6 +40,40 @@ class CrossEntropyOutput:
     predicted_tokens: Optional[torch.Tensor] = None
 
 
+def build_flce_apply_args(flce_cls, base_args, chunk_size=None, ce_impl=None, ce_mode=None):
+    """Append the optional trailing FLCE arguments the target Function class supports.
+
+    ``base_args`` is the 15-tuple of positional args that *every* fused-linear-cross-entropy
+    ``autograd.Function`` accepts. The active class is backend-dependent (Triton, native
+    CuTe DSL, cuTile, Ascend, ...) because ``liger_kernel.ops`` swaps it based on
+    ``LIGER_KERNEL_IMPL``. We consult the class's capability metadata to decide what to
+    append so callers never pass unsupported positional args:
+
+    * ``supports_chunk_size`` -> append ``(ce_impl, ce_mode, chunk_size)``.
+    * ``supports_inner_impl_dispatch`` only -> append ``(ce_impl, ce_mode)``.
+    * legacy classes (e.g. Ascend / non-CUDA) -> append nothing.
+
+    A requested ``chunk_size`` (or ``ce_impl``/``ce_mode``) that the class cannot honor
+    raises a ``ValueError`` rather than being silently ignored.
+    """
+    supports_chunk = getattr(flce_cls, "supports_chunk_size", False)
+    supports_dispatch = getattr(flce_cls, "supports_inner_impl_dispatch", False)
+    if supports_chunk:
+        return base_args + (ce_impl, ce_mode, chunk_size)
+    if chunk_size is not None:
+        raise ValueError(
+            f"{getattr(flce_cls, '__name__', flce_cls)} does not support an explicit "
+            "chunk_size override on this backend."
+        )
+    if supports_dispatch:
+        return base_args + (ce_impl, ce_mode)
+    if ce_impl is not None or ce_mode is not None:
+        raise ValueError(
+            f"{getattr(flce_cls, '__name__', flce_cls)} does not support ce_impl/ce_mode selection on this backend."
+        )
+    return base_args
+
+
 # conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html
 # `weight` and `size_average` are placeholders and not implemented yet
 def liger_cross_entropy(
@@ -95,8 +129,9 @@ def liger_fused_linear_cross_entropy(
     use_token_scaling: bool = False,
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
+    chunk_size: Optional[int] = None,
 ):
-    apply_args = (
+    base_args = (
         input,
         weight,
         target,
@@ -113,8 +148,7 @@ def liger_fused_linear_cross_entropy(
         return_token_accuracy,
         return_predicted_tokens,
     )
-    if getattr(LigerFusedLinearCrossEntropyFunction, "supports_inner_impl_dispatch", False):
-        apply_args += (None, None)
+    apply_args = build_flce_apply_args(LigerFusedLinearCrossEntropyFunction, base_args, chunk_size=chunk_size)
     loss, z_loss, token_accuracy, predicted_tokens = LigerFusedLinearCrossEntropyFunction.apply(*apply_args)
 
     if not return_z_loss and not return_token_accuracy and not return_predicted_tokens:
