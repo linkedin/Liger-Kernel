@@ -1,5 +1,8 @@
 #pragma once
 
+// SM100 forward role implementations. The __global__ entry point and its
+// explicit warp-role dispatch live in forward_gemm_kernel_sm100.cuh.
+
 #include "forward_gemm_sm100.cuh"
 #include "dx_reduce.cuh"
 #include "liger_cute/detail/local_reduce.cuh"
@@ -12,7 +15,6 @@
 #include <cute/arch/cluster_sm90.hpp>
 #include <cute/arch/copy_sm100.hpp>
 #include <cute/arch/mma_sm100_umma.hpp>
-#include <cute/arch/tmem_allocator_sm100.hpp>
 #include <cute/atom/copy_traits_sm100.hpp>
 #include <cute/atom/copy_traits_sm100_tma.hpp>
 #include <cute/atom/mma_traits_sm100.hpp>
@@ -486,147 +488,115 @@ forward_make_pipe_sm100(
 		cute::true_type{});
 }
 
-template <int Compute = 100>
-struct ForwardGemmProducerSm100 {
+// Warp 2: stage X and W into the cluster mainloop pipeline.
+template <
+	bool ReturnEntropy,
+	bool WavePipeline,
+	int Compute,
+	class TmaLoadX,
+	class TmaLoadW>
+CUTE_DEVICE void forward_tma_role_sm100(
+		typename ForwardGemmTraitsSm100<
+			Compute>::MainloopPipeline& pipe,
+		typename ForwardGemmTraitsSm100<
+			Compute>::PipelineState& state,
+		ForwardGemmSmemSm100<
+			Compute,
+			ReturnEntropy>& smem,
+		const TmaLoadX& tma_load_x,
+		const TmaLoadW& tma_load_w,
+		const ForwardGemmParamsSm100<Compute>& params,
+		const ForwardGemmWorkSm100<
+			Compute>& work,
+		const ForwardGemmSplitSm100<
+			Compute>& split,
+		const ForwardWaveWorkspaceSm100<
+			Compute>& wave_workspace,
+		int num_k_tiles) {
 	using Traits = ForwardGemmTraitsSm100<Compute>;
 	using Config = typename Traits::Config;
-
-	template <
-		bool ReturnEntropy,
-		bool WavePipeline,
-		class TmaLoadX,
-		class TmaLoadW>
-	CUTE_DEVICE static void run(
-			typename Traits::MainloopPipeline& pipe,
-			typename Traits::PipelineState& state,
-			ForwardGemmSmemSm100<
-				Compute,
-				ReturnEntropy>& smem,
-			const TmaLoadX& tma_load_x,
-			const TmaLoadW& tma_load_w,
-			const ForwardGemmParamsSm100<Compute>& params,
-			const ForwardGemmWorkSm100<
-				Compute>& work,
-			const ForwardGemmSplitSm100<
-				Compute>& split,
-			const ForwardWaveWorkspaceSm100<
-				Compute>& wave_workspace,
-			int num_k_tiles) {
-		run_impl<WavePipeline>(
-			pipe,
-			state,
-			smem,
-			tma_load_x,
-			tma_load_w,
-			params,
-			work,
-			split,
-			wave_workspace,
-			num_k_tiles);
-	}
-
-private:
-	template <
-		bool WavePipeline,
-		class Smem,
-		class TmaLoadX,
-		class TmaLoadW>
-	CUTE_DEVICE static void run_impl(
-			typename Traits::MainloopPipeline& pipe,
-			typename Traits::PipelineState& state,
-			Smem& smem,
-			const TmaLoadX& tma_load_x,
-			const TmaLoadW& tma_load_w,
-			const ForwardGemmParamsSm100<Compute>& params,
-			const ForwardGemmWorkSm100<
-				Compute>& work,
-			const ForwardGemmSplitSm100<
-				Compute>& split,
-			const ForwardWaveWorkspaceSm100<
-				Compute>& wave_workspace,
-			int num_k_tiles) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
-		auto sX = make_tensor(
-			make_smem_ptr(smem.x_data()),
-			typename Traits::SmemLayoutX{});
-		auto sW = make_tensor(
-			make_smem_ptr(smem.w_data()),
-			typename Traits::SmemLayoutW{});
-		auto mX = tma_load_x.get_tma_tensor(make_shape(
-			static_cast<int64_t>(params.tokens),
-			static_cast<int64_t>(params.hidden)));
-		auto mW = tma_load_w.get_tma_tensor(make_shape(
-			static_cast<int64_t>(params.local_vocab),
-			static_cast<int64_t>(params.hidden)));
+	auto sX = make_tensor(
+		make_smem_ptr(smem.x_data()),
+		typename Traits::SmemLayoutX{});
+	auto sW = make_tensor(
+		make_smem_ptr(smem.w_data()),
+		typename Traits::SmemLayoutW{});
+	auto mX = tma_load_x.get_tma_tensor(make_shape(
+		static_cast<int64_t>(params.tokens),
+		static_cast<int64_t>(params.hidden)));
+	auto mW = tma_load_w.get_tma_tensor(make_shape(
+		static_cast<int64_t>(params.local_vocab),
+		static_cast<int64_t>(params.hidden)));
 
-		typename Traits::TiledMma tiled_mma;
-		int cluster_rank =
-			static_cast<int>(cute::block_rank_in_cluster());
-		auto cta_mma = tiled_mma.get_slice(cluster_rank);
-		typename Traits::ClusterLayoutVMNK pair_layout_vmnk;
-		auto pair_coord_vmnk =
-			pair_layout_vmnk.get_flat_coord(cluster_rank);
-		uint16_t mcast_mask_x =
-			create_tma_multicast_mask<2>(
-				pair_layout_vmnk,
-				pair_coord_vmnk);
-		uint16_t mcast_mask_w =
-			create_tma_multicast_mask<1>(
-				pair_layout_vmnk,
-				pair_coord_vmnk);
+	typename Traits::TiledMma tiled_mma;
+	int cluster_rank =
+		static_cast<int>(cute::block_rank_in_cluster());
+	auto cta_mma = tiled_mma.get_slice(cluster_rank);
+	typename Traits::ClusterLayoutVMNK pair_layout_vmnk;
+	auto pair_coord_vmnk =
+		pair_layout_vmnk.get_flat_coord(cluster_rank);
+	uint16_t mcast_mask_x =
+		create_tma_multicast_mask<2>(
+			pair_layout_vmnk,
+			pair_coord_vmnk);
+	uint16_t mcast_mask_w =
+		create_tma_multicast_mask<1>(
+			pair_layout_vmnk,
+			pair_coord_vmnk);
 
-		[[maybe_unused]] std::uint64_t producer_wait_total = 0;
-		int wave_count = WavePipeline ? split.num_waves : 1;
-		for (int wave = 0; wave < wave_count; ++wave) {
-			if constexpr (WavePipeline) {
-				[[maybe_unused]] std::uint64_t wait_begin = 0;
-				if constexpr (kForwardDiagnosticTimestampsSm100) {
-					if (
-						(threadIdx.x & (kWarpSize - 1)) == 0 &&
-						forward_wave_reused_wave_sm100(wave) >= 0) {
-						wait_begin = forward_globaltimer_sm100();
-					}
-				}
-				forward_wait_source_slot_sm100(
-					wave_workspace,
-					wave_workspace.launch_epoch,
-					wave);
-				if constexpr (kForwardDiagnosticTimestampsSm100) {
-					if (
-						(threadIdx.x & (kWarpSize - 1)) == 0 &&
-						forward_wave_reused_wave_sm100(wave) >= 0) {
-						producer_wait_total +=
-							forward_globaltimer_sm100() -
-							wait_begin;
-					}
+	[[maybe_unused]] std::uint64_t producer_wait_total = 0;
+	int wave_count = WavePipeline ? split.num_waves : 1;
+	for (int wave = 0; wave < wave_count; ++wave) {
+		if constexpr (WavePipeline) {
+			[[maybe_unused]] std::uint64_t wait_begin = 0;
+			if constexpr (kForwardDiagnosticTimestampsSm100) {
+				if (
+					(threadIdx.x & (kWarpSize - 1)) == 0 &&
+					forward_wave_reused_wave_sm100(wave) >= 0) {
+					wait_begin = forward_globaltimer_sm100();
 				}
 			}
-			int first_logical_n = WavePipeline
-				? forward_wave_split_first_tile_sm100(
-					split,
-					wave,
-					work.split_id,
-					work.split_count)
-				: work.split_id;
-			int num_split_tiles = WavePipeline
-				? forward_wave_split_tile_count_sm100(
-					split,
-					wave,
-					work.split_id,
-					work.split_count)
-				: ceil_div(
-					split.num_logical_n_tiles -
-						work.split_id,
-					work.split_count);
-			for (int local_n = 0;
-					local_n < num_split_tiles;
-					++local_n) {
-				int logical_n =
-					first_logical_n +
-					local_n * work.split_count;
+			forward_wait_source_slot_sm100(
+				wave_workspace,
+				wave_workspace.launch_epoch,
+				wave);
+			if constexpr (kForwardDiagnosticTimestampsSm100) {
+				if (
+					(threadIdx.x & (kWarpSize - 1)) == 0 &&
+					forward_wave_reused_wave_sm100(wave) >= 0) {
+					producer_wait_total +=
+						forward_globaltimer_sm100() -
+						wait_begin;
+				}
+			}
+		}
+		int first_logical_n = WavePipeline
+								  ? forward_wave_split_first_tile_sm100(
+										split,
+										wave,
+										work.split_id,
+										work.split_count)
+								  : work.split_id;
+		int num_split_tiles = WavePipeline
+								  ? forward_wave_split_tile_count_sm100(
+										split,
+										wave,
+										work.split_id,
+										work.split_count)
+								  : ceil_div(
+										split.num_logical_n_tiles -
+											work.split_id,
+										work.split_count);
+		for (int local_n = 0;
+			 local_n < num_split_tiles;
+			 ++local_n) {
+			int logical_n =
+				first_logical_n +
+				local_n * work.split_count;
 			for (int panel = 0;
-					panel < Config::kAccumulatorPanels;
-					++panel) {
+				 panel < Config::kAccumulatorPanels;
+				 ++panel) {
 				int n_tile =
 					logical_n * Config::kAccumulatorPanels +
 					panel;
@@ -657,8 +627,8 @@ private:
 					group_modes<0, 3>(sW),
 					group_modes<0, 3>(tCgW));
 				for (int k_tile = 0;
-						k_tile < num_k_tiles;
-						++k_tile) {
+					 k_tile < num_k_tiles;
+					 ++k_tile) {
 					pipe.producer_acquire(state);
 					if (cute::elect_one_sync()) {
 						auto* barrier =
@@ -680,512 +650,329 @@ private:
 				}
 			}
 		}
-		}
-		if constexpr (
-			WavePipeline &&
-			kForwardDiagnosticTimestampsSm100) {
-			if ((threadIdx.x & (kWarpSize - 1)) == 0) {
-				forward_diagnostic_max_sm100(
-					wave_workspace.diagnostics,
-					kForwardDiagnosticProducerWaitSm100,
-					producer_wait_total);
-			}
-		}
-		pipe.producer_tail(state);
-#else
-		__trap();
-#endif
 	}
-};
+	if constexpr (
+		WavePipeline &&
+		kForwardDiagnosticTimestampsSm100) {
+		if ((threadIdx.x & (kWarpSize - 1)) == 0) {
+			forward_diagnostic_max_sm100(
+				wave_workspace.diagnostics,
+				kForwardDiagnosticProducerWaitSm100,
+				producer_wait_total);
+		}
+	}
+	pipe.producer_tail(state);
+#else
+	__trap();
+#endif
+}
 
-template <
+// Warp 3 or warps 4-11. Role is a template argument so the top-level kernel
+// selects one path and the unused MMA/epilogue branch is removed at compile
+// time without duplicating their shared pipeline setup.
+template <ForwardWarpRoleSm100 Role,
 	bool ReturnEntropy,
 	bool WavePipeline,
-	int Compute = 100>
-struct ForwardGemmConsumerSm100 {
+	int Compute>
+CUTE_DEVICE void forward_compute_role_sm100(
+	typename ForwardGemmTraitsSm100<Compute>::MainloopPipeline& pipe,
+	typename ForwardGemmTraitsSm100<Compute>::PipelineState& state,
+	ForwardGemmSmemSm100<Compute, ReturnEntropy>& smem,
+	const ForwardGemmParamsSm100<Compute>& params,
+	const ForwardGemmPartialsSm100<Compute>& partials,
+	const ForwardGemmWorkSm100<Compute>& work,
+	const ForwardGemmSplitSm100<Compute>& split,
+	const ForwardWaveWorkspaceSm100<Compute>& wave_workspace,
+	int num_k_tiles) {
 	using Traits = ForwardGemmTraitsSm100<Compute>;
 	using Config = typename Traits::Config;
-	using Smem =
-		ForwardGemmSmemSm100<
-			Compute,
-			ReturnEntropy>;
+	using Smem = ForwardGemmSmemSm100<Compute, ReturnEntropy>;
 	using Epilogue = ForwardGemmEpilogueSm100<Compute>;
-
-	CUTE_DEVICE static void run(
-			typename Traits::MainloopPipeline& pipe,
-			typename Traits::PipelineState& state,
-			Smem& smem,
-			const ForwardGemmParamsSm100<Compute>& params,
-			const ForwardGemmPartialsSm100<
-				Compute>& partials,
-			const ForwardGemmWorkSm100<
-				Compute>& work,
-			const ForwardGemmSplitSm100<
-				Compute>& split,
-			const ForwardWaveWorkspaceSm100<
-				Compute>& wave_workspace,
-			int num_k_tiles) {
+	static constexpr bool kMmaRole =
+		Role == ForwardWarpRoleSm100::kUmmaProducer;
+	static constexpr bool kEpilogueRole =
+		Role == ForwardWarpRoleSm100::kEpilogue;
+	static_assert(kMmaRole || kEpilogueRole,
+		"forward compute role must be UMMA producer or epilogue");
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
-		int cta_rank =
-			static_cast<int>(cute::block_rank_in_cluster());
-		bool is_leader_cta = cta_rank == 0;
-		int warp_id =
-			static_cast<int>(threadIdx.x) / kWarpSize;
-		bool is_mma_warp =
-			warp_id == Config::kUmmaWarp;
-		bool is_epilogue =
-			warp_id >= Config::kFirstEpilogueWarp &&
-			warp_id <= Config::kLastEpilogueWarp;
-		int tid_in_epi = static_cast<int>(threadIdx.x) -
-			Config::kFirstEpilogueWarp * kWarpSize;
-		int warpgroup = is_epilogue
-			? tid_in_epi / Config::kWarpgroupSize
-			: 0;
-		int tid_in_warpgroup = is_epilogue
-			? tid_in_epi % Config::kWarpgroupSize
-			: 0;
-		int warpgroup_barrier =
-			Config::kWarpgroup0BarrierId + warpgroup;
-		constexpr int kMmaEpilogueThreads =
-			Config::kEpilogueThreads + kWarpSize;
+	int cta_rank = static_cast<int>(cute::block_rank_in_cluster());
+	bool is_leader_cta = cta_rank == 0;
+	int tid_in_epi = kEpilogueRole ? static_cast<int>(threadIdx.x) -
+										 Config::kFirstEpilogueWarp * kWarpSize
+								   : 0;
+	int warpgroup = kEpilogueRole ? tid_in_epi / Config::kWarpgroupSize : 0;
+	int tid_in_warpgroup =
+		kEpilogueRole ? tid_in_epi % Config::kWarpgroupSize : 0;
+	int warpgroup_barrier = Config::kWarpgroup0BarrierId + warpgroup;
+	constexpr int kMmaEpilogueThreads = Config::kEpilogueThreads + kWarpSize;
 
-		typename Traits::TiledMma tiled_mma;
-		auto cta_mma = tiled_mma.get_slice(cta_rank);
-		auto sX = make_tensor(
-			make_smem_ptr(smem.x_data()),
-			typename Traits::SmemLayoutX{});
-		auto sW = make_tensor(
-			make_smem_ptr(smem.w_data()),
-			typename Traits::SmemLayoutW{});
-		auto tCrX = cta_mma.make_fragment_A(sX);
-		auto tCrW = cta_mma.make_fragment_B(sW);
-		auto cAccFull = make_identity_tensor(
-			make_shape(
-				Int<Config::kTileM>{},
-				Int<Config::kUmmaTileN>{}));
-		auto tCgC = cta_mma.partition_C(cAccFull);
-		auto tCtAcc = cta_mma.make_fragment_C(tCgC);
+	typename Traits::TiledMma tiled_mma;
+	auto cta_mma = tiled_mma.get_slice(cta_rank);
+	auto sX = make_tensor(
+		make_smem_ptr(smem.x_data()), typename Traits::SmemLayoutX{});
+	auto sW = make_tensor(
+		make_smem_ptr(smem.w_data()), typename Traits::SmemLayoutW{});
+	auto tCrX = cta_mma.make_fragment_A(sX);
+	auto tCrW = cta_mma.make_fragment_B(sW);
+	auto cAccFull = make_identity_tensor(
+		make_shape(Int<Config::kTileM>{}, Int<Config::kUmmaTileN>{}));
+	auto tCgC = cta_mma.partition_C(cAccFull);
+	auto tCtAcc = cta_mma.make_fragment_C(tCgC);
 
-		using AccPipe = typename Traits::AccumulatorPipeline;
-		typename AccPipe::Params acc_params;
-		acc_params.role =
-			is_mma_warp && is_leader_cta
-			? AccPipe::ThreadCategory::Producer
-			: AccPipe::ThreadCategory::Consumer;
-		acc_params.producer_arv_count = 1;
-		acc_params.consumer_arv_count = Config::kClusterM;
-		acc_params.initializing_warp =
-			Config::kFirstEpilogueWarp;
-		AccPipe acc_pipe(
-			smem.acc_pipe,
-			acc_params,
-			typename Traits::ClusterShape{});
-		auto acc_prod_state =
-			cutlass::make_producer_start_state<AccPipe>();
-		typename AccPipe::PipelineState acc_cons_state;
+	using AccPipe = typename Traits::AccumulatorPipeline;
+	typename AccPipe::Params acc_params;
+	if constexpr (kMmaRole) {
+		acc_params.role = is_leader_cta ? AccPipe::ThreadCategory::Producer
+										: AccPipe::ThreadCategory::Consumer;
+	} else {
+		acc_params.role = AccPipe::ThreadCategory::Consumer;
+	}
+	acc_params.producer_arv_count = 1;
+	acc_params.consumer_arv_count = Config::kClusterM;
+	acc_params.initializing_warp = Config::kFirstEpilogueWarp;
+	AccPipe acc_pipe(
+		smem.acc_pipe, acc_params, typename Traits::ClusterShape{});
+	auto acc_prod_state = cutlass::make_producer_start_state<AccPipe>();
+	typename AccPipe::PipelineState acc_cons_state;
 
-		if (
-			warp_id >= Config::kUmmaWarp &&
-			warp_id <= Config::kLastEpilogueWarp) {
-			cutlass::arch::NamedBarrier::sync(
-				kMmaEpilogueThreads,
-				Config::kMmaEpilogueBarrierId);
+	cutlass::arch::NamedBarrier::sync(
+		kMmaEpilogueThreads, Config::kMmaEpilogueBarrierId);
+	uint32_t tmem_base = smem.tmem_base;
+	tCtAcc.data() = tmem_base;
+
+	auto epi_tile =
+		make_tile(Int<Config::kCtaTileM>{}, Int<Config::kEpilogueChunkN>{});
+	auto acc_mn = tCtAcc(make_coord(_, _), _0{}, _0{});
+	auto tAccEpi = flat_divide(acc_mn, epi_tile);
+	auto t2r = make_tmem_copy(::liger::TmemLoadOp<Config::kEpilogueChunkN>{},
+		tAccEpi(_, _, _0{}, _0{}));
+	auto thr_t2r = t2r.get_slice(tid_in_warpgroup);
+	auto cChunk = make_identity_tensor(
+		make_shape(Int<Config::kCtaTileM>{}, Int<Config::kEpilogueChunkN>{}));
+	auto tTR_cChunk = thr_t2r.partition_D(cChunk);
+	auto tTR_rAcc = make_tensor<float>(shape(tTR_cChunk));
+	Layout tmem_warp_layout = typename decltype(make_tmem_warp_partitioner(
+		tAccEpi(_, _, _0{}, _0{})))::TiledLayout_TV{};
+	constexpr bool kPredicateTmemLoad =
+		size(tmem_warp_layout) != cosize(tmem_warp_layout);
+
+	int wave_count = WavePipeline ? split.num_waves : 1;
+	for (int wave = 0; wave < wave_count; ++wave) {
+		if constexpr (WavePipeline) {
+			forward_wait_source_slot_sm100(
+				wave_workspace, wave_workspace.launch_epoch, wave);
 		}
-		uint32_t tmem_base = smem.tmem_base;
-		tCtAcc.data() = tmem_base;
+		int first_logical_n =
+			WavePipeline ? forward_wave_split_first_tile_sm100(
+							   split, wave, work.split_id, work.split_count)
+						 : work.split_id;
+		int num_split_tiles =
+			WavePipeline ? forward_wave_split_tile_count_sm100(
+							   split, wave, work.split_id, work.split_count)
+						 : ceil_div(split.num_logical_n_tiles - work.split_id,
+							   work.split_count);
+		OnlineSoftmaxState softmax;
+		softmax.max_value = kForwardNegInfSm100;
 
-		auto epi_tile = make_tile(
-			Int<Config::kCtaTileM>{},
-			Int<Config::kEpilogueChunkN>{});
-		auto acc_mn =
-			tCtAcc(make_coord(_, _), _0{}, _0{});
-		auto tAccEpi = flat_divide(acc_mn, epi_tile);
-		auto t2r = make_tmem_copy(
-			::liger::TmemLoadOp<
-				Config::kEpilogueChunkN>{},
-			tAccEpi(_, _, _0{}, _0{}));
-		auto thr_t2r =
-			t2r.get_slice(tid_in_warpgroup);
-		auto cChunk = make_identity_tensor(make_shape(
-			Int<Config::kCtaTileM>{},
-			Int<Config::kEpilogueChunkN>{}));
-		auto tTR_cChunk = thr_t2r.partition_D(cChunk);
-		auto tTR_rAcc =
-			make_tensor<float>(shape(tTR_cChunk));
-		Layout tmem_warp_layout =
-			typename decltype(make_tmem_warp_partitioner(
-				tAccEpi(_, _, _0{}, _0{})))::TiledLayout_TV{};
-		constexpr bool kPredicateTmemLoad =
-			size(tmem_warp_layout) !=
-			cosize(tmem_warp_layout);
-
-		int wave_count = WavePipeline ? split.num_waves : 1;
-		for (int wave = 0; wave < wave_count; ++wave) {
-			if constexpr (WavePipeline) {
-				forward_wait_source_slot_sm100(
-					wave_workspace,
-					wave_workspace.launch_epoch,
-					wave);
-			}
-			int first_logical_n = WavePipeline
-				? forward_wave_split_first_tile_sm100(
-					split,
-					wave,
-					work.split_id,
-					work.split_count)
-				: work.split_id;
-			int num_split_tiles = WavePipeline
-				? forward_wave_split_tile_count_sm100(
-					split,
-					wave,
-					work.split_id,
-					work.split_count)
-				: ceil_div(
-					split.num_logical_n_tiles -
-						work.split_id,
-					work.split_count);
-			OnlineSoftmaxState softmax;
-			softmax.max_value = kForwardNegInfSm100;
-
-			for (int local_n = 0;
-					local_n < num_split_tiles;
-					++local_n) {
-				int logical_n =
-					first_logical_n +
-					local_n * work.split_count;
-				if (is_mma_warp && is_leader_cta) {
-				acc_pipe.producer_acquire(acc_prod_state);
-				int acc_stage = acc_prod_state.index();
-				uint32_t stage_base =
-					tmem_base +
-					static_cast<uint32_t>(
-						acc_stage *
-						Config::kTmemStageColumns);
-				for (int panel = 0;
-						panel < Config::kAccumulatorPanels;
-						++panel) {
-					tCtAcc.data() =
-						stage_base +
-						static_cast<uint32_t>(
-							panel *
-							Config::kUmmaTileN);
-					bool first = true;
-					for (int k_tile = 0;
-							k_tile < num_k_tiles;
-							++k_tile) {
-						pipe.consumer_wait(state);
-						CUTE_UNROLL
-						for (int k_block = 0;
-								k_block <
-									size<2>(tCrX);
-								++k_block) {
-							tiled_mma.accumulate_ =
-								first
-								? UMMA::ScaleOut::Zero
-								: UMMA::ScaleOut::One;
-							first = false;
-							gemm(
-								tiled_mma,
-								tCrX(
-									_,
-									_,
-									k_block,
-									state.index()),
-								tCrW(
-									_,
-									_,
-									k_block,
-									state.index()),
-								tCtAcc);
+		for (int local_n = 0; local_n < num_split_tiles; ++local_n) {
+			int logical_n = first_logical_n + local_n * work.split_count;
+			if constexpr (kMmaRole) {
+				if (is_leader_cta) {
+					acc_pipe.producer_acquire(acc_prod_state);
+					int acc_stage = acc_prod_state.index();
+					uint32_t stage_base =
+						tmem_base + static_cast<uint32_t>(
+										acc_stage * Config::kTmemStageColumns);
+					for (int panel = 0; panel < Config::kAccumulatorPanels;
+						 ++panel) {
+						tCtAcc.data() =
+							stage_base +
+							static_cast<uint32_t>(panel * Config::kUmmaTileN);
+						for (int k_tile = 0; k_tile < num_k_tiles; ++k_tile) {
+							pipe.consumer_wait(state);
+							CUTE_UNROLL
+							for (int k_block = 0; k_block < size<2>(tCrX);
+								 ++k_block) {
+								tiled_mma.accumulate_ =
+									k_tile == 0 && k_block == 0
+										? UMMA::ScaleOut::Zero
+										: UMMA::ScaleOut::One;
+								gemm(tiled_mma,
+									tCrX(_, _, k_block, state.index()),
+									tCrW(_, _, k_block, state.index()),
+									tCtAcc);
+							}
+							pipe.consumer_release(state);
+							++state;
 						}
-						pipe.consumer_release(state);
-						++state;
 					}
+					acc_pipe.producer_commit(acc_prod_state);
+					++acc_prod_state;
 				}
-				acc_pipe.producer_commit(acc_prod_state);
-				++acc_prod_state;
-				}
+			}
 
-				if (is_epilogue) {
+			if constexpr (kEpilogueRole) {
 				acc_pipe.consumer_wait(acc_cons_state);
 				int acc_stage = acc_cons_state.index();
 				uint32_t stage_base =
-					tmem_base +
-					static_cast<uint32_t>(
-						acc_stage *
-						Config::kTmemStageColumns);
-				for (int panel = 0;
-						panel < Config::kAccumulatorPanels;
-						++panel) {
+					tmem_base + static_cast<uint32_t>(
+									acc_stage * Config::kTmemStageColumns);
+				for (int panel = 0; panel < Config::kAccumulatorPanels;
+					 ++panel) {
 					tCtAcc.data() =
 						stage_base +
-						static_cast<uint32_t>(
-							panel *
-							Config::kUmmaTileN);
-					auto acc_mn_stage =
-						tCtAcc(
-							make_coord(_, _),
-							_0{},
-							_0{});
-					auto tAccEpiStage =
-						flat_divide(
-							acc_mn_stage,
-							epi_tile);
-					auto tTR_tAcc =
-						thr_t2r.partition_S(
-							tAccEpiStage);
+						static_cast<uint32_t>(panel * Config::kUmmaTileN);
+					auto acc_mn_stage = tCtAcc(make_coord(_, _), _0{}, _0{});
+					auto tAccEpiStage = flat_divide(acc_mn_stage, epi_tile);
+					auto tTR_tAcc = thr_t2r.partition_S(tAccEpiStage);
 					CUTE_UNROLL
-					for (int round = 0;
-							round <
-								Config::
-									kChunksPerWarpgroup;
-							++round) {
+					for (int round = 0; round < Config::kChunksPerWarpgroup; ++round) {
 						int chunk =
-							warpgroup *
-								Config::
-									kChunksPerWarpgroup +
-							round;
-						auto tAccChunk =
-							tTR_tAcc(
-								_,
-								_,
-								_,
-								_0{},
-								chunk);
+							warpgroup * Config::kChunksPerWarpgroup + round;
+						auto tAccChunk = tTR_tAcc(_, _, _, _0{}, chunk);
 						bool issue_tmem_load = true;
 						if constexpr (kPredicateTmemLoad) {
-							int subpart =
-								(tAccChunk.data().dp_ /
-									32) %
-								4;
+							int subpart = (tAccChunk.data().dp_ / 32) % 4;
 							issue_tmem_load =
-								tid_in_warpgroup /
-									kWarpSize ==
-								subpart;
+								tid_in_warpgroup / kWarpSize == subpart;
 						}
 						if (issue_tmem_load) {
-							copy(
-								t2r,
-								tAccChunk,
-								tTR_rAcc);
-							cutlass::arch::
-								fence_view_async_tmem_load();
+							copy(t2r, tAccChunk, tTR_rAcc);
+							cutlass::arch::fence_view_async_tmem_load();
 						}
 						cutlass::arch::NamedBarrier::sync(
-							Config::kWarpgroupSize,
-							warpgroup_barrier);
+							Config::kWarpgroupSize, warpgroup_barrier);
 						if (issue_tmem_load) {
 							CUTE_UNROLL
-							for (int i = 0;
-									i <
-										size(
-											tTR_rAcc);
-									++i) {
-								int row =
-									get<0>(
-										tTR_cChunk(
-											i));
-								int column =
-									get<1>(
-										tTR_cChunk(
-											i));
-								smem.logit_row(
-									warpgroup,
-									row)[column] =
-									static_cast<
-										typename Traits::
-											ElementLogit>(
+							for (int i = 0; i < size(tTR_rAcc); ++i) {
+								int row = get<0>(tTR_cChunk(i));
+								int column = get<1>(tTR_cChunk(i));
+								smem.logit_row(warpgroup, row)[column] =
+									static_cast<typename Traits::ElementLogit>(
 										tTR_rAcc(i));
 							}
 						}
 						cutlass::arch::NamedBarrier::sync(
-							Config::kWarpgroupSize,
-							warpgroup_barrier);
+							Config::kWarpgroupSize, warpgroup_barrier);
 
 						int row = tid_in_warpgroup;
 						int global_row =
-							work.raw_pid_m *
-								Config::kCtaTileM +
-							row;
-						int vocab_base =
-							logical_n *
-								Config::kLogicalTileN +
-							panel *
-								Config::kUmmaTileN +
-							chunk *
-								Config::kEpilogueChunkN;
-						int valid_cols =
-							params.local_vocab -
-							vocab_base;
+							work.raw_pid_m * Config::kCtaTileM + row;
+						int vocab_base = logical_n * Config::kLogicalTileN +
+										 panel * Config::kUmmaTileN +
+										 chunk * Config::kEpilogueChunkN;
+						int valid_cols = params.local_vocab - vocab_base;
 						if (valid_cols < 0)
 							valid_cols = 0;
-						if (valid_cols >
-							Config::kEpilogueChunkN) {
-							valid_cols =
-								Config::
-									kEpilogueChunkN;
+						if (valid_cols > Config::kEpilogueChunkN) {
+							valid_cols = Config::kEpilogueChunkN;
 						}
 						int target_offset = -1;
-						if (
-							work.store_enabled &&
-							global_row < params.tokens) {
-							std::int64_t target_id =
-								params.target[
-									global_row];
+						if (work.store_enabled && global_row < params.tokens) {
+							std::int64_t target_id = params.target[global_row];
 							std::int64_t local_target =
-								target_id -
-								params.vocab_start;
-							if (
-								target_id !=
-									params.ignore_index &&
-								local_target >=
-									vocab_base &&
-								local_target <
-									vocab_base +
-										valid_cols) {
+								target_id - params.vocab_start;
+							if (target_id != params.ignore_index &&
+								local_target >= vocab_base &&
+								local_target < vocab_base + valid_cols) {
 								target_offset =
-									static_cast<int>(
-										local_target) -
-									vocab_base;
+									static_cast<int>(local_target) - vocab_base;
 							}
 						}
-						Epilogue::template fold_chunk<
-							ReturnEntropy,
-							Config::kEpilogueChunkN>(
-								softmax,
-								smem.logit_row(
-									warpgroup,
-									row),
-								valid_cols,
-								target_offset,
-								params.
-									inverse_temperature);
+						Epilogue::template fold_chunk<ReturnEntropy,
+							Config::kEpilogueChunkN>(softmax,
+							smem.logit_row(warpgroup, row),
+							valid_cols,
+							target_offset,
+							params.inverse_temperature);
 						cutlass::arch::NamedBarrier::sync(
-							Config::kWarpgroupSize,
-							warpgroup_barrier);
+							Config::kWarpgroupSize, warpgroup_barrier);
 					}
 				}
 				cutlass::arch::NamedBarrier::sync(
-					Config::kEpilogueThreads,
-					Config::kEpilogueBarrierId);
+					Config::kEpilogueThreads, Config::kEpilogueBarrierId);
 				if (tid_in_epi == 0) {
-					acc_pipe.consumer_release(
-						acc_cons_state);
+					acc_pipe.consumer_release(acc_cons_state);
 				}
 				++acc_cons_state;
-				}
 			}
+		}
 
-			if (is_epilogue) {
+		if constexpr (kEpilogueRole) {
 			int row = tid_in_warpgroup;
-			int index =
-				smem.state_index(warpgroup, row);
-			smem.state_float(Smem::kMaxField, index) =
-				softmax.max_value;
-			smem.state_float(Smem::kSumField, index) =
-				softmax.exp_sum;
-			smem.state_float(Smem::kTargetField, index) =
-				softmax.target_logit;
-			smem.state_int(Smem::kHasTargetField, index) =
-				softmax.has_target;
+			int index = smem.state_index(warpgroup, row);
+			smem.state_float(Smem::kMaxField, index) = softmax.max_value;
+			smem.state_float(Smem::kSumField, index) = softmax.exp_sum;
+			smem.state_float(Smem::kTargetField, index) = softmax.target_logit;
+			smem.state_int(Smem::kHasTargetField, index) = softmax.has_target;
 			if constexpr (ReturnEntropy) {
-				smem.state_float(
-					Smem::kWeightedField,
-					index) =
+				smem.state_float(Smem::kWeightedField, index) =
 					softmax.exp_weighted_sum;
 			}
 			cutlass::arch::NamedBarrier::sync(
-				Config::kEpilogueThreads,
-				Config::kEpilogueBarrierId);
+				Config::kEpilogueThreads, Config::kEpilogueBarrierId);
 			if (warpgroup == 0 && work.store_enabled) {
-				int other =
-					smem.state_index(1, row);
+				int other = smem.state_index(1, row);
 				OnlineSoftmaxState rhs;
-				rhs.max_value =
-					smem.state_float(
-						Smem::kMaxField,
-						other);
-				rhs.exp_sum =
-					smem.state_float(
-						Smem::kSumField,
-						other);
-				rhs.target_logit =
-					smem.state_float(
-						Smem::kTargetField,
-						other);
-				rhs.has_target =
-					smem.state_int(
-						Smem::kHasTargetField,
-						other);
+				rhs.max_value = smem.state_float(Smem::kMaxField, other);
+				rhs.exp_sum = smem.state_float(Smem::kSumField, other);
+				rhs.target_logit = smem.state_float(Smem::kTargetField, other);
+				rhs.has_target = smem.state_int(Smem::kHasTargetField, other);
 				if constexpr (ReturnEntropy) {
 					rhs.exp_weighted_sum =
-						smem.state_float(
-							Smem::kWeightedField,
-							other);
+						smem.state_float(Smem::kWeightedField, other);
 				}
 				OnlineSoftmaxState combined =
-					Epilogue::template combine_scaled<
-						ReturnEntropy>(
-							softmax,
-							rhs);
-				Epilogue::template store_partial<
-					ReturnEntropy>(
-						combined,
-						partials,
-						(WavePipeline
-								? forward_wave_partial_row_offset_sm100(
-									split,
-									forward_wave_slot_sm100(wave),
-									work.raw_pid_m,
-									work.split_id)
-								: static_cast<std::size_t>(
-									work.output_work) *
-									Config::kCtaTileM) +
-							static_cast<std::size_t>(row));
+					Epilogue::template combine_scaled<ReturnEntropy>(
+						softmax, rhs);
+				Epilogue::template store_partial<ReturnEntropy>(combined,
+					partials,
+					(WavePipeline ? forward_wave_partial_row_offset_sm100(split,
+										forward_wave_slot_sm100(wave),
+										work.raw_pid_m,
+										work.split_id)
+								  : static_cast<std::size_t>(work.output_work) *
+										Config::kCtaTileM) +
+						static_cast<std::size_t>(row));
 				if constexpr (WavePipeline) {
 					__threadfence_system();
 				}
 			}
 			if constexpr (WavePipeline) {
 				cutlass::arch::NamedBarrier::sync(
-					Config::kEpilogueThreads,
-					Config::kEpilogueBarrierId);
-				if (
-					tid_in_epi == 0 &&
-					work.store_enabled) {
+					Config::kEpilogueThreads, Config::kEpilogueBarrierId);
+				if (tid_in_epi == 0 && work.store_enabled) {
 					std::size_t ready_offset =
-						forward_wave_partial_ready_offset_sm100(
-							split,
+						forward_wave_partial_ready_offset_sm100(split,
 							forward_wave_slot_sm100(wave),
 							work.raw_pid_m,
 							work.split_id);
 					forward_store_release_system_sm100(
 						partials.ready + ready_offset,
 						forward_wave_epoch_sm100(
-							*wave_workspace.launch_epoch,
-							wave));
+							*wave_workspace.launch_epoch, wave));
 				}
 			}
-			}
 		}
+	}
 
-		cutlass::arch::NamedBarrier::sync(
-			kMmaEpilogueThreads,
-			Config::kMmaEpilogueBarrierId);
-		if constexpr (kForwardDiagnosticTimestampsSm100) {
-			if (is_epilogue && tid_in_epi == 0 && work.store_enabled) {
-				forward_diagnostic_max_sm100(
-					wave_workspace.diagnostics,
+	cutlass::arch::NamedBarrier::sync(
+		kMmaEpilogueThreads, Config::kMmaEpilogueBarrierId);
+	if constexpr (kForwardDiagnosticTimestampsSm100) {
+		if constexpr (kEpilogueRole) {
+			if (tid_in_epi == 0 && work.store_enabled) {
+				forward_diagnostic_max_sm100(wave_workspace.diagnostics,
 					kForwardDiagnosticFinalPublishSm100,
 					forward_globaltimer_sm100());
 			}
 		}
-#else
-		__trap();
-#endif
 	}
-};
+#else
+	__trap();
+#endif
+}
 
+// Warp 0 helpers: merge split partials and perform the node-local reduction.
 template <
 	liger_cute::detail::LocalReduceBackend Backend,
 	liger_cute::detail::ReduceOp Op,
@@ -1906,6 +1693,7 @@ CUTE_DEVICE void forward_reduce_waves_sm100(
 }
 
 #if defined(LIGER_CUTE_FSLCE_SM100_ENABLE_NVSHMEM)
+// Warp 1 on the grid-leading CTA: run the inter-host ring and final all-gather.
 template <bool ReturnEntropy, int Compute>
 CUTE_DEVICE void forward_communicate_waves_sm100(
 		const ForwardGemmParamsSm100<Compute>& params,
@@ -2126,242 +1914,6 @@ CUTE_DEVICE void forward_communicate_waves_sm100(
 	}
 }
 #endif
-
-template <
-	bool ReturnEntropy,
-	int Compute,
-	bool RequiresRemote,
-	liger_cute::detail::LocalReduceBackend Backend,
-	class TmaLoadX,
-	class TmaLoadW,
-	class Mapping>
-__global__ __launch_bounds__(
-	ForwardGemmConfigSm100<
-		Compute>::kNumThreads,
-	1) __cluster_dims__(2, 1, 1)
-void forward_gemm_tp_kernel_sm100(
-		__grid_constant__ const TmaLoadX tma_load_x,
-		__grid_constant__ const TmaLoadW tma_load_w,
-		__grid_constant__ const ForwardGemmParamsSm100<
-			Compute> params,
-		__grid_constant__ const ForwardGemmPartialsSm100<
-			Compute> partials,
-		__grid_constant__ const ForwardGemmSplitSm100<
-			Compute> split,
-		__grid_constant__ const DxReduceWorkspace<float> comm,
-		__grid_constant__ const Mapping mapping,
-		int* split_ready,
-		float* global_max,
-		float* reduced,
-		__grid_constant__ const ForwardWaveWorkspaceSm100<
-			Compute> wave_workspace,
-		__grid_constant__ const liger_cute::detail::
-			RemoteReduceView remote,
-		__grid_constant__ const ForwardFinalOutputsSm100 outputs) {
-	static_assert(
-		Compute == 100,
-		"SM100 fused scaled linear cross entropy requires Compute=100");
-	static_assert(
-		!RequiresRemote ||
-			Backend ==
-				liger_cute::detail::
-					LocalReduceBackend::kNvls,
-		"the fused SM100 remote path requires node-local NVLS");
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
-	using Traits = ForwardGemmTraitsSm100<Compute>;
-	using Config = typename Traits::Config;
-	using Smem = ForwardGemmSmemSm100<
-		Compute,
-		ReturnEntropy>;
-	extern __shared__ char raw_smem[];
-	Smem& smem = *reinterpret_cast<Smem*>(raw_smem);
-
-	cute::prefetch_tma_descriptor(
-		tma_load_x.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(
-		tma_load_w.get_tma_descriptor());
-	auto pipe =
-		forward_make_pipe_sm100<Compute>(
-			smem.pipeline);
-
-	int warp_id =
-		static_cast<int>(threadIdx.x) / kWarpSize;
-	cute::TMEM::Allocator2Sm tmem_allocator;
-	// Startup-only rendezvous: all roles enter before any wave reduction or
-	// remote communication begins. No whole-CTA barrier is used after this
-	// point by the RequiresRemote specialization.
-	cute::cluster_sync();
-	if (warp_id == Config::kFirstEpilogueWarp) {
-		tmem_allocator.allocate(
-			Config::kTmemColumns,
-			&smem.tmem_base);
-		__syncwarp();
-	}
-	__syncthreads();
-	cute::cluster_sync();
-
-	ForwardGemmWorkSm100<Compute> work =
-		forward_gemm_assign_work_sm100<Compute>(
-				split,
-				static_cast<int>(blockIdx.z),
-				static_cast<int>(
-					cute::block_rank_in_cluster()));
-	int num_k_tiles =
-		ForwardGemmLaunchSm100<
-			Compute>::num_k_tiles(params.hidden);
-	if constexpr (kForwardDiagnosticTimestampsSm100) {
-		if (
-			warp_id == Config::kTmaWarp &&
-			(threadIdx.x & (kWarpSize - 1)) == 0) {
-			forward_diagnostic_min_sm100(
-				wave_workspace.diagnostics,
-				kForwardDiagnosticKernelStartSm100,
-				forward_globaltimer_sm100());
-		}
-	}
-
-	typename Traits::PipelineState state;
-	if (warp_id == Config::kTmaWarp) {
-		state =
-			cutlass::make_producer_start_state<
-				typename Traits::MainloopPipeline>();
-		ForwardGemmProducerSm100<
-			Compute>::template run<
-				ReturnEntropy,
-				RequiresRemote>(
-				pipe,
-				state,
-				smem,
-				tma_load_x,
-				tma_load_w,
-				params,
-				work,
-				split,
-				wave_workspace,
-				num_k_tiles);
-	} else if (
-		warp_id >= Config::kUmmaWarp &&
-		warp_id <= Config::kLastEpilogueWarp) {
-		ForwardGemmConsumerSm100<
-			ReturnEntropy,
-			RequiresRemote,
-			Compute>::run(
-				pipe,
-				state,
-				smem,
-				params,
-				partials,
-				work,
-				split,
-				wave_workspace,
-				num_k_tiles);
-	}
-
-	if constexpr (RequiresRemote) {
-		if (warp_id == Config::kLocalReduceWarp) {
-			forward_reduce_waves_sm100<
-				ReturnEntropy,
-				Compute,
-				Backend>(
-					params,
-					partials,
-					split,
-					comm,
-					mapping,
-					wave_workspace,
-					work);
-		} else if (
-			warp_id ==
-				Config::kRemoteCommunicationWarp &&
-			blockIdx.x == 0 &&
-			blockIdx.y == 0 &&
-			blockIdx.z == 0 &&
-			cute::block_rank_in_cluster() == 0) {
-#if defined(LIGER_CUTE_FSLCE_SM100_ENABLE_NVSHMEM)
-			forward_communicate_waves_sm100<
-				ReturnEntropy,
-				Compute>(
-					params,
-					split,
-					comm,
-					mapping,
-					remote,
-					wave_workspace,
-					outputs);
-#else
-			__trap();
-#endif
-		}
-
-		if (
-			warp_id >= Config::kUmmaWarp &&
-			warp_id <= Config::kLastEpilogueWarp) {
-			// Compute-only TMEM teardown. Warps 0 and 1 never enter this
-			// barrier, and warp 2 drains its TMA producer loop independently.
-			constexpr int kUmmaEpilogueThreads =
-				(Config::kLastEpilogueWarp -
-					Config::kUmmaWarp + 1) *
-				kWarpSize;
-			static_assert(kUmmaEpilogueThreads == 288);
-			static_assert(
-				!(Config::kTmaWarp >= Config::kUmmaWarp &&
-					Config::kTmaWarp <=
-						Config::kLastEpilogueWarp));
-			static_assert(
-				!(Config::kLocalReduceWarp >=
-						Config::kUmmaWarp &&
-					Config::kLocalReduceWarp <=
-						Config::kLastEpilogueWarp));
-			static_assert(
-				!(Config::kRemoteCommunicationWarp >=
-						Config::kUmmaWarp &&
-					Config::kRemoteCommunicationWarp <=
-						Config::kLastEpilogueWarp));
-			cutlass::arch::NamedBarrier::sync(
-				kUmmaEpilogueThreads,
-				Config::kComputeDoneBarrierId);
-			if (
-				warp_id ==
-				Config::kFirstEpilogueWarp) {
-				tmem_allocator.release_allocation_lock();
-				tmem_allocator.free(
-					smem.tmem_base,
-					Config::kTmemColumns);
-			}
-		}
-		return;
-	} else {
-		__syncthreads();
-		cute::cluster_sync();
-		if (warp_id == Config::kFirstEpilogueWarp) {
-			tmem_allocator.release_allocation_lock();
-			tmem_allocator.free(
-				smem.tmem_base,
-				Config::kTmemColumns);
-		}
-		__syncthreads();
-
-		forward_finalize_splits_and_reduce_local_sm100<
-			ReturnEntropy,
-			Compute,
-			Backend>(
-				smem,
-				params,
-				partials,
-				split,
-				comm,
-				mapping,
-				split_ready,
-				global_max,
-				reduced,
-				wave_workspace.diagnostics,
-				outputs);
-		cute::cluster_sync();
-	}
-#else
-	__trap();
-#endif
-}
 
 }  // namespace fused_scaled_linear_cross_entropy
 }  // namespace liger

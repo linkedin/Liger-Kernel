@@ -1,4 +1,4 @@
-#include "forward_gemm_mainloop_sm100.cuh"
+#include "forward_gemm_kernel_sm100.cuh"
 
 #include "forward_reduce.cuh"
 #include "liger_cute/check.h"

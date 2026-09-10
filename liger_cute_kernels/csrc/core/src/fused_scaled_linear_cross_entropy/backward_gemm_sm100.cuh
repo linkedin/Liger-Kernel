@@ -8,7 +8,7 @@
 // (backward_dz_handoff_wave_kernel_sm90 + backward_dx_cluster2_gemm_wave_
 // kernel_sm90) is the algorithmic and synchronization reference; the
 // executable machinery is the SM100 UMMA/TMEM/TMA machinery already used by
-// forward_gemm_mainloop_sm100.cuh and the SM100 MoE kernels.
+// forward_gemm_roles_sm100.cuh and the SM100 MoE kernels.
 //
 // ── Per-wave schedule ─────────────────────────────────────────────────────
 //   phase dZ    Z = X @ W_local^T over this wave's token rows; the epilogue

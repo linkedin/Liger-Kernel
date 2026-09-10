@@ -2,9 +2,11 @@
 
 // Native SM100 tensor-parallel fused scaled linear cross entropy contract.
 // The executable paired-CTA 2SM UMMA path is kept separate from SM90 in
-// forward_gemm_mainloop_sm100.cuh.
+// forward_gemm_kernel_sm100.cuh and forward_gemm_roles_sm100.cuh.
 
 #include <cuda_runtime.h>
+
+#include <cute/config.hpp>
 
 #include <cmath>
 #include <cstddef>
@@ -394,7 +396,7 @@ struct ForwardGemmEpilogueSm100 {
 			float inverse_temperature) {
 		float values[ChunkN];
 		float chunk_max = kForwardMaskLogitSm100;
-		#pragma unroll
+		CUTE_UNROLL
 		for (int column = 0; column < ChunkN; ++column) {
 			float value =
 				static_cast<float>(logits[column]) * inverse_temperature;
@@ -406,7 +408,7 @@ struct ForwardGemmEpilogueSm100 {
 		float next_max = fmaxf(state.max_value, chunk_max);
 		float chunk_sum = 0.0f;
 		float chunk_weighted = 0.0f;
-		#pragma unroll
+		CUTE_UNROLL
 		for (int column = 0; column < ChunkN; ++column) {
 			float weight = forward_exp2_sm100(
 				(values[column] - next_max) * kForwardLog2ESm100);

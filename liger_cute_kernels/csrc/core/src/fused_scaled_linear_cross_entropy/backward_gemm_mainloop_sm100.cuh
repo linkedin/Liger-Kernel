@@ -918,7 +918,7 @@ CUTE_DEVICE void backward_produce_dw_pairs_sm100(
 			group_modes<0, 3>(sB),
 			group_modes<0, 3>(tCgB1));
 
-		#pragma unroll 1
+		CUTE_NO_UNROLL
 		for (int k_tile = 0; k_tile < KTiles; ++k_tile) {
 			if constexpr (WaitDzReady) {
 				if ((k_tile & 3) == 0) {
@@ -1015,65 +1015,49 @@ CUTE_DEVICE void backward_mma_dw_pairs_sm100(
 			++acc_state;
 		}
 
-		bool first0 = true;
-		bool first1 = true;
-		#pragma unroll 1
+		CUTE_NO_UNROLL
 		for (int k_tile = 0; k_tile < KTiles; ++k_tile) {
-			pipe.consumer_wait(state);
-			if constexpr (kBackwardDiagnosticTimestampsSm100) {
-				if (
-					index == 0 && k_tile == 0 &&
-					(static_cast<int>(threadIdx.x) &
-						(kWarpSize - 1)) == 0) {
-					backward_diagnostic_first_sm100(
-						diagnostics, first_ready_index);
-				}
-			}
-			tCtAccumulator.data() =
-				tmem_base +
-				static_cast<std::uint32_t>(
-					accumulator_state0.index() * Config::kTileN);
-			CUTE_UNROLL
-			for (int k_block = 0; k_block < size<2>(tCrA); ++k_block) {
-				tiled_mma.accumulate_ = first0
-					? UMMA::ScaleOut::Zero
-					: UMMA::ScaleOut::One;
-				first0 = false;
-				gemm(
-					tiled_mma,
-					tCrA(_, _, k_block, state.index()),
-					tCrB(_, _, k_block, state.index()),
-					tCtAccumulator);
-			}
-			pipe.consumer_release(state);
-			++state;
-			if (k_tile + 1 == KTiles) {
-				acc_pipe.producer_commit(accumulator_state0);
-			}
-
-			if (has_second) {
-				pipe.consumer_wait(state);
-				tCtAccumulator.data() =
-					tmem_base +
+			auto accumulate_tile =
+				[&](const auto& accumulator_state, bool diagnose) {
+					pipe.consumer_wait(state);
+					if constexpr (kBackwardDiagnosticTimestampsSm100) {
+						if (
+							diagnose && index == 0 && k_tile == 0 &&
+							(static_cast<int>(threadIdx.x) &
+								(kWarpSize - 1)) == 0) {
+							backward_diagnostic_first_sm100(
+								diagnostics, first_ready_index);
+						}
+					}
+					tCtAccumulator.data() =
+						tmem_base +
 						static_cast<std::uint32_t>(
-							accumulator_state1.index() * Config::kTileN);
-				CUTE_UNROLL
-				for (int k_block = 0; k_block < size<2>(tCrA); ++k_block) {
-					tiled_mma.accumulate_ = first1
-						? UMMA::ScaleOut::Zero
-						: UMMA::ScaleOut::One;
-					first1 = false;
-					gemm(
-						tiled_mma,
-						tCrA(_, _, k_block, state.index()),
-						tCrB(_, _, k_block, state.index()),
-						tCtAccumulator);
-				}
-				pipe.consumer_release(state);
-				++state;
-				if (k_tile + 1 == KTiles) {
-					acc_pipe.producer_commit(accumulator_state1);
-				}
+							accumulator_state.index() *
+							Config::kTileN);
+					CUTE_UNROLL
+					for (int k_block = 0;
+							k_block < size<2>(tCrA);
+							++k_block) {
+						tiled_mma.accumulate_ =
+							k_tile == 0 && k_block == 0
+							? UMMA::ScaleOut::Zero
+							: UMMA::ScaleOut::One;
+						gemm(
+							tiled_mma,
+							tCrA(_, _, k_block, state.index()),
+							tCrB(_, _, k_block, state.index()),
+							tCtAccumulator);
+					}
+					pipe.consumer_release(state);
+					++state;
+					if (k_tile + 1 == KTiles) {
+						acc_pipe.producer_commit(
+							accumulator_state);
+					}
+				};
+			accumulate_tile(accumulator_state0, true);
+			if (has_second) {
+				accumulate_tile(accumulator_state1, false);
 			}
 		}
 	}
@@ -2875,7 +2859,8 @@ void backward_gemm_tp_kernel_sm100(
 								Config::kWarpgroupSize,
 								warpgroup_barrier);
 							if (tid_in_warpgroup == 0) {
-								cute::tma_store_fence();
+								cutlass::arch::
+									fence_view_async_shared();
 								int n_chunk =
 									n_tile *
 										(Config::kTileN /
@@ -2911,7 +2896,6 @@ void backward_gemm_tp_kernel_sm100(
 					Config::kDwEpilogueThreads,
 					Config::kEpilogueBarrierId);
 				if (tid_in_epi == 0) {
-					asm volatile("fence.proxy.async.global;" ::: "memory");
 					backward_diagnostic_max_sm100(
 						wave_workspace.diagnostics,
 						kBackwardDiagnosticDwEpiEnd);
