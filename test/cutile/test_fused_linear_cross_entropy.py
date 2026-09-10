@@ -434,8 +434,9 @@ def test_retained_backward_preserves_saved_gradient():
 # ---------------------------------------------------------------------------
 # Memory contract: the forward retains only [N, H] dX and [V, H] dW -- never a
 # full [N, V] logits/dZ tensor -- and both are the COMPLETED weight-dtype
-# gradients (dW cast once at the end of forward). The reusable logits buffer
-# keeps peak memory below the full [N, V] materialization.
+# gradients (dW cast once at the end of forward). Only one per-chunk logits/dZ
+# tensor is live at a time, so peak memory stays below the full [N, V]
+# materialization.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("accum_dtype", _ACCUM_MODES)
 def test_retains_only_final_gradients_no_full_logits(accum_dtype):
@@ -461,8 +462,58 @@ def test_retains_only_final_gradients_no_full_logits(accum_dtype):
     assert grad_weight.numel() < tokens * vocab_size
 
 
-def test_reusable_logits_buffer_bounds_peak_memory():
-    # V > 16*H so the default geometry is genuinely multi-chunk (buffer_rows < N).
+class _AllocTracer(TorchDispatchMode):
+    """Record the allocation-relevant matmul/copy ops of the FLCE forward.
+
+    Captures the SEQUENCE of ``aten.mm``/``aten.addmm`` ops (so the Triton
+    allocation style -- out-free ``aten.mm.default`` projection + dX, then an
+    ``addmm`` dW accumulation -- can be compared to the Triton reference) and the
+    output ``data_ptr`` of every projection GEMM (``arg1 == weight.t()``). Only
+    integer ``data_ptr`` values are stored, never Tensor references, so the tracer
+    cannot itself keep chunk storages alive and inflate peak memory.
+    """
+
+    _MM_FAMILY = (
+        "aten.mm.default",
+        "aten.mm.out",
+        "aten.mm.dtype_out",
+        "aten.addmm.default",
+        "aten.addmm.out",
+        "aten.addmm.dtype_out",
+    )
+
+    def __init__(self, hidden_size, vocab_size):
+        self._hv = (hidden_size, vocab_size)
+        self.mm_family = []
+        self.proj_ptrs = []
+        self.has_copy = False
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        name = str(func)
+        out = func(*args, **kwargs)
+        if name in self._MM_FAMILY:
+            self.mm_family.append(name)
+            if name == "aten.mm.default" and len(args) >= 2 and tuple(args[1].shape) == self._hv:
+                result = out[0] if isinstance(out, (tuple, list)) else out
+                self.proj_ptrs.append(result.data_ptr())  # int only -- no strong ref
+        elif name.startswith("aten.copy"):
+            self.has_copy = True
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Allocation-style regression: the chunked path must mirror the Triton
+# reference's per-chunk allocations -- a fresh out-free ``aten.mm.default``
+# projection and dX GEMM (NOT a recycled buffer or a direct GEMM-into-output
+# ``aten.mm.out``), a ``copy_`` of the dX chunk result into grad_input, and an
+# ``addmm`` dW accumulation. Traces both backends with both grads requested and
+# asserts the matmul family matches. Adjacent-chunk projection storages must
+# differ (the previous chunk's dZ view is still alive when the next projection is
+# allocated), but not ALL storages -- the caching allocator may reuse freed ones.
+# ---------------------------------------------------------------------------
+def test_chunked_allocation_matches_triton_reference():
+    # V > 16*H so the default geometry is genuinely multi-chunk.
     tokens, hidden_size, vocab_size = 4096, 128, 8192
     tiling = _expected_tiling(tokens, hidden_size, vocab_size)
     assert len(tiling) >= 2 and tiling[0] < tokens
@@ -470,6 +521,10 @@ def test_reusable_logits_buffer_bounds_peak_memory():
     weight = torch.randn(vocab_size, hidden_size, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     target = torch.randint(vocab_size, (tokens,), device="cuda")
 
+    # Peak-memory guard (measured WITHOUT the tracer so its bookkeeping cannot
+    # skew the allocation): this 4-chunk shape allows up to two [buffer_rows, V]
+    # logits/dZ chunk buffers to overlap, yet peak stays well below a full
+    # [N, V] materialization.
     torch.cuda.synchronize()
     torch.cuda.reset_peak_memory_stats()
     base = torch.cuda.memory_allocated()
@@ -477,11 +532,32 @@ def test_reusable_logits_buffer_bounds_peak_memory():
     loss.backward()
     torch.cuda.synchronize()
     peak_delta = torch.cuda.max_memory_allocated() - base
+    assert peak_delta < tokens * vocab_size * 2  # full bf16 [N, V]
 
-    full_logits_bytes = tokens * vocab_size * 2  # bf16 [N, V]
-    # A full [N, V] materialization would dominate; the chunked buffer must stay
-    # well under it (chunked logits is buffer_rows * V * 2 bytes).
-    assert peak_delta < full_logits_bytes
+    # Trace the cuTile chunked forward (both grads requested).
+    with torch.no_grad(), _AllocTracer(hidden_size, vocab_size) as ct_trace:
+        _, grad_input, grad_weight = chunked_fused_linear_cross_entropy_forward(x, weight, target, reduction="mean")
+    # Trace the actual Triton low-level forward with the same both-grad request.
+    with torch.no_grad(), _AllocTracer(hidden_size, vocab_size) as tr_trace:
+        triton_flce_mod.fused_linear_cross_entropy_forward(x, weight, target, reduction="mean")
+
+    n_chunks = len(tiling)
+    # Triton allocation style: out-free mm.default for projection + dX, no
+    # GEMM-into-output mm.out, and a copy_ of the dX chunk into grad_input.
+    assert "aten.mm.out" not in ct_trace.mm_family
+    assert ct_trace.mm_family.count("aten.mm.default") == 2 * n_chunks  # projection + dX per chunk
+    assert ct_trace.mm_family.count("aten.addmm.out") == n_chunks  # dW addmm every chunk
+    assert ct_trace.has_copy
+    # The matmul family matches the Triton reference exactly (same op sequence).
+    assert ct_trace.mm_family == tr_trace.mm_family
+    assert tr_trace.has_copy
+
+    # One projection storage recorded per chunk; adjacent chunks differ.
+    assert len(ct_trace.proj_ptrs) == n_chunks
+    assert ct_trace.proj_ptrs[0] != ct_trace.proj_ptrs[1]
+    # No retained gradient carries the full [N, V] footprint.
+    assert grad_input.numel() < tokens * vocab_size
+    assert grad_weight.numel() < tokens * vocab_size
 
 
 # ---------------------------------------------------------------------------
@@ -816,7 +892,7 @@ def _same_chunk_oracle(x_data, weight_data, target, reduction, upstream, ignore_
     loss = torch.zeros((), dtype=torch.float32, device=device)
     dx = torch.zeros((n_tokens, hidden), dtype=torch.bfloat16, device=device)
     dw = torch.zeros((vocab, hidden), dtype=accum_buf_dtype, device=device)
-    for chunk_index, start in enumerate(range(0, n_tokens, chunk_size)):
+    for start in range(0, n_tokens, chunk_size):
         stop = min(start + chunk_size, n_tokens)
         xc = x_data[start:stop]
         tc = target[start:stop]
@@ -836,10 +912,8 @@ def _same_chunk_oracle(x_data, weight_data, target, reduction, upstream, ignore_
         dz_t = dz.t()
         if accum_buf_dtype == torch.float32:
             dw.add_(_ref_dw_fp32(dz_t, xc))  # FP32-accumulated dW
-        elif chunk_index == 0:
-            torch.mm(dz_t, xc, out=dw)  # BF16 accumulate: overwrite on first chunk
         else:
-            torch.addmm(dw, dz_t, xc, out=dw)  # BF16 accumulate: addmm on subsequent
+            torch.addmm(dw, dz_t, xc, out=dw)  # BF16 accumulate: addmm into zero-init buffer every chunk
     grad_weight = dw.to(torch.bfloat16)  # single cast to weight dtype at end of forward
     dx_final = (dx * upstream).to(torch.bfloat16)  # backward applies only upstream
     dw_final = (grad_weight * upstream).to(torch.bfloat16)
@@ -1005,11 +1079,12 @@ def test_legacy_lowlevel_forward_backward_contract():
 # ---------------------------------------------------------------------------
 # GEMM ownership trace: the dW gradient runs through PyTorch/cuBLAS, not a custom
 # cuTile MMA kernel. For the FP32 accumulator the chunked path emits one FP32-out
-# dW ``aten::mm`` (first chunk) and one FP32-out ``aten::addmm`` per subsequent
-# chunk -- via the ``out_dtype`` overload on torch>=2.8, or plain ``mm.out`` /
+# dW ``aten::addmm`` PER CHUNK into a zero-initialized buffer (no first-chunk
+# ``mm`` init) -- via the ``out_dtype`` overload on torch>=2.8, or plain
 # ``addmm.out`` writing into an FP32 buffer on the pre-2.8 fallback. Projection
-# and dX always use the plain (BF16-out) ``aten::mm.out`` overload. The removed
-# cuTile matmul kernels must no longer exist on the module.
+# and dX use the out-free ``aten::mm.default`` overload (the Triton allocation
+# style), never a GEMM-into-output ``aten::mm.out``. The removed cuTile matmul
+# kernels must no longer exist on the module.
 # ---------------------------------------------------------------------------
 class _AtenOpRecorder(TorchDispatchMode):
     """Record every aten op name the path issues, plus dW mm/addmm out dtypes."""
@@ -1066,13 +1141,14 @@ def test_chunked_dw_accumulator_dtype_and_gemms(accum_dtype, force_fallback, mon
     n_chunks = len(_expected_tiling(n_tokens, hidden, vocab))
     assert n_chunks >= 2
 
-    # Spy the actual dW accumulator: buffer dtype, dZ operand dtype, overwrite flag.
+    # Spy the actual dW accumulator: buffer dtype, dZ operand dtype, accumulate flag.
     accum_calls = []
     real_accum = flce_mod._accumulate_dw
 
-    def spy(buf, dz, x_chunk, accumulate):
-        accum_calls.append((buf.dtype, dz.dtype, accumulate))
-        return real_accum(buf, dz, x_chunk, accumulate)
+    def spy(buf, dz_t, x_chunk, accumulate):
+        # dz_t is the already-transposed [V, rows] operand; its dtype is preserved.
+        accum_calls.append((buf.dtype, dz_t.dtype, accumulate))
+        return real_accum(buf, dz_t, x_chunk, accumulate)
 
     monkeypatch.setattr(flce_mod, "_accumulate_dw", spy)
 
@@ -1080,8 +1156,9 @@ def test_chunked_dw_accumulator_dtype_and_gemms(accum_dtype, force_fallback, mon
         _, _, grad_weight = chunked_fused_linear_cross_entropy_forward(x, weight, target, accum_dtype=accum_dtype)
 
     expected_buf_dtype = torch.float32 if accum_dtype == torch.float32 else torch.bfloat16
-    # Exactly one accumulate call per chunk: overwrite (mm) first, add (addmm) after.
-    assert [c[2] for c in accum_calls] == [False] + [True] * (n_chunks - 1)
+    # One accumulate call per chunk, all addmm (accumulate=True) into a
+    # zero-initialized buffer -- no first-chunk mm-overwrite optimization.
+    assert [c[2] for c in accum_calls] == [True] * n_chunks
     # The accumulator dtype is uniform across chunks and follows accum_dtype.
     assert all(c[0] == expected_buf_dtype for c in accum_calls)
     # dZ is always BF16 -- there is never a parameter-sized FP32 dZ tensor.
@@ -1092,27 +1169,31 @@ def test_chunked_dw_accumulator_dtype_and_gemms(accum_dtype, force_fallback, mon
     # FP32 end-cast. Either way the returned dW is BF16.
     assert grad_weight.dtype == torch.bfloat16
 
+    # Projection + dX use the out-free mm.default overload; no GEMM-into-output.
+    assert "aten.mm.out" not in rec.ops
+
     if expected_buf_dtype == torch.float32:
         if flce_mod._ADDMM_SUPPORTS_OUT_DTYPE:
-            # FP32 accumulator drives the out_dtype overload: FP32-out mm then addmm.
-            assert rec.ops.count("aten.mm.dtype_out") == 1
-            assert rec.ops.count("aten.addmm.dtype_out") == n_chunks - 1
+            # FP32 accumulator drives the out_dtype overload: one FP32-out addmm
+            # per chunk (including the first) into the zero-initialized buffer.
+            assert "aten.mm.dtype_out" not in rec.ops
+            assert rec.ops.count("aten.addmm.dtype_out") == n_chunks
             assert "aten.addmm.out" not in rec.ops
         else:
-            # Pre-2.8 fallback: no out_dtype overload. dW is a plain mm.out (first
-            # chunk) then plain addmm.out per subsequent chunk, all writing into
-            # the FP32 buffer. addmm.out is issued ONLY by the dW accumulation.
+            # Pre-2.8 fallback: no out_dtype overload. dW is a plain addmm.out per
+            # chunk (including the first), all writing into the FP32 buffer.
+            # addmm.out is issued ONLY by the dW accumulation.
             assert "aten.mm.dtype_out" not in rec.ops
             assert "aten.addmm.dtype_out" not in rec.ops
-            assert rec.ops.count("aten.addmm.out") == n_chunks - 1
-        # Both overloads emit exactly n_chunks FP32-out dW GEMMs (1 mm + addmm*(n-1)).
+            assert rec.ops.count("aten.addmm.out") == n_chunks
+        # Both overloads emit exactly n_chunks FP32-out dW addmm GEMMs.
         assert rec.dw_out_dtypes == [torch.float32] * n_chunks
     else:
-        # BF16 accumulator: plain BF16 mm/addmm, no out_dtype overload, no FP32 upcast.
+        # BF16 accumulator: plain BF16 addmm every chunk, no out_dtype overload.
         assert "aten.mm.dtype_out" not in rec.ops
         assert "aten.addmm.dtype_out" not in rec.ops
-        # addmm is issued ONLY by the dW accumulation, so its count is chunks - 1.
-        assert rec.ops.count("aten.addmm.out") == n_chunks - 1
+        # addmm.out is issued ONLY by the dW accumulation, one per chunk.
+        assert rec.ops.count("aten.addmm.out") == n_chunks
         assert rec.dw_out_dtypes == []
     assert "aten.addmm.default" not in rec.ops
 
@@ -1173,9 +1254,11 @@ def test_pre_2_8_fallback_avoids_out_dtype_overload(monkeypatch):
     # No out_dtype overload is used on the fallback path.
     assert "aten.mm.dtype_out" not in rec.ops
     assert "aten.addmm.dtype_out" not in rec.ops
-    # dW still overwrites once (plain mm.out) then accumulates (plain addmm.out).
-    # addmm is issued ONLY by the dW accumulation, so its count is chunks - 1.
-    assert rec.ops.count("aten.addmm.out") == n_chunks - 1
+    # Projection + dX use out-free mm.default; no GEMM-into-output mm.out.
+    assert "aten.mm.out" not in rec.ops
+    # dW accumulates with a plain addmm.out every chunk (zero-init buffer, no
+    # first-chunk mm). addmm.out is issued ONLY by the dW accumulation.
+    assert rec.ops.count("aten.addmm.out") == n_chunks
     # Every dW GEMM writes into the FP32 buffer, so all n_chunks outputs are FP32.
     assert rec.dw_out_dtypes == [torch.float32] * n_chunks
 
@@ -1281,9 +1364,11 @@ def test_before_gemm_normalization_feeds_normalized_dz(monkeypatch):
     captured = []
     real_accum = flce_mod._accumulate_dw
 
-    def spy(buf, dz, x_chunk, accumulate):
-        captured.append(dz.detach().clone())  # dz == the logits buffer dX also projects
-        return real_accum(buf, dz, x_chunk, accumulate)
+    def spy(buf, dz_t, x_chunk, accumulate):
+        # dz_t is the transposed [V, rows] operand; transpose back to [rows, V]
+        # (the logits buffer dX also projects from) for the normalized-dZ compare.
+        captured.append(dz_t.t().detach().clone())
+        return real_accum(buf, dz_t, x_chunk, accumulate)
 
     monkeypatch.setattr(flce_mod, "_accumulate_dw", spy)
 
@@ -1319,3 +1404,76 @@ def test_before_gemm_normalization_feeds_normalized_dz(monkeypatch):
     assert _relative_l2(fed_dz, raw_ref) > 0.5
     # The entirely-ignored middle chunk contributes exactly zero dZ.
     assert torch.count_nonzero(fed_dz[64:128]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Ambient FP16 autocast regression: the chunked backend allocates its per-chunk
+# projection (``input_chunk @ weight.t()``) and dX (``dZ @ weight``) FRESH -- not
+# through ``torch.mm(..., out=)`` like the legacy helper -- so those GEMMs are
+# autocast-eligible ops. Under an ambient ``torch.autocast('cuda', float16)``
+# (which ``amp_custom_fwd`` leaves enabled) a naive ``@`` would recast the BF16
+# operands to FP16, producing an FP16 logits/dZ buffer that the BF16 dW/dX path
+# cannot consume (NotImplementedError on the mixed-dtype GEMM), and would silently
+# widen the kernel's supported-precision surface. The fix wraps only those two
+# fresh GEMM sites in ``torch.autocast(enabled=False)``, so the fresh allocation
+# and temp/copy semantics are preserved but the operands keep their BF16 dtype.
+# This test reproduces the original B200 failure: end-to-end autograd under FP16
+# autocast must (a) NOT raise, (b) keep the dZ operand fed to the GEMMs BF16 (no
+# silent conversion), and (c) match -- bit-for-bit at the same geometry -- the
+# identical call with autocast disabled. No tolerance widening.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("reduction", ["mean", "sum"])
+@pytest.mark.parametrize("accum_dtype", [None, torch.bfloat16, torch.float32])
+def test_fp16_autocast_preserves_bf16_gemm_operands(reduction, accum_dtype, monkeypatch):
+    torch.manual_seed(50)
+    # H64 / V4096 with 50 tokens is the shape Main reproduced the B200 bug on;
+    # bump to a multi-chunk token count with a ragged tail so the per-chunk fresh
+    # projection + dX GEMMs (and the final partial chunk) all run under autocast.
+    n_tokens, hidden, vocab = 200, 64, 4096
+    ignore_index = -100
+    upstream = torch.tensor(0.7, device="cuda")  # non-unit upstream
+    tiling = _expected_tiling(n_tokens, hidden, vocab)
+    assert len(tiling) >= 2 and tiling[-1] != tiling[0]  # multichunk + ragged tail
+    x_data = torch.randn(n_tokens, hidden, device="cuda", dtype=torch.bfloat16)
+    weight_data = torch.randn(vocab, hidden, device="cuda", dtype=torch.bfloat16)
+    target = torch.randint(vocab, (n_tokens,), device="cuda")
+    target[:5] = ignore_index
+    target[::13] = ignore_index
+
+    # Spy the dW accumulation to prove the dZ operand fed to the GEMMs stays BF16
+    # (an FP16 recast of the logits buffer would surface here as an FP16 dz_t).
+    seen_dtypes = []
+    real_accum = flce_mod._accumulate_dw
+
+    def spy(buf, dz_t, x_chunk, accumulate):
+        seen_dtypes.append((buf.dtype, dz_t.dtype, x_chunk.dtype))
+        return real_accum(buf, dz_t, x_chunk, accumulate)
+
+    monkeypatch.setattr(flce_mod, "_accumulate_dw", spy)
+
+    # (a) End-to-end autograd under an ambient FP16 autocast must not raise.
+    x = x_data.clone().requires_grad_(True)
+    weight = weight_data.clone().requires_grad_(True)
+    with torch.autocast(device_type="cuda", dtype=torch.float16):
+        loss = _apply(x, weight, target, reduction, ignore_index, accum_dtype)[0]
+    loss.backward(upstream)
+
+    # (b) No silent dtype conversion: every GEMM operand fed to the dW helper is
+    # BF16 (the projection buffer the CE kernel wrote dZ into, and the input chunk).
+    assert seen_dtypes, "dW accumulation never ran"
+    assert all(dz_t == torch.bfloat16 and xc == torch.bfloat16 for _, dz_t, xc in seen_dtypes)
+    # Gradients stay in the parameter dtype -- autocast did not widen precision.
+    assert x.grad.dtype == torch.bfloat16
+    assert weight.grad.dtype == torch.bfloat16
+
+    # (c) Identical call with autocast disabled -> bit-for-bit identical results
+    # (same geometry, same operand dtypes; the guard makes autocast a no-op here).
+    x_ref = x_data.clone().requires_grad_(True)
+    weight_ref = weight_data.clone().requires_grad_(True)
+    with torch.autocast(device_type="cuda", enabled=False):
+        loss_ref = _apply(x_ref, weight_ref, target, reduction, ignore_index, accum_dtype)[0]
+    loss_ref.backward(upstream)
+
+    assert torch.equal(loss, loss_ref)
+    assert torch.equal(x.grad, x_ref.grad)
+    assert torch.equal(weight.grad, weight_ref.grad)

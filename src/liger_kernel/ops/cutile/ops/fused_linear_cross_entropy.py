@@ -6,12 +6,22 @@
 
 All three GEMMs -- the projection, the input-gradient (dX), and the
 weight-gradient (dW) -- use PyTorch's tuned cuBLAS path. cuTile computes
-partitioned CE statistics, overwrites a reusable ``[min(N, C), V]`` logits
-buffer with dZ, and (for the chunked path) normalizes dZ in the CE kernel. dW is
-accumulated across token chunks by cuBLAS ``mm`` (first chunk) then ``addmm``
-(subsequent chunks), so the transient logits workspace is ``O(min(N, C) * V)``
-instead of the full ``O(N * V)`` materialization; the retained gradients (BF16
-dX and BF16 dW) add ``O(N*H + V*H)``.
+partitioned CE statistics and (for the chunked path) normalizes dZ in the CE
+kernel. The chunked path's per-chunk allocation baseline mirrors the Triton FLCE
+backend exactly: each iteration materializes a fresh ``[min(N, C), V]`` logits
+tensor (``input_chunk @ weight.t()``) that the CE kernel overwrites in place with
+dZ; dX is a transient chunk GEMM (``dZ @ weight``) copied into a ``zeros_like``
+grad_input slice; and dW is accumulated across token chunks by cuBLAS ``addmm``
+into a zero-initialized buffer on EVERY chunk (including the first). The previous
+and current chunk buffers can overlap in memory because live dZ/transpose views
+keep an alias of the prior chunk alive while the next one is allocated, but the
+transient logits workspace still stays ``O(min(N, C) * V)`` rather than the full
+``O(N * V)`` materialization;
+the retained gradients (BF16 dX and BF16 dW) add ``O(N*H + V*H)``. Workspace
+reuse (a single recycled logits buffer, direct GEMM-into-output for dX, and a
+first-chunk ``mm`` that skips the addmm zero-init) are deliberately NOT applied
+here -- they are deferred to a later allocation-optimization PR for both
+backends, so this file stays a faithful allocation match to the Triton reference.
 
 Precision/normalization/cast order (chunked/autograd path) matches the Triton
 FLCE backend's mean/sum policy: the CE kernel folds the global non-ignored mean
@@ -190,40 +200,45 @@ def _fused_cross_entropy_dz_kernel(
 
 def _accumulate_dw(
     dweight_accum: torch.Tensor,
-    dz: torch.Tensor,
+    dz_t: torch.Tensor,
     x: torch.Tensor,
     accumulate: bool,
 ) -> None:
     """Accumulate ``dZ.T @ X`` into the ``dweight_accum`` buffer via cuBLAS.
 
-    ``dz`` is ``[rows, V]`` and ``x`` is ``[rows, H]``; the contribution
-    ``dZ.T @ X`` is ``[V, H]``. The first token chunk (``accumulate`` is
-    ``False``) overwrites the buffer with ``torch.mm``; subsequent chunks add
-    with ``torch.addmm``. The accumulation dtype follows ``dweight_accum.dtype``:
+    ``dz_t`` is the ALREADY-TRANSPOSED ``[V, rows]`` operand -- the caller forms
+    the ``.t()`` view (in the chunked path, ``grad_logits_t`` right before the
+    weight accumulation) so the operand's lifetime matches the Triton reference.
+    ``x`` is ``[rows, H]``; the contribution ``dZ.T @ X`` is ``[V, H]``. When
+    ``accumulate`` is ``True`` the product is added into the buffer with
+    ``torch.addmm``; when ``False`` the buffer is overwritten with ``torch.mm``.
+    The accumulation dtype follows ``dweight_accum.dtype``:
 
     * **Matching dtype** (e.g. an ``accum_dtype=None``/BF16 buffer whose dtype
-      already equals ``dz``): accumulate straight into the buffer with a plain
+      already equals ``dz_t``): accumulate straight into the buffer with a plain
       ``mm``/``addmm`` (``out=dweight_accum``), mirroring the Triton backend's
       direct low-precision ``addmm`` -- no FP32 upcast, no parameter-sized FP32
-      temporary. Doing the running sum with ``addmm`` (not a Python ``mm`` +
-      ``+=``) avoids the extra rounding of a separate BF16 partial product.
+      temporary.
     * **FP32 buffer with half operands** (``accum_dtype=torch.float32`` or the
       legacy path): on torch>=2.8 the BF16 operands drive the
       ``out_dtype=torch.float32`` overload directly; on older torch (no overload)
       only the bounded BF16 operands are upcast to FP32 before the same mm/addmm
       into the FP32 buffer.
 
-    This single helper is shared by the chunked and legacy paths.
+    The chunked path zero-initializes the buffer and passes ``accumulate=True``
+    for EVERY chunk (including the first) -- mirroring the Triton reference, which
+    starts from ``torch.zeros_like(weight)`` and ``addmm``\\ s each chunk. The
+    legacy unchunked path passes ``accumulate=False`` for its single full-batch
+    call. This helper is shared by both paths.
     """
-    dz_t = dz.t()  # [V, rows] view
     buf_dtype = dweight_accum.dtype
-    if buf_dtype == dz.dtype:
+    if buf_dtype == dz_t.dtype:
         # Matching-dtype accumulator: direct low-precision mm/addmm, no upcast.
         if accumulate:
             torch.addmm(dweight_accum, dz_t, x, out=dweight_accum)
         else:
             torch.mm(dz_t, x, out=dweight_accum)
-    elif buf_dtype == torch.float32 and dz.dtype in (torch.float16, torch.bfloat16):
+    elif buf_dtype == torch.float32 and dz_t.dtype in (torch.float16, torch.bfloat16):
         if _ADDMM_SUPPORTS_OUT_DTYPE:
             if accumulate:
                 torch.addmm(dweight_accum, dz_t, x, out_dtype=torch.float32, out=dweight_accum)
@@ -238,7 +253,7 @@ def _accumulate_dw(
                 torch.mm(dz_t_fp32, x_fp32, out=dweight_accum)
     else:
         raise NotImplementedError(
-            f"cuTile FLCE cannot accumulate dW with buffer dtype {buf_dtype!r} and dZ dtype {dz.dtype!r}"
+            f"cuTile FLCE cannot accumulate dW with buffer dtype {buf_dtype!r} and dZ dtype {dz_t.dtype!r}"
         )
 
 
@@ -414,9 +429,7 @@ def _ce_setup(_input, weight, target, reduction, ignore_index):
     )
 
 
-def _project_and_dz(
-    input_chunk,
-    weight,
+def _launch_ce_dz(
     logits_chunk,
     target_chunk,
     loss_chunk,
@@ -432,19 +445,22 @@ def _project_and_dz(
     reduction_mean,
     normalize_gradients,
 ):
-    """Project a token chunk to logits and overwrite it in place with dZ.
+    """Launch the fused CE kernel over an ALREADY-projected logits chunk.
 
-    ``torch.mm`` fills ``logits_chunk`` with the BF16 projection; the fused CE
-    kernel then writes the per-token loss and (when ``needs_dz``) replaces the
-    logits with the softmax-minus-one-hot gradient dZ. When
-    ``normalize_gradients`` is set the kernel folds the global mean normalizer
-    into dZ in FP32 before the BF16 cast (the chunked path), so the dX/dW GEMMs
-    run on already-normalized dZ; the legacy path passes ``False`` to preserve
-    the raw dZ contract. Shared by the legacy unchunked path (one full-batch
-    call) and the chunked path (per chunk).
+    The caller supplies ``logits_chunk`` (the BF16 ``input_chunk @ weight.t()``
+    projection); this helper writes the per-token loss and (when ``needs_dz``)
+    overwrites the logits IN PLACE with the softmax-minus-one-hot gradient dZ, so
+    the caller's ``logits_chunk`` reference aliases the dZ the dX/dW GEMMs then
+    consume. When ``normalize_gradients`` is set the kernel folds the global mean
+    normalizer into dZ in FP32 before the BF16 cast (the chunked path), so the
+    dX/dW GEMMs run on already-normalized dZ; the legacy path passes ``False`` to
+    preserve the raw dZ contract. Projection is intentionally NOT bundled here --
+    the caller issues the projection GEMM so the chunked loop can mirror the
+    Triton reference's fresh-per-chunk ``input_chunk @ weight.t()`` allocation.
+    Shared by the legacy unchunked path (one full-batch call) and the chunked
+    path (per chunk).
     """
     rows = logits_chunk.shape[0]
-    torch.mm(input_chunk, weight.t(), out=logits_chunk)
     # Counters must be reset before every partition reduction.
     completion_count.zero_()
     _launch_cutile(
@@ -536,9 +552,10 @@ def fused_linear_cross_entropy_forward(
     partial_sum = torch.empty_like(partial_max)
     completion_count = torch.zeros(tokens, dtype=torch.int32, device=_input.device)
 
-    _project_and_dz(
-        _input,
-        weight,
+    # Legacy projection: fill the full-batch [N, V] logits buffer once, then the
+    # CE kernel overwrites it in place with the RAW dZ (no in-kernel normalize).
+    torch.mm(_input, weight.t(), out=logits)
+    _launch_ce_dz(
         logits,
         target,
         loss_1d,
@@ -593,7 +610,7 @@ def fused_linear_cross_entropy_backward(
     grad_weight = None
     if grad_logits is not None:
         dweight_accum = torch.empty(weight_shape, dtype=torch.float32, device=grad_logits.device)
-        _accumulate_dw(dweight_accum, grad_logits, _input, accumulate=False)
+        _accumulate_dw(dweight_accum, grad_logits.t(), _input, accumulate=False)
         combined_scale = total_scale.to(torch.float32)
         grad_weight = torch.empty(weight_shape, dtype=weight_dtype, device=grad_logits.device)
         _launch_scale_cast(dweight_accum, grad_weight, combined_scale)
@@ -639,6 +656,18 @@ def chunked_fused_linear_cross_entropy_forward(
     exactly ONCE, here at the end of the forward, so the
     returned ``grad_weight`` is already the final weight-dtype gradient.
 
+    Allocation baseline (Triton-compatible, optimizations deferred): each
+    iteration materializes a FRESH ``[rows, V]`` logits tensor
+    (``input_chunk @ weight.t()``) that the CE kernel overwrites with dZ; dX is a
+    transient ``dZ @ weight`` chunk GEMM COPIED into a ``zeros_like`` grad_input
+    slice; and dW is accumulated with ``addmm`` into a ZERO-initialized buffer on
+    every chunk (including the first). A single recycled logits buffer, a direct
+    GEMM-into-grad_input, and a first-chunk ``mm`` init are intentionally not used
+    -- only the bounded CE statistics scratch is reused across chunks -- so this
+    matches the Triton reference's per-chunk allocations. Previous and current chunk
+    buffers can overlap while live dZ/transpose views alias the prior chunk during
+    the next allocation, yet the transient workspace stays ``O(min(N, C) * V)``.
+
     Returns ``(loss, grad_input, grad_weight)`` -- both gradients are in the
     parameter dtype (BF16). :func:`chunked_fused_linear_cross_entropy_backward`
     only applies the upstream gradient (no re-normalization).
@@ -672,36 +701,49 @@ def chunked_fused_linear_cross_entropy_forward(
     chunk = _get_chunk_size(tokens, hidden_size, vocab_size)
     buffer_rows = min(tokens, chunk)
 
-    # Reusable per-chunk logits/dZ buffer of shape [min(N, C), V] and the
-    # partitioned CE statistics/counter scratch of shape [min(N, C), num_partitions].
-    logits = torch.empty((buffer_rows, vocab_size), dtype=torch.bfloat16, device=_input.device)
+    # Only the partitioned CE statistics/counter scratch (shape
+    # [min(N, C), num_partitions]) is reused across chunks -- this is CT-specific
+    # bookkeeping with no Triton analogue. The per-chunk logits/dZ tensor is
+    # allocated fresh inside the loop (mirroring the Triton reference), NOT recycled.
     loss_1d = torch.empty(tokens, dtype=torch.float32, device=_input.device)
     partial_max = torch.empty((buffer_rows, num_vocab_tiles), dtype=torch.float32, device=_input.device)
     partial_sum = torch.empty_like(partial_max)
     completion_count = torch.zeros(buffer_rows, dtype=torch.int32, device=_input.device)
 
+    # dX buffer: zero-initialized like the Triton reference (each slice is
+    # overwritten by a copy of the chunk GEMM result). Preserve None when the
+    # input is frozen -- do not allocate an unrequested grad_input.
     grad_input = None
     if _input.requires_grad:
-        grad_input = torch.empty((tokens, hidden_size), dtype=_input.dtype, device=_input.device)
+        grad_input = torch.zeros_like(_input)
 
-    # dW accumulator reused across chunks. Its dtype follows accum_dtype: BF16
-    # (accum_dtype=None/BF16, matching the weight) or FP32 (accum_dtype=fp32).
-    # It is cast to the weight dtype exactly once at the end of the forward.
+    # dW accumulator: zero-initialized (like the Triton reference) so the first
+    # chunk can addmm into it just like every subsequent chunk. Its dtype follows
+    # accum_dtype: BF16 (accum_dtype=None/BF16, matching the weight) or FP32
+    # (accum_dtype=fp32). It is cast to the weight dtype exactly once at the end.
     dweight_accum = None
     if weight.requires_grad:
-        dweight_accum = torch.empty((vocab_size, hidden_size), dtype=accum_buffer_dtype, device=_input.device)
+        dweight_accum = torch.zeros((vocab_size, hidden_size), dtype=accum_buffer_dtype, device=_input.device)
 
-    for chunk_index, start in enumerate(range(0, tokens, chunk)):
+    for start in range(0, tokens, chunk):
         stop = min(start + chunk, tokens)
         rows = stop - start
-        logits_chunk = logits[:rows]
         input_chunk = _input[start:stop]
+
+        # Fresh per-chunk projection, mirroring the Triton loop exactly:
+        # ``logits_chunk = input_chunk @ weight.t()`` (aten.mm.default, no out).
+        # Disable autocast around the GEMM so the operand dtypes are preserved:
+        # the parent ``out=``-based projection ran outside autocast's op coverage,
+        # but a fresh ``@`` under an ambient FP16 autocast would recast BF16
+        # operands to FP16 (yielding an FP16 dZ the BF16 buffers can't consume).
+        # Fresh allocation is retained; only the silent recast is suppressed.
+        with torch.autocast(device_type="cuda", enabled=False):
+            logits_chunk = input_chunk @ weight.t()  # [rows, V]
 
         # normalize_gradients=True: the CE kernel folds the global mean normalizer
         # into dZ (FP32) before the BF16 cast, so the GEMMs below see normalized dZ.
-        _project_and_dz(
-            input_chunk,
-            weight,
+        # The kernel overwrites logits_chunk in place, so grad_logits_chunk aliases it.
+        _launch_ce_dz(
             logits_chunk,
             target[start:stop],
             loss_1d[start:stop],
@@ -717,16 +759,27 @@ def chunked_fused_linear_cross_entropy_forward(
             reduction_mean,
             True,
         )
+        grad_logits_chunk = logits_chunk  # CE kernel wrote NORMALIZED dZ in place
 
-        # logits_chunk now holds the NORMALIZED dZ. dX is the direct projection of
-        # that normalized dZ (no post-GEMM scaling).
+        # dX: transient ``dZ @ weight`` chunk GEMM COPIED into the grad_input slice
+        # (aten.mm.default + aten.copy_), matching the Triton reference -- not a
+        # direct GEMM-into-output.
         if grad_input is not None:
-            torch.mm(logits_chunk, weight, out=grad_input[start:stop])
+            # Same autocast guard as the forward projection: a fresh ``@`` under an
+            # ambient FP16 autocast would recast the BF16 operands to FP16. The
+            # transient allocation + copy into grad_input is unchanged.
+            with torch.autocast(device_type="cuda", enabled=False):
+                grad_input[start:stop] = grad_logits_chunk @ weight
 
-        # Accumulate normalized dZ.T @ X into the dW buffer via cuBLAS: overwrite
-        # (mm) on the first chunk, add (addmm) on subsequent chunks.
+        # dW: form the ``.t()`` view right before the weight accumulation (after
+        # dX), exactly as the Triton reference does, and pass THAT transposed
+        # [V, rows] operand to the helper. Reassigning grad_logits_chunk/
+        # grad_logits_t each iteration is what naturally frees the prior chunk's
+        # logits storage. addmm accumulates into the zero-initialized buffer on
+        # every chunk (including the first) -- no first-chunk mm optimization.
         if dweight_accum is not None:
-            _accumulate_dw(dweight_accum, logits_chunk, input_chunk, chunk_index > 0)
+            grad_logits_t = grad_logits_chunk.t()
+            _accumulate_dw(dweight_accum, grad_logits_t, input_chunk, accumulate=True)
 
     loss = loss_1d.sum()
     # Cast the completed dW accumulator to the weight dtype exactly once (matches
