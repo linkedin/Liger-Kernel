@@ -96,7 +96,10 @@ def fused_linear_cross_entropy_forward(
 
     grad_input = torch.zeros_like(_input, device=device)
 
-    # we use fp32 for loss and gradients accumulator
+    # loss_1d is always fp32. The weight/bias grad accumulators are NOT always fp32:
+    # with accum_dtype=None they inherit the parameter dtype (e.g. bf16/fp16), and only
+    # take accum_dtype when one is explicitly requested. The weight-grad projection below
+    # therefore has a dtype-matched low-precision path in addition to the fp32 fast path.
     if input_requires_grad:
         if accum_dtype is None:
             grad_weight = torch.zeros_like(weight, device=device) if weight_needs_grad else None
@@ -281,13 +284,17 @@ def fused_linear_cross_entropy_forward(
 
         if grad_weight is not None and input_requires_grad:
             grad_logits_t = grad_logits_chunk.t()
+            grad_logits_is_half = grad_logits_t.dtype in (torch.float16, torch.bfloat16)
+            on_cuda_sm80 = (
+                grad_weight.device.type == "cuda" and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
+            )
             if (
                 _ADDMM_SUPPORTS_OUT_DTYPE
-                and grad_weight.device.type == "cuda"
-                and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
+                and on_cuda_sm80
                 and grad_weight.dtype == torch.float32
-                and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
+                and grad_logits_is_half
             ):
+                # FP32 accumulator (accum_dtype=torch.float32, or fp32 params under AMP).
                 # Unlike torch.mm, torch.addmm's out_dtype path does not participate in
                 # autocast operand casting, so under AMP (fp32 params, no bias) _input_chunk
                 # can stay fp32 while grad_logits is the autocast dtype. addmm requires mat1
@@ -302,7 +309,26 @@ def fused_linear_cross_entropy_forward(
                     out_dtype=torch.float32,
                     out=grad_weight,
                 )
+            elif on_cuda_sm80 and grad_logits_is_half and grad_weight.dtype == grad_logits_t.dtype:
+                # Low-precision accumulator (accum_dtype=None with bf16/fp16 params) whose
+                # dtype already matches grad_logits. Accumulate straight into grad_weight with
+                # addmm(out=grad_weight); this mirrors the CuTe backend's direct bf16 addmm and
+                # avoids the legacy path's parameter-sized bf16->fp32 temporary + cast per chunk.
+                # In-place out ops are not autocast, so -- as torch.mm's autocast used to do --
+                # align _input_chunk (which may be promoted fp32 under bf16 AMP) to grad_logits.
+                input_chunk = _input_chunk
+                if input_chunk.dtype != grad_logits_t.dtype:
+                    input_chunk = input_chunk.to(grad_logits_t.dtype)
+                torch.addmm(
+                    grad_weight,
+                    grad_logits_t,
+                    input_chunk,
+                    out=grad_weight,
+                )
             else:
+                # Legacy fallback: unsupported torch/device (no out_dtype), fp64 accumulators,
+                # or a dtype mismatch (e.g. fp32 grad_logits promoted under AMP). Correct but
+                # allocates a parameter-sized fp32 temporary before summing into grad_weight.
                 grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
 
         if bias is not None and input_requires_grad:
