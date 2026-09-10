@@ -257,7 +257,7 @@ def test_fused_linear_cross_entropy_propagates_backend_to_inner_ce(monkeypatch, 
 
 # ===========================================================================
 # Regression tests for the weight-gradient ``addmm`` projection in
-# ``fused_linear_cross_entropy_forward`` (migrated from test_flce_addmm.py).
+# ``fused_linear_cross_entropy_forward``.
 #
 # These lock in the low-precision ``grad_weight`` accumulation path: when
 # ``accum_dtype=None`` and the parameters are bf16/fp16, the per-chunk weight
