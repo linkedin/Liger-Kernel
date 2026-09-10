@@ -87,8 +87,10 @@ bool same_buffers(const TpReduceBuffers& lhs, const TpReduceBuffers& rhs) {
 	return lhs.partial == rhs.partial &&
 		lhs.reduced == rhs.reduced &&
 		lhs.reduced_shard == rhs.reduced_shard &&
+		lhs.reduced_shard_bytes == rhs.reduced_shard_bytes &&
 		lhs.remote_inbox == rhs.remote_inbox &&
 		lhs.remote_signals == rhs.remote_signals &&
+		lhs.remote_inbox_slot_bytes == rhs.remote_inbox_slot_bytes &&
 		lhs.sync == rhs.sync &&
 		lhs.sync_bytes == rhs.sync_bytes &&
 		lhs.peer_partial_storage == rhs.peer_partial_storage &&
@@ -126,6 +128,12 @@ void configure_tp_reduce(
 		buffers.sync_bytes > 0,
 		"tensor-parallel reduction signal storage must be non-empty");
 	LIGER_CHECK(
+		buffers.reduced_shard_bytes >= sizeof(float),
+		"tensor-parallel reduced shard must contain float values");
+	LIGER_CHECK(
+		buffers.remote_inbox_slot_bytes >= sizeof(float),
+		"tensor-parallel remote inbox slot must contain float values");
+	LIGER_CHECK(
 		buffers.peer_partial_storage != nullptr &&
 			buffers.peer_sync_storage != nullptr,
 		"tensor-parallel direct-peer mapping storage must be non-null");
@@ -148,7 +156,7 @@ void configure_tp_reduce(
 		cudaMemset(
 			buffers.remote_signals,
 			0,
-			2 * sizeof(std::uint64_t)),
+			remote_ring_signal_bytes()),
 		"cudaMemset(remote reduction signals)");
 
 	RawNvlsMapping* device_mapping = nullptr;
@@ -181,23 +189,39 @@ void configure_tp_reduce(
 	std::vector<std::uint64_t*> peer_sync(team_size);
 	std::vector<unsigned char> world_members(
 		static_cast<std::size_t>(nvshmem_n_pes()), 0);
+	std::vector<unsigned char> node_world_members(
+		static_cast<std::size_t>(nvshmem_n_pes()), 0);
+	for (int rank = 0; rank < g_raw.node_size; ++rank) {
+		int world_pe = nvshmem_team_translate_pe(
+			NVSHMEMX_TEAM_NODE, rank, NVSHMEM_TEAM_WORLD);
+		LIGER_CHECK(
+			world_pe >= 0 &&
+				world_pe < static_cast<int>(node_world_members.size()),
+			"failed to translate node-local rank ",
+			rank,
+			" to NVSHMEM_TEAM_WORLD");
+		node_world_members[world_pe] = 1;
+	}
 	bool direct_available = true;
 	bool parent_covers_world = team_size == nvshmem_n_pes();
+	bool parent_spans_nodes = false;
 	int my_world_pe = nvshmem_my_pe();
 	for (int rank = 0; rank < team_size; ++rank) {
 		int world_pe = nvshmem_team_translate_pe(
 			team, rank, NVSHMEM_TEAM_WORLD);
 		LIGER_CHECK(
-			world_pe >= 0,
+			world_pe >= 0 &&
+				world_pe < static_cast<int>(world_members.size()),
 			"failed to translate tensor-parallel rank ",
 			rank,
 			" to NVSHMEM_TEAM_WORLD");
-		if (world_pe >= static_cast<int>(world_members.size()) ||
-			world_members[world_pe] != 0) {
+		if (world_members[world_pe] != 0) {
 			parent_covers_world = false;
 		} else {
 			world_members[world_pe] = 1;
 		}
+		parent_spans_nodes =
+			parent_spans_nodes || node_world_members[world_pe] == 0;
 		peer_partial[rank] = world_pe == my_world_pe
 			? buffers.partial
 			: static_cast<float*>(
@@ -229,17 +253,39 @@ void configure_tp_reduce(
 		(g_raw.multicast_partial != nullptr &&
 			g_raw.multicast_reduced != nullptr &&
 			g_raw.multicast_sync != nullptr);
-	bool remote_available =
-		!nvls_available && parent_covers_world &&
-		g_raw.node_size > 1 &&
-		g_raw.remote_size == 2 &&
-		g_raw.node_size * g_raw.remote_size == team_size &&
+	bool remote_topology_valid =
+		tp_reduce_uses_remote_ring(
+			team_size,
+			g_raw.node_size,
+			g_raw.remote_size,
+			parent_covers_world) &&
+		g_raw.node_rank >= 0 &&
+		g_raw.node_rank < g_raw.node_size &&
+		g_raw.remote_rank >= 0 &&
+		g_raw.remote_rank < g_raw.remote_size &&
 		g_raw.node_multicast_partial != nullptr &&
 		g_raw.node_multicast_reduced != nullptr &&
 		g_raw.node_multicast_sync != nullptr;
+	if (!nvls_available && parent_spans_nodes) {
+		LIGER_CHECK(
+			remote_topology_valid,
+			"cross-host tensor-parallel reduction requires a world-covering "
+			"team, uniform node sizes, node-local NVLS mappings, and matching-"
+			"rank remote teams (node size ",
+			g_raw.node_size,
+			", remote size ",
+			g_raw.remote_size,
+			", TP size ",
+			team_size,
+			")");
+	}
+	bool remote_available =
+		!nvls_available && parent_spans_nodes &&
+		remote_topology_valid;
 
 	g_plan = {};
-	g_plan.remote.peer_world = -1;
+	g_plan.remote.previous_world = -1;
+	g_plan.remote.next_world = -1;
 	g_plan.team_size = g_raw.team_size;
 	g_plan.direct = {
 		buffers.peer_partial_storage,
@@ -266,22 +312,33 @@ void configure_tp_reduce(
 			buffers.reduced_shard,
 			g_raw.node_rank,
 			g_raw.node_size};
-		int peer_rank = 1 - g_raw.remote_rank;
-		int peer_world = nvshmem_team_translate_pe(
+		int previous_rank = remote_ring_previous_rank(
+			g_raw.remote_rank, g_raw.remote_size);
+		int next_rank = remote_ring_next_rank(
+			g_raw.remote_rank, g_raw.remote_size);
+		int previous_world = nvshmem_team_translate_pe(
 			NVSHMEMX_TEAM_SAME_MYPE_NODE,
-			peer_rank,
+			previous_rank,
+			NVSHMEM_TEAM_WORLD);
+		int next_world = nvshmem_team_translate_pe(
+			NVSHMEMX_TEAM_SAME_MYPE_NODE,
+			next_rank,
 			NVSHMEM_TEAM_WORLD);
 		LIGER_CHECK(
-			peer_world >= 0,
-			"failed to translate remote reduction peer to world rank");
+			previous_world >= 0 && next_world >= 0,
+			"failed to translate remote ring neighbors to world ranks");
 		g_plan.remote = {
 			buffers.reduced_shard,
+			buffers.reduced_shard_bytes / sizeof(float),
 			buffers.remote_inbox,
 			buffers.remote_signals,
-			buffers.remote_signals + 1,
+			buffers.remote_signals + kRemoteRingSignalSlots,
+			buffers.remote_inbox_slot_bytes / sizeof(float),
 			g_raw.remote_rank,
 			g_raw.remote_size,
-			peer_world};
+			previous_world,
+			next_world,
+			static_cast<int>(NVSHMEMX_QP_DEFAULT)};
 	} else {
 		g_plan.backend = LocalReduceBackend::kDirectPeer;
 	}
@@ -329,25 +386,27 @@ void launch_remote_reduce(
 		cudaStream_t stream) {
 	LIGER_CHECK(remote.enabled(), "remote reduction is not configured");
 	LIGER_CHECK(
-		remote.size == 2 && remote.rank >= 0 && remote.rank < remote.size,
+		remote.size > 1 && remote.rank >= 0 && remote.rank < remote.size,
 		"invalid remote reduction topology");
-	launch_remote_pair_all_reduce(
+	LIGER_CHECK(
+		count <= remote.inbox_slot_elements &&
+			count <= remote.reduced_shard_elements,
+		"remote reduction payload exceeds its symmetric buffers");
+	launch_remote_ring_all_reduce(
+		remote,
 		remote.reduced_shard,
-		remote.inbox,
 		remote.reduced_shard,
 		count,
-		remote.ready,
-		remote.consumed,
 		launch_epoch,
-		0x30000000u,
-		remote.peer_world,
+		kRemoteSumEpochSuffix,
 		stream);
 }
 
 void reset_tp_reduce() {
 	g_raw = {};
 	g_plan = {};
-	g_plan.remote.peer_world = -1;
+	g_plan.remote.previous_world = -1;
+	g_plan.remote.next_world = -1;
 	g_buffers = {};
 	g_configured = false;
 	g_parent_team = 0;

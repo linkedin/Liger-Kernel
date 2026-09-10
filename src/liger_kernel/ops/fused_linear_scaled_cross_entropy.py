@@ -368,10 +368,18 @@ class LigerFusedLinearScaledCrossEntropyFunction:
 
 
 class LigerFusedLinearScaledCrossEntropyTPFunction:
-    """Tensor-parallel frontend using native CUTLASS + NVSHMEM on Hopper.
+    """Tensor-parallel fused projection and scaled cross entropy.
 
     ``weight`` is the calling rank's equally sized contiguous vocabulary shard,
-    while ``target`` contains global vocabulary indices.
+    while ``target`` contains global vocabulary indices. ``tp_group`` must be
+    initialized before the call and must match the NVSHMEM team used by the
+    native backend. BF16 Hopper/Blackwell inputs use the native CUTLASS +
+    NVSHMEM path when available; otherwise the operation uses the repository's
+    512-token Verl-derived fallback.
+
+    Returns per-token NLL, or ``(nll, entropy)`` when ``return_entropy=True``.
+    Autograd returns a tensor-parallel reduced input gradient and a rank-local
+    gradient for the vocabulary shard.
     """
 
     @staticmethod

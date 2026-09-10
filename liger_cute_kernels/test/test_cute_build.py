@@ -30,6 +30,12 @@ def test_prepare_nvshmem_home_adapts_versioned_pypi_layout(tmp_path, monkeypatch
     assert (compat / "lib" / "libnvshmem_device.a").resolve() == (home / "lib" / "libnvshmem_device.a").resolve()
 
 
+def test_cmake_base_args_propagates_cuda_arch(monkeypatch):
+    monkeypatch.setenv("LIGER_CUTE_CUDA_ARCH", "100f")
+
+    assert "-DLIGER_CUTE_CUDA_ARCH=100f" in cute_build._cmake_base_args()
+
+
 def test_build_core_passes_prepared_nvshmem_home(tmp_path, monkeypatch):
     out_dir = tmp_path / "out"
     build_temp = tmp_path / "cmake"

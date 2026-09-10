@@ -59,6 +59,9 @@ def _cmake_base_args() -> list[str]:
     ]
     if shutil.which("ninja") is not None:
         args.insert(0, "-GNinja")
+    cuda_arch = os.environ.get("LIGER_CUTE_CUDA_ARCH")
+    if cuda_arch:
+        args.append(f"-DLIGER_CUTE_CUDA_ARCH={cuda_arch}")
     return args
 
 

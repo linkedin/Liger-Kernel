@@ -255,6 +255,12 @@ def fused_linear_scaled_cross_entropy_configure_forward(
     max_tokens: int,
     max_local_vocab: int,
 ) -> None:
+    """Reserve reusable forward workspace for the maximum local problem.
+
+    This is a collective configuration call across the NVSHMEM team used by
+    subsequent forward launches. Capacities are immutable until the shared
+    buffer pool is cleared, so every rank must pass identical values.
+    """
     _load_module().fused_linear_scaled_cross_entropy_configure_forward(
         int(max_tokens),
         int(max_local_vocab),
@@ -268,6 +274,13 @@ def fused_linear_scaled_cross_entropy_configure_backward(
     max_tiles_per_reduce: int,
     team_handle: int,
 ) -> None:
+    """Reserve backward/NVLS/remote-ring workspace for an NVSHMEM TP team.
+
+    All PEs in ``team_handle`` must call this with identical maxima before the
+    first forward or backward launch. ``max_tiles_per_reduce`` must cover every
+    later ``tiles_per_reduce`` request. A multi-host team must cover the full
+    NVSHMEM world and use uniform node sizes.
+    """
     _load_module().fused_linear_scaled_cross_entropy_configure_backward(
         int(max_tokens),
         int(max_hidden),
@@ -275,6 +288,58 @@ def fused_linear_scaled_cross_entropy_configure_backward(
         int(max_tiles_per_reduce),
         int(team_handle),
     )
+
+
+def fused_linear_scaled_cross_entropy_forward_workspace_bytes(
+    max_tokens: int,
+    max_local_vocab: int,
+) -> int:
+    """Return the reusable native forward workspace at the given capacity."""
+    return int(
+        _load_module().fused_linear_scaled_cross_entropy_forward_workspace_bytes(
+            int(max_tokens),
+            int(max_local_vocab),
+        )
+    )
+
+
+def fused_linear_scaled_cross_entropy_backward_workspace_bytes(
+    max_tokens: int,
+    max_hidden: int,
+    max_local_vocab: int,
+    max_tiles_per_reduce: int,
+) -> int:
+    """Return total symmetric plus device-private backward pool bytes."""
+    return int(
+        _load_module().fused_linear_scaled_cross_entropy_backward_workspace_bytes(
+            int(max_tokens),
+            int(max_hidden),
+            int(max_local_vocab),
+            int(max_tiles_per_reduce),
+        )
+    )
+
+
+def fused_linear_scaled_cross_entropy_forward_diagnostics(
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Return the device timestamp/counter block from the latest forward."""
+    module = _load_module()
+    entries = int(module.fused_linear_scaled_cross_entropy_forward_diagnostic_entries())
+    output = torch.empty(entries, dtype=torch.int64, device=device)
+    module.fused_linear_scaled_cross_entropy_forward_diagnostics(output)
+    return output
+
+
+def fused_linear_scaled_cross_entropy_backward_diagnostics(
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Return the device timestamp/counter block from the latest backward."""
+    module = _load_module()
+    entries = int(module.fused_linear_scaled_cross_entropy_backward_diagnostic_entries())
+    output = torch.empty(entries, dtype=torch.int64, device=device)
+    module.fused_linear_scaled_cross_entropy_backward_diagnostics(output)
+    return output
 
 
 def fused_linear_scaled_cross_entropy_forward(
@@ -287,7 +352,23 @@ def fused_linear_scaled_cross_entropy_forward(
     team_handle: int,
     return_entropy: bool,
 ):
-    """Run the complete tensor-parallel forward on a prepared NVSHMEM team."""
+    """Run tensor-parallel fused projection and scaled cross entropy.
+
+    Args:
+        x: Contiguous BF16 tensor with shape ``[tokens, hidden]``.
+        weight: This rank's contiguous BF16 vocabulary shard with shape
+            ``[local_vocab, hidden]``.
+        target: Global int64 vocabulary indices with shape ``[tokens]``.
+        vocab_start: Global vocabulary index represented by ``weight[0]``.
+        ignore_index: Target value whose NLL and entropy outputs are zeroed.
+        inverse_temperature: Positive multiplier applied to classifier logits.
+        team_handle: Configured NVSHMEM tensor-parallel team.
+        return_entropy: Whether to compute per-token entropy.
+
+    Returns:
+        ``(nll, lse, entropy)`` as FP32 tensors with shape ``[tokens]``.
+        ``entropy`` is zero-filled when ``return_entropy`` is false.
+    """
     tokens = x.shape[0]
     nll = torch.empty(tokens, dtype=torch.float32, device=x.device)
     lse = torch.empty(tokens, dtype=torch.float32, device=x.device)
@@ -312,6 +393,47 @@ def fused_linear_scaled_cross_entropy_forward(
     return nll, lse, entropy
 
 
+def fused_linear_scaled_cross_entropy_backward_phase_bench(
+    grad_output: torch.Tensor,
+    entropy_grad: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    target: torch.Tensor,
+    lse: torch.Tensor,
+    entropy: torch.Tensor,
+    vocab_start: int,
+    ignore_index: int,
+    inverse_temperature: float,
+    team_handle: int,
+    phase: int,
+    return_entropy: bool,
+    grad_input: torch.Tensor,
+    grad_weight: torch.Tensor,
+):
+    """Benchmark-only: run one backward GEMM phase (1=dZ, 2=dX, 4=dW).
+
+    Uses the production kernel with a single phase bit set: identical tiles,
+    pipelines, TMEM plan and epilogue, no reduction or communication.
+    """
+    _load_module().fused_linear_scaled_cross_entropy_backward_phase_bench(
+        grad_output,
+        entropy_grad,
+        x,
+        weight,
+        target,
+        lse,
+        entropy,
+        int(vocab_start),
+        int(ignore_index),
+        float(inverse_temperature),
+        int(team_handle),
+        int(phase),
+        bool(return_entropy),
+        grad_input,
+        grad_weight,
+    )
+
+
 def fused_linear_scaled_cross_entropy_backward(
     grad_output: torch.Tensor,
     entropy_grad: torch.Tensor,
@@ -327,6 +449,13 @@ def fused_linear_scaled_cross_entropy_backward(
     tiles_per_reduce: int,
     return_entropy: bool,
 ):
+    """Run the persistent tensor-parallel fused backward.
+
+    ``lse`` and ``entropy`` must be the outputs saved from the matching
+    forward. The result is the globally reduced BF16 ``grad_input`` and this
+    rank's local BF16 ``grad_weight``. On SM100, TP16 uses node-local NVLS,
+    the matching-rank inter-host ring, and an all-CTA warp-1 FP32 merge.
+    """
     grad_input = torch.empty_like(x)
     grad_weight = torch.empty_like(weight)
     _load_module().fused_linear_scaled_cross_entropy_backward(

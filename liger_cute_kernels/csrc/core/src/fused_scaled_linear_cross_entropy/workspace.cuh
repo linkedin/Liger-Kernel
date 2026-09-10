@@ -14,6 +14,9 @@
 //   -----------------   ---------  ----------  ---------------------------
 //   kDxPartial          pool       yes   FP32 NVLS SUM source
 //   kDxReduced          pool       yes   FP32 NVLS SUM destination
+//   kDxReducedShard     pool       yes   dX shard or SM100 forward wave slots
+//   kDxRemoteInbox      pool       yes   two inter-host ring receive slots
+//   kDxRemoteSignals    pool       yes   ready/consumed signal pairs
 //   kDxSync             pool       yes   per-slot ready/completion epochs
 //   kDzWorkspace        pool       no    one wave of dZ, BF16
 //
@@ -38,7 +41,11 @@
 #include <cstddef>
 #include <cstdint>
 
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+#include "backward_gemm_sm100.cuh"
+#else
 #include "backward_gemm_sm90.cuh"
+#endif
 #include "dx_reduce.cuh"
 #include "state.h"
 
@@ -71,6 +78,15 @@ struct BackwardSymmetricNames {
 		"fused_scaled_linear_cross_entropy_tp_dx_peer_sync_ptrs";
 	static constexpr const char* kDxLaunchEpoch =
 		"fused_scaled_linear_cross_entropy_tp_dx_launch_epoch";
+	// Fixed device-private signal block for the fused SM100 backward: the
+	// monotonic full-grid barrier counter, the per-wave dX reduce-scatter
+	// completion counter and the inter-host ring completion epoch.
+	static constexpr const char* kBackwardSm100Signals =
+		"fused_scaled_linear_cross_entropy_tp_backward_sm100_signals";
+	static constexpr const char* kBackwardSm100DzTileReady =
+		"fused_scaled_linear_cross_entropy_tp_backward_sm100_dz_tile_ready";
+	static constexpr const char* kBackwardSm100Diagnostics =
+		"fused_scaled_linear_cross_entropy_tp_backward_sm100_diagnostics";
 };
 
 // The immutable collective configuration.
@@ -126,6 +142,8 @@ std::size_t backward_dx_staging_bytes(int max_tiles_per_reduce);
 std::size_t backward_dx_configured_staging_bytes();
 std::size_t backward_dx_configured_durable_bytes();
 std::size_t backward_dx_configured_packed_durable_bytes();
+std::size_t tp_reduced_shard_configured_bytes();
+std::size_t tp_remote_inbox_slot_configured_bytes();
 
 void validate_backward_tp_shape(
 	int tokens, int hidden, int local_vocab);
@@ -135,6 +153,7 @@ int backward_dx_resident_cta_capacity();
 
 int backward_dx_team_size();
 std::int64_t backward_dx_team_handle();
+int backward_tp_max_local_vocab();
 
 // The pooled dZ wave workspace for this shape.
 struct BackwardScratch {
