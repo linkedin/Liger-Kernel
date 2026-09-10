@@ -284,15 +284,12 @@ def fused_linear_cross_entropy_forward(
 
         if grad_weight is not None and input_requires_grad:
             grad_logits_t = grad_logits_chunk.t()
-            grad_logits_is_half = grad_logits_t.dtype in (torch.float16, torch.bfloat16)
-            on_cuda_sm80 = (
-                grad_weight.device.type == "cuda" and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
-            )
             if (
                 _ADDMM_SUPPORTS_OUT_DTYPE
-                and on_cuda_sm80
+                and grad_weight.device.type == "cuda"
+                and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
                 and grad_weight.dtype == torch.float32
-                and grad_logits_is_half
+                and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
             ):
                 # FP32 accumulator (accum_dtype=torch.float32, or fp32 params under AMP).
                 # Unlike torch.mm, torch.addmm's out_dtype path does not participate in
@@ -309,7 +306,12 @@ def fused_linear_cross_entropy_forward(
                     out_dtype=torch.float32,
                     out=grad_weight,
                 )
-            elif on_cuda_sm80 and grad_logits_is_half and grad_weight.dtype == grad_logits_t.dtype:
+            elif (
+                grad_weight.device.type == "cuda"
+                and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
+                and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
+                and grad_weight.dtype == grad_logits_t.dtype
+            ):
                 # Low-precision accumulator (accum_dtype=None with bf16/fp16 params) whose
                 # dtype already matches grad_logits. Accumulate straight into grad_weight with
                 # addmm(out=grad_weight); this mirrors the CuTe backend's direct bf16 addmm and
