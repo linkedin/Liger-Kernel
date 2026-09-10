@@ -33,12 +33,14 @@ pytestmark = [
 set_seed()
 
 
-def _apply(x, weight, target, reduction="mean", ignore_index=-100):
+def _apply(x, weight, target, reduction="mean", ignore_index=-100, accum_dtype=None):
     """Invoke the Function with the 17-argument module-style contract.
 
     There is NO public ``chunk_size`` argument: the token-chunk geometry is the
     shared default Triton policy (:func:`_get_chunk_size`). ``ce_impl`` / ``ce_mode``
-    are self-identity placeholders and default to ``None``.
+    are self-identity placeholders and default to ``None``. ``accum_dtype`` selects
+    the dW accumulation buffer dtype (``None`` -> weight dtype/BF16,
+    ``torch.float32`` -> FP32, explicit ``torch.bfloat16`` -> BF16).
     """
     return LigerFusedLinearCrossEntropyFunction.apply(
         x,
@@ -52,13 +54,38 @@ def _apply(x, weight, target, reduction="mean", ignore_index=-100):
         reduction,
         None,  # softcap
         False,  # return_z_loss
-        None,  # accum_dtype
+        accum_dtype,  # accum_dtype
         False,  # use_token_scaling
         False,  # return_token_accuracy
         False,  # return_predicted_tokens
         None,  # ce_impl
         None,  # ce_mode
     )
+
+
+def _triton_apply(x, weight, target, reduction="mean", ignore_index=-100, accum_dtype=None):
+    """Invoke the actual Triton FLCE autograd Function (the parity target)."""
+    return triton_flce_mod.LigerFusedLinearCrossEntropyFunction.apply(
+        x,
+        weight,
+        target,
+        None,  # bias
+        None,  # ce_weight
+        ignore_index,
+        0.0,  # lse_square_scale
+        0.0,  # label_smoothing
+        reduction,
+        None,  # softcap
+        False,  # return_z_loss
+        accum_dtype,
+    )
+
+
+# Accumulation-storage policies exercised across the correctness/oracle tests:
+# ``None`` and explicit BF16 both accumulate dW in the weight dtype (BF16) across
+# chunks; ``torch.float32`` accumulates in FP32. Every one casts dW to the weight
+# dtype exactly once at the end of the forward.
+_ACCUM_MODES = [None, torch.bfloat16, torch.float32]
 
 
 def _reference(x, weight, target, ignore_index, reduction):
@@ -118,7 +145,8 @@ def _expected_tiling(tokens, hidden_size, vocab_size):
     ],
 )
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
-def test_correctness(shape, reduction):
+@pytest.mark.parametrize("accum_dtype", _ACCUM_MODES)
+def test_correctness(shape, reduction, accum_dtype):
     tokens, hidden_size, vocab_size = shape
     # These shapes must be single-chunk so the tight tolerances below are valid.
     assert len(_expected_tiling(tokens, hidden_size, vocab_size)) == 1
@@ -136,13 +164,16 @@ def test_correctness(shape, reduction):
 
     x = x_data.clone().requires_grad_(True)
     weight = weight_data.clone().requires_grad_(True)
-    loss, _, _, _ = _apply(x, weight, target, reduction, ignore_index)
+    loss, _, _, _ = _apply(x, weight, target, reduction, ignore_index, accum_dtype)
     loss.backward(upstream)
 
     atol, rtol = _tolerances(reduction)
     assert_verbose_allclose(loss_ref, loss, atol=atol, rtol=rtol)
     assert_verbose_allclose(x_ref.grad, x.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(weight_ref.grad, weight.grad, atol=atol, rtol=rtol)
+    # Gradients are always in the parameter dtype (BF16), even for FP32 accum.
+    assert x.grad.dtype == torch.bfloat16
+    assert weight.grad.dtype == torch.bfloat16
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +198,8 @@ def test_correctness(shape, reduction):
     ],
 )
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
-def test_multichunk_correctness(shape, reduction):
+@pytest.mark.parametrize("accum_dtype", _ACCUM_MODES)
+def test_multichunk_correctness(shape, reduction, accum_dtype):
     tokens, hidden_size, vocab_size = shape
     # These shapes must be genuinely multi-chunk under the default geometry.
     assert len(_expected_tiling(tokens, hidden_size, vocab_size)) >= 2
@@ -185,7 +217,7 @@ def test_multichunk_correctness(shape, reduction):
 
     x = x_data.clone().requires_grad_(True)
     weight = weight_data.clone().requires_grad_(True)
-    loss, _, _, _ = _apply(x, weight, target, reduction, ignore_index)
+    loss, _, _, _ = _apply(x, weight, target, reduction, ignore_index, accum_dtype)
     loss.backward(upstream)
 
     if reduction == "mean":
@@ -290,7 +322,8 @@ def test_all_ignored_entire_batch():
     "requires_input_grad, requires_weight_grad",
     [(False, False), (True, False), (False, True), (True, True)],
 )
-def test_independent_gradient_requirements(requires_input_grad, requires_weight_grad):
+@pytest.mark.parametrize("accum_dtype", _ACCUM_MODES)
+def test_independent_gradient_requirements(requires_input_grad, requires_weight_grad, accum_dtype):
     torch.manual_seed(0)
     tokens, hidden_size, vocab_size = 200, 64, 4096
     ignore_index = -100
@@ -307,12 +340,14 @@ def test_independent_gradient_requirements(requires_input_grad, requires_weight_
 
     x = x_data.clone().requires_grad_(requires_input_grad)
     weight = weight_data.clone().requires_grad_(requires_weight_grad)
-    loss = _apply(x, weight, target, "mean", ignore_index)[0]
+    loss = _apply(x, weight, target, "mean", ignore_index, accum_dtype)[0]
     assert torch.isfinite(loss)
 
     # Same-chunk oracle on detached leaves -- the loss and each requested grad
     # match tightly regardless of which gradients were requested.
-    loss_oracle, dx_oracle, dw_oracle = _same_chunk_oracle(x_data, weight_data, target, "mean", upstream, ignore_index)
+    loss_oracle, dx_oracle, dw_oracle = _same_chunk_oracle(
+        x_data, weight_data, target, "mean", upstream, ignore_index, accum_dtype
+    )
     assert_verbose_allclose(loss, loss_oracle, atol=1e-2, rtol=1e-3)
 
     if requires_input_grad or requires_weight_grad:
@@ -327,14 +362,15 @@ def test_independent_gradient_requirements(requires_input_grad, requires_weight_
         assert loss.grad_fn is None  # no autograd graph when neither operand needs grad
 
     # Low-level chunked forward on leaves carrying the ORIGINAL requires flags:
-    # only the requested gradient buffers are materialized (with the right
-    # dtype/shape); the unrequested ones stay None. Run under no_grad on the
-    # leaves themselves -- the forward keys off tensor.requires_grad directly.
+    # only the requested gradient buffers are materialized. The new 3-tuple
+    # contract returns the COMPLETED weight-dtype gradients (loss, gX, gW): dW is
+    # cast to the weight dtype (BF16) once at the end of the forward, even for
+    # FP32 accumulation. Run under no_grad -- the forward keys off requires_grad.
     xl = x_data.clone().requires_grad_(requires_input_grad)
     wl = weight_data.clone().requires_grad_(requires_weight_grad)
     with torch.no_grad():
-        ll_loss, grad_input, dweight_accum, gradient_scale = chunked_fused_linear_cross_entropy_forward(
-            xl, wl, target, reduction="mean", ignore_index=ignore_index
+        ll_loss, grad_input, grad_weight = chunked_fused_linear_cross_entropy_forward(
+            xl, wl, target, reduction="mean", ignore_index=ignore_index, accum_dtype=accum_dtype
         )
     assert_verbose_allclose(ll_loss, loss_oracle, atol=1e-2, rtol=1e-3)
     if requires_input_grad:
@@ -344,12 +380,11 @@ def test_independent_gradient_requirements(requires_input_grad, requires_weight_
     else:
         assert grad_input is None
     if requires_weight_grad:
-        assert dweight_accum is not None
-        assert dweight_accum.dtype == torch.float32
-        assert tuple(dweight_accum.shape) == (vocab_size, hidden_size)
+        assert grad_weight is not None
+        assert grad_weight.dtype == torch.bfloat16  # weight dtype, regardless of accum_dtype
+        assert tuple(grad_weight.shape) == (vocab_size, hidden_size)
     else:
-        assert dweight_accum is None
-    assert gradient_scale.ndim == 0
+        assert grad_weight is None
 
 
 # ---------------------------------------------------------------------------
@@ -397,24 +432,30 @@ def test_retained_backward_preserves_saved_gradient():
 
 
 # ---------------------------------------------------------------------------
-# Memory contract: the forward retains only [N, H] dX and [V, H] dW (plus the
-# scalar scale) -- never a full [N, V] logits/dZ tensor -- and the reusable
-# logits buffer keeps peak memory below the full [N, V] materialization.
+# Memory contract: the forward retains only [N, H] dX and [V, H] dW -- never a
+# full [N, V] logits/dZ tensor -- and both are the COMPLETED weight-dtype
+# gradients (dW cast once at the end of forward). The reusable logits buffer
+# keeps peak memory below the full [N, V] materialization.
 # ---------------------------------------------------------------------------
-def test_retains_only_final_gradients_no_full_logits():
+@pytest.mark.parametrize("accum_dtype", _ACCUM_MODES)
+def test_retains_only_final_gradients_no_full_logits(accum_dtype):
     tokens, hidden_size, vocab_size = 256, 128, 4096
     x = torch.randn(tokens, hidden_size, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     weight = torch.randn(vocab_size, hidden_size, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     target = torch.randint(vocab_size, (tokens,), device="cuda")
 
     with torch.no_grad():
-        _, grad_input, grad_weight, gradient_scale = chunked_fused_linear_cross_entropy_forward(x, weight, target)
+        _, grad_input, grad_weight = chunked_fused_linear_cross_entropy_forward(
+            x, weight, target, accum_dtype=accum_dtype
+        )
 
     assert tuple(grad_input.shape) == (tokens, hidden_size)
     assert tuple(grad_weight.shape) == (vocab_size, hidden_size)
-    # The retained dW accumulator is FP32 (scaled + cast to weight dtype in backward).
-    assert grad_weight.dtype == torch.float32
-    assert gradient_scale.ndim == 0
+    # Both retained gradients are the completed weight dtype (BF16) -- the FP32
+    # accumulator (when accum_dtype=fp32) is cast to BF16 at the end of forward,
+    # so no parameter-sized FP32 tensor is retained for backward.
+    assert grad_input.dtype == torch.bfloat16
+    assert grad_weight.dtype == torch.bfloat16
     # No retained tensor has the full [N, V] footprint.
     assert grad_input.numel() < tokens * vocab_size
     assert grad_weight.numel() < tokens * vocab_size
@@ -595,21 +636,41 @@ def test_rejects_unsupported_features():
         LigerFusedLinearCrossEntropyFunction.apply(x, weight, target, bias)
 
 
-def test_accum_dtype_fp32_accepted_others_rejected():
+def test_accum_dtype_supported_others_rejected():
     x = torch.randn(64, 128, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     weight = torch.randn(256, 128, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     target = torch.randint(256, (64,), device="cuda")
 
-    # FP32 accumulation is explicitly allowed (it is the default policy).
-    loss = LigerFusedLinearCrossEntropyFunction.apply(
-        x, weight, target, None, None, -100, 0.0, 0.0, "mean", None, False, torch.float32
-    )[0]
-    assert torch.isfinite(loss)
+    # None (-> weight dtype/BF16), explicit BF16 (matching weight), and FP32 are
+    # all accepted by the chunked/default path.
+    for accum in (None, torch.bfloat16, torch.float32):
+        loss = LigerFusedLinearCrossEntropyFunction.apply(
+            x, weight, target, None, None, -100, 0.0, 0.0, "mean", None, False, accum
+        )[0]
+        assert torch.isfinite(loss)
 
-    with pytest.raises(NotImplementedError, match="accum"):
-        LigerFusedLinearCrossEntropyFunction.apply(
-            x, weight, target, None, None, -100, 0.0, 0.0, "mean", None, False, torch.float16
-        )
+    # Any other accum dtype (e.g. fp16, fp64) is rejected clearly, not silently
+    # downgraded.
+    for bad in (torch.float16, torch.float64):
+        with pytest.raises(NotImplementedError, match="accum"):
+            LigerFusedLinearCrossEntropyFunction.apply(
+                x, weight, target, None, None, -100, 0.0, 0.0, "mean", None, False, bad
+            )
+
+
+def test_legacy_helper_rejects_low_precision_accum():
+    # The legacy unchunked helper accumulates dW in FP32 only. None/FP32 are
+    # accepted; an explicit low-precision accum it cannot honor is rejected
+    # (never silently accepted then ignored).
+    x = torch.randn(64, 128, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(256, 128, device="cuda", dtype=torch.bfloat16)
+    target = torch.randint(256, (64,), device="cuda")
+    with torch.no_grad():
+        for accum in (None, torch.float32):
+            loss, *_ = fused_linear_cross_entropy_forward(x, weight, target, accum_dtype=accum)
+            assert torch.isfinite(loss.sum())
+        with pytest.raises(NotImplementedError, match="accum"):
+            fused_linear_cross_entropy_forward(x, weight, target, accum_dtype=torch.bfloat16)
 
 
 def _apply_with_dispatch(x, weight, target, ce_impl, ce_mode):
@@ -704,33 +765,34 @@ def test_noncurrent_cuda_device():
 
 
 # ---------------------------------------------------------------------------
-# dW small-gradient preservation: the FP32 dW accumulator is retained and the
-# combined upstream/mean scale is applied in FP32 BEFORE the single BF16 cast.
-# An early cast in the forward (before the upstream scale) flushes recoverable
-# small gradients to zero.
+# dW cast order (main/chunked path): dW is cast to the weight dtype ONCE at the
+# END of the forward, BEFORE the upstream gradient -- exactly like the Triton
+# mean/sum path. A sub-BF16 dW element therefore rounds to zero at that cast and
+# a later upstream multiply cannot recover it. This is the intended aligned
+# contract (NOT the old "small gradient survives late cast" behavior); the legacy
+# raw helper, which scales in FP32 before its single cast, still preserves it and
+# is covered separately below.
 # ---------------------------------------------------------------------------
-def test_small_dw_gradient_survives_bf16_cast():
-    # dW element magnitude ~ (1/V) * 1e-37 is below the BF16 subnormal floor,
-    # but after the go=65536 upstream scale it is representable again.
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_small_dw_gradient_rounds_to_zero_matches_triton(accum_dtype):
+    # dW element magnitude ~ (1/V) * 1e-37 is far below the BF16 subnormal floor.
     x = torch.full((1, 64), 1e-37, dtype=torch.bfloat16, device="cuda", requires_grad=True)
     weight = torch.zeros((4096, 64), dtype=torch.bfloat16, device="cuda", requires_grad=True)
     target = torch.tensor([0], device="cuda")
     upstream = torch.tensor(65536.0, device="cuda")
 
-    loss = _apply(x, weight, target, "mean", -100)[0]
+    loss = _apply(x, weight, target, "mean", -100, accum_dtype)[0]
     loss.backward(upstream)
 
-    # Independent FP32 Torch reference: dZ = softmax(0) with the target row
-    # decremented; the raw dW is the FP32 cuBLAS product dZ.T @ X, then the
-    # combined (upstream * mean-normalizer, here 1/1) scale is applied in FP32
-    # and cast to BF16 exactly once -- matching the retained-accumulator path.
-    dz = torch.full((1, 4096), 1.0 / 4096, dtype=torch.bfloat16, device="cuda")
-    dz[0, 0] -= 1.0
-    dw_fp32 = _ref_dw_fp32(dz.t(), x.detach())  # FP32 dW = dZ.T @ X
-    ref = (dw_fp32 * upstream.to(torch.float32)).to(torch.bfloat16)  # FP32 scale, single BF16 cast
+    # The forward casts dW to BF16 before the upstream scale, so the sub-BF16
+    # element flushes to zero and go=65536 cannot resurrect it -- matching Triton.
+    assert weight.grad[1, 0].item() == 0.0
 
-    assert weight.grad[1, 0].item() != 0.0
-    assert_verbose_allclose(weight.grad, ref, atol=0.0, rtol=0.0)
+    x_tr = torch.full((1, 64), 1e-37, dtype=torch.bfloat16, device="cuda", requires_grad=True)
+    weight_tr = torch.zeros((4096, 64), dtype=torch.bfloat16, device="cuda", requires_grad=True)
+    loss_tr = _triton_apply(x_tr, weight_tr, target, "mean", -100, accum_dtype)[0]
+    loss_tr.backward(upstream)
+    assert_verbose_allclose(weight.grad, weight_tr.grad, atol=0.0, rtol=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -740,7 +802,7 @@ def test_small_dw_gradient_survives_bf16_cast():
 # scaling bug would move whole elements far beyond these tolerances. An
 # independent full-batch PyTorch anchor is retained too.
 # ---------------------------------------------------------------------------
-def _same_chunk_oracle(x_data, weight_data, target, reduction, upstream, ignore_index=-100):
+def _same_chunk_oracle(x_data, weight_data, target, reduction, upstream, ignore_index=-100, accum_dtype=None):
     n_tokens, hidden = x_data.shape
     vocab = weight_data.shape[0]
     device = x_data.device
@@ -748,10 +810,13 @@ def _same_chunk_oracle(x_data, weight_data, target, reduction, upstream, ignore_
     chunk_size = _get_chunk_size(n_tokens, hidden, vocab)
     valid = target != ignore_index
     global_scale = 1.0 / valid.sum().clamp_min(1).float() if reduction == "mean" else torch.tensor(1.0, device=device)
+    # dW accumulation buffer dtype follows accum_dtype (None/BF16 -> weight dtype,
+    # float32 -> FP32), mirroring the production path.
+    accum_buf_dtype = torch.float32 if accum_dtype == torch.float32 else weight_data.dtype
     loss = torch.zeros((), dtype=torch.float32, device=device)
     dx = torch.zeros((n_tokens, hidden), dtype=torch.bfloat16, device=device)
-    dw_fp32 = torch.zeros((vocab, hidden), dtype=torch.float32, device=device)
-    for start in range(0, n_tokens, chunk_size):
+    dw = torch.zeros((vocab, hidden), dtype=accum_buf_dtype, device=device)
+    for chunk_index, start in enumerate(range(0, n_tokens, chunk_size)):
         stop = min(start + chunk_size, n_tokens)
         xc = x_data[start:stop]
         tc = target[start:stop]
@@ -762,26 +827,37 @@ def _same_chunk_oracle(x_data, weight_data, target, reduction, upstream, ignore_
         dz = torch.softmax(zf, dim=-1)
         rows = torch.arange(stop - start, device=device)
         valid_c = tc != ignore_index
+        # Target subtract-1 in FP32, THEN fold the global normalizer in FP32,
+        # THEN cast to BF16 -- normalization happens BEFORE the dX/dW GEMMs.
         dz[rows[valid_c], tc[valid_c]] -= 1.0
         dz[~valid_c] = 0.0
-        dz = dz.to(torch.bfloat16)
-        dx[start:stop] = torch.mm(dz, weight_data)  # raw BF16 dX
-        dw_fp32.add_(_ref_dw_fp32(dz.t(), xc))  # FP32-accumulated dW
-    combined = upstream * global_scale
-    dx_final = dx * combined  # BF16 raw dX scaled by upstream * mean-normalizer
-    dw_final = (dw_fp32 * combined).to(torch.bfloat16)  # FP32 scale, single BF16 cast
+        dz = (dz * global_scale).to(torch.bfloat16)  # normalized dZ, BF16
+        dx[start:stop] = torch.mm(dz, weight_data)  # dX from the normalized BF16 dZ
+        dz_t = dz.t()
+        if accum_buf_dtype == torch.float32:
+            dw.add_(_ref_dw_fp32(dz_t, xc))  # FP32-accumulated dW
+        elif chunk_index == 0:
+            torch.mm(dz_t, xc, out=dw)  # BF16 accumulate: overwrite on first chunk
+        else:
+            torch.addmm(dw, dz_t, xc, out=dw)  # BF16 accumulate: addmm on subsequent
+    grad_weight = dw.to(torch.bfloat16)  # single cast to weight dtype at end of forward
+    dx_final = (dx * upstream).to(torch.bfloat16)  # backward applies only upstream
+    dw_final = (grad_weight * upstream).to(torch.bfloat16)
     return loss, dx_final, dw_final
 
 
 @pytest.mark.parametrize("seed", [7, 314])
 @pytest.mark.parametrize("hidden", [96, 256])  # non-aligned + 256-aligned H tails
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
+@pytest.mark.parametrize("accum_dtype", _ACCUM_MODES)
 # force_fallback drives the pre-2.8 dW path (plain mm/addmm on FP32-upcast BF16
-# operands). The oracle's ``_ref_dw_fp32`` tracks the same flag, so both paths
-# stay bit-identical and the SAME tight tolerances apply -- forced multi-chunk
-# numerical coverage of the older-torch accumulation with no tolerance widening.
+# operands). It only affects the FP32-accumulator path; the None/BF16 matching
+# path always uses a plain BF16 mm/addmm. The oracle tracks the same flag (via
+# ``_ref_dw_fp32`` for FP32 accum), so both paths stay bit-identical and the SAME
+# tight tolerances apply -- forced multi-chunk numerical coverage of the
+# older-torch accumulation with no tolerance widening.
 @pytest.mark.parametrize("force_fallback", [False, True])
-def test_same_chunk_oracle_regression(seed, hidden, reduction, force_fallback, monkeypatch):
+def test_same_chunk_oracle_regression(seed, hidden, reduction, accum_dtype, force_fallback, monkeypatch):
     if force_fallback:
         monkeypatch.setattr(flce_mod, "_ADDMM_SUPPORTS_OUT_DTYPE", False)
     torch.manual_seed(seed)
@@ -798,11 +874,11 @@ def test_same_chunk_oracle_regression(seed, hidden, reduction, force_fallback, m
 
     x = x_data.clone().requires_grad_(True)
     weight = weight_data.clone().requires_grad_(True)
-    loss = _apply(x, weight, target, reduction, ignore_index)[0]
+    loss = _apply(x, weight, target, reduction, ignore_index, accum_dtype)[0]
     loss.backward(upstream)
 
     loss_oracle, dx_oracle, dw_oracle = _same_chunk_oracle(
-        x_data, weight_data, target, reduction, upstream, ignore_index
+        x_data, weight_data, target, reduction, upstream, ignore_index, accum_dtype
     )
 
     # Strict per-element match against the same-tiling oracle (dX is bit-exact;
@@ -861,22 +937,19 @@ def test_retained_backward_alias_safety():
     assert_verbose_allclose(gx_second, x_fresh.grad, atol=0.0, rtol=0.0)
     assert_verbose_allclose(gw_second, weight_fresh.grad, atol=0.0, rtol=0.0)
 
-    # Directly snapshot the retained low-level tensors and confirm two backward
-    # passes with different upstreams leave them untouched.
+    # Directly snapshot the retained low-level tensors (the completed BF16 dX/dW)
+    # and confirm two backward passes with different upstreams leave them
+    # untouched -- the 3-arg backward multiplies out-of-place.
     xg = x_data.clone().requires_grad_(True)
     wg = weight_data.clone().requires_grad_(True)
     with torch.no_grad():
-        _, grad_input, dweight_accum, gradient_scale = chunked_fused_linear_cross_entropy_forward(xg, wg, target)
+        _, grad_input, grad_weight = chunked_fused_linear_cross_entropy_forward(xg, wg, target)
     grad_input_snap = grad_input.clone()
-    dweight_snap = dweight_accum.clone()
-    chunked_fused_linear_cross_entropy_backward(
-        torch.tensor(1.0, device="cuda"), grad_input, dweight_accum, gradient_scale, torch.bfloat16
-    )
-    chunked_fused_linear_cross_entropy_backward(
-        torch.tensor(-1.3, device="cuda"), grad_input, dweight_accum, gradient_scale, torch.bfloat16
-    )
+    grad_weight_snap = grad_weight.clone()
+    chunked_fused_linear_cross_entropy_backward(torch.tensor(1.0, device="cuda"), grad_input, grad_weight)
+    chunked_fused_linear_cross_entropy_backward(torch.tensor(-1.3, device="cuda"), grad_input, grad_weight)
     assert_verbose_allclose(grad_input, grad_input_snap, atol=0.0, rtol=0.0)
-    assert_verbose_allclose(dweight_accum, dweight_snap, atol=0.0, rtol=0.0)
+    assert_verbose_allclose(grad_weight, grad_weight_snap, atol=0.0, rtol=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -931,10 +1004,12 @@ def test_legacy_lowlevel_forward_backward_contract():
 
 # ---------------------------------------------------------------------------
 # GEMM ownership trace: the dW gradient runs through PyTorch/cuBLAS, not a custom
-# cuTile MMA kernel. The chunked path must emit exactly one FP32-out ``aten::mm``
-# (first chunk) and one FP32-out ``aten::addmm`` per subsequent chunk; projection
-# and dX use the plain (BF16-out) ``aten::mm.out`` overload. The removed cuTile
-# matmul kernels must no longer exist on the module.
+# cuTile MMA kernel. For the FP32 accumulator the chunked path emits one FP32-out
+# dW ``aten::mm`` (first chunk) and one FP32-out ``aten::addmm`` per subsequent
+# chunk -- via the ``out_dtype`` overload on torch>=2.8, or plain ``mm.out`` /
+# ``addmm.out`` writing into an FP32 buffer on the pre-2.8 fallback. Projection
+# and dX always use the plain (BF16-out) ``aten::mm.out`` overload. The removed
+# cuTile matmul kernels must no longer exist on the module.
 # ---------------------------------------------------------------------------
 class _AtenOpRecorder(TorchDispatchMode):
     """Record every aten op name the path issues, plus dW mm/addmm out dtypes."""
@@ -948,9 +1023,19 @@ class _AtenOpRecorder(TorchDispatchMode):
         name = str(func)
         out = func(*args, **kwargs)
         self.ops.append(name)
+        # Record the dW GEMM output dtype regardless of which overload the path
+        # took: the ``out_dtype`` overload (torch>=2.8) issues ``.dtype_out`` and
+        # is always FP32; the pre-2.8 fallback issues plain ``.out`` writing into
+        # an FP32 buffer. Filtering the plain overload on FP32 keeps the BF16-out
+        # projection / dX GEMMs out of this list, so the BF16 accumulator path
+        # still records ``[]``.
         if name in ("aten.mm.dtype_out", "aten.addmm.dtype_out"):
             result = out[0] if isinstance(out, (tuple, list)) else out
             self.dw_out_dtypes.append(result.dtype)
+        elif name in ("aten.mm.out", "aten.addmm.out"):
+            result = out[0] if isinstance(out, (tuple, list)) else out
+            if result.dtype == torch.float32:
+                self.dw_out_dtypes.append(result.dtype)
         return out
 
 
@@ -963,8 +1048,15 @@ def test_no_custom_matmul_kernels_remain():
     assert hasattr(flce_mod, "_fused_cross_entropy_dz_kernel")
 
 
-def test_chunked_dw_uses_mm_then_addmm_fp32_out():
+@pytest.mark.parametrize("force_fallback", [False, True])
+@pytest.mark.parametrize("accum_dtype", _ACCUM_MODES)
+def test_chunked_dw_accumulator_dtype_and_gemms(accum_dtype, force_fallback, monkeypatch):
     torch.manual_seed(3)
+    if force_fallback:
+        # Drive the pre-2.8 path: plain mm.out/addmm.out instead of the
+        # ``out_dtype`` overload. Only the FP32 accumulator is affected; the
+        # None/BF16 modes never used the overload, so those cases are unchanged.
+        monkeypatch.setattr(flce_mod, "_ADDMM_SUPPORTS_OUT_DTYPE", False)
     # V > 16*H so the default geometry is multi-chunk: [16, 16, 16, 16, 6] -> 5 chunks.
     n_tokens, hidden, vocab = 70, 96, 8192
     x = torch.randn(n_tokens, hidden, device="cuda", dtype=torch.bfloat16, requires_grad=True)
@@ -973,26 +1065,56 @@ def test_chunked_dw_uses_mm_then_addmm_fp32_out():
 
     n_chunks = len(_expected_tiling(n_tokens, hidden, vocab))
     assert n_chunks >= 2
-    with _AtenOpRecorder() as rec, torch.no_grad():
-        chunked_fused_linear_cross_entropy_forward(x, weight, target)
 
-    # First dW chunk -> one FP32-out mm; every subsequent chunk -> FP32-out addmm.
-    if flce_mod._ADDMM_SUPPORTS_OUT_DTYPE:
-        assert rec.ops.count("aten.mm.dtype_out") == 1
-        assert rec.ops.count("aten.addmm.dtype_out") == n_chunks - 1
+    # Spy the actual dW accumulator: buffer dtype, dZ operand dtype, overwrite flag.
+    accum_calls = []
+    real_accum = flce_mod._accumulate_dw
+
+    def spy(buf, dz, x_chunk, accumulate):
+        accum_calls.append((buf.dtype, dz.dtype, accumulate))
+        return real_accum(buf, dz, x_chunk, accumulate)
+
+    monkeypatch.setattr(flce_mod, "_accumulate_dw", spy)
+
+    with _AtenOpRecorder() as rec, torch.no_grad():
+        _, _, grad_weight = chunked_fused_linear_cross_entropy_forward(x, weight, target, accum_dtype=accum_dtype)
+
+    expected_buf_dtype = torch.float32 if accum_dtype == torch.float32 else torch.bfloat16
+    # Exactly one accumulate call per chunk: overwrite (mm) first, add (addmm) after.
+    assert [c[2] for c in accum_calls] == [False] + [True] * (n_chunks - 1)
+    # The accumulator dtype is uniform across chunks and follows accum_dtype.
+    assert all(c[0] == expected_buf_dtype for c in accum_calls)
+    # dZ is always BF16 -- there is never a parameter-sized FP32 dZ tensor.
+    assert all(c[1] == torch.bfloat16 for c in accum_calls)
+    # The completed dW is always the weight dtype. The FP32 accumulator upcasts
+    # once and casts back to BF16 at the end (a single end-cast); the BF16
+    # accumulator holds a BF16 buffer that is re-cast per chunk with no distinct
+    # FP32 end-cast. Either way the returned dW is BF16.
+    assert grad_weight.dtype == torch.bfloat16
+
+    if expected_buf_dtype == torch.float32:
+        if flce_mod._ADDMM_SUPPORTS_OUT_DTYPE:
+            # FP32 accumulator drives the out_dtype overload: FP32-out mm then addmm.
+            assert rec.ops.count("aten.mm.dtype_out") == 1
+            assert rec.ops.count("aten.addmm.dtype_out") == n_chunks - 1
+            assert "aten.addmm.out" not in rec.ops
+        else:
+            # Pre-2.8 fallback: no out_dtype overload. dW is a plain mm.out (first
+            # chunk) then plain addmm.out per subsequent chunk, all writing into
+            # the FP32 buffer. addmm.out is issued ONLY by the dW accumulation.
+            assert "aten.mm.dtype_out" not in rec.ops
+            assert "aten.addmm.dtype_out" not in rec.ops
+            assert rec.ops.count("aten.addmm.out") == n_chunks - 1
+        # Both overloads emit exactly n_chunks FP32-out dW GEMMs (1 mm + addmm*(n-1)).
         assert rec.dw_out_dtypes == [torch.float32] * n_chunks
-        # dW never accumulated straight into a BF16 tensor via a plain addmm.
-        assert "aten.addmm.out" not in rec.ops
-        assert "aten.addmm.default" not in rec.ops
     else:
-        # Pre-2.8 fallback: no ``.dtype_out`` overload. dW overwrites once via a
-        # plain mm.out then accumulates via plain addmm.out into the FP32 buffer.
-        # addmm is issued ONLY by the dW accumulation, so its count is chunks - 1.
+        # BF16 accumulator: plain BF16 mm/addmm, no out_dtype overload, no FP32 upcast.
         assert "aten.mm.dtype_out" not in rec.ops
         assert "aten.addmm.dtype_out" not in rec.ops
+        # addmm is issued ONLY by the dW accumulation, so its count is chunks - 1.
         assert rec.ops.count("aten.addmm.out") == n_chunks - 1
         assert rec.dw_out_dtypes == []
-        assert "aten.addmm.default" not in rec.ops
+    assert "aten.addmm.default" not in rec.ops
 
 
 def test_legacy_backward_dw_uses_fp32_mm_nonunit_upstream():
@@ -1020,17 +1142,19 @@ def test_legacy_backward_dw_uses_fp32_mm_nonunit_upstream():
         assert rec.dw_out_dtypes == [torch.float32]
     else:
         # Pre-2.8 fallback: the single dW GEMM is a plain mm.out into the FP32
-        # buffer -- no ``.dtype_out`` overload and no addmm accumulation.
+        # buffer -- no ``.dtype_out`` overload and no addmm accumulation. The
+        # recorder still captures its FP32 output.
         assert "aten.mm.dtype_out" not in rec.ops
         assert "aten.addmm.dtype_out" not in rec.ops
-        assert rec.dw_out_dtypes == []
+        assert rec.dw_out_dtypes == [torch.float32]
     assert grad_weight.dtype == weight.dtype
 
 
 # ---------------------------------------------------------------------------
 # Pre-2.8 fallback: when the ``out_dtype`` mm/addmm overload is unavailable the
-# helper must upcast the bounded operands to FP32 and use the plain mm/addmm (no
-# ``.dtype_out`` op). Small gradients must still survive the deferred cast.
+# FP32-accumulator path must upcast the bounded operands to FP32 and use the
+# plain mm/addmm (no ``.dtype_out`` op). The None/BF16 path is unaffected (it
+# never used the overload), so this only exercises accum_dtype=torch.float32.
 # ---------------------------------------------------------------------------
 def test_pre_2_8_fallback_avoids_out_dtype_overload(monkeypatch):
     monkeypatch.setattr(flce_mod, "_ADDMM_SUPPORTS_OUT_DTYPE", False)
@@ -1044,7 +1168,7 @@ def test_pre_2_8_fallback_avoids_out_dtype_overload(monkeypatch):
     n_chunks = len(_expected_tiling(n_tokens, hidden, vocab))
     assert n_chunks >= 2
     with _AtenOpRecorder() as rec, torch.no_grad():
-        chunked_fused_linear_cross_entropy_forward(x, weight, target)
+        chunked_fused_linear_cross_entropy_forward(x, weight, target, accum_dtype=torch.float32)
 
     # No out_dtype overload is used on the fallback path.
     assert "aten.mm.dtype_out" not in rec.ops
@@ -1052,23 +1176,146 @@ def test_pre_2_8_fallback_avoids_out_dtype_overload(monkeypatch):
     # dW still overwrites once (plain mm.out) then accumulates (plain addmm.out).
     # addmm is issued ONLY by the dW accumulation, so its count is chunks - 1.
     assert rec.ops.count("aten.addmm.out") == n_chunks - 1
+    # Every dW GEMM writes into the FP32 buffer, so all n_chunks outputs are FP32.
+    assert rec.dw_out_dtypes == [torch.float32] * n_chunks
 
 
-def test_pre_2_8_fallback_small_gradient_survives(monkeypatch):
-    monkeypatch.setattr(flce_mod, "_ADDMM_SUPPORTS_OUT_DTYPE", False)
+# ---------------------------------------------------------------------------
+# Legacy small-gradient preservation: the LEGACY raw helper retains the RAW dZ
+# and applies the combined upstream/mean scale in FP32 BEFORE its single
+# weight-dtype cast, so a sub-BF16 dW is recovered by a large upstream. (The
+# aligned main path instead casts dW before the upstream and rounds it to zero,
+# matching Triton -- see test_small_dw_gradient_rounds_to_zero_matches_triton.)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("force_fallback", [False, True])
+def test_legacy_small_dw_gradient_survives_fp32_scale(force_fallback, monkeypatch):
+    if force_fallback:
+        monkeypatch.setattr(flce_mod, "_ADDMM_SUPPORTS_OUT_DTYPE", False)
     x = torch.full((1, 64), 1e-37, dtype=torch.bfloat16, device="cuda", requires_grad=True)
     weight = torch.zeros((4096, 64), dtype=torch.bfloat16, device="cuda", requires_grad=True)
     target = torch.tensor([0], device="cuda")
     upstream = torch.tensor(65536.0, device="cuda")
 
-    loss = _apply(x, weight, target, "mean", -100)[0]
-    loss.backward(upstream)
+    with torch.no_grad():
+        _, grad_input, grad_logits, gradient_scale = fused_linear_cross_entropy_forward(
+            x, weight, target, reduction="mean"
+        )
+    _, grad_weight = fused_linear_cross_entropy_backward(
+        upstream, grad_input, grad_logits, x.detach(), gradient_scale, weight.shape, weight.dtype
+    )
 
-    # The FP32 fallback preserves the sub-BF16 gradient just like the overload path.
+    # Independent FP32 reference: raw dZ (softmax with the target decremented),
+    # FP32 dW = dZ.T @ X, then upstream*mean-normalizer (1/1) applied in FP32 and
+    # cast to BF16 exactly once -- so the sub-BF16 element survives.
     dz = torch.full((1, 4096), 1.0 / 4096, dtype=torch.bfloat16, device="cuda")
     dz[0, 0] -= 1.0
-    dw_fp32 = torch.mm(dz.t().to(torch.float32), x.detach().to(torch.float32))  # bounded-operand upcast
+    dw_fp32 = _ref_dw_fp32(dz.t(), x.detach())
     ref = (dw_fp32 * upstream.to(torch.float32)).to(torch.bfloat16)
 
-    assert weight.grad[1, 0].item() != 0.0
-    assert_verbose_allclose(weight.grad, ref, atol=0.0, rtol=0.0)
+    assert grad_weight[1, 0].item() != 0.0
+    assert_verbose_allclose(grad_weight, ref, atol=0.0, rtol=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Actual Triton FLCE Function parity: at the shared default geometry (both
+# backends chunk by _get_chunk_size) with a non-unit upstream, the aligned
+# cuTile path matches the real Triton autograd Function for BOTH accumulation
+# modes (None -> BF16 accumulator, torch.float32 -> FP32) and both reductions.
+# This is NOT a bitwise CE claim -- the exp2 softmax differs slightly across
+# backends -- so a small relative-L2 tolerance is used; the dtype/cast ordering
+# is asserted exactly (both produce BF16 gradients).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("reduction", ["mean", "sum"])
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_triton_function_parity(reduction, accum_dtype):
+    torch.manual_seed(21)
+    n_tokens, hidden, vocab = 200, 64, 4096
+    ignore_index = -100
+    upstream = torch.tensor(1.3, device="cuda")
+    assert len(_expected_tiling(n_tokens, hidden, vocab)) >= 2
+    x_data = torch.randn(n_tokens, hidden, device="cuda", dtype=torch.bfloat16)
+    weight_data = torch.randn(vocab, hidden, device="cuda", dtype=torch.bfloat16)
+    target = torch.randint(vocab, (n_tokens,), device="cuda")
+    target[:9] = ignore_index
+    target[::11] = ignore_index
+
+    x = x_data.clone().requires_grad_(True)
+    weight = weight_data.clone().requires_grad_(True)
+    loss = _apply(x, weight, target, reduction, ignore_index, accum_dtype)[0]
+    loss.backward(upstream)
+
+    x_tr = x_data.clone().requires_grad_(True)
+    weight_tr = weight_data.clone().requires_grad_(True)
+    loss_tr = _triton_apply(x_tr, weight_tr, target, reduction, ignore_index, accum_dtype)[0]
+    loss_tr.backward(upstream)
+
+    # Loss and gradients match the real Triton Function within CE softmax noise.
+    assert abs(loss.item() - loss_tr.item()) / max(abs(loss_tr.item()), 1e-6) < 5e-3
+    assert _relative_l2(x.grad, x_tr.grad) < 1e-2
+    assert _relative_l2(weight.grad, weight_tr.grad) < 1e-2
+    # Cast ordering is identical: both backends emit BF16 gradients.
+    assert x.grad.dtype == x_tr.grad.dtype == torch.bfloat16
+    assert weight.grad.dtype == weight_tr.grad.dtype == torch.bfloat16
+
+
+# ---------------------------------------------------------------------------
+# Before-GEMM normalization regression: the dZ actually fed to the dX/dW GEMMs
+# must be the global-mean-normalized (softmax - one-hot) in FP32 rounded to BF16
+# -- NOT the raw unnormalized dZ that the old late-scaling contract produced.
+# Uses non-power-of-two valid counts (::7 and ::13 strides) and an entirely
+# ignored middle chunk; the dZ fed to the GEMMs is captured via _accumulate_dw
+# (the same buffer dX projects from) and compared to the normalized reference.
+# ---------------------------------------------------------------------------
+def test_before_gemm_normalization_feeds_normalized_dz(monkeypatch):
+    torch.manual_seed(2)
+    n_tokens, hidden, vocab = 192, 64, 4096
+    ignore_index = -100
+    assert _expected_tiling(n_tokens, hidden, vocab) == [64, 64, 64]
+    x_data = torch.randn(n_tokens, hidden, device="cuda", dtype=torch.bfloat16)
+    weight_data = torch.randn(vocab, hidden, device="cuda", dtype=torch.bfloat16)
+    target = torch.randint(vocab, (n_tokens,), device="cuda")
+    target[64:128] = ignore_index  # middle chunk fully ignored
+    target[::7] = ignore_index
+    target[::13] = ignore_index
+
+    captured = []
+    real_accum = flce_mod._accumulate_dw
+
+    def spy(buf, dz, x_chunk, accumulate):
+        captured.append(dz.detach().clone())  # dz == the logits buffer dX also projects
+        return real_accum(buf, dz, x_chunk, accumulate)
+
+    monkeypatch.setattr(flce_mod, "_accumulate_dw", spy)
+
+    x = x_data.clone().requires_grad_(True)
+    weight = weight_data.clone().requires_grad_(True)
+    with torch.no_grad():
+        chunked_fused_linear_cross_entropy_forward(x, weight, target, reduction="mean")
+
+    fed_dz = torch.cat(captured, dim=0)
+    assert tuple(fed_dz.shape) == (n_tokens, vocab)
+
+    # Build BOTH references: the NORMALIZED dZ (new/aligned contract) and the RAW
+    # dZ (old late-scaling contract).
+    chunk_size = _get_chunk_size(n_tokens, hidden, vocab)
+    global_scale = 1.0 / (target != ignore_index).sum().clamp_min(1).float()
+    norm_ref = torch.zeros_like(fed_dz)
+    raw_ref = torch.zeros_like(fed_dz)
+    for start in range(0, n_tokens, chunk_size):
+        stop = min(start + chunk_size, n_tokens)
+        tc = target[start:stop]
+        zf = torch.mm(x_data[start:stop], weight_data.t()).float()
+        dz = torch.softmax(zf, dim=-1)
+        rows = torch.arange(stop - start, device=zf.device)
+        valid_c = tc != ignore_index
+        dz[rows[valid_c], tc[valid_c]] -= 1.0
+        dz[~valid_c] = 0.0
+        raw_ref[start:stop] = dz.to(torch.bfloat16)
+        norm_ref[start:stop] = (dz * global_scale).to(torch.bfloat16)
+
+    # The fed dZ matches the NORMALIZED reference (softmax noise tolerance)...
+    assert _relative_l2(fed_dz, norm_ref) < 5e-2
+    # ...and is decisively NOT the raw unnormalized dZ (normalizer ~1/165 here).
+    assert _relative_l2(fed_dz, raw_ref) > 0.5
+    # The entirely-ignored middle chunk contributes exactly zero dZ.
+    assert torch.count_nonzero(fed_dz[64:128]) == 0

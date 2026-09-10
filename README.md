@@ -228,8 +228,9 @@ loss = loss_fn(lm_head_weight, hidden_states, labels)
 Implementation notes:
 
 - Token chunking uses the **exact same default geometry as the Triton backend** (`inc = ceil(V / (16·H))`, `chunk = min(N, next_pow2(ceil(N / inc)))`); there is no public `chunk_size` knob.
-- All three GEMMs — projection, input-gradient (`dX`), and weight-gradient (`dW`) — run through PyTorch/cuBLAS. `dW` is accumulated across token chunks in FP32 (`mm` then `addmm`) and the combined upstream/mean scale is applied in FP32 before a single BF16 cast, so small gradients are preserved.
-- Supports BF16 `input` and `weight` with `mean`/`sum` reductions; FP32 accumulation is the default and only accumulation policy. It is **not** a full feature/precision match for the Triton kernel (e.g. no bias, class weights, z-loss, label smoothing, softcap, or token scaling).
+- All three GEMMs — projection, input-gradient (`dX`), and weight-gradient (`dW`) — run through PyTorch/cuBLAS, and the precision/normalization/cast order matches the Triton backend's `mean`/`sum` path. The CE kernel normalizes `dZ` by the global non-ignored mean (`1/N`; `1` for `sum`) in FP32 — after the target subtract-1 and before the BF16 cast — so `dX` and the `dW` accumulation run on the already-normalized low-precision `dZ` (no post-GEMM scaling).
+- The `dW` accumulator dtype follows `accum_dtype`: `None` inherits the weight dtype (BF16) and accumulates across chunks in that dtype (`mm` then `addmm`), rounding to BF16 after each chunk so the final `end`-of-forward `.to(weight dtype)` is a no-op; `torch.float32` accumulates in FP32 and is converted to the weight dtype exactly once at the end of the forward. Backward then applies only the upstream gradient (the unchunked legacy backward is the FP32-only path).
+- Supports BF16 `input` and `weight` with `mean`/`sum` reductions and `accum_dtype` in (`None`, `torch.float32`, `torch.bfloat16`). This aligns the accumulation-precision/normalization/cast order with Triton, but it is still **not** a full feature or bitwise-precision match for the Triton kernel (e.g. no bias, class weights, z-loss, label smoothing, softcap, or token scaling).
 
 ### Enable CuTe DSL Backend
 
