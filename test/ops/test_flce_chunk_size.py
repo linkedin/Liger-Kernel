@@ -1,10 +1,11 @@
 """Focused tests for the explicit FLCE ``chunk_size`` controls.
 
-In this layer only the backends that already ship an explicit token ``chunk_size``
-override participate: the shared Triton FLCE and the native SM100 CuTe DSL FLCE. The
-cuTile backend is intentionally left at its legacy 15-arg contract here (chunking lands
-in a later layer), so its only assertion below is the *negative* one — a non-``None``
-override is refused, never silently ignored.
+In this layer the chunk-capable backends participate directly: the shared Triton FLCE,
+the native SM100 CuTe DSL FLCE, and the cuTile FLCE (SM90/SM100), which now computes
+dX/dW during forward with an explicit token ``chunk_size``. cuTile therefore takes the
+full 18-arg contract and is asserted *positively* below — metadata, an explicit
+non-power-of-two chunk on a BF16 model, and env-wrapper routing that must reach the
+cuTile Function rather than the default Triton one.
 
 Covers:
 
@@ -19,7 +20,8 @@ Covers:
   repeated-backward recompute re-deriving the same chunking,
 * the env-facing wrappers (top-level + transformers functional + nn.Module),
 * the capability-gated dispatch helper refusing an override on unsupported backends,
-* the legacy cuTile Function rejecting an explicit override on this layer.
+* the cuTile Function honoring an explicit chunk override (metadata + 18-arg call +
+  module/functional wrapper routing that must reach cuTile, not the default Triton).
 
 Optional CUDA backends (native CuTe DSL SM100) are skipped when the current GPU / SDK
 does not satisfy them.
@@ -49,6 +51,18 @@ def _native_cutedsl_available():
     except (ImportError, ModuleNotFoundError):
         # Only a *missing* optional dependency skips the test; a broken but
         # installed SDK must surface, not be silently hidden here.
+        return False
+    return True
+
+
+def _cutile_available():
+    # cuTile FLCE runs on Hopper SM90 and Blackwell SM100.
+    if not _HAS_CUDA or _cc() not in ((9, 0), (10, 0)):
+        return False
+    try:
+        import cuda.tile  # noqa: F401
+    except (ImportError, ModuleNotFoundError):
+        # Only a *missing* optional SDK skips; a broken-but-installed one must surface.
         return False
     return True
 
@@ -297,30 +311,90 @@ class TestNativeCuTeChunkSize:
 
 
 # ---------------------------------------------------------------------------
-# cuTile backend (SM90 + SM100) — chunking is owned by a later layer. Here we only
-# assert the *negative* contract: this layer leaves cuTile at its legacy 15-arg
-# Function, so an explicit override must be refused, never silently ignored.
+# cuTile backend (SM90 + SM100) — chunk-capable in this layer. cuTile computes
+# dX/dW during forward with an explicit token ``chunk_size`` (all three GEMMs run on
+# cuBLAS; CE / statistics / dZ / scale-cast are cuTile). We assert the *positive*
+# contract: the metadata advertises chunk support, the 18-arg Function honors an
+# explicit non-power-of-two chunk with a tail on a BF16 model, and the env-facing
+# module/functional wrappers actually route to this cuTile Function — not the
+# default Triton one it silently swaps in on unsupported devices.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(_cc() not in ((9, 0), (10, 0)), reason="cuTile FLCE requires SM90/SM100")
-class TestCuTileLegacyRejectsChunk:
+@pytest.mark.skipif(not _cutile_available(), reason="cuTile FLCE requires SM90/SM100 + cuda-tile")
+class TestCuTileChunkSize:
+    def _mod(self):
+        import liger_kernel.ops.cutile.ops.fused_linear_cross_entropy as mod
+
+        return mod
+
     def _fn(self):
-        pytest.importorskip("cuda.tile")
-        from liger_kernel.ops.cutile.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
+        return self._mod().LigerFusedLinearCrossEntropyFunction
 
-        return LigerFusedLinearCrossEntropyFunction
+    def _apply(self, x, w, t, chunk_size):
+        # Full 18-arg contract (15 base + ce_impl + ce_mode + chunk_size).
+        loss, _, _, _ = self._fn().apply(
+            x, w, t, None, None, -100, 0.0, 0.0, "mean", None, False, None, False, False, False, None, None, chunk_size
+        )
+        return loss
 
-    def test_does_not_advertise_chunk_support(self):
-        # cuTile stays on the legacy contract in this layer.
-        assert getattr(self._fn(), "supports_chunk_size", False) is False
+    def test_advertises_chunk_support(self):
+        fn = self._fn()
+        # cuTile is now chunk-capable, but it does NOT dispatch to alternate CE impls.
+        assert fn.supports_chunk_size is True
+        assert getattr(fn, "supports_inner_impl_dispatch", False) is False
 
-    def test_explicit_override_refused_by_dispatch_helper(self):
-        from liger_kernel.transformers.functional import build_flce_apply_args
+    def test_explicit_chunk_runs_nonpow2_tail(self):
+        # BF16 model, non-power-of-two token count with a tail: 200 = 48*4 + 8.
+        x, w, t, _ = _make_inputs(200, 256, 4096, torch.bfloat16, seed=10)
+        loss = self._apply(x, w, t, 48)
+        loss.backward()
+        assert torch.isfinite(loss)
+        assert x.grad is not None and w.grad is not None
+        assert torch.isfinite(x.grad).all() and torch.isfinite(w.grad).all()
 
-        base = tuple(range(15))
-        with pytest.raises(ValueError):
-            build_flce_apply_args(self._fn(), base, chunk_size=64)
+    def _spy_forward(self, monkeypatch):
+        """Wrap the cuTile forward so a routed call records the ``chunk_size`` it saw."""
+        mod = self._mod()
+        seen = {}
+        real = mod.chunked_fused_linear_cross_entropy_forward
+
+        def _spy(*args, **kwargs):
+            seen["chunk_size"] = kwargs.get("chunk_size")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(mod, "chunked_fused_linear_cross_entropy_forward", _spy)
+        return seen
+
+    def test_functional_wrapper_routes_to_cutile(self, monkeypatch):
+        # Force the backend-swapped symbol the functional wrapper resolves to be the
+        # cuTile Function, then confirm the cuTile forward actually ran with the
+        # explicit chunk flowing through — proving cuTile, not the default Triton.
+        import liger_kernel.transformers.functional as func
+
+        fn = self._fn()
+        assert "cutile" in fn.__module__
+        seen = self._spy_forward(monkeypatch)
+        monkeypatch.setattr(func, "LigerFusedLinearCrossEntropyFunction", fn)
+
+        x, w, t, _ = _make_inputs(200, 256, 4096, torch.bfloat16, seed=11)
+        out = func.liger_fused_linear_cross_entropy(x, w, t, chunk_size=48)
+        assert torch.isfinite(out)
+        assert seen["chunk_size"] == 48
+
+    def test_nn_module_routes_to_cutile(self, monkeypatch):
+        import liger_kernel.transformers.fused_linear_cross_entropy as nnmod
+
+        fn = self._fn()
+        assert "cutile" in fn.__module__
+        seen = self._spy_forward(monkeypatch)
+        monkeypatch.setattr(nnmod, "LigerFusedLinearCrossEntropyFunction", fn)
+
+        x, w, t, _ = _make_inputs(200, 256, 4096, torch.bfloat16, seed=12)
+        loss = nnmod.LigerFusedLinearCrossEntropyLoss(chunk_size=48)(w, x, t)
+        loss.backward()
+        assert torch.isfinite(loss)
+        assert seen["chunk_size"] == 48
 
 
 # ---------------------------------------------------------------------------

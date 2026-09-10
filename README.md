@@ -269,8 +269,55 @@ Policy for an explicit override:
   of its public `impl=` selections -- `nvidia-triton` (Triton inner CE kernel) and `nvidia-cutedsl`
   (the *same* shared orchestration with a CuTe DSL inner CE kernel, not a standalone native kernel).
   The distinct, self-contained native SM100 CuTe DSL FLCE (selected via `LIGER_KERNEL_IMPL=cutedsl`)
-  also accepts it. The legacy cuTile FLCE backend does not yet advertise support and rejects an
-  explicit `chunk_size` (a later layer wires it through) rather than silently ignoring the override.
+  also accepts it. The cuTile FLCE backend (`LIGER_KERNEL_IMPL=cutile`, SM90 Hopper **and** SM100
+  Blackwell) now advertises `supports_chunk_size = True` and computes dX/dW during forward under the
+  same explicit `chunk_size`. Backends that cannot honor an override (e.g. the Ascend Triton path)
+  still raise `ValueError` rather than silently ignoring it.
+
+#### Comparing backends: `benchmark/scripts/benchmark_flce_backends.py`
+
+This harness imports the backend `autograd.Function` classes **directly** (no dispatcher, no
+`LIGER_KERNEL_IMPL` env) and times a full forward **and** backward at matched shapes and explicit
+chunk sizes. It is a *whole-pipeline* comparison, not a CE-only DSL-isolation measurement, and it
+does not go through the `impl="nvidia-cutedsl"` public route.
+
+```bash
+.venv/bin/python benchmark/scripts/benchmark_flce_backends.py \
+    --backends all3 --tokens 4096 --hidden-size 2048 --vocab-size 32000 \
+    --chunk-sizes 256 1024 4096
+```
+
+- **Backends & arch policy.** `cutedsl` requires exactly SM100 (Blackwell, e.g. B200); `cutile` runs
+  on SM90 (Hopper) **and** SM100. So on a B200 the default -- and `--backends all3` -- is all three
+  (`triton`, `cutedsl`, `cutile`) in one process; on SM90 the default is `triton` + `cutile`; elsewhere
+  `triton` only. Requesting a backend the GPU cannot run fails loudly, and a missing SDK surfaces its
+  own `ImportError`.
+- **GEMM ownership differs per backend** (so the numbers are not apples-to-apples kernel isolation):
+  `triton` runs the projection, `dX` and `dW` all through PyTorch/cuBLAS; the native `cutedsl` path
+  uses its **custom CuTe DSL SM100 GEMM for the projection only**, with `dX`/`dW` on PyTorch/cuBLAS;
+  `cutile` uses PyTorch/cuBLAS for **all three GEMMs** (projection, `dX` **and** `dW`) and owns only
+  the partitioned CE statistics, the `dZ` scatter, and the final FP32 `dW` scale-and-cast -- there is
+  **no cuTile `dW` MMA/GEMM**.
+- **Numerics & `--accum-dtype`.** Inputs are BF16. `--accum-dtype fp32` (the default) forces
+  `accum_dtype=torch.float32` on every backend so the cross-chunk `dW` accumulation precision matches,
+  and the table's `eff_accum` column reads `fp32` for every row. `--accum-dtype default` instead passes
+  `None` and lets each backend apply its own policy: with BF16 weights `triton` and native `cutedsl`
+  store the cross-chunk `dW` in **BF16**, while `cutile` **always** retains an **FP32** accumulator --
+  so that panel is **not** precision-matched (`eff_accum` reads `bf16` for `triton`/`cutedsl` and `fp32`
+  for `cutile`). The `cutile` `dW` keeps raw FP32 through accumulation and is cast to BF16 only after the
+  combined upstream x global-mean scaling in backward.
+
+```bash
+.venv/bin/python benchmark/scripts/benchmark_flce_backends.py \
+    --backends all3 --accum-dtype default
+```
+
+- **`chunk` vs `eff_chunk`.** A chunk larger than the token count is clamped to `B*T`; the table prints
+  both the requested `chunk` and the `eff_chunk` actually used, so a clamp is never reported as the
+  request.
+- **Reduction.** The harness exercises `reduction="mean"` only: the native `cutedsl` and `cutile` paths
+  support `mean`/`sum`, while the composed Triton op additionally supports `reduction="none"` (a
+  deferred-backward recomputation that honors the explicit `chunk_size`).
 
 ### Fused Scaled Cross Entropy
 
