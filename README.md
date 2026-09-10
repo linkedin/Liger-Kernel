@@ -209,6 +209,28 @@ LIGER_KERNEL_IMPL=cutile python your_script.py
 
 `LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile` and `cutedsl`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
 
+#### cuTile Fused Linear Cross Entropy
+
+With `LIGER_KERNEL_IMPL=cutile`, `LigerFusedLinearCrossEntropyLoss` routes to a cuTile Fused Linear Cross Entropy kernel for BF16 `input`/`weight` on Hopper (SM90) and Blackwell (SM100). No API change is needed — the default route just works:
+
+```bash
+LIGER_KERNEL_IMPL=cutile python your_script.py
+```
+
+```python
+from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+
+# Same call as the default backend — there is no chunk_size argument.
+loss_fn = LigerFusedLinearCrossEntropyLoss(reduction="mean")
+loss = loss_fn(lm_head_weight, hidden_states, labels)
+```
+
+Implementation notes:
+
+- Token chunking uses the **exact same default geometry as the Triton backend** (`inc = ceil(V / (16·H))`, `chunk = min(N, next_pow2(ceil(N / inc)))`); there is no public `chunk_size` knob.
+- All three GEMMs — projection, input-gradient (`dX`), and weight-gradient (`dW`) — run through PyTorch/cuBLAS. `dW` is accumulated across token chunks in FP32 (`mm` then `addmm`) and the combined upstream/mean scale is applied in FP32 before a single BF16 cast, so small gradients are preserved.
+- Supports BF16 `input` and `weight` with `mean`/`sum` reductions; FP32 accumulation is the default and only accumulation policy. It is **not** a full feature/precision match for the Triton kernel (e.g. no bias, class weights, z-loss, label smoothing, softcap, or token scaling).
+
 ### Enable CuTe DSL Backend
 
 CuTe DSL is the optional, CUDA-only Python DSL shipped with NVIDIA CUTLASS (`import cutlass.cute`), targeting Hopper (SM90) and Blackwell (SM100/SM110). After installing the `cutedsl` extra, enable it explicitly:
