@@ -18,11 +18,14 @@ from typing import Optional
 
 import torch
 
+from liger_kernel.ops.utils import ensure_contiguous
+
 
 class LigerTiledMLPFunction(torch.autograd.Function):
     """Tiled MLP computation (no GPU kernel, memory-efficient via re-computation)."""
 
     @staticmethod
+    @ensure_contiguous
     def forward(ctx, fn, mlp_module, x, shards, compute_params=None):
         # compute_params is part of the upstream API (intended for DeepSpeed ZeRO
         # weight registration); we accept and forward it for parity but don't
@@ -39,13 +42,14 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         return torch.cat(output_shards, dim=-2)
 
     @staticmethod
+    @ensure_contiguous
     def backward(ctx, *grads):
         fn = ctx.fn
         (x,) = ctx.saved_tensors
         mlp_module = ctx.mlp_module
         shards = ctx.shards
 
-        x_requires_grad = x.requires_grad
+        x_requires_grad = ctx.needs_input_grad[2]
 
         x_detached = x.detach()
         x_shards = list(torch.chunk(x_detached, chunks=shards, dim=-2))
