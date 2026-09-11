@@ -81,12 +81,15 @@ def _require_guarded_launches(monkeypatch, device):
     active = []
     launches = []
 
-    @contextmanager
-    def track_device(selected):
-        with real_device(selected):
+    class track_device(real_device):
+        def __enter__(self):
+            result = super().__enter__()
             active.append(torch.cuda.current_device())
+            return result
+
+        def __exit__(self, exc_type, exc_value, traceback):
             try:
-                yield
+                return super().__exit__(exc_type, exc_value, traceback)
             finally:
                 active.pop()
 
