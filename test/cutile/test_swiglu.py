@@ -161,12 +161,11 @@ def test_cutile_default_multipliers_backward_compat():
 @pytest.mark.parametrize("width", [7, 512], ids=["masked", "aligned"])
 @pytest.mark.parametrize("noncontiguous_inputs", [False, True], ids=["contiguous_inputs", "transposed_inputs"])
 @pytest.mark.parametrize("gate, down", [(1.0, 1.0), (1.5, 0.75)], ids=["default", "scaled"])
-def test_cutile_non_contiguous_forward_backward(dtype, width, noncontiguous_inputs, gate, down):
-    from test.cutile.test_cutile_backends_parity import _cutile_supported
+@pytest.mark.parametrize("entrypoint", ["native", "dispatcher"])
+def test_cutile_non_contiguous_forward_backward(dtype, width, noncontiguous_inputs, gate, down, entrypoint):
+    from test.cutile.test_cutile_backends_parity import _cutile_impl
 
-    supported, reason = _cutile_supported()
-    if not supported:
-        pytest.skip(reason)
+    impl = _cutile_impl("swiglu")
     torch.manual_seed(0)
     a = torch.randn(2, 3, width, device="cuda", dtype=dtype).transpose(0, 1)
     b = torch.randn(2, 3, width, device="cuda", dtype=dtype).transpose(0, 1)
@@ -184,7 +183,12 @@ def test_cutile_non_contiguous_forward_backward(dtype, width, noncontiguous_inpu
     ref_out = _ref_silu_mul(ref_a, ref_b, gate, down)
     ref_out.backward(grad.float())
 
-    out = CuTileSiLUMulFunction.apply(a, b, gate, down)
+    if entrypoint == "native":
+        out = CuTileSiLUMulFunction.apply(a, b, gate, down)
+    else:
+        from liger_kernel import functional
+
+        out = functional.swiglu(a, b, gate_multiplier=gate, down_multiplier=down, impl=impl, mode="default")
     assert out.shape == a.shape
     out.backward(grad)
 

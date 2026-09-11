@@ -131,6 +131,9 @@ def _rope_general_kernel_ct(
 
 
 def rope_forward(q, k, cos, sin):
+    # The kernels rotate in place; broadcast views alias elements being written.
+    q = q.contiguous() if 0 in q.stride() else q
+    k = k.contiguous() if 0 in k.stride() else k
     bsz, n_q_heads, seq_len, head_dim = q.shape
     n_k_heads = k.shape[1]
     head_dim_half = head_dim // 2
@@ -204,8 +207,8 @@ def rope_forward(q, k, cos, sin):
                 int(TILE_HD),
             ),
         )
-        q_out = q_t.transpose(1, 2).to(original_dtype)
-        k_out = k_t.transpose(1, 2).to(original_dtype)
+        q_out = q_t.transpose(1, 2)
+        k_out = k_t.transpose(1, 2)
         return q_out, k_out, cos_3d, sin_3d, cos_bs, ALIGNED, TILE_QH, TILE_KH, TILE_HD, original_dtype
 
 
@@ -226,6 +229,9 @@ def rope_backward(
     n_k_heads,
     head_dim,
 ):
+    # Reductions such as sum() supply expanded, zero-stride gradients.
+    dq = dq.contiguous() if 0 in dq.stride() else dq
+    dk = dk.contiguous() if 0 in dk.stride() else dk
     head_dim_half = head_dim // 2
     n_row = bsz * seq_len
     grid = (n_row,)
@@ -276,8 +282,8 @@ def rope_backward(
                 int(TILE_HD),
             ),
         )
-        dq_out = dq_t.transpose(1, 2).to(original_dtype)
-        dk_out = dk_t.transpose(1, 2).to(original_dtype)
+        dq_out = dq_t.transpose(1, 2)
+        dk_out = dk_t.transpose(1, 2)
         return dq_out, dk_out
 
 

@@ -3,6 +3,8 @@
 import importlib
 import os
 
+from unittest.mock import patch
+
 import pytest
 import torch
 
@@ -71,30 +73,72 @@ def test_functional_dispatcher_registers_cutile_ops():
 
     missing = [op_name for op_name in DISPATCH_OPS if get_registered(op_name, "nvidia-cutile") is None]
     assert not missing, f"missing cuTile dispatcher adapters: {missing}"
+    for op_name in DISPATCH_OPS:
+        impl = get_registered(op_name, "nvidia-cutile")
+        assert impl.modes == ("default",)
+        assert impl.default_mode == "default"
+        assert impl.capability.min_cc == (10, 0)
+        assert impl.preference_rank == 80
+
+
+@pytest.mark.parametrize("op_name", DISPATCH_OPS)
+def test_cutile_adapters_reject_unknown_modes(op_name):
+    from liger_kernel.backends.registry import get_registered
+
+    impl = get_registered(op_name, "nvidia-cutile")
+    assert impl is not None
+    x = torch.empty(2, 4)
+    args = {
+        "cross_entropy": (x, torch.empty(2, dtype=torch.int64)),
+        "fused_add_rms_norm": (x, x, torch.empty(4)),
+        "geglu": (x, x),
+        "kl_div": (x, x),
+        "rope": (x, x, x, x),
+        "swiglu": (x, x),
+    }
+    with pytest.raises(ValueError, match="has only mode='default'"):
+        impl.call(*args[op_name], mode="unsupported")
 
 
 @pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.get_device_capability() < (10, 0),
     reason="cuTile cross_entropy/rope require Blackwell (sm_100+); skip where they are not registered.",
 )
-def test_cutile_dispatch_transformers_execute():
+def test_cutile_dispatch_transformers_execute(monkeypatch):
+    from liger_kernel.ops.cutile.ops.cross_entropy import LigerCrossEntropyFunction
+    from liger_kernel.ops.cutile.ops.rope import LigerRopeFunction
     from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
     from liger_kernel.transformers.rope import liger_rotary_pos_emb
+    from test.cutile.test_rope import _rotate_reference
 
+    monkeypatch.setenv("LIGER_KERNEL_IMPL_CROSS_ENTROPY", "nvidia-cutile")
+    monkeypatch.setenv("LIGER_KERNEL_IMPL_ROPE", "nvidia-cutile")
     logits = torch.randn(8, 64, device="cuda", dtype=torch.float32, requires_grad=True)
+    logits_ref = logits.detach().clone().requires_grad_(True)
     target = torch.randint(0, 64, (8,), device="cuda")
-    loss = LigerCrossEntropyLoss()(logits, target)
+    with patch.object(LigerCrossEntropyFunction, "apply", wraps=LigerCrossEntropyFunction.apply) as native_ce:
+        loss = LigerCrossEntropyLoss()(logits, target)
+        native_ce.assert_called_once()
+    expected_loss = torch.nn.functional.cross_entropy(logits_ref, target)
     loss.backward()
-    assert torch.isfinite(loss)
-    assert torch.isfinite(logits.grad).all()
+    expected_loss.backward()
+    torch.testing.assert_close(loss, expected_loss, atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(logits.grad, logits_ref.grad, atol=1e-6, rtol=1e-5)
 
     q = torch.randn(1, 2, 4, 8, device="cuda", dtype=torch.float32, requires_grad=True)
     k = torch.randn(1, 2, 4, 8, device="cuda", dtype=torch.float32, requires_grad=True)
-    cos = torch.ones(1, 4, 8, device="cuda", dtype=torch.float32)
-    sin = torch.zeros_like(cos)
-    q_out, k_out = liger_rotary_pos_emb(q, k, cos, sin)
+    q_ref = q.detach().clone().requires_grad_(True)
+    k_ref = k.detach().clone().requires_grad_(True)
+    angles = torch.randn(1, 4, 4, device="cuda", dtype=torch.float32)
+    cos = angles.cos().repeat(1, 1, 2)
+    sin = angles.sin().repeat(1, 1, 2)
+    with patch.object(LigerRopeFunction, "apply", wraps=LigerRopeFunction.apply) as native_rope:
+        q_out, k_out = liger_rotary_pos_emb(q, k, cos, sin)
+        native_rope.assert_called_once()
+    q_expected, k_expected = _rotate_reference(q_ref, cos, sin), _rotate_reference(k_ref, cos, sin)
     (q_out.sum() + k_out.sum()).backward()
-    assert torch.isfinite(q_out).all()
-    assert torch.isfinite(k_out).all()
-    assert torch.isfinite(q.grad).all()
-    assert torch.isfinite(k.grad).all()
+    (q_expected.sum() + k_expected.sum()).backward()
+    torch.testing.assert_close(q_out, q_expected, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(k_out, k_expected, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(q.grad, q_ref.grad, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(k.grad, k_ref.grad, atol=1e-5, rtol=1e-5)
