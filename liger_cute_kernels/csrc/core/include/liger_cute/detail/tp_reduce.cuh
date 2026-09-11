@@ -173,6 +173,7 @@ struct RemoteReduceView {
 	int previous_world;
 	int next_world;
 	int qp_handle;
+	int team_handle;
 
 	bool enabled() const {
 		return reduced_shard != nullptr && inbox != nullptr &&
@@ -180,7 +181,8 @@ struct RemoteReduceView {
 			reduced_shard_elements > 0 &&
 			inbox_slot_elements > 0 &&
 			size > 1 && rank >= 0 && rank < size &&
-			previous_world >= 0 && next_world >= 0;
+			previous_world >= 0 && next_world >= 0 &&
+			team_handle >= 0;
 	}
 };
 
@@ -201,14 +203,27 @@ struct TpReduceTopology {
 
 __host__ __device__ constexpr bool tp_reduce_uses_remote_ring(
 		int team_size,
-		int node_size,
-		int remote_size,
-		bool parent_covers_world) {
-	return parent_covers_world &&
-		team_size > node_size &&
-		node_size > 1 &&
+		int local_size,
+		int remote_size) {
+	return team_size > local_size &&
+		local_size >= 1 &&
 		remote_size > 1 &&
-		node_size * remote_size == team_size;
+		local_size * remote_size == team_size;
+}
+
+__host__ __device__ constexpr int tp_reduce_host_rank(
+		int team_rank, int local_size) {
+	return team_rank / local_size;
+}
+
+__host__ __device__ constexpr int tp_reduce_local_rank(
+		int team_rank, int local_size) {
+	return team_rank % local_size;
+}
+
+__host__ __device__ constexpr int tp_reduce_parent_rank(
+		int host_rank, int local_rank, int local_size) {
+	return host_rank * local_size + local_rank;
 }
 
 struct TpReduceBuffers {
@@ -245,6 +260,7 @@ TpReducePlan tp_reduce_plan();
 void begin_tp_reduce(
 	const std::uint64_t* launch_epoch,
 	cudaStream_t stream);
+void synchronize_tp_reduce(cudaStream_t stream);
 void end_tp_reduce(cudaStream_t stream);
 void reset_tp_reduce();
 

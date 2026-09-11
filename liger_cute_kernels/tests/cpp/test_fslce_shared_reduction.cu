@@ -70,7 +70,8 @@ TEST(TensorParallelRemoteRing, ModelsTheTwoHostTp16Topology) {
 		2,
 		8,
 		8,
-		0};
+		0,
+		17};
 	liger_cute::detail::RemoteReduceView rank_one = rank_zero;
 	rank_one.rank = 1;
 	rank_one.previous_world = 0;
@@ -78,6 +79,9 @@ TEST(TensorParallelRemoteRing, ModelsTheTwoHostTp16Topology) {
 
 	EXPECT_TRUE(rank_zero.enabled());
 	EXPECT_TRUE(rank_one.enabled());
+	rank_one.team_handle = -1;
+	EXPECT_FALSE(rank_one.enabled());
+	rank_one.team_handle = 17;
 	EXPECT_EQ(
 		liger_cute::detail::remote_ring_previous_rank(0, 2),
 		1);
@@ -92,31 +96,54 @@ TEST(TensorParallelRemoteRing, ModelsTheTwoHostTp16Topology) {
 		0);
 }
 
-TEST(TensorParallelRemoteRing, SelectsOnlyUniformWorldCoveringTopologies) {
+TEST(TensorParallelRemoteRing, SelectsUniformParentRelativeTopologies) {
 	EXPECT_FALSE(
 		liger_cute::detail::tp_reduce_uses_remote_ring(
-			1, 1, 1, true));
+			1, 1, 1));
 	EXPECT_FALSE(
 		liger_cute::detail::tp_reduce_uses_remote_ring(
-			2, 2, 1, true));
+			2, 2, 1));
 	EXPECT_FALSE(
 		liger_cute::detail::tp_reduce_uses_remote_ring(
-			4, 4, 1, true));
+			4, 4, 1));
 	EXPECT_FALSE(
 		liger_cute::detail::tp_reduce_uses_remote_ring(
-			8, 8, 1, true));
+			8, 8, 1));
 	EXPECT_TRUE(
 		liger_cute::detail::tp_reduce_uses_remote_ring(
-			16, 8, 2, true));
+			2, 1, 2));
 	EXPECT_TRUE(
 		liger_cute::detail::tp_reduce_uses_remote_ring(
-			16, 4, 4, true));
+			4, 2, 2));
+	EXPECT_TRUE(
+		liger_cute::detail::tp_reduce_uses_remote_ring(
+			8, 4, 2));
+	EXPECT_TRUE(
+		liger_cute::detail::tp_reduce_uses_remote_ring(
+			16, 8, 2));
 	EXPECT_FALSE(
 		liger_cute::detail::tp_reduce_uses_remote_ring(
-			16, 8, 2, false));
-	EXPECT_FALSE(
+			16, 6, 2));
+	EXPECT_TRUE(
 		liger_cute::detail::tp_reduce_uses_remote_ring(
-			16, 6, 2, true));
+			16, 4, 4));
+}
+
+TEST(TensorParallelRemoteRing, MapsStridedWorldTeamAsHostMajor2DGrid) {
+	// Parent-team ranks for world ranks {0, 4, 8, 12}. xrange=2 gives
+	// local rows {0,1}/{2,3} and matching-rank columns {0,2}/{1,3}.
+	EXPECT_EQ(liger_cute::detail::tp_reduce_host_rank(0, 2), 0);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_host_rank(1, 2), 0);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_host_rank(2, 2), 1);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_host_rank(3, 2), 1);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_local_rank(0, 2), 0);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_local_rank(1, 2), 1);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_local_rank(2, 2), 0);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_local_rank(3, 2), 1);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_parent_rank(0, 0, 2), 0);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_parent_rank(0, 1, 2), 1);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_parent_rank(1, 0, 2), 2);
+	EXPECT_EQ(liger_cute::detail::tp_reduce_parent_rank(1, 1, 2), 3);
 }
 
 TEST(TensorParallelRemoteRing, DefinesPerBlockAndGridWorkerContracts) {

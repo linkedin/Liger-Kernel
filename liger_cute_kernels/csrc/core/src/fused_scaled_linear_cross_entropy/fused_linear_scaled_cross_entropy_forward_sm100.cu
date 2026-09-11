@@ -7,7 +7,6 @@
 
 #include <cuda_runtime.h>
 #include <cute/atom/copy_traits_sm100_tma.hpp>
-#include <device/nvshmemx_collective_launch_apis.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -117,6 +116,37 @@ struct ClusterLaunchSm100 {
 			smem_bytes,
 			stream,
 			cluster_attribute);
+		return cudaLaunchKernelEx(
+			&launch,
+			kernel,
+			args...);
+	}
+
+	template <class Kernel, class... Args>
+	static cudaError_t launch_cooperative(
+			Kernel kernel,
+			dim3 grid,
+			int threads,
+			int smem_bytes,
+			cudaStream_t stream,
+			const Args&... args) {
+		cudaLaunchAttribute attributes[2] = {};
+		attributes[0].id =
+			cudaLaunchAttributeClusterDimension;
+		attributes[0].val.clusterDim.x = 2;
+		attributes[0].val.clusterDim.y = 1;
+		attributes[0].val.clusterDim.z = 1;
+		attributes[1].id =
+			cudaLaunchAttributeCooperative;
+		attributes[1].val.cooperative = 1;
+		cudaLaunchConfig_t launch = {};
+		launch.gridDim = grid;
+		launch.blockDim =
+			dim3(static_cast<unsigned>(threads), 1, 1);
+		launch.dynamicSmemBytes = smem_bytes;
+		launch.stream = stream;
+		launch.attrs = attributes;
+		launch.numAttrs = 2;
 		return cudaLaunchKernelEx(
 			&launch,
 			kernel,
@@ -560,80 +590,29 @@ void launch_forward_sm100(
 				static_cast<unsigned>(
 					split.num_cluster_pairs));
 			if constexpr (RequiresRemote) {
-				auto tma_load_x_arg = tma_load_x;
-				auto tma_load_w_arg = tma_load_w;
-				auto gemm_params_arg = gemm_params;
-				auto partials_arg = partials;
-				auto split_arg = split;
-				auto comm_arg = comm;
-				auto mapping_arg = mapping;
-				int* split_ready_arg =
-					reduce_workspace.split_ready;
-				float* global_max_arg =
-					reduce_workspace.global_max;
-				float* reduced_arg =
-					reduce_workspace.reduced;
-				auto wave_workspace_arg =
-					wave_workspace;
-				auto remote_arg = reduce.remote;
-				auto outputs_arg = outputs;
-				void* args[] = {
-					&tma_load_x_arg,
-					&tma_load_w_arg,
-					&gemm_params_arg,
-					&partials_arg,
-					&split_arg,
-					&comm_arg,
-					&mapping_arg,
-					&split_ready_arg,
-					&global_max_arg,
-					&reduced_arg,
-					&wave_workspace_arg,
-					&remote_arg,
-					&outputs_arg};
-				dim3 block(
-					static_cast<unsigned>(
-						Config::kNumThreads),
-					1u,
-					1u);
-				int collective_grid_limit = 0;
-				int query_status =
-					nvshmemx_collective_launch_query_gridsize(
-						reinterpret_cast<const void*>(
-							kernel),
-						block,
-						args,
-						kSmemBytes,
-						&collective_grid_limit);
-				LIGER_CHECK(
-					query_status == 0,
-					"SM100 forward collective grid query failed "
-					"with status ",
-					query_status);
-				LIGER_CHECK(
-					collective_grid_limit > 0 &&
-						grid_ctas <=
-							collective_grid_limit,
-					"SM100 forward requires ",
-					grid_ctas,
-					" resident clustered CTAs, but NVSHMEM "
-					"collective launch allows ",
-					collective_grid_limit);
-				int status = nvshmemx_collective_launch(
-					reinterpret_cast<const void*>(kernel),
-					grid,
-					block,
-					args,
-					kSmemBytes,
+				liger_cute::detail::synchronize_tp_reduce(
 					stream);
-				LIGER_CHECK(
-					status == 0,
-					"SM100 forward collective clustered launch "
-					"failed with status ",
-					status);
 				check_cuda_sm100(
-					cudaGetLastError(),
-					"nvshmemx_collective_launch("
+					ClusterLaunchSm100::launch_cooperative(
+						kernel,
+						grid,
+						Config::kNumThreads,
+						kSmemBytes,
+						stream,
+						tma_load_x,
+						tma_load_w,
+						gemm_params,
+						partials,
+						split,
+						comm,
+						mapping,
+						reduce_workspace.split_ready,
+						reduce_workspace.global_max,
+						reduce_workspace.reduced,
+						wave_workspace,
+						reduce.remote,
+						outputs),
+					"cudaLaunchKernelEx(cooperative "
 					"forward_gemm_tp_kernel_sm100)");
 			} else {
 				check_cuda_sm100(

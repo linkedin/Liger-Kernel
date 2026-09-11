@@ -504,17 +504,22 @@ void fused_linear_scaled_cross_entropy_forward_diagnostics(
 }
 
 int64_t fused_linear_scaled_cross_entropy_backward_diagnostic_entries() {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
   return liger::fused_scaled_linear_cross_entropy::
       kBackwardDiagnosticEntries;
+#else
+  return 0;
+#endif
 }
 
 void fused_linear_scaled_cross_entropy_backward_diagnostics(
     ffi::TensorView output) {
   DLDataType i64{kDLInt, 64, 1};
   RequireCudaTensor(output, 1, i64, "output");
-  int entries = liger::fused_scaled_linear_cross_entropy::
-      kBackwardDiagnosticEntries;
+  int entries =
+      fused_linear_scaled_cross_entropy_backward_diagnostic_entries();
   TVM_FFI_ICHECK_GE(output.size(0), entries);
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
   cudaStream_t stream = reinterpret_cast<cudaStream_t>(
       TVMFFIEnvGetStream(
           output.device().device_type,
@@ -530,6 +535,7 @@ void fused_linear_scaled_cross_entropy_backward_diagnostics(
         "fused_linear_scaled_cross_entropy_backward_diagnostics",
         e);
   }
+#endif
 }
 
 void fused_linear_scaled_cross_entropy_forward(

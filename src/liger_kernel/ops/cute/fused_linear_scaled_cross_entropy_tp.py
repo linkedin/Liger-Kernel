@@ -129,8 +129,8 @@ class LigerFusedLinearScaledCrossEntropyNativeTPFunction(torch.autograd.Function
     gradient and the rank-local weight gradient.
 
     The process group must already have a corresponding NVSHMEM team. Node-
-    local TP1/2/4/8 uses NVLS. The SM100 TP16 path requires two uniform
-    eight-GPU hosts and a world-covering team.
+    local TP uses NVLS. Multi-host execution derives node-local and
+    matching-rank remote teams from a uniformly partitioned TP process group.
     """
 
     @staticmethod

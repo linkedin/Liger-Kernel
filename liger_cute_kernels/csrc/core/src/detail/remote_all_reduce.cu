@@ -17,8 +17,8 @@ void launch_remote_collective(
 		void** args,
 		cudaStream_t stream,
 		const char* what) {
-	// RemoteReduceView is enabled only for a TP team covering WORLD, so every
-	// PE enters these launches with identical kernel geometry and ordering.
+	// Every active TP subgroup enters with identical kernel geometry and
+	// ordering; disjoint groups may execute this path concurrently.
 	int status = nvshmemx_collective_launch(
 		kernel, grid, block, args, 0, stream);
 	LIGER_CHECK(
@@ -135,9 +135,8 @@ void launch_remote_ring_all_reduce(
 		remote_ring_worker_threads_per_block<
 			kRemoteSumWorkerWarpsPerBlock>();
 	dim3 block_dims(kThreadsPerBlock, 1, 1);
-	// TP remote execution already requires a uniform world-covering topology.
-	// With the same kernel, block size, and payload on homogeneous GPUs, every
-	// PE obtains and deterministically caps the same cooperative grid size.
+	// A uniform TP subgroup uses the same kernel, block size, and payload on
+	// homogeneous GPUs, so every member deterministically caps the same grid.
 	int max_grid_size = 0;
 	int query_status =
 		nvshmemx_collective_launch_query_gridsize(

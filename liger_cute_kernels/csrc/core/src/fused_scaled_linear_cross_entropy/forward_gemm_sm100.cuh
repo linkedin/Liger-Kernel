@@ -627,8 +627,8 @@ struct ForwardTpParamsSm100 {
 	float* lse = nullptr;      // FP32 [tokens], globally reduced logsumexp
 	float* entropy = nullptr;  // FP32 [tokens], optional globally reduced entropy
 	// NVSHMEM team configured by configure_backward_tp_symmetric() and
-	// configure_forward_tp_workspace(). Multi-host execution requires a
-	// world-covering team with uniform node sizes.
+	// configure_forward_tp_workspace(). Multi-host execution requires uniform
+	// host-local membership and host-major team-rank ordering.
 	std::int64_t team_handle = 0;
 };
 

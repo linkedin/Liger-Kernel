@@ -8,6 +8,9 @@ import os
 import torch
 import torch.distributed as dist
 
+from fslce_tp_test_utils import stagger_tp_group
+from fslce_tp_test_utils import strided_tp_group
+
 INVERSE_TEMPERATURE = 1.0 / 0.9
 IGNORE_INDEX = -100
 WAVE_ROWS = 4096
@@ -206,6 +209,18 @@ def main() -> int:
     parser.add_argument("--local-vocab", type=int, default=4096)
     parser.add_argument("--case", default="")
     parser.add_argument(
+        "--tp-group-stride",
+        type=int,
+        default=0,
+        help="split WORLD into interleaved TP groups; 4 on world-size 16 forms {0,4,8,12}, etc.",
+    )
+    parser.add_argument(
+        "--group-stagger-ms",
+        type=int,
+        default=0,
+        help="delay successive strided groups before each case to verify subgroup-scoped progress",
+    )
+    parser.add_argument(
         "--wave-rows",
         type=int,
         choices=(1024, 2048, 4096),
@@ -217,15 +232,17 @@ def main() -> int:
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
     dist.init_process_group("nccl", device_id=device)
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    group = dist.group.WORLD
+    global_rank = dist.get_rank()
+    global_world_size = dist.get_world_size()
+    group = strided_tp_group(global_world_size, args.tp_group_stride)
+    rank = dist.get_rank(group)
+    world_size = dist.get_world_size(group)
 
     from liger_cute_kernels import nvshmem
     from liger_cute_kernels import tvm_ffi
 
     nvshmem.init_from_pg()
-    team = nvshmem.team_world()
+    team = nvshmem.resolve_team(group)
     if world_size not in (1, 2, 4, 8, 16):
         raise RuntimeError(f"validation supports TP1/2/4/8/16, got TP{world_size}")
 
@@ -250,7 +267,8 @@ def main() -> int:
 
     failures = 0
     for case in cases:
-        dist.barrier()
+        stagger_tp_group(global_rank, args.tp_group_stride, args.group_stagger_ms)
+        dist.barrier(group=group)
         failures += not _run_case(
             tvm_ffi,
             team,
@@ -264,7 +282,7 @@ def main() -> int:
 
     if rank == 0:
         print(
-            f"TP{world_size} failures={failures}/{len(cases)}",
+            f"TP{world_size} group_root={global_rank} failures={failures}/{len(cases)}",
             flush=True,
         )
     nvshmem.finalize()

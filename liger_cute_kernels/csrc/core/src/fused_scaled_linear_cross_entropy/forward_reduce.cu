@@ -509,8 +509,8 @@ void launch_forward_remote_finalize_typed(
 			&remote_finalize_forward_kernel<
 				ReturnEntropy,
 				kForwardStandaloneRemoteWorkerWarpsPerBlock>;
-		// Remote topology configuration requires the TP team to cover WORLD,
-		// which makes this blocking NVSHMEM kernel a valid collective launch.
+		// Every member of the active TP subgroup enters this blocking NVSHMEM
+		// kernel with identical launch geometry and ordering.
 		int status = nvshmemx_collective_launch(
 			reinterpret_cast<const void*>(kernel),
 			dim3(1, 1, 1),

@@ -18,9 +18,6 @@
 
 #include <cuda_runtime.h>
 #include <cute/atom/copy_traits_sm100_tma.hpp>
-#if defined(LIGER_CUTE_FSLCE_SM100_BACKWARD_ENABLE_NVSHMEM)
-#include <device/nvshmemx_collective_launch_apis.h>
-#endif
 
 #include <cstddef>
 #include <cstdint>
@@ -320,7 +317,7 @@ void launch_instance(
 			"cudaMemsetAsync(SM100 backward diagnostics)");
 	}
 	if constexpr (EnableLocalReduce) {
-		if (reduce.nvls.size > 1) {
+		if (reduce.nvls.size > 1 || RequiresRemote) {
 			liger_cute::detail::begin_tp_reduce(
 				comm.launch_epoch, stream);
 		}
@@ -331,52 +328,22 @@ void launch_instance(
 		static_cast<unsigned>(cluster_pairs));
 	if constexpr (RequiresRemote) {
 #if defined(LIGER_CUTE_FSLCE_SM100_BACKWARD_ENABLE_NVSHMEM)
-		auto bundle_arg = bundle;
-		auto gemm_arg = gemm;
-		auto comm_arg = comm;
-		auto mapping_arg = reduce.nvls;
-		auto remote_arg = reduce.remote;
-		auto wave_arg = wave_workspace;
-		void* args[] = {
-			&bundle_arg,
-			&gemm_arg,
-			&comm_arg,
-			&mapping_arg,
-			&remote_arg,
-			&wave_arg};
-		dim3 block(static_cast<unsigned>(HostConfig::kNumThreads), 1u, 1u);
-		int collective_grid_limit = 0;
-		int query_status = nvshmemx_collective_launch_query_gridsize(
-			reinterpret_cast<const void*>(kernel),
-			block,
-			args,
-			kSmemBytes,
-			&collective_grid_limit);
-		LIGER_CHECK(
-			query_status == 0,
-			"SM100 backward collective grid query failed with status ",
-			query_status);
-		LIGER_CHECK(
-			collective_grid_limit > 0 &&
-				grid_ctas <= collective_grid_limit,
-			"SM100 backward requires ",
-			grid_ctas,
-			" resident clustered CTAs, but NVSHMEM collective launch allows ",
-			collective_grid_limit);
-		int status = nvshmemx_collective_launch(
-			reinterpret_cast<const void*>(kernel),
-			grid,
-			block,
-			args,
-			kSmemBytes,
-			stream);
-		LIGER_CHECK(
-			status == 0,
-			"SM100 backward collective clustered launch failed with status ",
-			status);
+		liger_cute::detail::synchronize_tp_reduce(stream);
 		check_cuda(
-			cudaGetLastError(),
-			"nvshmemx_collective_launch(backward_gemm_tp_kernel_sm100)");
+			ClusterLaunch::launch_cooperative(
+				kernel,
+				grid,
+				HostConfig::kNumThreads,
+				kSmemBytes,
+				stream,
+				bundle,
+				gemm,
+				comm,
+				reduce.nvls,
+				reduce.remote,
+				wave_workspace),
+			"cudaLaunchKernelEx(cooperative "
+			"backward_gemm_tp_kernel_sm100)");
 #else
 		LIGER_CHECK(
 			false,
@@ -400,7 +367,7 @@ void launch_instance(
 			"cudaLaunchKernelEx(backward_gemm_tp_kernel_sm100)");
 	}
 	if constexpr (EnableLocalReduce) {
-		if (reduce.nvls.size > 1) {
+		if (reduce.nvls.size > 1 || RequiresRemote) {
 			liger_cute::detail::end_tp_reduce(stream);
 		}
 	}
@@ -416,16 +383,22 @@ void dispatch_instance(
 		"the fused SM100 backward requires a node-local NVLS team");
 	if (reduce.remote.enabled()) {
 		LIGER_CHECK(
-			reduce.team_size == 16 &&
-				reduce.nvls.size == 8 &&
+			(reduce.nvls.size == 1 ||
+				reduce.nvls.size == 2 ||
+				reduce.nvls.size == 4 ||
+				reduce.nvls.size == 8) &&
 				reduce.remote.size == 2,
-			"the SM100 remote backward currently requires two uniform "
-			"8-GPU hosts, got TP",
+			"the SM100 remote backward requires two uniform hosts with "
+			"1, 2, 4, or 8 selected GPUs per host, got TP",
 			reduce.team_size,
 			" with local size ",
 			reduce.nvls.size,
 			" and remote size ",
 			reduce.remote.size);
+		LIGER_CHECK(
+			reduce.team_size ==
+				reduce.nvls.size * reduce.remote.size,
+			"inconsistent SM100 hierarchical reduction topology");
 		launch_instance<ReturnEntropy, true, true>(
 			params, reduce, stream);
 	} else {

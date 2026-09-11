@@ -12,6 +12,9 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from fslce_tp_test_utils import stagger_tp_group
+from fslce_tp_test_utils import strided_tp_group
+
 IGNORE_INDEX = -100
 TEMPERATURE = 0.9
 
@@ -80,15 +83,29 @@ def main() -> int:
     parser.add_argument("--warmups", type=int, default=10)
     parser.add_argument("--iterations", type=int, default=30)
     parser.add_argument("--forward-only", action="store_true")
+    parser.add_argument(
+        "--tp-group-stride",
+        type=int,
+        default=0,
+        help="split WORLD into interleaved TP groups; 4 on world-size 16 forms {0,4,8,12}, etc.",
+    )
+    parser.add_argument(
+        "--group-stagger-ms",
+        type=int,
+        default=0,
+        help="delay successive strided groups before the first native launch",
+    )
     args = parser.parse_args()
 
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
     dist.init_process_group("nccl", device_id=device)
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    group = dist.group.WORLD
+    global_rank = dist.get_rank()
+    global_world_size = dist.get_world_size()
+    group = strided_tp_group(global_world_size, args.tp_group_stride)
+    rank = dist.get_rank(group)
+    world_size = dist.get_world_size(group)
     if world_size not in (1, 2, 4, 8, 16):
         raise RuntimeError(f"benchmark supports TP1/2/4/8/16, got TP{world_size}")
     if args.global_vocab:
@@ -108,7 +125,7 @@ def main() -> int:
     apply_tp_fallback = fallback_module._apply_tp_fallback
 
     nvshmem.init_from_pg()
-    team = nvshmem.team_world()
+    team = nvshmem.resolve_team(group)
     tvm_ffi.fused_linear_scaled_cross_entropy_configure_backward(args.tokens, args.hidden, args.local_vocab, 1, team)
     tvm_ffi.fused_linear_scaled_cross_entropy_configure_forward(args.tokens, args.local_vocab)
     native_workspace_bytes = tvm_ffi.fused_linear_scaled_cross_entropy_forward_workspace_bytes(
@@ -185,6 +202,7 @@ def main() -> int:
         )
 
     def native_e2e():
+        stagger_tp_group(global_rank, args.tp_group_stride, args.group_stagger_ms)
         native()
         module.fused_linear_scaled_cross_entropy_backward(
             grad_output,
@@ -250,7 +268,8 @@ def main() -> int:
             f"native_workspace_mib={native_workspace_bytes / (1024 * 1024):.2f} "
             f"native_peak_mib={native_peak / (1024 * 1024):.2f} "
             f"fallback_peak_mib={fallback_peak / (1024 * 1024):.2f} "
-            f"max_abs={float(max_abs.item()):.6g}",
+            f"max_abs={float(max_abs.item()):.6g} "
+            f"group_root={global_rank}",
             flush=True,
         )
         if not args.forward_only:
@@ -264,7 +283,8 @@ def main() -> int:
                 f"speedup={fallback_e2e_ms / native_e2e_ms:.3f} "
                 f"native_workspace_mib={native_workspace_bytes / (1024 * 1024):.2f} "
                 f"native_peak_mib={native_e2e_peak / (1024 * 1024):.2f} "
-                f"fallback_peak_mib={fallback_e2e_peak / (1024 * 1024):.2f}",
+                f"fallback_peak_mib={fallback_e2e_peak / (1024 * 1024):.2f} "
+                f"group_root={global_rank}",
                 flush=True,
             )
 

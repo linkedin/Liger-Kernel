@@ -74,16 +74,19 @@ tensor-parallel ranks and take inverse temperature.
 Capacities for tokens, hidden size, local vocabulary, and reduction grouping
 must be configured before capture or execution.
 
-Hierarchical NVLS+remote backward currently requires the configured
-tensor-parallel team to cover the full NVSHMEM world. Single-host NVLS
-subgroups remain supported; a multi-host subgroup that is only part of a
-larger world fails explicitly rather than communicating with nonmembers.
+Hierarchical NVLS+remote execution supports uniformly partitioned multi-host
+subgroups. Team ranks must be host-major: each host contributes the same
+number of consecutive team-local ranks. Setup applies
+`nvshmem_team_split_2d` to derive an NVLS-capable local row and a matching-rank
+remote column. For example, world ranks `{0,4,8,12}` on two eight-GPU hosts
+become local teams `{0,4}` / `{8,12}` and remote pairs `{0,8}` / `{4,12}`.
 
 Tensor-parallel reduction transport is implemented in `liger_cute::detail`.
 Host setup selects either the NVLS or DirectPeer local backend and passes only
-that backend's compact device view to the kernel. The ring topology, epochs,
-packed online-softmax state merge, and node-local all-gather are shared by
-SM90 and SM100. The inter-host ring is a warp-scoped
+that backend's compact device view to the kernel. Multi-host setup retains the
+parent-relative local and remote teams until configuration reset. The ring
+topology, epochs, packed online-softmax state merge, and node-local all-gather
+are shared by SM90 and SM100. The inter-host ring is a warp-scoped
 device function: one worker warp avoids block synchronization for fusion,
 while standalone wrappers use eight worker warps. SM100 forward partitions
 the local vocabulary into configurable N256 waves (64 tiles by default),
@@ -94,6 +97,10 @@ After the last wave, warp 1 performs the node-local NVLS all-gather and writes
 NLL/LSE/entropy. SM90 forward retains the separately launched finalizer.
 Backward uses the same ring between its local reduce-scatter and local
 all-gather/scatter stages.
+
+SM100 remote kernels synchronize on the configured parent TP team, then use a
+cooperative clustered CUDA launch. They do not require the TP team to equal
+`NVSHMEM_TEAM_WORLD`, so disjoint TP groups can execute independently.
 
 On SM100 the backward is a single persistent 384-thread, cluster-2 kernel with
 a device-side token-wave loop: dZ, dX, dW and the wave schedule are fused into

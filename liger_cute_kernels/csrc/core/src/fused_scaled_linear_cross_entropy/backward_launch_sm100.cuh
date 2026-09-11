@@ -141,6 +141,32 @@ struct ClusterLaunch {
 			grid, threads, smem_bytes, stream, cluster_attribute);
 		return cudaLaunchKernelEx(&launch, kernel, args...);
 	}
+
+	template <class Kernel, class... Args>
+	static cudaError_t launch_cooperative(
+			Kernel kernel,
+			dim3 grid,
+			int threads,
+			int smem_bytes,
+			cudaStream_t stream,
+			const Args&... args) {
+		cudaLaunchAttribute attributes[2] = {};
+		attributes[0].id = cudaLaunchAttributeClusterDimension;
+		attributes[0].val.clusterDim.x = HostConfig::kClusterM;
+		attributes[0].val.clusterDim.y = 1;
+		attributes[0].val.clusterDim.z = 1;
+		attributes[1].id = cudaLaunchAttributeCooperative;
+		attributes[1].val.cooperative = 1;
+		cudaLaunchConfig_t launch = {};
+		launch.gridDim = grid;
+		launch.blockDim =
+			dim3(static_cast<unsigned>(threads), 1, 1);
+		launch.dynamicSmemBytes = smem_bytes;
+		launch.stream = stream;
+		launch.attrs = attributes;
+		launch.numAttrs = 2;
+		return cudaLaunchKernelEx(&launch, kernel, args...);
+	}
 };
 
 // ───────────────────────────────────────────────────────────────────────────

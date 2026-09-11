@@ -90,7 +90,7 @@ __device__ __forceinline__ void reduce_forward_state_team_warp(
 	}
 	__syncwarp(liger_cute::detail::kRemoteRingFullWarpMask);
 	nvshmemx_float_max_reduce_warp(
-		NVSHMEMX_TEAM_SAME_MYPE_NODE,
+		static_cast<nvshmem_team_t>(remote.team_handle),
 		result,
 		max_source,
 		rows);
@@ -119,7 +119,7 @@ __device__ __forceinline__ void reduce_forward_state_team_warp(
 	__syncwarp(liger_cute::detail::kRemoteRingFullWarpMask);
 	float* reduced = result + rows;
 	nvshmemx_float_sum_reduce_warp(
-		NVSHMEMX_TEAM_SAME_MYPE_NODE,
+		static_cast<nvshmem_team_t>(remote.team_handle),
 		reduced,
 		max_source,
 		rows * kFields);
