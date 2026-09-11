@@ -161,10 +161,16 @@ waits across waves by default.
 On B300 two-host runs, pin one PE to each GPU-local HCA:
 
 ```bash
+export NVSHMEM_REMOTE_TRANSPORT=ibrc
+export NVSHMEM_IB_ENABLE_IBGDA=1
 export NVSHMEM_ENABLE_NIC_PE_MAPPING=1
 unset NVSHMEM_HCA_LIST
 export NVSHMEM_HCA_PE_MAPPING='mlx5_0:1:1,mlx5_2:1:1,mlx5_3:1:1,mlx5_4:1:1,mlx5_5:1:1,mlx5_6:1:1,mlx5_8:1:1,mlx5_9:1:1'
 ```
+
+With `NVSHMEM_DEBUG=INFO`, initialization should report
+`Successfully initialized the transport: IBGDA. It will be used for
+device-side APIs over IB.`
 
 For transport attribution, the SM100 remote stage can instead use matching-rank
 warp MAX/SUM collectives with
