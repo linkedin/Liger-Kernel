@@ -3,6 +3,7 @@ import importlib.util
 import pytest
 import torch
 
+from liger_kernel.ops._nvidia_shared import cutile_compiler_available
 from test.utils import supports_bfloat16
 
 
@@ -24,6 +25,7 @@ else:
 pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="cuTile SwiGLU requires CUDA"),
     pytest.mark.skipif(not _CUDA_TILE_AVAILABLE, reason="cuda-tile is not installed"),
+    pytest.mark.skipif(not cutile_compiler_available(), reason="tileiras compiler is not available"),
 ]
 
 
@@ -153,6 +155,43 @@ def test_cutile_default_multipliers_backward_compat():
 
     torch.testing.assert_close(a1.grad, a2.grad)
     torch.testing.assert_close(b1.grad, b2.grad)
+
+
+@pytest.mark.parametrize("dtype", _SILU_DTYPES)
+@pytest.mark.parametrize("width", [7, 512], ids=["masked", "aligned"])
+@pytest.mark.parametrize("noncontiguous_inputs", [False, True], ids=["contiguous_inputs", "transposed_inputs"])
+@pytest.mark.parametrize("gate, down", [(1.0, 1.0), (1.5, 0.75)], ids=["default", "scaled"])
+def test_cutile_non_contiguous_forward_backward(dtype, width, noncontiguous_inputs, gate, down):
+    from test.cutile.test_cutile_backends_parity import _cutile_supported
+
+    supported, reason = _cutile_supported()
+    if not supported:
+        pytest.skip(reason)
+    torch.manual_seed(0)
+    a = torch.randn(2, 3, width, device="cuda", dtype=dtype).transpose(0, 1)
+    b = torch.randn(2, 3, width, device="cuda", dtype=dtype).transpose(0, 1)
+    if not noncontiguous_inputs:
+        a, b = a.contiguous(), b.contiguous()
+    a = a.detach().requires_grad_(True)
+    b = b.detach().requires_grad_(True)
+    grad = torch.randn(2, 3, width, device="cuda", dtype=dtype).transpose(0, 1)
+    assert a.is_contiguous() == (not noncontiguous_inputs)
+    assert b.is_contiguous() == (not noncontiguous_inputs)
+    assert not grad.is_contiguous()
+
+    ref_a = a.detach().float().clone().requires_grad_(True)
+    ref_b = b.detach().float().clone().requires_grad_(True)
+    ref_out = _ref_silu_mul(ref_a, ref_b, gate, down)
+    ref_out.backward(grad.float())
+
+    out = CuTileSiLUMulFunction.apply(a, b, gate, down)
+    assert out.shape == a.shape
+    out.backward(grad)
+
+    atol, rtol = _silu_tol(dtype)
+    torch.testing.assert_close(out.float(), ref_out, atol=atol, rtol=rtol)
+    torch.testing.assert_close(a.grad.float(), ref_a.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(b.grad.float(), ref_b.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize("shape", [(512,), (123,), (2, 256, 512), (3, 5, 7), (2, 4, 8, 16)])

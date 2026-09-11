@@ -56,6 +56,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.utils import ensure_contiguous
 
 # Forward base tile for the exact-fit decomposition (occupancy=1 + exp2). 2048
 # gives the best DRAM utilisation on B200; larger tiles (4096) become issue-bound.
@@ -298,6 +299,7 @@ class LigerSiLUMulFunction(torch.autograd.Function):
     """
 
     @staticmethod
+    @ensure_contiguous
     def forward(ctx, a, b, gate_multiplier: float = 1.0, down_multiplier: float = 1.0):
         gate_multiplier = float(gate_multiplier)
         down_multiplier = float(down_multiplier)
@@ -326,6 +328,7 @@ class LigerSiLUMulFunction(torch.autograd.Function):
         return c_out
 
     @staticmethod
+    @ensure_contiguous
     def backward(ctx, dc):
         a, b = ctx.saved_tensors
         ori_shape = ctx.ori_shape

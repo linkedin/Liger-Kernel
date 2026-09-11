@@ -123,6 +123,8 @@ def liger_cross_entropy_kernel_ct(
         )
         if HAS_SOFTCAPPING:
             input_tile = ct.mul(softcap, ct.tanh(ct.mul(input_raw, 1.0 / softcap)))
+            # Softcapping maps padded -inf to a finite value; exclude those classes.
+            input_tile = ct.where(col_idx < n_cols, input_tile, -math.inf)
         else:
             input_tile = input_raw
 
@@ -197,6 +199,7 @@ def liger_cross_entropy_kernel_ct(
             if HAS_SOFTCAPPING:
                 intermediate = ct.tanh(ct.mul(input_raw, 1.0 / softcap))
                 input_tile = ct.mul(softcap, intermediate)
+                input_tile = ct.where(col_idx < n_cols, input_tile, -math.inf)
             else:
                 input_tile = input_raw
 
