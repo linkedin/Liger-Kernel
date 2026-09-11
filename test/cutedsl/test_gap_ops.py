@@ -1,60 +1,23 @@
-"""Dispatcher correctness tests for CuTe DSL gap ops.
+"""Native CuTe DSL gap-op correctness against Triton AND independent PyTorch.
 
-Six ``nvidia-cutedsl`` dispatcher registrations (``geglu``, ``softmax``,
-``layer_norm``, ``kl_div``, ``jsd``, ``fused_linear_jsd``) plus the
-``jsd_loss_and_grad`` primitive had no CuTe DSL-side test coverage. These
-tests pin parity against the Triton implementations of the same dispatcher
-ops (the repo's reference kernels), in fp32 and bf16, forward and backward.
+Inputs and upstream gradients are cloned per implementation because some
+backwards consume their storage. Output arity and every expected input gradient
+are checked, including a relative-norm check for small loss gradients.
 
-Methodology that matters:
-
-1. Every impl call gets its own pristine CLONE of the same sampled inputs (two
-   RNG draws never compare equal, and an earlier smoke round of "bugs" turned
-   out to be RNG-position artifacts).
-
-2. Each cell is PINNED as *real CuTe DSL* or *Triton fallback* and the pin is
-   verified against the dispatcher's fallback signal. Several CuTe DSL
-   registrations punt to Triton for some inputs (fp32 JSD parity guard,
-   oversized tiles, ``reduction='none'``, ...). If we blindly dispatched
-   ``impl="nvidia-cutedsl"`` for such a cell we would be comparing
-   Triton-vs-Triton — a vacuous self-comparison that always passes. So a real
-   cell that silently falls back is a hard failure, and a by-design fallback
-   cell is skipped (not silently "passed") after asserting the fallback
-   actually happened.
-
-3. The backward oracle weights each grad-bearing output by a fixed random
-   weight that is SHARED (cloned) across both backends: ``(out * w).sum()``.
-   A plain ``out.sum()`` oracle is degenerate for some ops — e.g.
-   ``softmax(x).sum()`` equals the row count (a constant), so its gradient is
-   ~0 and the backward would compare noise-vs-noise. The weighted sum makes the
-   gradient data-dependent and the two backends directly comparable.
-
-Notes:
-- Real CuTe DSL parity is claimed *only on Blackwell* (sm_100+). The gap-op
-  CuTe DSL registrations advertise sm_90+, but this suite scopes the "real
-  CuTe DSL" expectation to Blackwell so it is portable and can never error on a
-  non-Blackwell device: on Hopper (sm_90) and any earlier arch every "real"
-  cell is skipped up-front as out-of-scope, while the Blackwell path stays fully
-  asserted (see ``_is_blackwell`` and ``_assert_parity``).
-- ``jsd`` / ``jsd_loss_and_grad`` run the real CuTe DSL primitive in both fp32
-  and bf16 on Blackwell: the fp32 path computes ``exp``/``log`` via
-  libdevice-precise (no-fastmath) intrinsics so it lands on the strict fp32 JSD
-  contract, so it no longer falls back to Triton (the old fp32-parity guard is
-  gone). Non-Blackwell archs skip the real cells up-front as out-of-scope.
-- ``fused_linear_jsd`` runs the real CuTe DSL route in both dtypes on Blackwell
-  (parity-checked against the Triton reference); non-Blackwell archs skip it as
-  out-of-scope.
-- ``jsd_loss_and_grad`` is the primitive contract used by distillation:
-  it returns ``(loss, dx)`` with ``dx`` written in-place.
-
-The suite is skipped (never failed) when CUDA or the ``nvidia-cutlass-dsl``
-package is unavailable.
+The native cells use aligned, supported widths on the advertised sm_90+ path.
+Hopper is not excluded merely because validation is pending; launch or numerical
+failures on an advertised device must surface. Pre-sm_90 devices and missing
+CUDA/CuTe DSL are unsupported and skipped. Fallback coverage lives separately in
+test_shape_fallbacks.py. For fused_linear_jsd, "native" refers to the inner JSD
+primitive, not its shared PyTorch matmuls or Triton gradient-scaling kernel.
 """
 
 import warnings
 
 import pytest
 import torch
+
+import liger_kernel.functional  # noqa: F401
 
 cuda_required = pytest.mark.skipif(not torch.cuda.is_available(), reason="cutedsl gap-op tests require CUDA")
 
@@ -66,16 +29,6 @@ def set_seed(seed: int = 42):
 
 
 def _cutedsl_available() -> bool:
-    """Whether the CuTe DSL backend can *execute* here at all.
-
-    The gap-op CuTe DSL registrations advertise sm_90+ (``min_cc=(9, 0)``), so
-    this floor only guards that the ``cutlass.cute`` package imports and a
-    Hopper-or-newer GPU is present. It deliberately does NOT decide whether we
-    *claim* real CuTe DSL parity — that is Blackwell-only and enforced per cell
-    via :func:`_is_blackwell` (see ``_assert_parity``). Keeping the floor at
-    sm_90 lets the by-design Triton-fallback cells (fp32 JSD guard,
-    ``fused_linear_jsd``) still run and assert their fallback on Hopper.
-    """
     try:
         import cutlass.cute  # noqa: F401
     except ImportError:
@@ -83,25 +36,11 @@ def _cutedsl_available() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability() >= (9, 0)
 
 
-def _is_blackwell() -> bool:
-    """Real CuTe DSL gap-op parity is claimed only on Blackwell (sm_100+).
-
-    The dispatcher's CuTe DSL gap-op kernels are validated against Triton on
-    Blackwell. On Hopper (sm_90) and any earlier arch this returns ``False`` and
-    every "real CuTe DSL" cell is skipped as out-of-scope instead of being
-    forced down the CuTe DSL path — so the suite stays portable and error-free
-    across GPUs while the Blackwell assertions remain fully intact.
-    """
-    return torch.cuda.is_available() and torch.cuda.get_device_capability() >= (10, 0)
-
-
 skip_no_cutedsl = pytest.mark.skipif(
     not _cutedsl_available(), reason="cutedsl backend unavailable (cutlass.cute or sm_90+ missing)"
 )
 
-# (tol_fwd, tol_bwd): bf16 needs headroom for the Triton side's bf16
-# accumulation; fp32 is near-exact. Matches the validated H200 smoke
-# tolerances (bwd = 10x fwd bar).
+# Existing (tol_fwd, tol_bwd) parity tolerances, unchanged.
 _TOL = {
     torch.float32: (1e-4, 1e-3),
     torch.bfloat16: (2e-2, 2e-1),
@@ -121,21 +60,82 @@ def _clone_args(args):
     return out
 
 
-def _grads(args):
-    return [a.grad for a in args if isinstance(a, torch.Tensor) and a.grad is not None]
+def _assert_outputs_close(actual, expected, tol):
+    assert type(actual) is type(expected), "output container mismatch"
+    actual = actual if isinstance(actual, (tuple, list)) else (actual,)
+    expected = expected if isinstance(expected, (tuple, list)) else (expected,)
+    assert len(actual) == len(expected) > 0, "output arity mismatch"
+    for x, y in zip(actual, expected):
+        assert x.shape == y.shape and x.dtype == y.dtype
+        assert x.requires_grad == y.requires_grad, "output detached from autograd"
+        _assert_nonzero_close(x, y, tol, tol)
 
 
-def _dispatch_cutedsl_detecting_fallback(op, *args, **kwargs):
+def _assert_nonzero_close(actual, expected, atol, rtol):
+    assert actual is not None and expected is not None, "missing expected gradient/output"
+    assert actual.shape == expected.shape and actual.dtype == expected.dtype
+    assert torch.isfinite(actual).all() and torch.isfinite(expected).all()
+    actual, expected = actual.float(), expected.float()
+    assert torch.count_nonzero(actual) > 0, "all-zero actual gradient/output"
+    assert torch.count_nonzero(expected) > 0, "degenerate reference gradient/output"
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+    # Elementwise atol alone can exceed every entry of a batch-averaged loss gradient.
+    error = torch.linalg.vector_norm(actual - expected)
+    scale = torch.linalg.vector_norm(expected)
+    assert error <= rtol * scale, f"relative L2 error {error / scale} exceeds {rtol}"
+
+
+def _assert_grads_close(actual, expected, tol):
+    assert len(actual) == len(expected), "input arity mismatch"
+    for i, (x, y) in enumerate(zip(actual, expected)):
+        if not isinstance(x, torch.Tensor):
+            continue
+        assert x.requires_grad == y.requires_grad
+        if x.requires_grad:
+            assert x.grad is not None and y.grad is not None, f"missing gradient for input {i}"
+            assert x.grad.shape == x.shape and y.grad.shape == y.shape
+            _assert_nonzero_close(x.grad, y.grad, tol, tol)
+        else:
+            assert x.grad is None and y.grad is None
+
+
+def _pytorch_jsd_loss(log_q, log_p, labels=None, beta=0.5, ignore_index=-100, n_non_ignore=None):
+    """Per-element generalized JSD; autograd supplies the independent d(log Q)."""
+    x, y = log_q.float(), log_p.float()
+    q, p = x.exp(), y.exp()
+    if beta == 0.0:
+        loss = p * (y - x)
+    elif beta == 1.0:
+        loss = q * (x - y)
+    else:
+        mixture = beta * p + (1.0 - beta) * q
+        loss = beta * p * (y - mixture.log()) + (1.0 - beta) * q * (x - mixture.log())
+    if labels is not None:
+        keep = labels != ignore_index
+        loss = loss * keep.unsqueeze(-1)
+    if n_non_ignore is None:
+        n_non_ignore = log_q.shape[0] if labels is None else int(keep.sum())
+    return loss / max(n_non_ignore, 1)
+
+
+def _pytorch_fused_linear_jsd(si, sw, ti, tw, labels, jsd_beta=0.5, ignore_index=-100, temperature=1.0):
+    # Match the public projection dtype, but differentiate the unfused PyTorch graph.
+    log_q = torch.log_softmax((si @ sw.T).float() / temperature, dim=-1)
+    log_p = torch.log_softmax((ti @ tw.T).float() / temperature, dim=-1)
+    return _pytorch_jsd_loss(log_q, log_p, labels, jsd_beta, ignore_index).sum()
+
+
+def _dispatch_cutedsl_detecting_fallback(op, *args, fallback_reason=None, **kwargs):
     """Dispatch ``op`` to ``nvidia-cutedsl`` and report whether the CuTe DSL impl
     internally punted to Triton.
 
     The CuTe DSL registrations emit a one-shot :class:`LigerImplFallbackWarning`
     (via ``emit_fallback_warning``) right before returning a Triton result
-    whenever they cannot run the real kernel (fp32 JSD parity guard, oversized
+    whenever they cannot run the real kernel (architecture-specific JSD guard, oversized
     tiles, ``reduction='none'``, ...). That warning is therefore a reliable "I
     did NOT execute CuTe DSL" probe. The dispatcher dedupes the warning to at
     most once per ``(op, requested, actual)`` key, so we clear that dedup set
-    first to guarantee the signal fires for *this* call.
+    for this call, restoring the original set afterwards.
 
     Returns ``(output, fell_back)``.
     """
@@ -145,70 +145,55 @@ def _dispatch_cutedsl_detecting_fallback(op, *args, **kwargs):
     # re-exported ``dispatch`` *function* (the package __init__ shadows the
     # submodule name), so grab the real module object explicitly.
     _dispatch_mod = importlib.import_module("liger_kernel.backends.dispatch")
+    inner_impls = []
 
-    with _dispatch_mod._FALLBACK_NOTIFIED_LOCK:
-        _dispatch_mod._FALLBACK_NOTIFIED.clear()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        out = _dispatch_mod.dispatch(op, *args, impl="nvidia-cutedsl", **kwargs)
-    fell_back = any(isinstance(w.message, _dispatch_mod.LigerImplFallbackWarning) for w in caught)
-    return out, fell_back
+    def track_inner_dispatch(op_name, *inner_args, **inner_kwargs):
+        if op_name == "jsd_loss_and_grad":
+            inner_impls.append(inner_kwargs.get("impl"))
+        return _dispatch_mod.dispatch(op_name, *inner_args, **inner_kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(_dispatch_mod, "_FALLBACK_NOTIFIED", set())
+        patch.setenv("LIGER_KERNEL_STRICT", "0")
+        if op in ("jsd", "fused_linear_jsd"):
+            composed_module = importlib.import_module(f"liger_kernel.ops.{op}")
+            patch.setattr(composed_module, "dispatch", track_inner_dispatch)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", _dispatch_mod.LigerImplFallbackWarning)
+            out = _dispatch_mod.dispatch(op, *args, impl="nvidia-cutedsl", **kwargs)
+    if op in ("jsd", "fused_linear_jsd"):
+        assert inner_impls and set(inner_impls) == {"nvidia-cutedsl"}, f"{op}: inner JSD route was {inner_impls}"
+    fallbacks = [w for w in caught if isinstance(w.message, _dispatch_mod.LigerImplFallbackWarning)]
+    for warning in caught:
+        if warning not in fallbacks:
+            warnings.warn_explicit(warning.message, warning.category, warning.filename, warning.lineno)
+    if fallback_reason is not None:
+        assert any(
+            f"Liger {op}:" in str(w.message)
+            and "falling back to 'nvidia-triton'" in str(w.message)
+            and fallback_reason in str(w.message)
+            for w in fallbacks
+        ), f"{op}: expected Triton fallback reason {fallback_reason!r}; got {fallbacks}"
+    return out, bool(fallbacks)
 
 
-def _assert_parity(op, args, dtype, extra=None, *, expect_cutedsl=True):
-    """Dispatch ``op`` under both impls on cloned inputs; assert fwd+bwd parity.
-
-    ``expect_cutedsl`` pins whether this cell is supposed to run the real CuTe
-    DSL kernel (``True``) or fall back to Triton by design (``False``). The pin
-    is verified against the dispatcher's fallback signal so a cell can never
-    silently compare a backend against itself:
-
-    - a real cell that unexpectedly falls back      -> hard failure
-    - a fallback cell that unexpectedly runs CuTe DSL -> hard failure (stale matrix)
-    - a confirmed fallback cell                       -> skipped (vacuous parity)
-    """
+def _assert_parity(op, args, dtype, reference, extra=None):
+    """Compare native CuTe DSL, Triton and PyTorch, including every input gradient."""
     from liger_kernel.backends import dispatch
 
-    # Real CuTe DSL gap-op parity is claimed only on Blackwell (sm_100+). On
-    # Hopper / any non-Blackwell device a "real" cell is out of scope: skip it
-    # up-front (before touching the CuTe DSL path) so the suite is portable and
-    # can never error cross-GPU. By-design Triton-fallback cells
-    # (``expect_cutedsl=False``) still run everywhere and assert their fallback,
-    # exactly like the fp32 JSD guard below.
-    if expect_cutedsl and not _is_blackwell():
-        pytest.skip(
-            f"{op} [{dtype}]: real CuTe DSL parity is scoped to Blackwell "
-            f"(sm_100+); this device is non-Blackwell, so the cell is out of "
-            f"scope (clean skip, no cross-GPU error)."
-        )
-
     tol_fwd, tol_bwd = _TOL[dtype]
-    ac, at = _clone_args(args), _clone_args(args)
+    ac, at, ap = _clone_args(args), _clone_args(args), _clone_args(args)
+    op_ref = reference(*ap, **(extra or {}))
     oc, fell_back = _dispatch_cutedsl_detecting_fallback(op, *ac, **(extra or {}))
-
-    if expect_cutedsl:
-        assert not fell_back, (
-            f"{op} [{dtype}]: expected the CuTe DSL kernel to execute, but the "
-            f"dispatcher fell back to Triton — this cell would compare "
-            f"Triton-vs-Triton (vacuous). Fix the cell or mark it as a fallback."
-        )
-    else:
-        assert fell_back, (
-            f"{op} [{dtype}]: expected a Triton fallback by design, but the CuTe "
-            f"DSL kernel actually ran. The fallback matrix is stale — add real "
-            f"CuTe DSL parity coverage for this cell."
-        )
-        pytest.skip(
-            f"{op} [{dtype}] falls back to Triton by design; parity would be "
-            f"Triton-vs-Triton (vacuous), so it is not CuTe DSL coverage."
-        )
-
+    assert not fell_back, f"{op} [{dtype}]: expected native CuTe DSL, not Triton-vs-Triton"
     ot = dispatch(op, *at, impl="nvidia-triton", **(extra or {}))
 
+    _assert_outputs_close(oc, ot, tol_fwd)
+    _assert_outputs_close(oc, op_ref, tol_fwd)
+    _assert_outputs_close(ot, op_ref, tol_fwd)
     tc = oc if isinstance(oc, (tuple, list)) else (oc,)
     tt = ot if isinstance(ot, (tuple, list)) else (ot,)
-    for x, y in zip(tc, tt):
-        torch.testing.assert_close(x.float(), y.float(), atol=tol_fwd, rtol=tol_fwd)
+    tp = op_ref if isinstance(op_ref, (tuple, list)) else (op_ref,)
 
     # Non-trivial, comparable backward: weight each grad-bearing output by a
     # fixed random weight that is SHARED (cloned) across both backends, i.e.
@@ -216,18 +201,22 @@ def _assert_parity(op, args, dtype, extra=None, *, expect_cutedsl=True):
     # ops (e.g. ``softmax(x).sum()`` is ~constant, so its gradient vanishes and
     # backward compares noise-vs-noise). The identical ``w`` keeps the two
     # backends' gradients directly comparable.
-    losses_c, losses_t = [], []
-    for x, y in zip(tc, tt):
+    losses_c, losses_t, losses_p = [], [], []
+    assert len(tc) == len(tt) == len(tp)
+    for x, y, z in zip(tc, tt, tp):
         if not x.requires_grad:
             continue
         w = torch.randn(x.shape, device=x.device, dtype=torch.float32)
         losses_c.append((x.float() * w.clone()).sum())
         losses_t.append((y.float() * w.clone()).sum())
-    if losses_c:
-        sum(losses_c).backward()
-        sum(losses_t).backward()
-        for gx, gy in zip(_grads(ac), _grads(at)):
-            torch.testing.assert_close(gx.float(), gy.float(), atol=tol_bwd, rtol=tol_bwd)
+        losses_p.append((z.float() * w.clone()).sum())
+    assert losses_c, f"{op}: no differentiable output"
+    sum(losses_c).backward()
+    sum(losses_t).backward()
+    sum(losses_p).backward()
+    _assert_grads_close(ac, at, tol_bwd)
+    _assert_grads_close(ac, ap, tol_bwd)
+    _assert_grads_close(at, ap, tol_bwd)
 
 
 @cuda_required
@@ -237,7 +226,9 @@ def test_cutedsl_geglu_matches_triton(dtype):
     set_seed()
     a = torch.randn(512, 512, device="cuda", dtype=dtype, requires_grad=True)
     b = torch.randn(512, 512, device="cuda", dtype=dtype, requires_grad=True)
-    _assert_parity("geglu", (a, b), dtype)
+    _assert_parity(
+        "geglu", (a, b), dtype, lambda a, b: torch.nn.functional.gelu(a.float(), approximate="tanh").to(a.dtype) * b
+    )
 
 
 @cuda_required
@@ -246,7 +237,7 @@ def test_cutedsl_geglu_matches_triton(dtype):
 def test_cutedsl_softmax_matches_triton(dtype):
     set_seed()
     x = torch.randn(512, 4096, device="cuda", dtype=dtype, requires_grad=True)
-    _assert_parity("softmax", (x,), dtype)
+    _assert_parity("softmax", (x,), dtype, lambda x: torch.softmax(x.float(), dim=-1).to(x.dtype))
 
 
 @cuda_required
@@ -263,7 +254,14 @@ def test_cutedsl_layer_norm_matches_triton(shape, dtype):
     x = torch.randn(*shape, device="cuda", dtype=dtype, requires_grad=True)
     w = torch.randn(N, device="cuda", dtype=dtype, requires_grad=True)
     b = torch.randn(N, device="cuda", dtype=dtype, requires_grad=True)
-    _assert_parity("layer_norm", (x, w, b, 1e-6), dtype)
+    _assert_parity(
+        "layer_norm",
+        (x, w, b, 1e-6),
+        dtype,
+        lambda x, w, b, eps: torch.nn.functional.layer_norm(x.float(), (x.shape[-1],), w.float(), b.float(), eps).to(
+            x.dtype
+        ),
+    )
 
 
 @cuda_required
@@ -273,7 +271,13 @@ def test_cutedsl_kl_div_matches_triton(dtype):
     set_seed()
     yp = torch.nn.functional.log_softmax(torch.randn(512, 4096, device="cuda"), -1).to(dtype).requires_grad_(True)
     yt = torch.softmax(torch.randn(512, 4096, device="cuda"), -1).to(dtype)
-    _assert_parity("kl_div", (yp, yt), dtype, extra={"reduction": "batchmean"})
+    _assert_parity(
+        "kl_div",
+        (yp, yt),
+        dtype,
+        lambda yp, yt, reduction: torch.nn.functional.kl_div(yp.float(), yt.float(), reduction=reduction),
+        extra={"reduction": "batchmean"},
+    )
 
 
 @cuda_required
@@ -283,17 +287,15 @@ def test_cutedsl_jsd_matches_triton(dtype):
     set_seed()
     stu = torch.nn.functional.log_softmax(torch.randn(512, 4096, device="cuda"), -1).to(dtype).requires_grad_(True)
     tea = torch.nn.functional.log_softmax(torch.randn(512, 4096, device="cuda"), -1).to(dtype)
-    # Both dtypes run the real CuTe DSL primitive on Blackwell: the fp32 path
-    # uses libdevice-precise exp/log so it now matches the Triton reference
-    # (the old fp32-parity fallback guard is gone). Non-Blackwell is skipped
-    # up-front as out-of-scope by ``_assert_parity``.
-    _assert_parity("jsd", (stu, tea), dtype, expect_cutedsl=True)
+    _assert_parity("jsd", (stu, tea), dtype, lambda stu, tea: _pytorch_jsd_loss(stu, tea).sum().to(stu.dtype))
 
 
 @cuda_required
 @skip_no_cutedsl
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_cutedsl_jsd_loss_and_grad_primitive_matches_triton(dtype):
+@pytest.mark.parametrize("beta", [0.0, 0.5, 1.0])
+@pytest.mark.parametrize("label_mode", ["packed", "ignored", "no-labels"])
+def test_cutedsl_jsd_loss_and_grad_primitive_matches_triton(dtype, beta, label_mode):
     from liger_kernel.backends import dispatch
 
     set_seed()
@@ -301,32 +303,43 @@ def test_cutedsl_jsd_loss_and_grad_primitive_matches_triton(dtype):
     stu = torch.nn.functional.log_softmax(torch.randn(512, 4096, device="cuda"), -1).to(dtype)
     tea = torch.nn.functional.log_softmax(torch.randn(512, 4096, device="cuda"), -1).to(dtype)
     labels = torch.arange(512, device="cuda") % 10
-
-    # Both dtypes run the real CuTe DSL primitive on Blackwell (the fp32 path
-    # uses libdevice-precise exp/log, so it matches Triton; the old fp32-parity
-    # fallback guard is gone). Real CuTe DSL parity is Blackwell-only (sm_100+):
-    # on a non-Blackwell device the cell is out of scope and skipped up-front,
-    # so the suite never errors cross-GPU.
-    expect_cutedsl = True
-    if expect_cutedsl and not _is_blackwell():
-        pytest.skip(
-            f"jsd_loss_and_grad [{dtype}]: real CuTe DSL parity is scoped to "
-            f"Blackwell (sm_100+); this device is non-Blackwell, so the cell is "
-            f"out of scope (clean skip, no cross-GPU error)."
-        )
+    if label_mode == "ignored":
+        labels[::7] = -100
+    elif label_mode == "no-labels":
+        labels = None
+    # The denominator may be GLOBAL while the primitive sees just one chunk.
+    n_non_ignore = 1024.0 if label_mode == "ignored" else 512.0
+    sc, tc, lc = _clone_args((stu, tea, labels))
+    st, tt, lt = _clone_args((stu, tea, labels))
+    sp = stu.detach().clone().requires_grad_(True)
+    loss_p = _pytorch_jsd_loss(sp, tea, labels, beta, -100, n_non_ignore)
+    loss_p.sum().backward()
     (loss_c, dx_c), fell_back = _dispatch_cutedsl_detecting_fallback(
-        "jsd_loss_and_grad", stu.clone(), tea.clone(), labels.clone(), 0.5, -100, 512.0
+        "jsd_loss_and_grad", sc, tc, lc, beta, -100, n_non_ignore
     )
     assert not fell_back, (
         f"jsd_loss_and_grad [{dtype}]: expected the CuTe DSL primitive to run, "
         "but it fell back to Triton (would be Triton-vs-Triton, vacuous)."
     )
 
-    loss_t, dx_t = dispatch(
-        "jsd_loss_and_grad", stu.clone(), tea.clone(), labels.clone(), 0.5, -100, 512.0, impl="nvidia-triton"
-    )
+    loss_t, dx_t = dispatch("jsd_loss_and_grad", st, tt, lt, beta, -100, n_non_ignore, impl="nvidia-triton")
+    assert dx_c.data_ptr() == sc.data_ptr() and dx_t.data_ptr() == st.data_ptr()
+    assert loss_c.shape == loss_t.shape == stu.shape
+    assert loss_c.dtype == loss_t.dtype == torch.float32
+    assert dx_c.dtype == dx_t.dtype == dtype
+    torch.testing.assert_close(tc, tea, atol=0, rtol=0)
+    torch.testing.assert_close(tt, tea, atol=0, rtol=0)
+    if labels is not None:
+        torch.testing.assert_close(lc, labels, atol=0, rtol=0)
+        torch.testing.assert_close(lt, labels, atol=0, rtol=0)
     torch.testing.assert_close(loss_c.float(), loss_t.float(), atol=tol_fwd, rtol=tol_fwd)
     torch.testing.assert_close(dx_c.float(), dx_t.float(), atol=tol_bwd, rtol=tol_bwd)
+    for loss, dx in ((loss_c, dx_c), (loss_t, dx_t)):
+        _assert_nonzero_close(loss, loss_p.detach(), tol_fwd, tol_fwd)
+        _assert_nonzero_close(dx, sp.grad, tol_bwd, tol_bwd)
+        if label_mode == "ignored":
+            assert torch.count_nonzero(loss[labels == -100]) == 0
+            assert torch.count_nonzero(dx[labels == -100]) == 0
 
 
 @cuda_required
@@ -339,7 +352,69 @@ def test_cutedsl_fused_linear_jsd_matches_triton(dtype):
     ti = torch.randn(512, 512, device="cuda", dtype=dtype) * 0.1
     tw = torch.randn(4096, 512, device="cuda", dtype=dtype) * 0.1
     labels = torch.arange(512, device="cuda") % 10
-    # The composed op runs the real CuTe DSL route in both dtypes on Blackwell
-    # (parity-checked against the Triton reference); non-Blackwell is skipped
-    # up-front as out-of-scope by ``_assert_parity``.
-    _assert_parity("fused_linear_jsd", (si, sw, ti, tw, labels), dtype, expect_cutedsl=True)
+    _assert_parity("fused_linear_jsd", (si, sw, ti, tw, labels), dtype, _pytorch_fused_linear_jsd)
+
+
+def test_parity_helper_rejects_missing_gradient():
+    actual = [torch.ones(4, requires_grad=True) for _ in range(2)]
+    expected = _clone_args(actual)
+    for tensor in (actual[0], *expected):
+        tensor.sum().backward()
+    with pytest.raises(AssertionError, match="missing gradient for input 1"):
+        _assert_grads_close(actual, expected, 1e-3)
+
+
+def test_parity_helper_rejects_truncated_outputs():
+    with pytest.raises(AssertionError, match="output arity mismatch"):
+        _assert_outputs_close((torch.ones(4),), (torch.ones(4), torch.ones(4)), 1e-4)
+
+
+def test_parity_helper_rejects_detached_output():
+    with pytest.raises(AssertionError, match="output detached from autograd"):
+        _assert_outputs_close(torch.ones(4), torch.ones(4, requires_grad=True), 1e-4)
+
+
+@pytest.mark.parametrize("scale", [0.0, 0.5])
+def test_parity_helper_rejects_small_incorrect_gradients(scale):
+    expected = torch.full((16,), 1e-7)
+    with pytest.raises(AssertionError):
+        _assert_nonzero_close(expected * scale, expected, 1e-3, 1e-3)
+
+
+def test_clone_args_isolates_storage_and_preserves_grad_requirements():
+    args = (torch.ones(4, requires_grad=True), torch.ones(4), None, 0.5)
+    first, second = _clone_args(args), _clone_args(args)
+    with torch.no_grad():
+        first[0].zero_()
+        first[1].zero_()
+    assert len(first) == len(second) == len(args)
+    for i, original in enumerate(args[:2]):
+        clone = second[i]
+        torch.testing.assert_close(clone, original, atol=0, rtol=0)
+        assert clone.requires_grad == original.requires_grad and clone.is_leaf
+    assert first[2:] == second[2:] == [None, 0.5]
+
+
+@pytest.mark.parametrize("beta", [0.0, 0.5, 1.0])
+def test_pytorch_jsd_reference_mask_and_global_denominator(beta):
+    q = torch.tensor([[0.25, 0.75], [0.75, 0.25]])
+    p = torch.tensor([[0.5, 0.5], [0.125, 0.875]])
+    log_q = q.log().requires_grad_(True)
+    labels = torch.tensor([0, -100])
+    loss = _pytorch_jsd_loss(log_q, p.log(), labels, beta, n_non_ignore=8)
+    loss.sum().backward()
+    if beta == 0.0:
+        expected_loss = torch.nn.functional.kl_div(q.log(), p, reduction="none")
+        expected_grad = -p
+    elif beta == 1.0:
+        expected_loss = torch.nn.functional.kl_div(p.log(), q, reduction="none")
+        expected_grad = q * (q.log() - p.log() + 1)
+    else:
+        mixture = beta * p + (1 - beta) * q
+        expected_loss = beta * torch.nn.functional.kl_div(mixture.log(), p, reduction="none")
+        expected_loss += (1 - beta) * torch.nn.functional.kl_div(mixture.log(), q, reduction="none")
+        expected_grad = (1 - beta) * q * (q.log() - mixture.log())
+    torch.testing.assert_close(loss[0], expected_loss[0] / 8)
+    torch.testing.assert_close(log_q.grad[0], expected_grad[0] / 8)
+    assert torch.count_nonzero(loss[1]) == 0
+    assert torch.count_nonzero(log_q.grad[1]) == 0
