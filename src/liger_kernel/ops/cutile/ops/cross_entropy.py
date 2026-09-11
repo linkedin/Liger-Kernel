@@ -10,6 +10,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import LOG2E
+from liger_kernel.ops.cutile.ops.utils import _launch
 from liger_kernel.ops.cutile.ops.utils import _select_cross_entropy_block_size
 
 ConstFloat = ct.Constant[float]
@@ -347,8 +348,8 @@ def cross_entropy_forward(
     dummy_i64 = torch.zeros(1, dtype=torch.int64, device=_input.device)
     dummy_weight = torch.zeros(1, dtype=torch.float32, device=_input.device)
 
-    ct.launch(
-        torch.cuda.current_stream(),
+    _launch(
+        _input.device,
         (num_rows, 1, 1),
         liger_cross_entropy_kernel_ct,
         (

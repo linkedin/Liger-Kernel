@@ -55,6 +55,7 @@ kernel with an adaptive block size and does NOT set occupancy=1 (uses exp(-a)).
 import cuda.tile as ct
 import torch
 
+from liger_kernel.ops.cutile.ops.utils import _launch
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.utils import ensure_contiguous
 
@@ -312,8 +313,8 @@ class LigerSiLUMulFunction(torch.autograd.Function):
         c = torch.empty_like(a)
         fwd_kernel = _get_fwd_kernel(int(n_cols))
 
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            a.device,
             (n_rows, 1, 1),
             fwd_kernel,
             (a, b, c, gate_multiplier),
@@ -340,8 +341,8 @@ class LigerSiLUMulFunction(torch.autograd.Function):
         BLOCK_SIZE = _calculate_block_size(n_cols, MAX_FUSED_SIZE_BWD)
         bwd_kernel = _swiglu_bwd_ct_aligned if n_cols % BLOCK_SIZE == 0 else _swiglu_bwd_ct
 
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            a.device,
             (n_rows, 1, 1),
             bwd_kernel,
             (dc, a, b, int(n_cols), int(BLOCK_SIZE), ctx.gate_multiplier),

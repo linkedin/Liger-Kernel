@@ -9,6 +9,7 @@ Rotary Positional Embedding (RoPE) kernel (CuTile backend).
 import cuda.tile as ct
 import torch
 
+from liger_kernel.ops.cutile.ops.utils import _launch
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 
 ConstInt = ct.Constant[int]
@@ -164,8 +165,8 @@ def rope_forward(q, k, cos, sin):
     grid = (bsz * seq_len,)
 
     if ALIGNED:
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            q.device,
             grid,
             _rope_4d_kernel_ct,
             (
@@ -189,8 +190,8 @@ def rope_forward(q, k, cos, sin):
         cos_3d = cos.contiguous()
         sin_3d = sin.contiguous()
         cos_bs = cos_3d.shape[0]
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            q.device,
             grid,
             _rope_general_kernel_ct,
             (
@@ -244,8 +245,8 @@ def rope_backward(
         sin = sin.unsqueeze(0)
 
     if ALIGNED:
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            dq.device,
             grid,
             _rope_4d_kernel_ct,
             (
@@ -264,8 +265,8 @@ def rope_backward(
     else:
         dq_t = dq.transpose(1, 2).contiguous()
         dk_t = dk.transpose(1, 2).contiguous()
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            dq.device,
             grid,
             _rope_general_kernel_ct,
             (
