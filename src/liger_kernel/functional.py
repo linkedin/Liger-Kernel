@@ -80,31 +80,34 @@ declare_op_locations(
     ),
 )
 
-# SwiGLU: Triton (universal) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
+# SwiGLU: Triton (universal) + cuTile (Blackwell) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
 declare_op_locations(
     "swiglu",
     (
         "liger_kernel.ops.backends._triton.swiglu",
+        "liger_kernel.ops.backends._cutile.swiglu",
         "liger_kernel.ops.backends._cutedsl.swiglu",
         "liger_kernel.ops.backends._ascend.swiglu",
     ),
 )
 
-# RoPE: Triton (universal) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
+# RoPE: Triton (universal) + cuTile (Blackwell) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
 declare_op_locations(
     "rope",
     (
         "liger_kernel.ops.backends._triton.rope",
+        "liger_kernel.ops.backends._cutile.rope",
         "liger_kernel.ops.backends._cutedsl.rope",
         "liger_kernel.ops.backends._ascend.rope",
     ),
 )
 
-# CrossEntropy: NVIDIA Triton fallback + Ascend Triton on NPU.
+# CrossEntropy: Triton (universal) + cuTile (Blackwell) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
 declare_op_locations(
     "cross_entropy",
     (
         "liger_kernel.ops.backends._triton.cross_entropy",
+        "liger_kernel.ops.backends._cutile.cross_entropy",
         "liger_kernel.ops.backends._cutedsl.cross_entropy",
         "liger_kernel.ops.backends._ascend.cross_entropy",
     ),
@@ -117,37 +120,41 @@ declare_op_locations(
     "cross_entropy_loss_and_grad",
     (
         "liger_kernel.ops.backends._triton.cross_entropy",
+        "liger_kernel.ops.backends._cutile.cross_entropy",
         "liger_kernel.ops.backends._cutedsl.cross_entropy",
     ),
 )
 
-# fused_add_rms_norm: Triton (universal) + opt-in CuTe DSL (Hopper+). The
-# CuTe DSL variant reuses rmsnorm_fwd with a residual input, while Triton
-# remains the convergence-safe automatic default.
+# fused_add_rms_norm: Triton (universal) + cuTile (Blackwell) + opt-in CuTe DSL
+# (Hopper+). The CuTe DSL variant reuses rmsnorm_fwd with a residual input,
+# while Triton remains the convergence-safe automatic default.
 declare_op_locations(
     "fused_add_rms_norm",
     (
         "liger_kernel.ops.backends._triton.fused_add_rms_norm",
+        "liger_kernel.ops.backends._cutile.fused_add_rms_norm",
         "liger_kernel.ops.backends._cutedsl.fused_add_rms_norm",
     ),
 )
 
-# GeGLU: Triton (universal) + CuTe DSL (Hopper+). Elementwise GELU-tanh(a)*b;
-# mirrors the SwiGLU CuTe DSL pattern.
+# GeGLU: Triton (universal) + cuTile (Blackwell) + CuTe DSL (Hopper+).
+# Elementwise GELU-tanh(a)*b; mirrors the SwiGLU CuTe DSL pattern.
 declare_op_locations(
     "geglu",
     (
         "liger_kernel.ops.backends._triton.geglu",
+        "liger_kernel.ops.backends._cutile.geglu",
         "liger_kernel.ops.backends._cutedsl.geglu",
     ),
 )
 
-# KL Divergence: Triton (universal) + CuTe DSL (Hopper+). Forward uses a
-# row-reduction (ReductionBase); backward is elementwise.
+# KL Divergence: Triton (universal) + cuTile (Blackwell) + CuTe DSL (Hopper+).
+# Forward uses a row-reduction (ReductionBase); backward is elementwise.
 declare_op_locations(
     "kl_div",
     (
         "liger_kernel.ops.backends._triton.kl_div",
+        "liger_kernel.ops.backends._cutile.kl_div",
         "liger_kernel.ops.backends._cutedsl.kl_div",
     ),
 )
@@ -164,10 +171,10 @@ declare_op_locations(
     ),
 )
 
-# fused_linear_cross_entropy: Triton (universal) + Ascend Triton on NPU.
-# On NVIDIA, the CuTe DSL acceleration is inside the composed op via
-# ``cross_entropy_loss_and_grad``. On Ascend the dedicated FLCE Function
-# is selected by preference_rank.
+# fused_linear_cross_entropy: Triton (universal) + the composed CuTe DSL path
+# (Hopper+) + Ascend Triton on NPU. (The SM90-only cuTile FLCE adapter is
+# deferred to a dedicated follow-up that integrates its narrow BF16/Hopper
+# contract with the generic cross-backend test matrix.)
 declare_op_locations(
     "fused_linear_cross_entropy",
     (
