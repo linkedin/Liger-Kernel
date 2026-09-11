@@ -28,7 +28,7 @@ model or system.
 |---|---|
 | Standalone MoE kernels | Up to **32% lower forward latency** and **7% lower backward latency** than the strongest compared implementation |
 | Communication-intensive H200 cases | **10–35% higher forward throughput** than Comet; selected backward cases reach up to **~108% higher throughput** than DeepEP |
-| Tensor-parallel fused scaled linear cross entropy | At M8192/H4096/global-V131072: forward reaches **1,531 TFLOP/s/GPU at TP1**, **1,386 at TP8**, and **722 at two-host TP16**; full forward+backward reaches **1,185**, **782**, and **410 TFLOP/s/GPU** |
+| Tensor-parallel fused scaled linear cross entropy | At M8192/H4096/global-V131072: forward reaches **1,531 TFLOP/s/GPU at TP1**, **1,386 at TP8**, and **722 at two-host TP16**; full forward+backward reaches **1,580**, **1,043**, and **547 TFLOP/s/GPU** across forward, dZ recompute, dX, and dW |
 | Qwen3-30B-A3B training on 8 H100 GPUs | **2.35× speedup / 57% lower step time** than Megatron and **~17% lower step time** than Transformer Engine |
 | End-to-end convergence | **5.06% final-loss improvement** over the Megatron baseline |
 

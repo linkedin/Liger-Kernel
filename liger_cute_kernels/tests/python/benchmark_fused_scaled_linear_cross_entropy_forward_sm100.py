@@ -254,7 +254,9 @@ def main() -> int:
         native_e2e_ms, fallback_e2e_ms = _time_pair_ms(native_e2e, fallback_e2e, args.warmups, args.iterations, group)
         native_e2e_peak = _peak_increment_bytes(native_e2e, group)
         fallback_e2e_peak = _peak_increment_bytes(fallback_e2e, group)
-        e2e_flops = 3.0 * flops
+        # Forward plus backward executes four classifier GEMMs: forward logits,
+        # backward logits recomputation (dZ), dX, and dW.
+        e2e_flops = 4.0 * flops
 
     if rank == 0:
         print(
