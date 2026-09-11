@@ -308,11 +308,12 @@ def cross_entropy_forward(
     )
 
     target_mask = target != ignore_index
-    n_non_ignore = target_mask.sum().item()
-    assert (target * target_mask).max() < _input.shape[-1], (
-        f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}"
-    )
-    assert (target * target_mask).min() >= 0, f"Target {target.min()} is out of bounds. Expected >= 0"
+    masked_target = target * target_mask
+    target_min, target_max = torch.aminmax(masked_target)
+    # Transfer validation statistics together instead of synchronizing three times.
+    n_non_ignore, min_target, max_target = torch.stack((target_mask.sum(), target_min, target_max)).cpu().tolist()
+    assert max_target < _input.shape[-1], f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}"
+    assert min_target >= 0, f"Target {target.min()} is out of bounds. Expected >= 0"
     inv_n_non_ignore = 1.0 / max(n_non_ignore, 1)
     reduction_mean = int(reduction == "mean")
 
