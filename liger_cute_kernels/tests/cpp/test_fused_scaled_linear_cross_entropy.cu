@@ -26,7 +26,8 @@ static_assert(sizeof(liger_cute::detail::NvlsReduceView) <= 5 * sizeof(void*));
 static_assert(
 	sizeof(liger_cute::detail::DirectPeerReduceView) <= 4 * sizeof(void*));
 static_assert(std::is_same_v<
-	decltype(fslce::ForwardGemmParamsSm90<>{}.output),
+	std::remove_cv_t<std::remove_reference_t<
+		decltype((fslce::ForwardGemmParamsSm90<>{}.output))>>,
 	fslce::ForwardLocalStatsBuffers>);
 static_assert(fslce::backward_dx_split_k(2048, 256) == 2);
 static_assert(fslce::backward_dx_split_k(2048, 320) == 1);
