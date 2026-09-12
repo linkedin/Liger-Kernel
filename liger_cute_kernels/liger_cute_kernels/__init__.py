@@ -7,6 +7,7 @@ extension and its support libraries side by side::
     liger_cute_kernels/
       __init__.py
       libliger_cute_kernels.so   # torch-free CUTLASS + NVSHMEM core
+      liger_moe_sm90_nonrdc.cubin     # optional local/IB Hopper module
       libnvshmem_host.so         # bundled nvshmem
 
 The Python API loads the core through TVM FFI, so the runtime boundary is the

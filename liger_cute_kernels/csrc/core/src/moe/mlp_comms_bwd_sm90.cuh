@@ -75,6 +75,9 @@ struct GetTmaDescsBwd {
 	CUtensorMap src_dy_desc[kGetMaxPes];
 	CUtensorMap dst_x_staging_desc;       // local x_staging
 	CUtensorMap dst_dy_staging_desc;      // local dy_staging
+	const void* src_x_ptr[kGetMaxPes];    // host-resolved peer x_sorted
+	const void* src_dy_ptr[kGetMaxPes];   // host-resolved peer dy_sorted
+	void* dst_dx_ptr[kGetMaxPes];         // host-resolved peer dx_sorted
 	int enabled;                          // 1 = local-peer TMA path available
 	int gpus_per_node;
 	int my_pe;
@@ -192,7 +195,9 @@ struct CommBuffersBwd {
 // band in kGetBoxRowsBwd-tall sub-bands × kGetKChunk-wide column boxes.
 // chunk_idx == yc (the CTA's slot within its NC-cooperating group); with
 // kNumGetWarpsBwd == 1 the per-warp row band is TileM/NC.
-template <typename Element, int TileM, int K, int NC, int BoxRows>
+template <
+	typename Element, int TileM, int K, int NC, int BoxRows,
+	bool MayUseIb = true>
 __device__ __forceinline__ void do_get_bwd_tma(
 		StagePipe<K, kNumGetWarpsBwd * NC, 1>& src_pipe,
 		const CommBuffersBwd& bufs,
@@ -210,6 +215,7 @@ __device__ __forceinline__ void do_get_bwd_tma(
 		int* tile_valid_rows_dst,
 		const GetTmaDescsBwd* descs,
 		const CUtensorMap* src_desc_per_pe,  // descs->src_x_desc or src_dy_desc
+		const void* const* src_ptr_per_pe,   // matching host-resolved pointers
 		const CUtensorMap* dst_desc,         // descs->dst_x_staging or dst_dy_staging
 		char* bounce_warp) {
 
@@ -225,8 +231,19 @@ __device__ __forceinline__ void do_get_bwd_tma(
 	Element* local_tile  = staging_base + slot * tile_elems;
 	Element* remote_tile = remote_base + info.token_offset * bufs.hidden_dim;
 
-	bool is_local = descs && descs->enabled && get_pe_is_local_bwd(descs, info.pe);
-	bool tma_ok = is_local && (bufs.hidden_dim % kGetKChunk == 0) && bounce_warp != nullptr;
+	bool is_local = true;
+	if constexpr (MayUseIb) {
+		is_local =
+			descs && descs->enabled &&
+			get_pe_is_local_bwd(descs, info.pe);
+	}
+	bool tma_ok = true;
+	if constexpr (MayUseIb) {
+		tma_ok =
+			descs && descs->enabled && is_local &&
+			(bufs.hidden_dim % kGetKChunk == 0) &&
+			bounce_warp != nullptr;
+	}
 
 	if (tma_ok) {
 		Element*  sbuf = reinterpret_cast<Element*>(bounce_warp);
@@ -273,24 +290,43 @@ __device__ __forceinline__ void do_get_bwd_tma(
 		constexpr int kWarpsPerTile = kNumGetWarpsBwd * NC;  // one get warp per CTA
 		int chunk = tile_elems / kWarpsPerTile;
 		int offset = chunk_idx * chunk;
-		int global_pe = nvshmem_team_translate_pe(bufs.team, info.pe, NVSHMEM_TEAM_WORLD);
-		void* p2p_remote = nvshmem_ptr(remote_tile, global_pe);
-		if (p2p_remote != nullptr) {
-			nvshmemx_getmem_warp(local_tile + offset, remote_tile + offset,
-				(size_t)chunk * sizeof(Element), global_pe);
+		if constexpr (!MayUseIb) {
+			int local_peer = info.pe % descs->gpus_per_node;
+			const auto* peer_base =
+				static_cast<const Element*>(src_ptr_per_pe[local_peer]);
+			copy_local_peer_warp(
+				local_tile + offset,
+				peer_base + info.token_offset * bufs.hidden_dim + offset,
+				chunk, lane);
 		} else {
-			if (chunk_idx == ib_seq % kWarpsPerTile) {
-				int valid_elems =
-					max(0, min(TileM, info.valid_rows)) * bufs.hidden_dim;
-				for (int i = valid_elems + lane; i < tile_elems; i += 32)
-					local_tile[i] = Element{};
-				__syncwarp();
-				if (valid_elems > 0)
-					nvshmemx_getmem_warp(
-						local_tile, remote_tile,
-						(size_t)valid_elems * sizeof(Element), global_pe);
+			if (is_local) {
+				int local_peer = info.pe % descs->gpus_per_node;
+				const auto* peer_base =
+					static_cast<const Element*>(src_ptr_per_pe[local_peer]);
+				copy_local_peer_warp(
+					local_tile + offset,
+					peer_base +
+						info.token_offset * bufs.hidden_dim + offset,
+					chunk, lane);
+			} else {
+				int global_pe = nvshmem_team_translate_pe(
+					bufs.team, info.pe, NVSHMEM_TEAM_WORLD);
+				if (chunk_idx == ib_seq % kWarpsPerTile) {
+					int valid_elems =
+						max(0, min(TileM, info.valid_rows)) *
+						bufs.hidden_dim;
+					for (int i = valid_elems + lane;
+							i < tile_elems; i += 32)
+						local_tile[i] = Element{};
+					__syncwarp();
+					if (valid_elems > 0)
+						moe_nvshmem_getmem_warp(
+							local_tile, remote_tile,
+							(size_t)valid_elems * sizeof(Element),
+							global_pe);
+				}
+				++ib_seq;
 			}
-			++ib_seq;
 		}
 	}
 
@@ -320,7 +356,9 @@ __device__ __forceinline__ void do_get_bwd_tma(
 // The write happens AFTER the getmem completes and BEFORE producer_release,
 // so it is part of the slot's atomic publish: any consumer that's seen
 // producer_release sees both the getmem'd staging bytes AND the expert id.
-template <typename Element, int TileM, int K, int NC>
+template <
+	typename Element, int TileM, int K, int NC,
+	bool MayUseIb = true>
 __device__ __forceinline__ void do_get_bwd(
 		StagePipe<K, kNumGetWarpsPerCta * NC, 1>& src_pipe,
 		const CommBuffersBwd& bufs,
@@ -358,26 +396,32 @@ __device__ __forceinline__ void do_get_bwd(
 	// by a single warp, chosen round-robin across IB tiles only (ib_seq
 	// skips local/P2P tiles and is advanced in lockstep by every warp).
 	// See the matching fwd do_get for the full rationale.
-	void* p2p_remote = nvshmem_ptr(remote_tile, global_pe);
-	if (p2p_remote != nullptr) {
-		static_assert(sizeof(Element) == 2,
-			"P2P int4 copy assumes 2-byte elements (bf16/half)");
-		constexpr int kElemsPerVec = sizeof(int4) / sizeof(Element);
-		int n_vec = chunk / kElemsPerVec;
-		const int4* src_v = reinterpret_cast<const int4*>(
-			static_cast<Element*>(p2p_remote) + offset);
-		int4*       dst_v = reinterpret_cast<int4*>(local_tile + offset);
-		#pragma unroll 4
-		for (int i = lane; i < n_vec; i += 32) {
-			dst_v[i] = src_v[i];
-		}
-		__syncwarp();
+	if constexpr (!MayUseIb) {
+		moe_nvshmem_getmem_warp(
+			local_tile + offset, remote_tile + offset,
+			(size_t)chunk * sizeof(Element), global_pe);
 	} else {
-		if (chunk_idx == ib_seq % kWarpsPerTile) {
-			nvshmemx_getmem_warp(local_tile, remote_tile,
-				(size_t)tile_elems * sizeof(Element), global_pe);
+		void* p2p_remote = nvshmem_ptr(remote_tile, global_pe);
+		if (p2p_remote != nullptr) {
+			static_assert(sizeof(Element) == 2,
+				"P2P int4 copy assumes 2-byte elements (bf16/half)");
+			constexpr int kElemsPerVec = sizeof(int4) / sizeof(Element);
+			int n_vec = chunk / kElemsPerVec;
+			const int4* src_v = reinterpret_cast<const int4*>(
+				static_cast<Element*>(p2p_remote) + offset);
+			int4* dst_v = reinterpret_cast<int4*>(local_tile + offset);
+			#pragma unroll 4
+			for (int i = lane; i < n_vec; i += 32)
+				dst_v[i] = src_v[i];
+			__syncwarp();
+		} else {
+			if (chunk_idx == ib_seq % kWarpsPerTile) {
+				moe_nvshmem_getmem_warp(
+					local_tile, remote_tile,
+					(size_t)tile_elems * sizeof(Element), global_pe);
+			}
+			++ib_seq;
 		}
-		++ib_seq;
 	}
 
 	if (tile_expert_ids_dst != nullptr && chunk_idx == 0 && lane == 0) {
@@ -398,7 +442,9 @@ __device__ __forceinline__ void do_get_bwd(
 // num_put_warps / put_local_idx keep the single-put-warp layout
 // (kWarpsPerTile = NC, slice = yc): warp 2 owns dX puts while warp 3 is
 // reserved for the SM100 MLP path.
-template <typename Element, int TileM, int K, int NC>
+template <
+	typename Element, int TileM, int K, int NC,
+	bool MayUseIb = true>
 __device__ __forceinline__ void do_put_bwd(
 		StagePipe<K, 1, NC>& dst_pipe,
 		const CommBuffersBwd& bufs,
@@ -411,7 +457,8 @@ __device__ __forceinline__ void do_put_bwd(
 		int& ib_seq,              // IB-tile counter (round-robin turn; advanced here)
 		int lane,
 		int num_put_warps = 1,    // 1 (fallback) or kNumPutWarpsBwd (TMA mode)
-		int put_local_idx = 0) {  // 0..num_put_warps-1
+		int put_local_idx = 0,    // 0..num_put_warps-1
+		const GetTmaDescsBwd* descs = nullptr) {
 
 	int kWarpsPerTile = num_put_warps * NC;
 	int put_idx = chunk_idx * num_put_warps + put_local_idx;  // 0..kWarpsPerTile-1
@@ -426,25 +473,55 @@ __device__ __forceinline__ void do_put_bwd(
 	Element* local_tile  = dx_staging + slot * tile_elems;
 	Element* remote_tile = remote_dx + info.token_offset * bufs.hidden_dim;
 
-	int global_pe = nvshmem_team_translate_pe(bufs.team, info.pe, NVSHMEM_TEAM_WORLD);
-
 	// NVLink P2P peers keep the cooperative split; IB peers send the whole
 	// tile as one RDMA issued by a single put warp, round-robin over IB
 	// tiles only (see do_get_bwd / fwd do_put).
-	void* p2p_remote = nvshmem_ptr(remote_tile, global_pe);
-	if (p2p_remote != nullptr) {
-		nvshmemx_putmem_warp(remote_tile + offset, local_tile + offset,
-			my_bytes, global_pe);
+	if constexpr (!MayUseIb) {
+		int local_peer = info.pe % descs->gpus_per_node;
+		auto* peer_base =
+			static_cast<Element*>(descs->dst_dx_ptr[local_peer]);
+		Element* dst =
+			peer_base + info.token_offset * bufs.hidden_dim + offset;
+		const Element* src = local_tile + offset;
+		static_assert(
+			sizeof(Element) == 2,
+			"local dX vector copy assumes 2-byte elements");
+		constexpr int kElemsPerVec = sizeof(int4) / sizeof(Element);
+		int num_vectors = chunk / kElemsPerVec;
+		const int4* src_vectors = reinterpret_cast<const int4*>(src);
+		int4* dst_vectors = reinterpret_cast<int4*>(dst);
+		for (int i = lane; i < num_vectors; i += 32)
+			dst_vectors[i] = src_vectors[i];
+		for (int i = num_vectors * kElemsPerVec + lane;
+				i < chunk; i += 32)
+			dst[i] = src[i];
+		__syncwarp();
+		__threadfence_system();
 	} else {
-		if (put_idx == ib_seq % kWarpsPerTile) {
-			int valid_elems =
-				max(0, min(TileM, info.valid_rows)) * bufs.hidden_dim;
-			if (valid_elems > 0)
-				nvshmemx_putmem_warp(
-					remote_tile, local_tile,
-					(size_t)valid_elems * sizeof(Element), global_pe);
+		bool is_local =
+			descs && descs->enabled &&
+			get_pe_is_local_bwd(descs, info.pe);
+		if (is_local) {
+			int local_peer = info.pe % descs->gpus_per_node;
+			auto* peer_base =
+				static_cast<Element*>(descs->dst_dx_ptr[local_peer]);
+			copy_local_peer_warp(
+				peer_base + info.token_offset * bufs.hidden_dim + offset,
+				local_tile + offset, chunk, lane);
+			__threadfence_system();
+		} else {
+			int global_pe = nvshmem_team_translate_pe(
+				bufs.team, info.pe, NVSHMEM_TEAM_WORLD);
+			if (put_idx == ib_seq % kWarpsPerTile) {
+				int valid_elems =
+					max(0, min(TileM, info.valid_rows)) * bufs.hidden_dim;
+				if (valid_elems > 0)
+					moe_nvshmem_putmem_warp(
+						remote_tile, local_tile,
+						(size_t)valid_elems * sizeof(Element), global_pe);
+			}
+			++ib_seq;
 		}
-		++ib_seq;
 	}
 
 	dst_pipe.consumer_release(lane);
@@ -645,7 +722,8 @@ template <
 	int TileM,
 	int NumStages,
 	int NC = 2,
-	int BoxRows = kGetBoxRowsBwdSm90>
+	int BoxRows = kGetBoxRowsBwdSm90,
+	bool MayUseIb = true>
 __device__ __forceinline__ void nvshmem_comm_main_bwd(
 		CommSmem& smem,
 		const CommBuffersBwd& bufs,
@@ -733,21 +811,25 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 		for (int i = 0; i < my_total; ++i) {
 			TileInfo info = iter.next();
 
-			do_get_bwd_tma<Element, TileM, K, NC, BoxRows>(
+			do_get_bwd_tma<
+				Element, TileM, K, NC, BoxRows, MayUseIb>(
 				x_pipe, bufs, info, remote_x_base, x_staging, tile_elems,
 				xc, MC, chunk_idx, ib_seq, lane,
 				/*mbar_index=*/0,
 				x_expert_dst, x_valid_dst, descs,
 				descs ? descs->src_x_desc : nullptr,
+				descs ? descs->src_x_ptr : nullptr,
 				descs ? &descs->dst_x_staging_desc : nullptr,
 				get_bounce);
 
-			do_get_bwd_tma<Element, TileM, K, NC, BoxRows>(
+			do_get_bwd_tma<
+				Element, TileM, K, NC, BoxRows, MayUseIb>(
 				dy_pipe, bufs, info, remote_dy_base, dy_staging, tile_elems,
 				xc, MC, chunk_idx, ib_seq, lane,
 				/*mbar_index=*/1,
 				dy_expert_dst, nullptr, descs,
 				descs ? descs->src_dy_desc : nullptr,
+				descs ? descs->src_dy_ptr : nullptr,
 				descs ? &descs->dst_dy_staging_desc : nullptr,
 				get_bounce);
 		}
@@ -761,10 +843,10 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 		int ib_seq = 0;  // advances only on IB tiles (inside do_put_bwd)
 		for (int i = 0; i < my_total; ++i) {
 			TileInfo info = iter.next();
-			do_put_bwd<Element, TileM, K, NC>(
+			do_put_bwd<Element, TileM, K, NC, MayUseIb>(
 				dst_pipe, bufs, info,
 				dx_staging, tile_elems, xc, MC, chunk_idx, ib_seq, lane,
-				kNumPutWarpsBwd, put_local_idx);
+				kNumPutWarpsBwd, put_local_idx, descs);
 		}
 	}
 }
