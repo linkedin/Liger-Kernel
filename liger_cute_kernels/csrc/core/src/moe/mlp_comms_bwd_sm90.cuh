@@ -61,6 +61,24 @@ static constexpr int kCommBwdWarpEnd   = kCommBwdPutWarp;
 static constexpr int kNumGetWarpsBwd = 1;  // TMA mode: 1 get warp (X+dY)
 static constexpr int kNumPutWarpsBwd = 1;  // TMA mode: 1 put warp (dX)
 
+template <typename Element>
+__device__ __forceinline__ void copy_local_peer_warp(
+		Element* dst, const Element* src, int num_elements, int lane) {
+	static_assert(
+		sizeof(Element) == 2,
+		"local peer vector copy assumes 2-byte elements");
+	constexpr int kElemsPerVec = sizeof(int4) / sizeof(Element);
+	int num_vectors = num_elements / kElemsPerVec;
+	const int4* src_vectors = reinterpret_cast<const int4*>(src);
+	int4* dst_vectors = reinterpret_cast<int4*>(dst);
+	for (int i = lane; i < num_vectors; i += 32)
+		dst_vectors[i] = src_vectors[i];
+	for (int i = num_vectors * kElemsPerVec + lane;
+			i < num_elements; i += 32)
+		dst[i] = src[i];
+	__syncwarp();
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // GetTmaDescsBwd — raw CUtensorMap descriptors for the bwd TMA GET
 // ═══════════════════════════════════════════════════════════════════

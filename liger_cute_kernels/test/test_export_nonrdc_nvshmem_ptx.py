@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 
 from pathlib import Path
 
@@ -39,6 +40,35 @@ def test_export_symbols_rejects_missing_symbol():
         export_ptx.export_symbols(source)
 
 
+def test_export_symbols_rejects_duplicate_symbol():
+    declaration = f".const .align 8 .b8 {export_ptx.REQUIRED_SYMBOLS[0]}[8];\n"
+    source = _sample_ptx().replace(declaration, declaration * 2)
+
+    with pytest.raises(ValueError, match="expected one PTX declaration"):
+        export_ptx.export_symbols(source)
+
+
+@pytest.mark.parametrize(
+    "probe",
+    (
+        "setmaxnreg.dec.sync.aligned.u32 24;\n",
+        "setmaxnreg.inc.sync.aligned.u32 240;\n",
+    ),
+)
+def test_export_symbols_rejects_missing_setmaxnreg_probe(probe):
+    with pytest.raises(ValueError, match="missing the SETMAXNREG build probe"):
+        export_ptx.export_symbols(_sample_ptx().replace(probe, ""))
+
+
 def test_export_symbols_rejects_non_accelerated_target():
     with pytest.raises(ValueError, match="must target sm_90a"):
         export_ptx.export_symbols(_sample_ptx().replace("sm_90a", "sm_90"))
+
+
+def test_main_rejects_identical_resolved_paths(tmp_path, monkeypatch):
+    path = tmp_path / "module.ptx"
+    path.write_text(_sample_ptx())
+    monkeypatch.setattr(sys, "argv", [str(_MODULE_PATH), str(path), str(path)])
+
+    with pytest.raises(ValueError, match="input and output PTX paths must differ"):
+        export_ptx.main()

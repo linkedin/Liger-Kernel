@@ -104,7 +104,17 @@ if(LIGER_CUTE_ENABLE_SM90_NONRDC_MOE)
         "${NVSHMEM_INCLUDE_DIR}/*.h"
         "${NVSHMEM_INCLUDE_DIR}/*.cuh")
     list(APPEND _nonrdc_moe_dependencies ${_nonrdc_nvshmem_headers})
-    set(_nonrdc_moe_fingerprint_material "sm90-nonrdc-moe-abi-v1")
+    if(LIGER_CUTE_SM90_NONRDC_ALL_CONFIGS)
+        set(_nonrdc_moe_config_mode "all-configs")
+        set(_nonrdc_moe_config_defines
+            -DLIGER_CUTE_SM90_NONRDC_BENCHMARK_ALL_CONFIGS=1)
+    else()
+        set(_nonrdc_moe_config_mode "target-mixtral")
+        set(_nonrdc_moe_config_defines
+            -DLIGER_CUTE_SM90_NONRDC_TARGET_MIXTRAL=1)
+    endif()
+    set(_nonrdc_moe_fingerprint_material
+        "sm90-nonrdc-moe-abi-v1:${_nonrdc_moe_config_mode}")
     set(_nonrdc_moe_fingerprint_files
         ${_nonrdc_moe_dependencies}
         "${_nonrdc_moe_source}"
@@ -121,13 +131,6 @@ if(LIGER_CUTE_ENABLE_SM90_NONRDC_MOE)
         _nonrdc_moe_fingerprint_u64)
     set(_nonrdc_moe_fingerprint_literal
         "0x${_nonrdc_moe_fingerprint_u64}ULL")
-    if(LIGER_CUTE_SM90_NONRDC_ALL_CONFIGS)
-        set(_nonrdc_moe_config_defines
-            -DLIGER_CUTE_SM90_NONRDC_BENCHMARK_ALL_CONFIGS=1)
-    else()
-        set(_nonrdc_moe_config_defines
-            -DLIGER_CUTE_SM90_NONRDC_TARGET_MIXTRAL=1)
-    endif()
 
     add_custom_command(
         OUTPUT "${LIGER_CUTE_SM90_NONRDC_MOE_CUBIN}"

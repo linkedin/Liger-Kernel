@@ -733,7 +733,6 @@ static constexpr int kGetMaxPes = 8;   // upper bound on GPUs per host
 struct GetTmaDescs {
 	CUtensorMap src_x_desc[kGetMaxPes];  // index by (TileInfo::pe % gpus_per_node)
 	CUtensorMap dst_staging_desc;        // local src_staging
-	const void* src_x_ptr[kGetMaxPes];   // host-resolved peer pointers
 	int  enabled;                        // 1 = NVLink P2P TMA path available; 0 = getmem
 	int  gpus_per_node;                  // local host PE count — host/local-rank divisor
 	int  my_pe;                          // this PE in team space (for same-host test)
@@ -775,24 +774,6 @@ struct GetBounce {
 	static constexpr int kPerWarpStride = ((kBoxBytes + 8) + 127) & ~127;
 	static constexpr int kTotalBytes    = kPerWarpStride * kNumGetWarpsFwd;
 };
-
-template <typename Element>
-__device__ __forceinline__ void copy_local_peer_warp(
-		Element* dst, const Element* src, int num_elements, int lane) {
-	static_assert(
-		sizeof(Element) == 2,
-		"local peer vector copy assumes 2-byte elements");
-	constexpr int kElemsPerVec = sizeof(int4) / sizeof(Element);
-	int num_vectors = num_elements / kElemsPerVec;
-	const int4* src_vectors = reinterpret_cast<const int4*>(src);
-	int4* dst_vectors = reinterpret_cast<int4*>(dst);
-	for (int i = lane; i < num_vectors; i += 32)
-		dst_vectors[i] = src_vectors[i];
-	for (int i = num_vectors * kElemsPerVec + lane;
-			i < num_elements; i += 32)
-		dst[i] = src[i];
-	__syncwarp();
-}
 
 template <
 	typename Element, int TileM, int K, int NC, int MSubTiles,
@@ -916,15 +897,9 @@ __device__ __forceinline__ void do_get(
 	auto* local_tokens = static_cast<Element*>(bufs.local_tokens);
 	Element* remote_base = local_tokens + info.token_offset * bufs.hidden_dim;
 	Element* local_base = src_staging + slot * src_tile_elems;
-	if constexpr (!MayUseIb) {
-		int local_peer = info.pe % descs->gpus_per_node;
-		const auto* peer_base =
-			static_cast<const Element*>(descs->src_x_ptr[local_peer]);
-		copy_local_peer_warp(
-			local_base + offset,
-			peer_base + info.token_offset * bufs.hidden_dim + offset,
-			chunk, lane);
-	} else {
+	// The local-only specialization takes the unconditional TMA branch above.
+	// Only the IB-capable specialization retains a getmem fallback.
+	if constexpr (MayUseIb) {
 		int global_pe =
 			nvshmem_team_translate_pe(
 				bufs.team(), info.pe, NVSHMEM_TEAM_WORLD);
@@ -944,24 +919,15 @@ __device__ __forceinline__ void do_get(
 					global_pe);
 			}
 			ib_seq++;
-		} else if (descs != nullptr) {
-			int local_peer = info.pe % descs->gpus_per_node;
-			const auto* peer_base =
-				static_cast<const Element*>(descs->src_x_ptr[local_peer]);
-			copy_local_peer_warp(
-				local_base + offset,
-				peer_base + info.token_offset * bufs.hidden_dim + offset,
-				chunk, lane);
 		} else {
 			moe_nvshmem_getmem_warp(
 				local_base + offset, remote_base + offset,
 				(size_t)chunk * sizeof(Element), global_pe);
 		}
+		if (bufs.tile_expert_ids && chunk_idx == 0 && lane == 0)
+			bufs.tile_expert_ids[slot] = info.expert;
+		src_pipe.producer_release(lane);
 	}
-	if (bufs.tile_expert_ids && chunk_idx == 0 && lane == 0) {
-		bufs.tile_expert_ids[slot] = info.expert;
-	}
-	src_pipe.producer_release(lane);
 }
 
 template <

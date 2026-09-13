@@ -40,6 +40,8 @@ char g_module_path_anchor = 0;
 struct ModuleState {
 	CUcontext context = nullptr;
 	int device = -1;
+	int num_hosts = -1;
+	int gpus_per_host = -1;
 	CUmodule module = nullptr;
 	bool registered_with_nvshmem = false;
 	std::string path;
@@ -268,7 +270,9 @@ void configure_module(
 		int device,
 		const std::array<int, liger_cute::detail::kMaxPEs>& destinations,
 		const std::array<int, liger_cute::detail::kMaxPEs>& ranks,
-		int num_pes) {
+		int num_pes,
+		int num_hosts,
+		int gpus_per_host) {
 	const std::string path = configured_cubin_path();
 	LIGER_CHECK(!path.empty(), "non-RDC MoE cubin path is empty");
 	std::ifstream cubin(path, std::ios::binary);
@@ -286,6 +290,14 @@ void configure_module(
 			module_state.path == path,
 			"non-RDC MoE cubin path changed after module initialization: ",
 			module_state.path, " -> ", path);
+		LIGER_CHECK(
+			module_state.num_hosts == num_hosts &&
+				module_state.gpus_per_host == gpus_per_host,
+			"non-RDC MoE topology changed after module initialization: "
+			"configured (num_hosts=", module_state.num_hosts,
+			", gpus_per_host=", module_state.gpus_per_host,
+			"), requested (num_hosts=", num_hosts,
+			", gpus_per_host=", gpus_per_host, ")");
 		if (!module_state.registered_with_nvshmem) {
 			const int init_status =
 				nvshmemx_cumodule_init(module_state.module);
@@ -320,6 +332,8 @@ void configure_module(
 	ModuleState state;
 	state.context = context;
 	state.device = device;
+	state.num_hosts = num_hosts;
+	state.gpus_per_host = gpus_per_host;
 	state.module = module;
 	state.registered_with_nvshmem = true;
 	state.path = path;
@@ -383,7 +397,8 @@ void configure_sm90_nonrdc_moe(int num_hosts, int gpus_per_host) {
 			"process");
 	}
 	configure_module(
-		context, device, destinations, ranks, num_pes);
+		context, device, destinations, ranks, num_pes,
+		num_hosts, gpus_per_host);
 #endif
 }
 

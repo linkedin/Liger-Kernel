@@ -272,16 +272,29 @@ void moe_configure_symmetric(
 		gpus_per_host, ") = ", num_hosts * gpus_per_host,
 		" must equal num_pes (", num_pes, ")");
 
+	auto& cfg = get_symm_config();
+	if (cfg.initialized) {
+		LIGER_CHECK(
+			cfg.num_hosts == num_hosts &&
+				cfg.gpus_per_host == gpus_per_host,
+			"moe_configure_symmetric topology changed after initialization: "
+			"configured (num_hosts=", cfg.num_hosts,
+			", gpus_per_host=", cfg.gpus_per_host,
+			"), requested (num_hosts=", num_hosts,
+			", gpus_per_host=", gpus_per_host, ")");
+	}
+
 	// Populate g_dest_table / g_rank_table in device constant memory.
 	// Idempotent — safe to re-call with the same (N, M).
 	init_comm_schedule(num_hosts, gpus_per_host);
 	configure_sm90_nonrdc_moe(num_hosts, gpus_per_host);
 
-	auto& cfg = get_symm_config();
 	cfg.max_total_slots = max_tokens * max_top_k + max_num_experts * kTileM;
 	cfg.max_num_experts = max_num_experts;
 	cfg.hidden_dim = hidden_dim;
 	cfg.num_pes = num_pes;
+	cfg.num_hosts = num_hosts;
+	cfg.gpus_per_host = gpus_per_host;
 	cfg.experts_per_pe = max_num_experts / num_pes;
 	cfg.max_top_k = max_top_k;
 	cfg.initialized = true;
@@ -1450,9 +1463,9 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 			if (!same_host) continue;
 			int gpe = nvshmem_team_translate_pe(team, tp, NVSHMEM_TEAM_WORLD);
 			void* pp = nvshmem_ptr(buf.x_sorted, gpe);  // self → own ptr (non-null)
-			if (pp == nullptr) { ok = false; break; }   // same-host but no P2P → disable TMA
-			get_descs.src_x_ptr[tp % gpus_per_node] = pp;
-			ok = make_get_tma_map(get_descs.src_x_desc[tp % gpus_per_node], pp,
+			if (pp == nullptr) { ok = false; break; }
+			ok = make_get_tma_map(
+				get_descs.src_x_desc[tp % gpus_per_node], pp,
 				hidden_dim, max_total_slots, kGetBoxRows);
 		}
 		if (ok)
