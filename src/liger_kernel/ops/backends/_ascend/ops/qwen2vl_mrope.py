@@ -34,7 +34,7 @@ def _triton_qwen2vl_mrope_npu(
     actual_rows = tl.minimum(rows_per_program, total_rows - start_row)
 
     for row_offset in tl.range(0, actual_rows):
-        pid = start_row + row_offset
+        pid = (start_row + row_offset).to(tl.int64)
 
         t_end = mrope_section_t
         h_end = t_end + mrope_section_h
