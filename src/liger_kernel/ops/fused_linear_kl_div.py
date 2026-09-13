@@ -40,27 +40,25 @@ def get_num_warps(BLOCK_SIZE):
 
 @triton.jit
 def _kl_div_kernel(
-    Y_ptr,  # [BT, V], student log-probabilities, Y = log softmax(x / temperature)
-    Y_stride,
-    Q_ptr,  # [BT, V], target probabilities
+    X_ptr,  # [BT, V] student logits (x @ W^T), overwritten in place with dL/dlogits
+    X_stride,
+    Q_ptr,  # [BT, V] target probabilities
     Q_stride,
     loss_ptr,  # [BT], per-row loss (already scaled by reduction)
     loss_stride,
-    dY_ptr,  # [BT, V], gradient w.r.t. Y, written in-place over Y
-    dY_stride,
     label_ptr,
     ignore_index: tl.constexpr,
     n_cols,
+    temperature,
     eps,
     scale,  # pre-computed reduction scale fused into loss and gradients
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
 ):
     pid = tl.program_id(0).to(tl.int64)
-    Y_ptr += pid * Y_stride
+    X_ptr += pid * X_stride
     Q_ptr += pid * Q_stride
     loss_ptr += pid * loss_stride
-    dY_ptr += pid * dY_stride
     label_ptr += pid
 
     if HAS_LABEL:
@@ -68,26 +66,53 @@ def _kl_div_kernel(
         if label == ignore_index:
             for i in range(0, n_cols, BLOCK_SIZE):
                 offsets = i + tl.arange(0, BLOCK_SIZE)
-                tl.store(dY_ptr + offsets, 0.0, mask=offsets < n_cols)
+                tl.store(X_ptr + offsets, 0.0, mask=offsets < n_cols)
             return
 
-    loss_sum = 0.0
+    # Everything below runs on fp32 values upcast from X on load (registers),
+    # so HBM only ever sees the native-precision logits buffer. Y, the student
+    # log-probabilities, is never materialized: Y = x / T - logsumexp(x / T).
+    # Pass 1: row max of x / T (masked lanes forced to -inf, sign-of-T safe).
+    m = float("-inf")
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_cols
+        x = tl.load(X_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        x = tl.where(mask, x / temperature, float("-inf"))
+        m = tl.maximum(m, tl.max(x, axis=0))
 
-        Y = tl.load(Y_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        Q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+    # Pass 2: softmax denominator, plus the loss pieces that don't need lse yet.
+    # KL(Q || P) = sum(Q * (log(Q) - Y))
+    #            = sum(Q * (log(max(Q, eps)) - x / T)) + lse * sum(Q)   (= a1 + lse * a2)
+    # 0 * log 0 is treated as 0 by clamping Q to eps before the log.
+    a1 = 0.0
+    a2 = 0.0
+    s = 0.0
+    for i in range(0, n_cols, BLOCK_SIZE):
+        offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_cols
+        x = tl.load(X_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        x = tl.where(mask, x / temperature, float("-inf"))
+        q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        s += tl.sum(tl.exp(x - m), axis=0)
+        a1 += tl.sum(tl.where(mask, q * (tl.log(tl.maximum(q, eps)) - x), 0.0), axis=0)
+        a2 += tl.sum(q, axis=0)
 
-        # KL(Q || P) = sum(Q * (log(Q) - log(P))) = sum(Q * (log(Q) - Y))
-        # 0 * log(0) is treated as 0 by clamping Q to eps before the log
-        loss = Q * (tl.log(tl.maximum(Q, eps)) - Y)
-        dY = -Q
+    lse = m + tl.log(s)
+    tl.store(loss_ptr, (a1 + lse * a2) * scale)
 
-        loss_sum += tl.sum(loss, axis=0)
-        tl.store(dY_ptr + offsets, dY * scale, mask=mask)
-
-    tl.store(loss_ptr, loss_sum * scale)
+    # Pass 3: gradient w.r.t. the logits, stored in place over X. Backprop
+    # through log-softmax with g = dL/dY = -Q * scale:
+    #   dL/dlogits = (g - softmax(x/T) * sum(g)) / T = -scale * (Q - softmax * a2) / T
+    for i in range(0, n_cols, BLOCK_SIZE):
+        offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_cols
+        x = tl.load(X_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        x = tl.where(mask, x / temperature, float("-inf"))
+        q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        softmax = tl.exp(x - m) / s
+        d = -scale * (q - softmax * a2) / temperature
+        tl.store(X_ptr + offsets, d, mask=mask)
 
 
 def fused_linear_kl_div_forward(
@@ -103,13 +128,12 @@ def fused_linear_kl_div_forward(
     accum_dtype=None,
 ):
     device = student_input.device
-    dtype = student_input.dtype
 
     # inputs have shape: BT x H
-    # materialized activations will have shape: BT x V
-    # the increase in memory = BT x V
-    # reduction can be achieved by partitioning the number of tokens BT into smaller chunks.
-    # the transient budget is _CHUNK_MEM_CONST x BT x H (see fused_linear_cross_entropy.py):
+    # the only chunk-sized transient is the native-precision logits/grad buffer of
+    # shape chunk_size x V (the FP32 math happens in-kernel on upcast values in
+    # registers); partitioning the number of tokens BT into chunks keeps it within
+    # the transient budget of _CHUNK_MEM_CONST x BT x H (see fused_linear_cross_entropy.py):
     # inc_factor = (V + _CHUNK_MEM_CONST*H - 1) // (_CHUNK_MEM_CONST*H), chunk_size = (BT + inc_factor - 1) // inc_factor
     BT, H = student_input.shape
     V = student_weight.shape[0]
@@ -153,54 +177,38 @@ def fused_linear_kl_div_forward(
         input_chunk = student_input[start_idx:end_idx]
         target_chunk = target[start_idx:end_idx]
 
-        # shape: chunk_size x V
-        # For anything starting from logits to the final KL loss, we do computation
-        # in FP32 to avoid losing numerical stability.
-        logits_chunk = (input_chunk @ student_weight.t()).to(torch.float32)
-        logits_chunk.div_(temperature)
+        # shape: chunk_size x V. The GEMM output keeps its native precision in
+        # HBM; the FP32 upcast, temperature scaling, log-softmax and the
+        # log-softmax backward all happen inside _kl_div_kernel in registers,
+        # so this is the only chunk-sized transient and the kernel overwrites
+        # it in place with the gradient w.r.t. the logits.
+        logits_chunk = input_chunk @ student_weight.t()
         chunk_n_rows = logits_chunk.shape[0]
 
-        # log-softmax with temperature
-        log_prob_chunk = torch.log_softmax(logits_chunk, dim=-1).contiguous()
-
-        # Here we calculate the gradient w.r.t. log_prob_chunk in place so we can save memory.
         _kl_div_kernel[(chunk_n_rows,)](
-            Y_ptr=log_prob_chunk,
-            Y_stride=log_prob_chunk.stride(-2),
+            X_ptr=logits_chunk,
+            X_stride=logits_chunk.stride(-2),
             Q_ptr=target_chunk,
             Q_stride=target_chunk.stride(-2),
             loss_ptr=loss_1d[start_idx:end_idx],
             loss_stride=loss_1d[start_idx:end_idx].stride(0),
-            dY_ptr=log_prob_chunk,
-            dY_stride=log_prob_chunk.stride(-2),
             label_ptr=(
                 shift_labels[start_idx:end_idx] if has_label else torch.empty(1, device=device)
             ),  # dummy ptr if no label
             ignore_index=ignore_index,
             n_cols=V,
+            temperature=temperature,
             eps=eps,
             scale=scale,
             BLOCK_SIZE=BLOCK_SIZE,
             HAS_LABEL=has_label,
             num_warps=get_num_warps(BLOCK_SIZE),
         )
-        # gradients of log_prob_chunk in place, shape: chunk_size x V
-        # backprop through log-softmax:
-        # dL/dlogits = g - softmax(logits) * sum(g), then divided by temperature
-        # (log_prob_chunk now holds g = dL/dlog_prob; done in place to avoid
-        # materializing extra chunk_size x V temporaries)
-        softmax_chunk = torch.softmax(logits_chunk, dim=-1)
-        del logits_chunk  # free chunk_size x V fp32 before the GEMMs below
-        row_sum = log_prob_chunk.sum(dim=-1, keepdim=True)
-        torch.mul(softmax_chunk, row_sum, out=softmax_chunk)
-        log_prob_chunk.sub_(softmax_chunk).div_(temperature)
-        del softmax_chunk, row_sum
-        grad_logits_chunk = log_prob_chunk.to(dtype)
-        del log_prob_chunk
-        grad_input[start_idx:end_idx] = grad_logits_chunk @ student_weight
+        # logits_chunk now holds dL/dlogits, shape: chunk_size x V
+        grad_input[start_idx:end_idx] = logits_chunk @ student_weight
 
         if grad_weight is not None:
-            grad_logits_t = grad_logits_chunk.t()
+            grad_logits_t = logits_chunk.t()
             if (
                 _ADDMM_SUPPORTS_OUT_DTYPE
                 and grad_weight.device.type == "cuda"
@@ -249,6 +257,8 @@ def fused_linear_kl_div_forward(
                 # AMP). Correct but allocates a parameter-sized fp32 temporary before
                 # summing into grad_weight.
                 grad_weight.add_(torch.mm(grad_logits_t, input_chunk).float())
+
+        del logits_chunk  # free the chunk transient before the next chunk's GEMM
 
     loss = loss_1d.sum()
     grad_weight = (
@@ -299,6 +309,11 @@ class LigerFusedLinearKLDivFunction(torch.autograd.Function):
     Handle the forward and backward pass of the final linear layer via KL by avoiding
     the materialization of the large logits tensor. Since the KL loss is the last layer, we can
     compute the gradient at the forward pass.
+
+    The Triton kernel consumes the native-precision GEMM output directly: the FP32
+    upcast, temperature scaling, log-softmax, the KL loss and the log-softmax
+    backward all happen inside the kernel on values in registers, and the logits
+    buffer is overwritten in place with the gradient w.r.t. the logits.
     """
 
     @staticmethod
