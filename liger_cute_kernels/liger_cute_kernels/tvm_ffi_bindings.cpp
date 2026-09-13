@@ -460,18 +460,25 @@ int64_t fused_linear_scaled_cross_entropy_backward_workspace_bytes(
   TVM_FFI_ICHECK(
       max_tiles_per_reduce == 1 || max_tiles_per_reduce == 2 ||
       max_tiles_per_reduce == 4);
-  std::size_t symmetric =
-      liger::fused_scaled_linear_cross_entropy::
-          backward_tp_pool_symmetric_bytes(
-              static_cast<int>(max_tokens),
-              static_cast<int>(max_hidden),
-              static_cast<int>(max_tiles_per_reduce),
-              1);
-  std::size_t device =
-      liger::fused_scaled_linear_cross_entropy::
-          backward_tp_pool_device_bytes(
-              static_cast<int>(max_local_vocab));
-  return static_cast<int64_t>(symmetric + device);
+  try {
+    std::size_t symmetric =
+        liger::fused_scaled_linear_cross_entropy::
+            backward_tp_pool_symmetric_bytes(
+                static_cast<int>(max_tokens),
+                static_cast<int>(max_hidden),
+                static_cast<int>(max_tiles_per_reduce),
+                1);
+    std::size_t device =
+        liger::fused_scaled_linear_cross_entropy::
+            backward_tp_pool_device_bytes(
+                static_cast<int>(max_local_vocab));
+    return static_cast<int64_t>(symmetric + device);
+  } catch (const std::exception& e) {
+    ThrowCoreError(
+        "fused_linear_scaled_cross_entropy_backward_workspace_bytes",
+        e);
+  }
+  return 0;
 }
 
 int64_t fused_linear_scaled_cross_entropy_forward_diagnostic_entries() {

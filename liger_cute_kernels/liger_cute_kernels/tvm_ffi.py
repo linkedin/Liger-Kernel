@@ -278,8 +278,8 @@ def fused_linear_scaled_cross_entropy_configure_backward(
 
     All PEs in ``team_handle`` must call this with identical maxima before the
     first forward or backward launch. ``max_tiles_per_reduce`` must cover every
-    later ``tiles_per_reduce`` request. A multi-host team must cover the full
-    NVSHMEM world and use uniform node sizes.
+    later ``tiles_per_reduce`` request. Multi-host teams must have uniform
+    per-host membership and host-major team-rank ordering.
     """
     _load_module().fused_linear_scaled_cross_entropy_configure_backward(
         int(max_tokens),
@@ -309,7 +309,13 @@ def fused_linear_scaled_cross_entropy_backward_workspace_bytes(
     max_local_vocab: int,
     max_tiles_per_reduce: int,
 ) -> int:
-    """Return total symmetric plus device-private backward pool bytes."""
+    """Return total symmetric plus device-private backward pool bytes.
+
+    Before configuration, this is a conservative topology-independent
+    estimate. After configuration, all arguments must exactly match the
+    immutable configured capacity and the exact allocated footprint is
+    returned.
+    """
     return int(
         _load_module().fused_linear_scaled_cross_entropy_backward_workspace_bytes(
             int(max_tokens),

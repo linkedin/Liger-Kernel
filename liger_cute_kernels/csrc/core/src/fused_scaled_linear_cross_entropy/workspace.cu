@@ -161,6 +161,49 @@ int resident_cta_capacity() {
 	return properties.multiProcessorCount;
 }
 
+void validate_configured_symmetric_query(
+		int max_tokens,
+		int max_hidden,
+		int max_tiles_per_reduce,
+		int max_comm_channels) {
+	if (!g_configured) return;
+	LIGER_CHECK(
+		max_tokens == g_capacity.max_tokens &&
+			max_hidden == g_capacity.max_hidden &&
+			max_tiles_per_reduce == g_capacity.max_tiles_per_reduce &&
+			max_comm_channels == g_capacity.max_comm_channels,
+		"fused_scaled_linear_cross_entropy backward workspace query must "
+		"match the configured capacity (configured tokens ",
+		g_capacity.max_tokens,
+		", hidden ",
+		g_capacity.max_hidden,
+		", TilesPerReduce ",
+		g_capacity.max_tiles_per_reduce,
+		", communication channels ",
+		g_capacity.max_comm_channels,
+		"; requested tokens ",
+		max_tokens,
+		", hidden ",
+		max_hidden,
+		", TilesPerReduce ",
+		max_tiles_per_reduce,
+		", communication channels ",
+		max_comm_channels,
+		")");
+}
+
+void validate_configured_device_query(int max_local_vocab) {
+	if (!g_configured) return;
+	LIGER_CHECK(
+		max_local_vocab == g_capacity.max_local_vocab,
+		"fused_scaled_linear_cross_entropy backward workspace query must "
+		"match the configured capacity (configured local vocabulary ",
+		g_capacity.max_local_vocab,
+		"; requested ",
+		max_local_vocab,
+		")");
+}
+
 }  // namespace
 
 void configure_backward_tp_symmetric(
@@ -320,9 +363,19 @@ std::size_t backward_tp_pool_symmetric_bytes(
 		int max_hidden,
 		int max_tiles_per_reduce,
 		int max_comm_channels) {
+	LIGER_CHECK(max_tokens > 0, "max_tokens must be positive");
+	LIGER_CHECK(max_hidden > 0, "max_hidden must be positive");
+	LIGER_CHECK(
+		max_tiles_per_reduce >= 1,
+		"max_tiles_per_reduce must be positive");
 	LIGER_CHECK(
 		max_comm_channels >= 1,
 		"max_comm_channels must be positive");
+	validate_configured_symmetric_query(
+		max_tokens,
+		max_hidden,
+		max_tiles_per_reduce,
+		max_comm_channels);
 	int max_ctas =
 		g_configured ? g_capacity.max_resident_ctas : resident_cta_capacity();
 	int team_size = g_configured
@@ -374,6 +427,8 @@ std::size_t backward_tp_pool_symmetric_bytes(
 }
 
 std::size_t backward_tp_pool_device_bytes(int max_local_vocab) {
+	LIGER_CHECK(max_local_vocab > 0, "max_local_vocab must be positive");
+	validate_configured_device_query(max_local_vocab);
 	int team_size = g_configured
 		? g_capacity.team_size
 		: liger_cute::detail::kMaxTpReduceTeamSize;

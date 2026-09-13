@@ -114,15 +114,19 @@ void configure_backward_tp_symmetric(
 	int max_comm_channels,
 	std::int64_t team_handle);
 
-// Symmetric footprint at the configured maximum. The fused path reuses the
-// larger CTA-owned staging allocation, so channels add no buffer bytes.
+// Before configuration, returns a conservative topology-independent estimate.
+// After configuration, the arguments must exactly match the immutable capacity
+// and the exact configured symmetric footprint is returned. The fused path
+// reuses the larger CTA-owned staging allocation, so channels add no bytes.
 std::size_t backward_tp_pool_symmetric_bytes(
 	int max_tokens,
 	int max_hidden,
 	int max_tiles_per_reduce,
 	int max_comm_channels);
 
-// Total device-private pool footprint. CTA ring state is in shared memory.
+// Before configuration, returns a conservative device-private estimate. After
+// configuration, max_local_vocab must exactly match the immutable capacity.
+// CTA ring state is in shared memory.
 std::size_t backward_tp_pool_device_bytes(int max_local_vocab);
 
 // Collective: every PE of the configured team must call this with the same

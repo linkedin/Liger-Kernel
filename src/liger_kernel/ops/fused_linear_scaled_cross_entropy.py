@@ -84,10 +84,11 @@ def _validate_tp_inputs(_input, weight, target):
         raise TypeError("target must be an int64 tensor")
 
 
-def _is_hopper(device):
+def _supports_native_tp_architecture(device):
     if device.type != "cuda" or not torch.cuda.is_available() or torch.version.hip is not None:
         return False
-    return torch.cuda.get_device_capability(device) == (9, 0)
+    major, minor = torch.cuda.get_device_capability(device)
+    return (major, minor) == (9, 0) or major == 10
 
 
 class _TensorParallelFusedLinearPPOFallbackFunction(torch.autograd.Function):
@@ -406,7 +407,7 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
         vocab_start = rank * weight.shape[0]
 
         native_function = None
-        if _input.dtype == torch.bfloat16 and _is_hopper(_input.device):
+        if _input.dtype == torch.bfloat16 and _supports_native_tp_architecture(_input.device):
             try:
                 native_function = _load_native_tp_function()
             except ImportError:
