@@ -84,6 +84,9 @@ class LigerRMSNormForGemma4(LigerRMSNorm):
 
     When ``with_scale=False`` the Liger kernel has no weight to multiply by,
     so we fall back to a plain torch implementation that matches HF exactly.
+
+    Also swapped in for ``Gemma4UnifiedRMSNorm`` (gemma4_unified), which is
+    implementation-identical to ``Gemma4RMSNorm``.
     """
 
     def __init__(
