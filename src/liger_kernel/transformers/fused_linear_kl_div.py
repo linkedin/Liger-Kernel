@@ -83,5 +83,5 @@ class LigerFusedLinearKLDivLoss(torch.nn.Module):
     def extra_repr(self):
         return (
             f"reduction={self.reduction}, ignore_index={self.ignore_index}, "
-            f"temperature={self.temperature}, eps={self.eps}"
+            f"temperature={self.temperature}, eps={self.eps}, accum_dtype={self.accum_dtype}"
         )

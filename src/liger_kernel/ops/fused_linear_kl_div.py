@@ -200,29 +200,55 @@ def fused_linear_kl_div_forward(
         grad_input[start_idx:end_idx] = grad_logits_chunk @ student_weight
 
         if grad_weight is not None:
-            if accum_dtype is None:
-                grad_weight.add_(grad_logits_chunk.t() @ input_chunk)
+            grad_logits_t = grad_logits_chunk.t()
+            if (
+                _ADDMM_SUPPORTS_OUT_DTYPE
+                and grad_weight.device.type == "cuda"
+                and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
+                and grad_weight.dtype == torch.float32
+                and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
+            ):
+                # FP32 accumulator (accum_dtype=torch.float32). Unlike torch.mm,
+                # torch.addmm's out_dtype path does not participate in autocast operand
+                # casting, so the accumulator can stay fp32 while grad_logits is the
+                # autocast dtype. addmm requires mat1 and mat2 to share a dtype, so align
+                # input_chunk before accumulating.
+                chunk_input = input_chunk
+                if chunk_input.dtype != grad_logits_t.dtype:
+                    chunk_input = chunk_input.to(grad_logits_t.dtype)
+                torch.addmm(
+                    grad_weight,
+                    grad_logits_t,
+                    chunk_input,
+                    out_dtype=torch.float32,
+                    out=grad_weight,
+                )
+            elif (
+                grad_weight.device.type == "cuda"
+                and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
+                and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
+                and grad_weight.dtype == grad_logits_t.dtype
+            ):
+                # Low-precision accumulator (accum_dtype=None with bf16/fp16 params) whose
+                # dtype already matches grad_logits. Accumulate straight into grad_weight
+                # with addmm(out=grad_weight), mirroring the fused_linear_cross_entropy
+                # accumulation; avoids the legacy path's parameter-sized low-precision
+                # temporary + cast per chunk.
+                chunk_input = input_chunk
+                if chunk_input.dtype != grad_logits_t.dtype:
+                    chunk_input = chunk_input.to(grad_logits_t.dtype)
+                torch.addmm(
+                    grad_weight,
+                    grad_logits_t,
+                    chunk_input,
+                    out=grad_weight,
+                )
             else:
-                grad_logits_t = grad_logits_chunk.t()
-                if (
-                    _ADDMM_SUPPORTS_OUT_DTYPE
-                    and grad_weight.device.type == "cuda"
-                    and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
-                    and grad_weight.dtype == torch.float32
-                    and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
-                ):
-                    chunk_input = input_chunk
-                    if chunk_input.dtype != grad_logits_t.dtype:
-                        chunk_input = chunk_input.to(grad_logits_t.dtype)
-                    torch.addmm(
-                        grad_weight,
-                        grad_logits_t,
-                        chunk_input,
-                        out_dtype=torch.float32,
-                        out=grad_weight,
-                    )
-                else:
-                    grad_weight.add_(torch.mm(grad_logits_t, input_chunk).float())
+                # Legacy fallback: unsupported torch/device (no out_dtype), fp64
+                # accumulators, or a dtype mismatch (e.g. fp32 grad_logits promoted under
+                # AMP). Correct but allocates a parameter-sized fp32 temporary before
+                # summing into grad_weight.
+                grad_weight.add_(torch.mm(grad_logits_t, input_chunk).float())
 
     loss = loss_1d.sum()
     grad_weight = (
