@@ -32,20 +32,36 @@ if(LIGER_CUTE_ENABLE_SM90_NONRDC_MOE)
         "${LIGER_CUTE_NONRDC_MOE_MODULE_SOURCE}")
 endif()
 
-# WGMMA/TMA translation units stay non-RDC. Remote NVSHMEM collectives are
-# isolated in detail/remote_all_reduce.cu.
+# SM90 WGMMA/TMA translation units stay non-RDC. SM100 inlines the warp-scoped
+# NVSHMEM forward ring, but the installed NVSHMEM ABI exposes device-state
+# symbols only to RDC compilation; the target is switched below only for that
+# architecture. Generic large-payload collectives remain isolated in
+# detail/remote_all_reduce.cu.
 set(LIGER_CUTE_FSLCE_FORWARD_SM90_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/fused_linear_scaled_cross_entropy_forward.cu")
+set(LIGER_CUTE_FSLCE_FORWARD_SM100_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/fused_linear_scaled_cross_entropy_forward_sm100.cu")
 set(LIGER_CUTE_FSLCE_FORWARD_REDUCE_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/forward_reduce.cu")
 set(LIGER_CUTE_FSLCE_BACKWARD_SM90_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/fused_linear_scaled_cross_entropy_backward.cu")
+set(LIGER_CUTE_FSLCE_BACKWARD_SM100_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/fused_linear_scaled_cross_entropy_backward_sm100.cu")
+set(LIGER_CUTE_FSLCE_BACKWARD_BENCH_SM100_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/fused_linear_scaled_cross_entropy_backward_bench_sm100.cu")
 set(LIGER_CUTE_FSLCE_BACKWARD_REDUCE_SM90_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/backward_reduce_sm90.cu")
+set_source_files_properties(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy/workspace.cu"
+    PROPERTIES COMPILE_DEFINITIONS
+    "LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS=${LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS};LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT=${LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT}")
 list(REMOVE_ITEM LIGER_CUTE_CORE_SOURCES
     "${LIGER_CUTE_FSLCE_FORWARD_SM90_SOURCE}"
+    "${LIGER_CUTE_FSLCE_FORWARD_SM100_SOURCE}"
     "${LIGER_CUTE_FSLCE_FORWARD_REDUCE_SOURCE}"
     "${LIGER_CUTE_FSLCE_BACKWARD_SM90_SOURCE}"
+    "${LIGER_CUTE_FSLCE_BACKWARD_SM100_SOURCE}"
+    "${LIGER_CUTE_FSLCE_BACKWARD_BENCH_SM100_SOURCE}"
     "${LIGER_CUTE_FSLCE_BACKWARD_REDUCE_SM90_SOURCE}")
 
 file(GLOB_RECURSE LIGER_CUTE_CORE_HEADERS
@@ -182,22 +198,65 @@ if(LIGER_CUTE_ENABLE_SM90_NONRDC_MOE)
         DEPENDS "${LIGER_CUTE_SM90_NONRDC_MOE_CUBIN}")
 endif()
 
-add_library(liger_cute_fslce_forward_sm90 OBJECT
-    "${LIGER_CUTE_FSLCE_FORWARD_SM90_SOURCE}")
-set_target_properties(liger_cute_fslce_forward_sm90 PROPERTIES
+if(LIGER_CUTE_CUDA_ARCH MATCHES "^(100|103)")
+    set(LIGER_CUTE_FSLCE_FORWARD_TARGET liger_cute_fslce_forward_sm100)
+    set(LIGER_CUTE_FSLCE_FORWARD_SOURCE
+        "${LIGER_CUTE_FSLCE_FORWARD_SM100_SOURCE}")
+else()
+    set(LIGER_CUTE_FSLCE_FORWARD_TARGET liger_cute_fslce_forward_sm90)
+    set(LIGER_CUTE_FSLCE_FORWARD_SOURCE
+        "${LIGER_CUTE_FSLCE_FORWARD_SM90_SOURCE}")
+endif()
+
+add_library(${LIGER_CUTE_FSLCE_FORWARD_TARGET} OBJECT
+    "${LIGER_CUTE_FSLCE_FORWARD_SOURCE}")
+set_target_properties(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     CXX_VISIBILITY_PRESET hidden
     CUDA_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
-target_compile_definitions(liger_cute_fslce_forward_sm90 PRIVATE
+target_compile_definitions(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PRIVATE
     LIGER_CUTE_BUILDING=1)
-target_include_directories(liger_cute_fslce_forward_sm90 PRIVATE
+if(LIGER_CUTE_CUDA_ARCH MATCHES "^(100|103)")
+    # The installed NVSHMEM headers expose their device-state declarations
+    # only under __CUDACC_RDC__. Keep SM90 non-RDC, but compile the SM100
+    # communication specialization relocatably and resolve it in the final
+    # core device link.
+    set_target_properties(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON)
+    target_compile_definitions(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PRIVATE
+        LIGER_CUTE_FSLCE_SM100_STAGES=${LIGER_CUTE_FSLCE_SM100_STAGES}
+        LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES=${LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES}
+        LIGER_CUTE_FSLCE_SM100_ENABLE_NVSHMEM=1)
+    if(LIGER_CUTE_FSLCE_SM100_DIAGNOSTIC_DISABLE_REMOTE)
+        target_compile_definitions(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PRIVATE
+            LIGER_CUTE_FSLCE_SM100_DIAGNOSTIC_DISABLE_REMOTE=1)
+    endif()
+    if(LIGER_CUTE_FSLCE_SM100_DIAGNOSTIC_TIMESTAMPS)
+        target_compile_definitions(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PRIVATE
+            LIGER_CUTE_FSLCE_SM100_DIAGNOSTIC_TIMESTAMPS=1)
+    endif()
+    if(LIGER_CUTE_FSLCE_SM100_PIPELINED_RING_WAVES)
+        target_compile_definitions(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PRIVATE
+            LIGER_CUTE_FSLCE_SM100_PIPELINED_RING_WAVES=1)
+    endif()
+    if(LIGER_CUTE_FSLCE_SM100_USE_WARP_TEAM_COLLECTIVES)
+        target_compile_definitions(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PRIVATE
+            LIGER_CUTE_FSLCE_SM100_USE_WARP_TEAM_COLLECTIVES=1)
+    endif()
+endif()
+target_include_directories(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/moe
     ${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy)
-target_link_libraries(liger_cute_fslce_forward_sm90 PRIVATE
+target_link_libraries(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PRIVATE
     CUTLASS::CUTLASS
     CUDA::cudart)
+if(LIGER_CUTE_CUDA_ARCH MATCHES "^(100|103)")
+    target_link_libraries(${LIGER_CUTE_FSLCE_FORWARD_TARGET} PRIVATE
+        NVSHMEM::nvshmem_host
+        NVSHMEM::nvshmem_device)
+endif()
 
 add_library(liger_cute_fslce_forward_reduce OBJECT
     "${LIGER_CUTE_FSLCE_FORWARD_REDUCE_SOURCE}")
@@ -262,13 +321,87 @@ target_link_libraries(
     CUDA::cudart
     CUDA::cuda_driver)
 
+# The fused SM100 backward is a single persistent cluster-2 kernel. Like the
+# SM100 forward it inlines the warp-scoped NVSHMEM ring, and the installed
+# NVSHMEM ABI exposes its device-state symbols only to RDC compilation, so this
+# translation unit alone is compiled relocatably and resolved in the final core
+# device link. SM90 stays non-RDC.
+set(LIGER_CUTE_FSLCE_BACKWARD_SM100_OBJECTS "")
+if(LIGER_CUTE_CUDA_ARCH MATCHES "^(100|103)")
+    add_library(liger_cute_fslce_backward_sm100 OBJECT
+        "${LIGER_CUTE_FSLCE_BACKWARD_SM100_SOURCE}")
+    set_target_properties(liger_cute_fslce_backward_sm100 PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CXX_VISIBILITY_PRESET hidden
+        CUDA_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+    target_compile_definitions(liger_cute_fslce_backward_sm100 PRIVATE
+        LIGER_CUTE_BUILDING=1
+        LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES=${LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES}
+        LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS=${LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS}
+        LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT=${LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT}
+        LIGER_CUTE_FSLCE_SM100_BACKWARD_ENABLE_NVSHMEM=1)
+    if(LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_CHUNK_PIPELINE)
+        target_compile_definitions(liger_cute_fslce_backward_sm100 PRIVATE
+            LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_CHUNK_PIPELINE=1)
+    endif()
+    if(LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_TIMESTAMPS)
+        target_compile_definitions(liger_cute_fslce_backward_sm100 PRIVATE
+            LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_TIMESTAMPS=1)
+    endif()
+    target_include_directories(liger_cute_fslce_backward_sm100 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/moe
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy)
+    target_link_libraries(liger_cute_fslce_backward_sm100 PRIVATE
+        CUTLASS::CUTLASS
+        NVSHMEM::nvshmem_host
+        NVSHMEM::nvshmem_device
+        CUDA::cudart
+        CUDA::cuda_driver)
+    # Benchmark-only per-phase launch paths. Same kernel template, one phase
+    # bit each. It reaches the pooled symmetric allocator through
+    # buffer_pool.cuh, whose NVSHMEM device-state declarations are only visible
+    # under RDC, so this target matches the production one.
+    add_library(liger_cute_fslce_backward_bench_sm100 OBJECT
+        "${LIGER_CUTE_FSLCE_BACKWARD_BENCH_SM100_SOURCE}")
+    set_target_properties(liger_cute_fslce_backward_bench_sm100 PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CXX_VISIBILITY_PRESET hidden
+        CUDA_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+    target_compile_definitions(liger_cute_fslce_backward_bench_sm100 PRIVATE
+        LIGER_CUTE_BUILDING=1
+        LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES=${LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES}
+        LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS=${LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS}
+        LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT=${LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT})
+    if(LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_TIMESTAMPS)
+        target_compile_definitions(liger_cute_fslce_backward_bench_sm100 PRIVATE
+            LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_TIMESTAMPS=1)
+    endif()
+    target_include_directories(liger_cute_fslce_backward_bench_sm100 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/moe
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy)
+    target_link_libraries(liger_cute_fslce_backward_bench_sm100 PRIVATE
+        CUTLASS::CUTLASS
+        NVSHMEM::nvshmem_host
+        NVSHMEM::nvshmem_device
+        CUDA::cudart
+        CUDA::cuda_driver)
+    set(LIGER_CUTE_FSLCE_BACKWARD_SM100_OBJECTS
+        "$<TARGET_OBJECTS:liger_cute_fslce_backward_sm100>"
+        "$<TARGET_OBJECTS:liger_cute_fslce_backward_bench_sm100>")
+endif()
+
 add_library(liger_cute_kernels SHARED
     ${LIGER_CUTE_CORE_SOURCES}
     ${LIGER_CUTE_CORE_HEADERS}
-    $<TARGET_OBJECTS:liger_cute_fslce_forward_sm90>
+    $<TARGET_OBJECTS:${LIGER_CUTE_FSLCE_FORWARD_TARGET}>
     $<TARGET_OBJECTS:liger_cute_fslce_forward_reduce>
     $<TARGET_OBJECTS:liger_cute_fslce_backward_sm90>
     $<TARGET_OBJECTS:liger_cute_fslce_backward_reduce_sm90>
+    ${LIGER_CUTE_FSLCE_BACKWARD_SM100_OBJECTS}
     "${CMAKE_CURRENT_SOURCE_DIR}/../../liger_cute_kernels/tvm_ffi_bindings.cpp"
 )
 

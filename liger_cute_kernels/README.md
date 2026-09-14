@@ -16,7 +16,7 @@ buffers, and support CUDA Graph execution without a token-capacity limit.
 The tensor-parallel fused scaled linear cross-entropy implementation fuses the
 classifier projection with per-token NLL and optional entropy. Local MAX/SUM
 reductions run in the WGMMA epilogue through NVLS or DirectPeer, with a sharded
-IBRC follow-up for two-host execution.
+inter-host ring follow-up for multi-host execution.
 
 ### Hopper results
 
@@ -28,7 +28,7 @@ model or system.
 |---|---|
 | Standalone MoE kernels | Up to **32% lower forward latency** and **7% lower backward latency** than the strongest compared implementation |
 | Communication-intensive H200 cases | **10–35% higher forward throughput** than Comet; selected backward cases reach up to **~108% higher throughput** than DeepEP |
-| Tensor-parallel fused scaled linear cross entropy | **783.5 TFLOP/s/GPU at TP1**, **762.3 at TP8**, and **662.9 at two-host TP16** for M8192/H4096/V131072 |
+| Tensor-parallel fused scaled linear cross entropy | At M8192/H4096/global-V131072: forward reaches **1,531 TFLOP/s/GPU at TP1**, **1,386 at TP8**, and **722 at two-host TP16**; full forward+backward reaches **1,580**, **1,043**, and **547 TFLOP/s/GPU** across forward, dZ recompute, dX, and dW |
 | Qwen3-30B-A3B training on 8 H100 GPUs | **2.35× speedup / 57% lower step time** than Megatron and **~17% lower step time** than Transformer Engine |
 | End-to-end convergence | **5.06% final-loss improvement** over the Megatron baseline |
 
@@ -65,7 +65,7 @@ The Hopper native core also provides
 `fused_linear_scaled_cross_entropy_backward`. The backward path uses a
 three-stage cluster-2 dZ handoff followed by a four-stage combined dX+dW
 cluster kernel. dX uses split-K=2 only for hidden size 2,048; hidden size 4,096
-uses split-K=1. Direct-peer and hierarchical two-host transports remain
+uses split-K=1. Direct-peer and hierarchical multi-host transports remain
 available when the single-host NVLS path is not selected.
 
 The `liger_cute_kernels.tvm_ffi` facade exposes configuration plus forward and
@@ -74,18 +74,122 @@ tensor-parallel ranks and take inverse temperature.
 Capacities for tokens, hidden size, local vocabulary, and reduction grouping
 must be configured before capture or execution.
 
-Hierarchical NVLS+remote backward currently requires the configured
-tensor-parallel team to cover the full NVSHMEM world. Single-host NVLS
-subgroups remain supported; a multi-host subgroup that is only part of a
-larger world fails explicitly rather than communicating with nonmembers.
+Hierarchical NVLS+remote execution supports uniformly partitioned multi-host
+subgroups. Team ranks must be host-major: each host contributes the same
+number of consecutive team-local ranks. Setup applies
+`nvshmem_team_split_2d` to derive an NVLS-capable local row and a matching-rank
+remote column. For example, world ranks `{0,4,8,12}` on two eight-GPU hosts
+become local teams `{0,4}` / `{8,12}` and remote pairs `{0,8}` / `{4,12}`.
 
 Tensor-parallel reduction transport is implemented in `liger_cute::detail`.
 Host setup selects either the NVLS or DirectPeer local backend and passes only
-that backend's compact device view to the kernel. Forward performs local MAX
-and corrected SUM reductions in its WGMMA epilogue; the RDC follow-up exchanges
-one unique token shard per local GPU over IBRC, gathers the merged shards with
-NVLS, and writes NLL/LSE/entropy. Backward retains its local reduce-scatter,
-remote reduction, and local all-gather/scatter pipeline.
+that backend's compact device view to the kernel. Multi-host setup retains the
+parent-relative local and remote teams until configuration reset. The ring
+topology, epochs, packed online-softmax state merge, and node-local all-gather
+are shared by SM90 and SM100. The inter-host ring is a warp-scoped
+device function: one worker warp avoids block synchronization for fusion,
+while standalone wrappers use eight worker warps. SM100 forward partitions
+the local vocabulary into configurable N256 waves (64 tiles by default),
+keeps four source slots, and runs
+the matching-rank host ring plus final state accumulation in warp 1 of one
+stable CTA while later waves continue through TMA, UMMA, and the epilogue.
+After the last wave, warp 1 performs the node-local NVLS all-gather and writes
+NLL/LSE/entropy. SM90 forward retains the separately launched finalizer.
+Backward uses the same ring between its local reduce-scatter and local
+all-gather/scatter stages.
+
+SM100 remote kernels synchronize on the configured parent TP team, then use a
+cooperative clustered CUDA launch. They do not require the TP team to equal
+`NVSHMEM_TEAM_WORLD`, so disjoint TP groups can execute independently.
+
+On SM100 the backward is a single persistent 384-thread, cluster-2 kernel with
+a device-side token-wave loop: dZ, dX, dW and the wave schedule are fused into
+one launch. Warp 2 owns every TMA producer, warp 3 every UMMA issue, and warps
+4-11 the epilogues and TMEM loads. Warp 4 takes a single `Allocator2Sm` TMEM
+allocation, sized by the max over phases, that dZ, dX and dW reuse; the three
+operand arenas form a phase-serial union while pipelines, mbarriers and the
+TMEM handle live outside it. dW wave 0 stores and later waves TMA-reduce-add,
+exactly like SM90. Every compute-side named barrier excludes warps 0 and 1, and
+a full-grid software barrier is taken only where dZ workspace publication and
+reuse require it, under a strict full-residency launch invariant.
+
+The dX communication runs a three-stage chunk pipeline. A *chunk* is one token
+wave's complete dX: every CTA of the grid contributes a disjoint set of
+M128xN256 tiles into one packed shard region, so a chunk is exactly one
+contiguous inter-host message.
+
+* **Stage R — tile granular.** Warp 0 NVLS reduce-scatters each tile the dX
+  epilogue publishes and releases its staging slot immediately; it never waits
+  for the rest of the chunk.
+* **Stage P — chunk granular.** After its last tile of chunk `k`, every CTA's
+  warp 0 bumps a monotone completion counter. CTA 0's warp 1 launches the
+  inter-host transfer only once the whole chunk is locally reduced. When the
+  peer shard arrives, warp 1 from every resident CTA merges a global-strided
+  section into the packed shard and contributes one HBM atomic arrival. CTA 0
+  acknowledges the ring and publishes completion after all `grid_ctas`
+  arrivals.
+* **Stage F — chunk granular, deferred by one chunk.** Warp 0 finalizes chunk
+  `k` (node-local NVLS all-gather plus the BF16 scatter into `grad_input`) at
+  the top of chunk `k+1`, so it overlaps chunk `k+1`'s dZ GEMM instead of
+  gating it. The last chunk is drained after the wave loop.
+
+The communication pipeline therefore spans both the same chunk's dW GEMM and
+the next chunk's dZ GEMM:
+
+```
+compute   | dX(k) | dW(k)              | dZ(k+1)            | dX(k+1) | dW(k+1)
+warp 0    | R(k) tile by tile          | F(k)               | R(k+1) ...
+warp 1s   |       | IB transfer + all-CTA warp-1 merge      | IB dX(k+1) ...>
+```
+
+dX(`k`) is finalized before its slots could be reused, not before compute
+advances: the end-of-wave grid barrier protects the dZ workspace only, the
+tile-granular staging ring is released in stage R, and the packed shard plus
+the all-gather destination are addressed by absolute chunk index, so the two
+live chunks always own disjoint storage. SM90 backward retains its two
+separately launched wave kernels and its standalone finalizer.
+
+The wave width can be selected at build time with
+`-DLIGER_CUTE_FSLCE_SM100_WAVE_N_TILES=16|32|64|128`.
+The ring publishes each whole shard and its ready epoch with one blocking
+`nvshmemx_qp_float_put_signal_warp` on `NVSHMEMX_QP_DEFAULT`; it contains no
+`nvshmem_quiet`, `nvshmem_fence`, or `put_block` calls. Two-host execution
+alternates ready/inbox slots by wave sequence and needs no consumed signals.
+Larger host rings retain consumed acknowledgements and pipeline their final
+waits across waves by default.
+
+On B300 two-host runs, pin one PE to each GPU-local HCA:
+
+```bash
+export NVSHMEM_REMOTE_TRANSPORT=ibrc
+export NVSHMEM_IB_ENABLE_IBGDA=1
+export NVSHMEM_ENABLE_NIC_PE_MAPPING=1
+unset NVSHMEM_HCA_LIST
+export NVSHMEM_HCA_PE_MAPPING='mlx5_0:1:1,mlx5_2:1:1,mlx5_3:1:1,mlx5_4:1:1,mlx5_5:1:1,mlx5_6:1:1,mlx5_8:1:1,mlx5_9:1:1'
+```
+
+With `NVSHMEM_DEBUG=INFO`, initialization should report
+`Successfully initialized the transport: IBGDA. It will be used for
+device-side APIs over IB.`
+
+For transport attribution, the SM100 remote stage can instead use matching-rank
+warp MAX/SUM collectives with
+`-DLIGER_CUTE_FSLCE_SM100_USE_WARP_TEAM_COLLECTIVES=ON`. This two-pass mode is
+an ablation; the QP combined put-signal ring remains the default.
+
+The distributed forward benchmark keeps the production Verl-derived fallback
+selectable and reports full-forward latency, effective global TFLOP/s, and
+maximum per-rank CUDA memory:
+
+```bash
+torchrun --standalone --nproc_per_node=8 \
+  benchmark/scripts/benchmark_fused_scaled_linear_cross_entropy_tp.py \
+  --provider native
+
+torchrun --standalone --nproc_per_node=8 \
+  benchmark/scripts/benchmark_fused_scaled_linear_cross_entropy_tp.py \
+  --provider verl-fallback
+```
 
 ## Package architecture
 
@@ -163,7 +267,8 @@ src/liger_kernel/ops/cute/
 ## Prerequisites
 
 - **CUDA toolkit** with `nvcc` and either SM 9.0a (Hopper / `sm_90a`) or
-  SM 10.0a (Blackwell / `sm_100a`) support.
+  Blackwell family (`sm_100f`) support. The family target covers both B200
+  (`sm_100`) and B300 (`sm_103`) while enabling TCGEN05 UMMA and TMEM.
 - **NVSHMEM** install (host `.so`, device `.a`, headers). Two layouts are
   supported:
   - Native/system install: point `NVSHMEM_HOME` at it, or use the default
@@ -234,12 +339,15 @@ For development artifacts in a different directory, set
 Build for Blackwell by overriding the CUDA architecture:
 
 ```bash
-cmake -S liger_cute_kernels -B build/core-sm100 \
+cmake -S liger_cute_kernels -B build/core-sm100f \
       -DLIGER_CUTE_BUILD_BINDINGS=OFF \
-      -DLIGER_CUTE_CUDA_ARCH=100a \
+      -DLIGER_CUTE_CUDA_ARCH=100f \
       -DCMAKE_BUILD_TYPE=Release -GNinja
-cmake --build build/core-sm100 --target liger_cute_kernels -j
+cmake --build build/core-sm100f --target liger_cute_kernels -j
 ```
+
+Use architecture-specific `100a` or `103a` targets only when a kernel requires
+features outside the common Blackwell-family ISA.
 
 Or from Python (with `liger_cute_kernels/` on `sys.path`):
 
@@ -412,7 +520,11 @@ libraries into the package automatically.
 |---|---|---|
 | `LIGER_CUTE_BUILD_BINDINGS` | `OFF` | Deprecated compatibility option. Leave OFF; tensor APIs are exposed through TVM FFI only. |
 | `LIGER_CUTE_CORE_IMPORTED_DIR` | *(empty)* | Dir holding a prebuilt `libliger_cute_kernels.so`. When set, the core is linked as an imported library (not compiled) and CUTLASS is not required. |
-| `LIGER_CUTE_CUDA_ARCH` | `90a` | CUDA target architecture. Use `100a` for Blackwell / B200. |
+| `LIGER_CUTE_CUDA_ARCH` | `90a` | CUDA target architecture. Use `100f` for one B200/B300 Blackwell-family build. |
+| `LIGER_CUTE_FSLCE_SM100_STAGES` | `5` | SM100 forward TMA mainloop stages. |
+| `LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES` | `64` | SM100 forward communication wave width in N256 tiles. |
+| `LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES` | `5` | SM100 fused backward dZ TMA mainloop stages. |
+| `LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_CHUNK_PIPELINE` | `OFF` | Diagnostic only: force the chunk-granular deferred dX schedule on a single host so the state machine can be validated without an inter-host ring. |
 | `LIGER_CUTE_BUILD_TESTS` | `OFF` | Build the C++ gtest tests. |
 | `LIGER_CUTE_TESTS_ONLY` | `OFF` | Build only tests; skips NVSHMEM/TVM FFI/core packaging. |
 | `LIGER_CUTE_STATIC_LIBSTDCXX` | `ON` | Statically link libstdc++/libgcc into the core so its internal C++ ABI is invisible to consumers. |
@@ -423,7 +535,7 @@ Standard CMake flags also apply: `-DCMAKE_BUILD_TYPE=Release`, `-GNinja`,
 `-DPython_EXECUTABLE=...`.
 
 CUDA architecture defaults to `sm_90a` (Hopper, with WGMMA/TMA/multicast) and
-is configurable with `-DLIGER_CUTE_CUDA_ARCH=100a` for Blackwell.
+is configurable with `-DLIGER_CUTE_CUDA_ARCH=100f` for B200 and B300.
 
 ## Environment variables
 
@@ -431,6 +543,7 @@ is configurable with `-DLIGER_CUTE_CUDA_ARCH=100a` for Blackwell.
 |---|---|---|
 | `NVSHMEM_HOME` | CMake / `cute_build` | NVSHMEM install root (default `/usr/local/nvshmem`). |
 | `CUTLASS_HOME` | CMake | CUTLASS repo root (core compile only). |
+| `LIGER_CUTE_CUDA_ARCH` | CMake / `cute_build` | CUDA target architecture; use `100f` for a shared Blackwell-family build. |
 | `LIGER_CUTE_CORE_DIR` | `setup.py` | Dir with a prebuilt core. Set → link it (no core recompile); unset → build the core from source. |
 | `LIGER_CUTE_LOCAL_VERSION` | `setup.py` | Override the auto-detected `cu<ver>.torch<ver>` local version tag. |
 

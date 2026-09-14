@@ -139,6 +139,16 @@ def _worker(rank: int, world_size: int, init_file: str, subgroup: bool):
 
         tvm_ffi.fused_linear_scaled_cross_entropy_configure_forward(tokens, local_vocab)
         tvm_ffi.fused_linear_scaled_cross_entropy_configure_backward(tokens, hidden, local_vocab, 1, team)
+        assert tvm_ffi.fused_linear_scaled_cross_entropy_backward_workspace_bytes(tokens, hidden, local_vocab, 1) > 0
+        mismatched_capacities = (
+            (tokens * 2, hidden, local_vocab, 1),
+            (tokens, hidden * 2, local_vocab, 1),
+            (tokens, hidden, local_vocab * 2, 1),
+            (tokens, hidden, local_vocab, 2),
+        )
+        for workspace_capacity in mismatched_capacities:
+            with pytest.raises(RuntimeError, match="workspace query must match the configured capacity"):
+                tvm_ffi.fused_linear_scaled_cross_entropy_backward_workspace_bytes(*workspace_capacity)
         actual_nll, lse, entropy = tvm_ffi.fused_linear_scaled_cross_entropy_forward(
             x,
             weight,
