@@ -40,6 +40,19 @@ _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
+def _get_chunk_size(BT, H, V):
+    """Token-chunk size shared by the Triton and cuTile FLCE backends.
+
+    Widens the transient logits budget to ``_CHUNK_MEM_CONST x BT x H`` (C=1 is a
+    memory floor, not a perf target): ``inc_factor = cdiv(V, C*H)``, then the
+    chunk is the next power of two of ``cdiv(BT, inc_factor)``, clamped to ``BT``
+    so a single chunk covers ``BT`` when the budget allows (and when ``V <= C*H``).
+    """
+    inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
+    chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
+    return min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
+
+
 def fused_linear_cross_entropy_forward(
     _input,
     weight,
@@ -89,9 +102,7 @@ def fused_linear_cross_entropy_forward(
     V = weight.shape[0]
 
     # widen the transient logits budget to C x BT x H (C=1 is a memory floor, not a perf target)
-    inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
-    chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
-    chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
+    chunk_size = _get_chunk_size(BT, H, V)
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
     grad_input = torch.zeros_like(_input, device=device)

@@ -209,6 +209,30 @@ LIGER_KERNEL_IMPL=cutile python your_script.py
 
 `LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile` and `cutedsl`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
 
+#### cuTile Fused Linear Cross Entropy
+
+With `LIGER_KERNEL_IMPL=cutile`, `LigerFusedLinearCrossEntropyLoss` routes to a cuTile Fused Linear Cross Entropy kernel for BF16 `input`/`weight` on Hopper (SM90) and Blackwell (SM100). No API change is needed — the default route just works:
+
+```bash
+LIGER_KERNEL_IMPL=cutile python your_script.py
+```
+
+```python
+from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+
+# Same call as the default backend — there is no chunk_size argument.
+loss_fn = LigerFusedLinearCrossEntropyLoss(reduction="mean")
+loss = loss_fn(lm_head_weight, hidden_states, labels)
+```
+
+Implementation notes:
+
+- Token chunking uses the **exact same default geometry as the Triton backend** (`inc = ceil(V / (16·H))`, `chunk = min(N, next_pow2(ceil(N / inc)))`); there is no public `chunk_size` knob.
+- All three GEMMs — projection, input-gradient (`dX`), and weight-gradient (`dW`) — run through PyTorch/cuBLAS, and the precision/normalization/cast order matches the Triton backend's `mean`/`sum` path. The CE kernel normalizes `dZ` by the global non-ignored mean (`1/N`; `1` for `sum`) in FP32 — after the target subtract-1 and before the BF16 cast — so `dX` and the `dW` accumulation run on the already-normalized low-precision `dZ` (no post-GEMM scaling).
+- The `dW` accumulator dtype follows `accum_dtype`: `None` inherits the weight dtype (BF16) and accumulates across chunks in that dtype (`addmm` into a zero-initialized buffer on every chunk, including the first), rounding to BF16 after each chunk so the final `end`-of-forward `.to(weight dtype)` is a no-op; `torch.float32` accumulates in FP32 and is converted to the weight dtype exactly once at the end of the forward. Backward then applies only the upstream gradient (the unchunked legacy backward is the FP32-only path).
+- Per-chunk allocation mirrors the Triton reference as a baseline: each token chunk materializes a fresh `[rows, V]` logits tensor (`input_chunk @ weight.t()`) that the CE kernel overwrites with `dZ`, `dX` is a transient `dZ @ weight` chunk GEMM copied into a `zeros_like` `grad_input` slice, and `dW` accumulates via `addmm` into a zero-initialized buffer on every chunk. Workspace reuse (a single recycled logits buffer, direct GEMM-into-output for `dX`, and a first-chunk `mm` init) is intentionally deferred to a later allocation-optimization PR for both backends.
+- Supports BF16 `input` and `weight` with `mean`/`sum` reductions and `accum_dtype` in (`None`, `torch.float32`, `torch.bfloat16`). This aligns the accumulation-precision/normalization/cast order with Triton, but it is still **not** a full feature or bitwise-precision match for the Triton kernel (e.g. no bias, class weights, z-loss, label smoothing, softcap, or token scaling).
+
 ### Enable CuTe DSL Backend
 
 CuTe DSL is the optional, CUDA-only Python DSL shipped with NVIDIA CUTLASS (`import cutlass.cute`), targeting Hopper (SM90) and Blackwell (SM100/SM110). After installing the `cutedsl` extra, enable it explicitly:
