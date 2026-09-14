@@ -79,7 +79,7 @@ def _sparsemax_bwd_kernel_ct(
 
     go_sum = ct.sum(go_sum_tile, 0, keepdims=False)
     supp_cnt = ct.sum(supp_cnt_tile, 0, keepdims=False)
-    mean_go = go_sum / (supp_cnt + 1e-6)
+    mean_go = go_sum / ct.maximum(supp_cnt, 1.0)
 
     for ci in range(n_chunks):
         col_idx = ct.arange(BLOCK_SIZE, dtype=ct.int32) + ci * BLOCK_SIZE
