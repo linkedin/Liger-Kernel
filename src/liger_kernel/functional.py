@@ -47,6 +47,7 @@ declare_op_locations(
         "liger_kernel.ops.backends._triton.layer_norm",
         "liger_kernel.ops.backends._cutedsl.layer_norm",
         "liger_kernel.ops.backends._cutile.layer_norm",
+        "liger_kernel.ops.backends._ascend.layer_norm",
     ),
 )
 
