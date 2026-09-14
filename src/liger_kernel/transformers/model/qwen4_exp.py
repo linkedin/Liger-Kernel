@@ -1,0 +1,142 @@
+from typing import Optional
+from typing import Union
+
+import torch
+
+from transformers.cache_utils import Cache
+from transformers.utils.generic import can_return_tuple
+
+from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
+from liger_kernel.transformers.model.output_classes import LigerMoeCausalLMOutputWithPast
+from liger_kernel.transformers.qwen4_exp import _has_module_hooks
+
+
+def _can_use_fused_lce_lm_head(lm_head, hidden_states):
+    """Only direct-read the weight of a plain, resident, semantically unwrapped Linear."""
+    if type(lm_head) is not torch.nn.Linear or lm_head.bias is not None:
+        return False
+    if "forward" in lm_head.__dict__:
+        return False
+    if hasattr(lm_head, "_hf_hook") or hasattr(lm_head, "_old_forward"):
+        return False
+    if _has_module_hooks(lm_head):
+        return False
+    weight = lm_head.weight
+    return (
+        type(weight) is torch.nn.Parameter
+        and weight.layout == torch.strided
+        and weight.device.type != "meta"
+        and weight.device == hidden_states.device
+    )
+
+
+@can_return_tuple
+def lce_forward(
+    self,
+    input_ids: Optional[torch.LongTensor] = None,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    past_key_values: Cache | None = None,
+    inputs_embeds: Optional[torch.FloatTensor] = None,
+    labels: Optional[torch.LongTensor] = None,
+    use_cache: Optional[bool] = None,
+    output_router_logits: Optional[bool] = None,
+    logits_to_keep: Union[int, torch.Tensor] = 0,
+    *,
+    cache_position: Optional[torch.LongTensor] = None,
+    skip_logits: Optional[bool] = None,
+    **kwargs,
+) -> LigerMoeCausalLMOutputWithPast:
+    r"""
+    labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+        Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+        config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+        (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+    logits_to_keep (`int` or `torch.Tensor`, *optional*):
+        If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
+        `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
+        token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
+        If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
+        This is useful when using packed tensor format (single dimension for batch and sequence length).
+    """
+    shift_labels = kwargs.pop("shift_labels", None)
+    if skip_logits and labels is None and shift_labels is None:
+        raise ValueError("skip_logits is True, but labels and shift_labels are None")
+
+    if output_router_logits is None:
+        output_router_logits = getattr(self.config, "output_router_logits", False)
+
+    # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+    outputs = self.model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        past_key_values=past_key_values,
+        inputs_embeds=inputs_embeds,
+        use_cache=use_cache,
+        output_router_logits=output_router_logits,
+        return_dict=True,
+        cache_position=cache_position,
+        **kwargs,
+    )
+
+    hidden_states = outputs.last_hidden_state
+    # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+    slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+    kept_hidden_states = hidden_states[:, slice_indices, :]
+
+    logits = None
+    loss = None
+    token_accuracy = None
+    predicted_tokens = None
+
+    if skip_logits is None:
+        skip_logits = self.training and (labels is not None or shift_labels is not None)
+
+    if skip_logits and _can_use_fused_lce_lm_head(self.lm_head, kept_hidden_states):
+        result = LigerForCausalLMLoss(
+            hidden_states=kept_hidden_states,
+            lm_head_weight=self.lm_head.weight,
+            labels=labels,
+            shift_labels=shift_labels,
+            hidden_size=self.config.hidden_size,
+            **kwargs,
+        )
+        loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
+    else:  # if in inference model materialize logits
+        logits = self.lm_head(kept_hidden_states)
+        if labels is not None or shift_labels is not None:
+            loss = self.loss_function(
+                logits=logits,
+                labels=labels,
+                shift_labels=shift_labels,
+                vocab_size=self.vocab_size,
+                **kwargs,
+            )
+
+    aux_loss = None
+    if output_router_logits:
+        from transformers.models.qwen4_exp.modeling_qwen4_exp import load_balancing_loss_func
+
+        aux_loss = load_balancing_loss_func(
+            outputs.router_logits,
+            self.num_experts,
+            self.num_experts_per_tok,
+            attention_mask,
+        )
+        if labels is not None or shift_labels is not None:
+            loss += self.router_aux_loss_coef * aux_loss.to(loss.device)  # make sure to reside in the same device
+
+    return LigerMoeCausalLMOutputWithPast(
+        loss=loss,
+        aux_loss=aux_loss,
+        logits=logits,
+        past_key_values=outputs.past_key_values,
+        hidden_states=outputs.hidden_states,
+        attentions=outputs.attentions,
+        router_logits=outputs.router_logits,
+        token_accuracy=token_accuracy,
+        predicted_tokens=predicted_tokens,
+    )

@@ -24,6 +24,8 @@ from liger_kernel.ops import LigerModulatedRMSNormFunction
 from liger_kernel.ops import LigerMultiTokenAttentionFunction
 from liger_kernel.ops import LigerPolyNormFunction
 from liger_kernel.ops import LigerQwen2VLMRopeFunction
+from liger_kernel.ops import LigerQwen4ExpGRWriteFunction
+from liger_kernel.ops import LigerQwen4ExpHyperConnectionPreFunction
 from liger_kernel.ops import LigerReLUSquaredFunction
 from liger_kernel.ops import LigerRMSNormFunction
 from liger_kernel.ops import LigerRopeFunction
@@ -31,6 +33,7 @@ from liger_kernel.ops import LigerSiLUMulFunction
 from liger_kernel.ops import LigerSoftmaxFunction
 from liger_kernel.ops import LigerSparsemaxFunction
 from liger_kernel.ops import LigerTVDLossFunction
+from liger_kernel.ops.qwen4_exp import qwen4_exp_ngram_hash
 
 
 @dataclass
@@ -344,6 +347,26 @@ def liger_layer_norm(X, W, B, eps):
 
 def liger_qwen2vl_mrope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
     return LigerQwen2VLMRopeFunction.apply(q, k, cos, sin, mrope_section, unsqueeze_dim)
+
+
+def liger_qwen4_exp_gr_write(block_output, residual, write_logits):
+    return LigerQwen4ExpGRWriteFunction.apply(block_output, residual, write_logits)
+
+
+def liger_qwen4_exp_hyper_connection_pre(mix_logits, normalized_input, n_groups):
+    return LigerQwen4ExpHyperConnectionPreFunction.apply(mix_logits, normalized_input, n_groups)
+
+
+def liger_qwen4_exp_ngram_hash(previous_context, input_ids, multipliers, vocab_sizes, offsets, eos_token_id):
+    """Return EOS-aware, head-offset Qwen4Exp PLE embedding IDs."""
+    return qwen4_exp_ngram_hash(
+        previous_context,
+        input_ids,
+        multipliers,
+        vocab_sizes,
+        offsets,
+        eos_token_id,
+    )
 
 
 def liger_relu_squared(x):

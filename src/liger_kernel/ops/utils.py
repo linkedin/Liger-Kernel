@@ -154,6 +154,22 @@ def get_npu_core_count(default: int = 20) -> int:
         return default
 
 
+def get_device_multiprocessor_count(device) -> int:
+    """Return the backend's compute-unit count used to size persistent grids."""
+    device = torch.device(device)
+    if device.type == "npu":
+        return get_npu_core_count()
+    backend = getattr(torch, device.type, None)
+    if backend is None or not hasattr(backend, "get_device_properties"):
+        return 1
+    properties = backend.get_device_properties(device)
+    for attribute in ("multi_processor_count", "gpu_eu_count", "gpu_subslice_count"):
+        value = getattr(properties, attribute, None)
+        if value is not None:
+            return int(value)
+    return 1
+
+
 def set_large_grf_mode(kernel_args: dict):
     """Set large GRF mode for XPU devices."""
     # On XPU triton installed along with pytorch-xpu will be called `pytorch-triton-xpu`,

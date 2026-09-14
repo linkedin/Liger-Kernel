@@ -68,6 +68,13 @@ class ModelConfig:
     topk: Optional[int] = None
     moe_intermediate_size: Optional[int] = None
 
+    # ===== Qwen4Exp n-gram / HyperConnection-specific (optional) =====
+    hc_count: Optional[int] = None
+    ngram_size: Optional[int] = None
+    heads_per_ngram: Optional[int] = None
+    ngram_vocab_size_base: Optional[int] = None
+    ngram_seed: Optional[int] = None
+
     @property
     def is_moe(self) -> bool:
         return self.num_experts is not None
@@ -223,6 +230,27 @@ DEEPSEEK_V3 = ModelConfig(
     topk=8,
 )
 
+QWEN4_EXP = ModelConfig(
+    name="qwen4_exp",
+    hidden_size=2048,
+    intermediate_size=512,
+    vocab_size=248320,
+    num_attention_heads=16,
+    num_key_value_heads=2,
+    head_dim=256,
+    hidden_act="silu",
+    max_position_embeddings=32768,
+    rms_norm_eps=1e-6,
+    moe_intermediate_size=512,
+    num_experts=512,
+    topk=10,
+    hc_count=4,
+    ngram_size=3,
+    heads_per_ngram=8,
+    ngram_vocab_size_base=20000000,
+    ngram_seed=1234,
+)
+
 MODEL_REGISTRY: Dict[str, ModelConfig] = {
     "llama_2_7b": LLAMA_2_7B,
     "llama_3_8b": LLAMA_3_8B,
@@ -231,6 +259,7 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
     "qwen2.5_72b": QWEN_2_5_72B,
     "deepseek_v2_lite": DEEPSEEK_V2_LITE,
     "deepseek_v3": DEEPSEEK_V3,
+    "qwen4_exp": QWEN4_EXP,
 }
 
 DEFAULT_MODEL_CONFIG = LLAMA_3_8B

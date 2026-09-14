@@ -5,6 +5,41 @@ from liger_kernel.utils import is_npu_available
 from test.utils import set_seed
 
 
+@pytest.fixture
+def qwen4_exp_globals():
+    """Restore class swaps, class attributes, and the native-forward registry together."""
+    from transformers.models.qwen4_exp import modeling_qwen4_exp
+
+    from liger_kernel.transformers import monkey_patch
+
+    names = (
+        "Qwen4ExpTextRMSNorm",
+        "Qwen4ExpTextMLP",
+        "Qwen4ExpTextExperts",
+        "Qwen4ExpTextNGramEmbedding",
+        "Qwen4ExpTextGatedResidual",
+        "Qwen4ExpTextDecoderLayer",
+        "Qwen4ExpForCausalLM",
+    )
+    classes = {name: getattr(modeling_qwen4_exp, name) for name in names}
+    attributes = {cls: dict(vars(cls)) for cls in classes.values()}
+    native_classes = monkey_patch._QWEN4_EXP_NATIVE_RMS_NORM_CLASSES
+    native_forward = monkey_patch._QWEN4_EXP_NATIVE_RMS_NORM_FORWARD
+    try:
+        yield modeling_qwen4_exp
+    finally:
+        for name, cls in classes.items():
+            setattr(modeling_qwen4_exp, name, cls)
+            saved = attributes[cls]
+            for attribute in vars(cls).keys() - saved.keys():
+                delattr(cls, attribute)
+            for attribute, value in saved.items():
+                if vars(cls).get(attribute) is not value:
+                    setattr(cls, attribute, value)
+        monkey_patch._QWEN4_EXP_NATIVE_RMS_NORM_CLASSES = native_classes
+        monkey_patch._QWEN4_EXP_NATIVE_RMS_NORM_FORWARD = native_forward
+
+
 @pytest.fixture(autouse=True)
 def set_random_seed():
     set_seed(42)

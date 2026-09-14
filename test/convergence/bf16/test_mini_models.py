@@ -61,12 +61,14 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
+from liger_kernel.transformers import apply_liger_kernel_to_qwen4_exp
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
 from liger_kernel.utils import infer_device
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import get_logprobs
+from test.utils import get_qwen4_exp_mini_config
 from test.utils import get_topk
 from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_deepseek_v4
@@ -106,6 +108,7 @@ from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import revert_liger_kernel_to_qwen3_next
 from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl_moe
+from test.utils import revert_liger_kernel_to_qwen4_exp
 from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
@@ -330,6 +333,13 @@ try:
     QWEN3NEXT_AVAILABLE = True
 except ImportError:
     QWEN3NEXT_AVAILABLE = False
+
+try:
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpForCausalLM
+
+    QWEN4EXP_AVAILABLE = True
+except ImportError:
+    QWEN4EXP_AVAILABLE = False
 
 try:
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
@@ -1556,6 +1566,21 @@ if FALCONH1_AVAILABLE:
         ),
     )
 
+if QWEN4EXP_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen4_exp"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen4_exp,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen4_exp,
+        model_class=Qwen4ExpForCausalLM,
+        mini_model_config=get_qwen4_exp_mini_config(
+            ple_layer_ids=[1],
+            ple_embed_dim=32,
+            ngram_size=2,
+            heads_per_ngram=2,
+            ngram_vocab_size_base=31,
+            make_ngram_vocab_size_divisible_by=128,
+        ),
+    )
+
 if QWEN3NEXT_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen3_next"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_qwen3_next,
@@ -1836,7 +1861,13 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name or "qwen3_next" in model_name or "qwen3_5" in model_name or "deepseek_v4" in model_name:
+        if (
+            "glm4" in model_name
+            or "qwen3_next" in model_name
+            or "qwen3_5" in model_name
+            or "qwen4_exp" in model_name
+            or "deepseek_v4" in model_name
+        ):
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -2476,6 +2507,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN3NEXT_AVAILABLE,
                     reason="Qwen3Next not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen4_exp",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            1e-1,
+            1e-1,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN4EXP_AVAILABLE,
+                    reason="Qwen4Exp not available in this version of transformers",
                 ),
             ],
         ),
