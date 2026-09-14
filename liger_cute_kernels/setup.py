@@ -9,7 +9,8 @@ into ``liger_kernel``. The native wheel:
   * builds the torch-free core ``libliger_cute_kernels.so`` with TVM FFI exports
     compiled into that same shared library,
   * ships it as ``liger_cute_kernels/{libliger_cute_kernels.so,
-    libnvshmem_host.so}`` (plus its own ``__init__.py``),
+    liger_moe_sm90_nonrdc.cubin, libnvshmem_host.so}`` when the optional SM90
+    non-RDC MoE path is built,
   * is tagged with the CUDA + torch version as a PEP 440 local version, e.g.
     ``liger_cute_kernels-0.1.0+cu130.torch2.9.1-cp312-cp312-linux_x86_64.whl``.
 
@@ -45,7 +46,7 @@ setup(
     # platform wheel (cpXY/abi/platform tags).
     packages=["liger_cute_kernels"],
     package_dir={"liger_cute_kernels": "liger_cute_kernels"},
-    package_data={"liger_cute_kernels": ["tvm_ffi_bindings.cpp"]},
+    package_data={"liger_cute_kernels": ["tvm_ffi_bindings.cpp", "*.cubin"]},
     ext_modules=[CMakeExtension("liger_cute_kernels.libliger_cute_kernels")],
     cmdclass={"build_ext": LckBuildExt},
     zip_safe=False,

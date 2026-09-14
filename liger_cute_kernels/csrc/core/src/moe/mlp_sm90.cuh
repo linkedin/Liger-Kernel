@@ -88,6 +88,9 @@ template <typename Traits1, typename Traits2,
           // TMA + wgmma granularity is finer. 1 → unchanged.
           int SubTiles = 1,
           int Compute = 90,
+          // 0 = ordinary mixed-role path, 1 = producer warp only,
+          // 2 = WGMMA consumer warp groups only.
+          int WarpGroupRole = 0,
           typename TileIter,
           typename TmaLoadX, typename TmaLoadW1, typename TmaStoreZ,
           typename TmaLoadZ, typename TmaLoadW2, typename TmaStoreY>
@@ -136,6 +139,9 @@ __device__ __forceinline__ void mlp_fused_fwd(
 	using PipeState2 = typename Traits2::PipelineState;
 
 	int warp_id = threadIdx.x / Traits1::WarpSize;
+	static_assert(
+		WarpGroupRole >= 0 && WarpGroupRole <= 2,
+		"invalid SM90 MLP warp-group role");
 
 	// MLP-warp NamedBarrier arrival count — must equal MlpFwdCtaBarrierT<Compute>'s
 	// template count (both fire kMlpBarrierId). Hopper: w0+w4-11 (288). Blackwell:
@@ -167,8 +173,15 @@ __device__ __forceinline__ void mlp_fused_fwd(
 	}();
 
 	if constexpr (Compute == 90) {
-		if (warp_id == 3) {
-			return;
+		if constexpr (WarpGroupRole == 0) {
+			if (warp_id == 3)
+				return;
+		} else if constexpr (WarpGroupRole == 1) {
+			if (warp_id != 0)
+				return;
+		} else {
+			if (warp_id < 4)
+				return;
 		}
 	}
 
@@ -209,10 +222,12 @@ __device__ __forceinline__ void mlp_fused_fwd(
 	// 2 states per phase. They persist across tiles since k-tile
 	// counts are fixed — the barrier phase bit cycles back to 0
 	// after each tile's k-loop completes.
-	PipeState1 p1_state = (warp_id == 0) ?
+	PipeState1 p1_state =
+		(WarpGroupRole == 1 || (WarpGroupRole == 0 && warp_id == 0)) ?
 		cutlass::make_producer_start_state<Pipeline1>() : PipeState1{};
 	PipeState1 p1_cons_state;
-	PipeState2 p2_state = (warp_id == 0) ?
+	PipeState2 p2_state =
+		(WarpGroupRole == 1 || (WarpGroupRole == 0 && warp_id == 0)) ?
 		cutlass::make_producer_start_state<Pipeline2>() : PipeState2{};
 	PipeState2 p2_cons_state;
 
@@ -249,7 +264,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 			if constexpr (Compute == 100)
 				if (warp_id == 3 && threadIdx.x % Traits1::WarpSize == 0)
 					smem.mlp1.tmem_base = smem.tmem_base;
-			if (warp_id == 0) {
+			if constexpr (WarpGroupRole == 1) {
 				if constexpr (Compute == 100) {
 					mlp1_fused_producer<Traits1>(
 						p1_pipe, p1_state,
@@ -267,20 +282,29 @@ __device__ __forceinline__ void mlp_fused_fwd(
 						dims.num_experts, dims.total_n_rows_1,
 						dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
 				}
+			} else if constexpr (WarpGroupRole == 0) {
+				if (warp_id == 0) {
+					if constexpr (Compute == 100) {
+						mlp1_fused_producer<Traits1>(
+							p1_pipe, p1_state,
+							smem.mlp1, tma_load_x, tma_load_b, tma_load_c,
+							x_mt, expert * dims.expert_n_stride_1,
+							num_tokens, dims.hidden_dim, dims.intermediate_dim,
+							dims.num_experts, dims.total_n_rows_1,
+							dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
+					} else {
+						mlp1_fused_producer<Traits1, true>(
+							p1_pipe, p1_state,
+							smem.mlp1, tma_load_x, tma_load_b, tma_load_c,
+							x_mt, expert,
+							num_tokens, dims.hidden_dim, dims.intermediate_dim,
+							dims.num_experts, dims.total_n_rows_1,
+							dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
+					}
+				}
 			}
 
-			// Fused MoE CTA warp map: warp 0 = TMA, warps 1..3 = NVSHMEM comm
-			// (warp 3 = put), warps 4..11 = MLP GEMM consumers. Warp 3 is a comm
-			// warp here, so the fused MLP1 keeps the ORIGINAL warp-4 UMMA design
-			// (single-warp UMMA + warps 4..11 epilogue). The warp-3 dual-WG
-			// rewrite is used ONLY by the isolated MLP1 kernel (no comm warps),
-			// so it neither frees warp 3 from comm nor changes the shared MLP
-			// barrier count — MLP2 and the rest of the fused pipeline are
-			// untouched. Compile-time flag (no register cost). Enabling warp-3
-			// here would require the comm-warp + barrier migration (pipeline.md
-			// §5) — intentionally out of scope.
-
-			if (warp_id >= 3 && warp_id <= 11) {
+			if constexpr (WarpGroupRole == 2) {
 				if constexpr (Compute == 100) {
 					mlp1_fused_consumer<Traits1, 100>(
 						p1_pipe, p1_cons_state,
@@ -293,6 +317,24 @@ __device__ __forceinline__ void mlp_fused_fwd(
 						smem.mlp1, tma_store_z, z_m, dims.intermediate_dim,
 						num_z_m_tiles, dims.num_n_tiles_1, dims.num_k_tiles_1,
 						n_split, n_count);
+				}
+			} else if constexpr (WarpGroupRole == 0) {
+				// Fused MoE CTA warp map: warp 0 = TMA, warps 1..3 =
+				// NVSHMEM comm, and warps 4..11 = MLP consumers.
+				if (warp_id >= 3 && warp_id <= 11) {
+					if constexpr (Compute == 100) {
+						mlp1_fused_consumer<Traits1, 100>(
+							p1_pipe, p1_cons_state,
+							smem.mlp1, tma_store_z, z_m, dims.intermediate_dim,
+							num_z_m_tiles, dims.num_n_tiles_1, dims.num_k_tiles_1,
+							n_split, n_count);
+					} else {
+						mlp1_fused_consumer<Traits1, 90>(
+							p1_pipe, p1_cons_state,
+							smem.mlp1, tma_store_z, z_m, dims.intermediate_dim,
+							num_z_m_tiles, dims.num_n_tiles_1, dims.num_k_tiles_1,
+							n_split, n_count);
+					}
 				}
 			}
 
@@ -342,7 +384,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 			if constexpr (Compute == 100)
 				if (warp_id == 3 && threadIdx.x % Traits2::WarpSize == 0)
 					smem.mlp2.tmem_base = smem.tmem_base;
-			if (warp_id == 0) {
+			if constexpr (WarpGroupRole == 1) {
 				if constexpr (Compute == 100) {
 					mlp2_fused_producer<Traits2>(
 						p2_pipe, p2_state,
@@ -360,9 +402,31 @@ __device__ __forceinline__ void mlp_fused_fwd(
 						dims.intermediate_dim, dims.num_experts, dims.total_n_rows_2,
 						dims.num_n_tiles_2, dims.num_k_tiles_2, n_split, n_count);
 				}
+			} else if constexpr (WarpGroupRole == 0) {
+				if (warp_id == 0) {
+					if constexpr (Compute == 100) {
+						mlp2_fused_producer<Traits2>(
+							p2_pipe, p2_state,
+							smem.mlp2, tma_load_z, tma_load_a,
+							z_m, expert * dims.num_n_tiles_2,
+							num_z_m_tiles * Traits1::TileM, dims.hidden_dim,
+							dims.intermediate_dim, dims.num_experts,
+							dims.total_n_rows_2, dims.num_n_tiles_2,
+							dims.num_k_tiles_2, n_split, n_count);
+					} else {
+						mlp2_fused_producer<Traits2, true>(
+							p2_pipe, p2_state,
+							smem.mlp2, tma_load_z, tma_load_a,
+							z_m, expert,
+							num_z_m_tiles * Traits1::TileM, dims.hidden_dim,
+							dims.intermediate_dim, dims.num_experts,
+							dims.total_n_rows_2, dims.num_n_tiles_2,
+							dims.num_k_tiles_2, n_split, n_count);
+					}
+				}
 			}
 
-			if (warp_id >= 3 && warp_id <= 11) {
+			if constexpr (WarpGroupRole == 2) {
 				if constexpr (Compute == 100) {
 					mlp2_fused_consumer<Traits2, 100>(
 						p2_pipe, p2_cons_state,
@@ -377,6 +441,26 @@ __device__ __forceinline__ void mlp_fused_fwd(
 						y_coord, dims.hidden_dim,
 						y_ntiles, dims.num_n_tiles_2, dims.num_k_tiles_2,
 						n_split, n_count);
+				}
+			} else if constexpr (WarpGroupRole == 0) {
+				if (warp_id >= 3 && warp_id <= 11) {
+					if constexpr (Compute == 100) {
+						mlp2_fused_consumer<Traits2, 100>(
+							p2_pipe, p2_cons_state,
+							smem.mlp2, y_desc,
+							y_coord, dims.hidden_dim,
+							y_ntiles, dims.num_n_tiles_2,
+							dims.num_k_tiles_2,
+							n_split, n_count, valid_m64_subtiles);
+					} else {
+						mlp2_fused_consumer<Traits2, 90>(
+							p2_pipe, p2_cons_state,
+							smem.mlp2, y_desc,
+							y_coord, dims.hidden_dim,
+							y_ntiles, dims.num_n_tiles_2,
+							dims.num_k_tiles_2,
+							n_split, n_count);
+					}
 				}
 			}
 

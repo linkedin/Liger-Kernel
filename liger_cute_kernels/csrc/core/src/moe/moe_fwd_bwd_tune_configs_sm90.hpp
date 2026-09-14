@@ -149,13 +149,23 @@
 
 
 // ── Direction unions (whole menu per direction; fed to the .cu files) ─
+#if defined(LIGER_CUTE_SM90_NONRDC_TARGET_MIXTRAL)
+#define LIGER_MOE_TUNE_CONFIGS(X) \
+	X(128, 64, 4, 64, 256, 64, 4, 64, 4, 4, 128)
+#else
 #define LIGER_MOE_TUNE_CONFIGS(X) \
 	LIGER_MOE_FWD_TUNE_CONFIGS_TM64(X) \
 	LIGER_MOE_FWD_TUNE_CONFIGS_TM128(X)
+#endif
 
+#if defined(LIGER_CUTE_SM90_NONRDC_TARGET_MIXTRAL)
+#define LIGER_MOE_BWD_TUNE_CONFIGS(X) \
+	X(4, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128)
+#else
 #define LIGER_MOE_BWD_TUNE_CONFIGS(X) \
 	LIGER_MOE_BWD_TUNE_CONFIGS_TM64(X) \
 	LIGER_MOE_BWD_TUNE_CONFIGS_TM128(X)
+#endif
 
 // ═══════════════════════════════════════════════════════════════════
 // Candidate bank — rows not winning any shape in the last sweep.

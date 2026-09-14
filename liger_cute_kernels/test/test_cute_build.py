@@ -4,6 +4,8 @@ import importlib.util
 
 from pathlib import Path
 
+import pytest
+
 _MODULE_PATH = Path(__file__).resolve().parents[1] / "cute_build.py"
 _SPEC = importlib.util.spec_from_file_location("lck_cute_build", _MODULE_PATH)
 assert _SPEC is not None and _SPEC.loader is not None
@@ -43,6 +45,7 @@ def test_build_core_passes_prepared_nvshmem_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cute_build, "_prepare_nvshmem_home", lambda _: compat_home)
     monkeypatch.setattr(cute_build.subprocess, "check_call", fake_check_call)
     monkeypatch.setattr(cute_build, "_stage_nvshmem", lambda _: None)
+    monkeypatch.setattr(cute_build, "_stage_optional_core_artifacts", lambda *args, **kwargs: None)
 
     result = cute_build.build_core(out_dir, build_temp)
 
@@ -51,3 +54,33 @@ def test_build_core_passes_prepared_nvshmem_home(tmp_path, monkeypatch):
     configure = calls[0]
     assert f"-DNVSHMEM_HOME={compat_home}" in configure
     assert "-DLIGER_CUTE_BUILD_BINDINGS=OFF" in configure
+
+
+def test_cmake_args_enable_sm90_nonrdc_moe(monkeypatch):
+    monkeypatch.setenv(cute_build.SM90_NONRDC_MOE_BUILD_ENV, "1")
+
+    assert "-DLIGER_CUTE_ENABLE_SM90_NONRDC_MOE=ON" in cute_build._cmake_base_args()
+
+
+def test_cmake_args_disable_sm90_nonrdc_moe(monkeypatch):
+    monkeypatch.delenv(cute_build.SM90_NONRDC_MOE_BUILD_ENV, raising=False)
+
+    assert "-DLIGER_CUTE_ENABLE_SM90_NONRDC_MOE=OFF" in cute_build._cmake_base_args()
+
+
+def test_stage_optional_nonrdc_cubin(tmp_path):
+    source = tmp_path / "build" / "csrc" / "core"
+    output = tmp_path / "output"
+    source.mkdir(parents=True)
+    output.mkdir()
+    cubin = source / cute_build.SM90_NONRDC_MOE_CUBIN
+    cubin.write_bytes(b"cubin")
+
+    cute_build._stage_optional_core_artifacts(tmp_path / "build", output, required=True)
+
+    assert (output / cute_build.SM90_NONRDC_MOE_CUBIN).read_bytes() == b"cubin"
+
+
+def test_stage_required_nonrdc_cubin_rejects_missing(tmp_path):
+    with pytest.raises(RuntimeError, match="was not built"):
+        cute_build._stage_optional_core_artifacts(tmp_path, tmp_path, required=True)

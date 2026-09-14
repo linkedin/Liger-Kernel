@@ -204,6 +204,33 @@ cmake --build build/core --target liger_cute_kernels -j
 # -> build/core/csrc/core/libliger_cute_kernels.so
 ```
 
+To also build the opt-in whole-program SM90 MoE module:
+
+```bash
+cmake -S liger_cute_kernels -B build/core \
+      -DLIGER_CUTE_BUILD_BINDINGS=OFF \
+      -DLIGER_CUTE_ENABLE_SM90_NONRDC_MOE=ON \
+      -DCMAKE_BUILD_TYPE=Release -GNinja
+cmake --build build/core --target liger_cute_kernels -j
+```
+
+One cubin is placed beside `libliger_cute_kernels.so`. It contains separate
+compile-time local and IB-capable kernel instantiations. At runtime, set
+`LIGER_MOE_SM90_NONRDC=1` before `moe_configure_symmetric`. The core loads the
+module into the current CUDA context, registers it with
+`nvshmemx_cumodule_init`, and uses it for SM90 forward and backward launches.
+Each launch translates the configured EP team's members into
+`NVSHMEMX_TEAM_NODE` on the host. If every member belongs to the node team, the
+local specialization is selected; otherwise the IB-capable specialization is
+selected. The local specialization compiles out IB transport and device-side
+`nvshmem_ptr` probing.
+The initial module contains the tuned Mixtral-8x7B `T=8192` forward and
+backward specializations; other shapes continue through the ordinary RDC
+kernels. Add `-DLIGER_CUTE_SM90_NONRDC_ALL_CONFIGS=ON` for the complete tuned
+menu and 1/2/4/8/16-PE benchmark coverage, including the cross-host IB path.
+For development artifacts in a different directory, set
+`LIGER_MOE_SM90_NONRDC_CUBIN`.
+
 Build for Blackwell by overriding the CUDA architecture:
 
 ```bash
@@ -323,6 +350,7 @@ For a native NVSHMEM install:
 
 ```bash
 NVSHMEM_HOME=/usr/local/nvshmem \
+    LIGER_CUTE_ENABLE_SM90_NONRDC_MOE=1 \
     pip wheel . --no-deps --no-build-isolation -w dist
 ```
 
