@@ -118,6 +118,84 @@ def test_cutile_matches_triton_and_hf(
     assert torch.allclose(k_ct_grad, k_hf_grad, atol=atol, rtol=rtol)
 
 
+def _rotate_reference(x, cos, sin):
+    first, second = x.float().chunk(2, dim=-1)
+    cos = cos.float().unsqueeze(1)[..., : first.shape[-1]]
+    sin = sin.float().unsqueeze(1)[..., : first.shape[-1]]
+    return torch.cat((first * cos - second * sin, second * cos + first * sin), dim=-1).to(x.dtype)
+
+
+def _run_cutile_rope(entrypoint, q, k, cos, sin):
+    from liger_kernel import functional
+    from test.cutile.test_cutile_backends_parity import _cutile_impl
+
+    impl = _cutile_impl("rope")
+    if entrypoint == "native":
+        return LigerRopeCuTileFunction.apply(q, k, cos, sin)
+    return functional.rope(q, k, cos, sin, impl=impl, mode="default")
+
+
+@pytest.mark.parametrize("entrypoint", ["native", "dispatcher"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16], ids=["fp32", "fp16", "bf16"])
+@pytest.mark.parametrize("n_q_heads, head_dim", [(4, 8), (3, 8), (2, 12)], ids=["aligned", "odd_heads", "padded_half"])
+@pytest.mark.parametrize("broadcast_inputs", [False, True], ids=["dense", "broadcast"])
+def test_cutile_broadcast_inputs_and_reduction_gradients(entrypoint, dtype, n_q_heads, head_dim, broadcast_inputs):
+    q = torch.randn(2, n_q_heads, 1 if broadcast_inputs else 7, head_dim, device="cuda", dtype=dtype)
+    k = torch.randn(2, 2, 1 if broadcast_inputs else 7, head_dim, device="cuda", dtype=dtype)
+    if broadcast_inputs:
+        q = q.expand(-1, -1, 7, -1)
+        k = k.expand(-1, -1, 7, -1)
+        assert q.stride(2) == k.stride(2) == 0
+    q = q.detach().requires_grad_(True)
+    k = k.detach().requires_grad_(True)
+    q_ref = q.detach().clone().requires_grad_(True)
+    k_ref = k.detach().clone().requires_grad_(True)
+    angles = torch.randn(1, 7, head_dim // 2, device="cuda", dtype=dtype)
+    cos = torch.cat((angles.cos(), angles.cos()), dim=-1)
+    sin = torch.cat((angles.sin(), angles.sin()), dim=-1)
+
+    q_expected, k_expected = _rotate_reference(q_ref, cos, sin), _rotate_reference(k_ref, cos, sin)
+    q_out, k_out = _run_cutile_rope(entrypoint, q, k, cos, sin)
+    atol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 1e-1}[dtype]
+    torch.testing.assert_close(q_out, q_expected, atol=atol, rtol=1e-5)
+    torch.testing.assert_close(k_out, k_expected, atol=atol, rtol=1e-5)
+
+    # Autograd supplies zero-stride views for both reduction gradients.
+    (q_out.sum() + 0.75 * k_out.sum()).backward()
+    (q_expected.sum() + 0.75 * k_expected.sum()).backward()
+    torch.testing.assert_close(q.grad, q_ref.grad, atol=atol, rtol=1e-5)
+    torch.testing.assert_close(k.grad, k_ref.grad, atol=atol, rtol=1e-5)
+
+
+@pytest.mark.parametrize("entrypoint", ["native", "dispatcher"])
+@pytest.mark.parametrize("n_q_heads, head_dim", [(3, 8), (2, 12)], ids=["odd_heads", "padded_half"])
+@pytest.mark.parametrize(
+    "q_dtype, k_dtype",
+    [(torch.float16, torch.float32), (torch.bfloat16, torch.float32), (torch.float32, torch.float16)],
+    ids=["fp16_fp32", "bf16_fp32", "fp32_fp16"],
+)
+def test_cutile_general_preserves_each_input_dtype(entrypoint, n_q_heads, head_dim, q_dtype, k_dtype):
+    q = torch.randn(1, n_q_heads, 7, head_dim, device="cuda", dtype=q_dtype, requires_grad=True)
+    k = torch.randn(1, 2, 7, head_dim, device="cuda", dtype=k_dtype, requires_grad=True)
+    q_ref = q.detach().clone().requires_grad_(True)
+    k_ref = k.detach().clone().requires_grad_(True)
+    angles = torch.randn(1, 7, head_dim // 2, device="cuda")
+    cos = torch.cat((angles.cos(), angles.cos()), dim=-1)
+    sin = torch.cat((angles.sin(), angles.sin()), dim=-1)
+    q_expected, k_expected = _rotate_reference(q_ref, cos, sin), _rotate_reference(k_ref, cos, sin)
+
+    q_out, k_out = _run_cutile_rope(entrypoint, q, k, cos, sin)
+    assert q_out.dtype == q_dtype
+    assert k_out.dtype == k_dtype
+    dq, dk = torch.randn_like(q_out), torch.randn_like(k_out)
+    torch.autograd.backward((q_out, k_out), (dq.clone(), dk.clone()))
+    torch.autograd.backward((q_expected, k_expected), (dq, dk))
+
+    for actual, expected in ((q_out, q_expected), (k_out, k_expected), (q.grad, q_ref.grad), (k.grad, k_ref.grad)):
+        atol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 1e-1}[actual.dtype]
+        torch.testing.assert_close(actual, expected, atol=atol, rtol=1e-5)
+
+
 @pytest.mark.parametrize(
     "bsz, seq_len, num_q_heads, num_kv_heads, head_dim",
     [
