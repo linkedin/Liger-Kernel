@@ -39,6 +39,11 @@ option(LIGER_CUTE_BUILD_BINDINGS
 set(LIGER_CUTE_CORE_IMPORTED_DIR "" CACHE PATH
     "Dir holding a prebuilt libliger_cute_kernels.so to link instead of building the core")
 
+option(LIGER_CUTE_ENABLE_SM90_NONRDC_MOE
+    "Build the opt-in whole-program SM90 MoE forward/backward cubin" OFF)
+option(LIGER_CUTE_SM90_NONRDC_ALL_CONFIGS
+    "Compile every SM90 MoE dispatch config into the non-RDC cubin" OFF)
+
 # Tests-only build: compile just the torch-free C++ unit tests (which include the
 # moe device-function headers directly) against CUTLASS + CUDA + gtest. Skips
 # NVSHMEM, TVM FFI, the core library, and the bindings entirely — none are needed

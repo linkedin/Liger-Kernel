@@ -12,7 +12,7 @@ is handled separately; see this module's README.md.
 Phase 3.1 — build the torch-free core (no torch required)::
 
     from cute_build import build_core
-    build_core(out_dir)   # -> out_dir/libliger_cute_kernels.so (+ libnvshmem_host.so)
+    build_core(out_dir)   # -> core .so, optional cubin, and NVSHMEM runtime
 """
 
 from __future__ import annotations
@@ -33,14 +33,30 @@ CMAKE_DIR = HERE  # CMakeLists.txt sits beside this module
 
 CORE_SO = "libliger_cute_kernels.so"
 NVSHMEM_SO = "libnvshmem_host.so"
+SM90_NONRDC_MOE_CUBIN = "liger_moe_sm90_nonrdc.cubin"
+SM90_NONRDC_MOE_BUILD_ENV = "LIGER_CUTE_ENABLE_SM90_NONRDC_MOE"
 
 # In-wheel location of the native libraries: the native wheel's own top-level
 # package, kept separate from liger_kernel so it doesn't mix with it.
 PKG_REL = Path("liger_cute_kernels")
 
 
+def _env_flag(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None or value in ("", "0"):
+        return False
+    if value == "1":
+        return True
+    raise ValueError(f"{name} must be 0 or 1, got {value!r}")
+
+
 def _cmake_base_args() -> list[str]:
-    args = [f"-DPython_EXECUTABLE={sys.executable}", "-DCMAKE_BUILD_TYPE=Release"]
+    enabled = "ON" if _env_flag(SM90_NONRDC_MOE_BUILD_ENV) else "OFF"
+    args = [
+        f"-DPython_EXECUTABLE={sys.executable}",
+        "-DCMAKE_BUILD_TYPE=Release",
+        f"-DLIGER_CUTE_ENABLE_SM90_NONRDC_MOE={enabled}",
+    ]
     if shutil.which("ninja") is not None:
         args.insert(0, "-GNinja")
     return args
@@ -131,10 +147,23 @@ def _stage_nvshmem(out_dir: Path) -> None:
         )
 
 
+def _stage_optional_core_artifacts(source_root: Path, out_dir: Path, *, required: bool) -> None:
+    direct = source_root / SM90_NONRDC_MOE_CUBIN
+    matches = [direct] if direct.is_file() else list(source_root.rglob(SM90_NONRDC_MOE_CUBIN))
+    if len(matches) > 1:
+        raise RuntimeError(f"multiple {SM90_NONRDC_MOE_CUBIN} artifacts found under {source_root}")
+    if not matches:
+        if required:
+            raise RuntimeError(f"{SM90_NONRDC_MOE_BUILD_ENV}=1 but {SM90_NONRDC_MOE_CUBIN} was not built")
+        return
+    shutil.copy2(matches[0], out_dir / SM90_NONRDC_MOE_CUBIN)
+
+
 def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Path:
     """Build the torch-free core. Returns the path to the core .so.
 
-    Stages the core + nvshmem host .so into ``out_dir``. Requires
+    Stages the core, optional SM90 non-RDC MoE cubin, and NVSHMEM runtime into
+    ``out_dir``. Requires
     NVSHMEM_HOME / CUTLASS_HOME to be discoverable but does NOT require torch
     (configured with -DLIGER_CUTE_BUILD_BINDINGS=OFF).
     """
@@ -153,6 +182,11 @@ def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Pat
     )
 
     shutil.copy2(next(build_temp.rglob(CORE_SO)), out_dir / CORE_SO)
+    _stage_optional_core_artifacts(
+        build_temp,
+        out_dir,
+        required=_env_flag(SM90_NONRDC_MOE_BUILD_ENV),
+    )
     _stage_nvshmem(out_dir)
     return out_dir / CORE_SO
 
@@ -198,8 +232,15 @@ class LckBuildExt(build_ext):
         dest.mkdir(parents=True, exist_ok=True)
         if use_prebuilt:
             shutil.copy2(Path(core_dir) / CORE_SO, dest / CORE_SO)
+            artifact_root = Path(core_dir)
         else:
             shutil.copy2(next(build_temp.rglob(CORE_SO)), dest / CORE_SO)
+            artifact_root = build_temp
+        _stage_optional_core_artifacts(
+            artifact_root,
+            dest,
+            required=_env_flag(SM90_NONRDC_MOE_BUILD_ENV),
+        )
         _stage_nvshmem(dest)
         print(f"staged native artifacts -> {dest}")
 
