@@ -6,12 +6,13 @@ extension and its support libraries side by side::
 
     liger_cute_kernels/
       __init__.py
-      libliger_cute_kernels.so   # torch-free CUTLASS + NVSHMEM core
+      libliger_cute_kernels_sm90a.so   # Hopper core
+      libliger_cute_kernels_sm100f.so  # Blackwell-family core
       liger_moe_sm90_nonrdc.cubin     # optional local/IB Hopper module
-      libnvshmem_host.so         # bundled nvshmem
 
 The Python API loads the core through TVM FFI, so the runtime boundary is the
-torch-free core ABI rather than a Torch extension.
+torch-free core ABI rather than a Torch extension. NVSHMEM is installed through
+the separate ``nvidia-nvshmem-cu12`` runtime dependency.
 
 The package currently includes expert-parallel MoE and tensor-parallel fused
 scaled linear cross-entropy kernels. Consumers should go through

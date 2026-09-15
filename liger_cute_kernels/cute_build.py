@@ -5,20 +5,21 @@ root and is self-contained: it knows how to compile the torch-free core
 ``libliger_cute_kernels.so`` from the CMake project sitting next to it.
 
 It is deliberately decoupled from the top-level ``liger_kernel`` wheel — that
-wheel is pure Python/Triton and never builds native code. The separate,
-CUDA/torch-version-prefixed native wheel (its own setup.py + optional install)
-is handled separately; see this module's README.md.
+wheel is pure Python/Triton and never builds native code. The separate native
+wheel uses the same public version and is handled by its own setup.py; see this
+module's README.md.
 
 Phase 3.1 — build the torch-free core (no torch required)::
 
     from cute_build import build_core
-    build_core(out_dir)   # -> core .so, optional cubin, and NVSHMEM runtime
+    build_core(out_dir)   # -> core .so and optional cubin
 """
 
 from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,15 +27,24 @@ import sys
 from pathlib import Path
 
 from setuptools import Extension
+from setuptools.command.bdist_wheel import bdist_wheel
 from setuptools.command.build_ext import build_ext
 
 HERE = Path(__file__).resolve().parent
 CMAKE_DIR = HERE  # CMakeLists.txt sits beside this module
 
 CORE_SO = "libliger_cute_kernels.so"
-NVSHMEM_SO = "libnvshmem_host.so"
 SM90_NONRDC_MOE_CUBIN = "liger_moe_sm90_nonrdc.cubin"
 SM90_NONRDC_MOE_BUILD_ENV = "LIGER_CUTE_ENABLE_SM90_NONRDC_MOE"
+SM90_NONRDC_MOE_ALL_CONFIGS_ENV = "LIGER_CUTE_SM90_NONRDC_ALL_CONFIGS"
+CUDA_ARCH_ENV = "LIGER_CUTE_CUDA_ARCH"
+CUDA_ARCHES_ENV = "LIGER_CUTE_CUDA_ARCHS"
+VERSION_ENV = "LIGER_CUTE_VERSION"
+STRIP_NATIVE_ENV = "LIGER_CUTE_STRIP_NATIVE"
+CLEAN_BUILD_ENV = "LIGER_CUTE_CLEAN_BUILD"
+BUILD_JOBS_ENV = "LIGER_CUTE_BUILD_JOBS"
+WHEEL_PLATFORM_ENV = "LIGER_CUTE_WHEEL_PLATFORM_TAG"
+ROOT_PYPROJECT = HERE.parent / "pyproject.toml"
 
 # In-wheel location of the native libraries: the native wheel's own top-level
 # package, kept separate from liger_kernel so it doesn't mix with it.
@@ -50,29 +60,68 @@ def _env_flag(name: str) -> bool:
     raise ValueError(f"{name} must be 0 or 1, got {value!r}")
 
 
-def _cmake_base_args() -> list[str]:
-    enabled = "ON" if _env_flag(SM90_NONRDC_MOE_BUILD_ENV) else "OFF"
+def lck_version() -> str:
+    """Return the same public version used by the root ``liger-kernel`` package."""
+    override = os.environ.get(VERSION_ENV)
+    if override:
+        return override
+    match = re.search(
+        r'(?m)^version\s*=\s*"([^"]+)"\s*$',
+        ROOT_PYPROJECT.read_text(),
+    )
+    if match is None:
+        raise RuntimeError(f"could not read the project version from {ROOT_PYPROJECT}")
+    return match.group(1)
+
+
+def lck_cuda_arches() -> tuple[str, ...]:
+    """Return the architecture cores to package, preserving legacy single-arch builds."""
+    plural = os.environ.get(CUDA_ARCHES_ENV)
+    singular = os.environ.get(CUDA_ARCH_ENV)
+    if plural and singular:
+        raise ValueError(f"set only one of {CUDA_ARCHES_ENV} or {CUDA_ARCH_ENV}")
+    raw = plural or singular or "90a"
+    arches = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not arches:
+        raise ValueError("at least one CUDA architecture is required")
+    if len(set(arches)) != len(arches):
+        raise ValueError(f"duplicate CUDA architectures in {raw!r}")
+    for arch in arches:
+        if re.fullmatch(r"\d+[a-z]?", arch) is None:
+            raise ValueError(f"invalid CUDA architecture {arch!r}")
+    return arches
+
+
+def packaged_core_name(arch: str, *, multi_arch: bool) -> str:
+    if not multi_arch:
+        return CORE_SO
+    return f"libliger_cute_kernels_sm{arch}.so"
+
+
+def lck_wheel_tag(default_platform: str) -> tuple[str, str, str]:
+    """Return a Python-ABI-independent platform tag for the TVM FFI wheel."""
+    platform_tag = os.environ.get(WHEEL_PLATFORM_ENV, default_platform)
+    if re.fullmatch(r"[a-z0-9_.]+", platform_tag) is None:
+        raise ValueError(f"{WHEEL_PLATFORM_ENV} contains an invalid platform tag: {platform_tag!r}")
+    return "py3", "none", platform_tag
+
+
+def _cmake_base_args(cuda_arch: str | None = None) -> list[str]:
+    cuda_arch = cuda_arch or os.environ.get(CUDA_ARCH_ENV)
+    nonrdc_enabled = _env_flag(SM90_NONRDC_MOE_BUILD_ENV) and cuda_arch in (None, "90a")
+    enabled = "ON" if nonrdc_enabled else "OFF"
+    all_configs = "ON" if nonrdc_enabled and _env_flag(SM90_NONRDC_MOE_ALL_CONFIGS_ENV) else "OFF"
     args = [
         f"-DPython_EXECUTABLE={sys.executable}",
         "-DCMAKE_BUILD_TYPE=Release",
         f"-DLIGER_CUTE_ENABLE_SM90_NONRDC_MOE={enabled}",
+        f"-DLIGER_CUTE_SM90_NONRDC_ALL_CONFIGS={all_configs}",
     ]
     if shutil.which("ninja") is not None:
         args.insert(0, "-GNinja")
-    cuda_arch = os.environ.get("LIGER_CUTE_CUDA_ARCH")
     if cuda_arch:
         args.append(f"-DLIGER_CUTE_CUDA_ARCH={cuda_arch}")
     return args
-
-
-def _find_nvshmem_so() -> Path | None:
-    for home in _nvshmem_home_candidates():
-        for libdir in ("lib", "lib64"):
-            for name in (NVSHMEM_SO, f"{NVSHMEM_SO}.3"):
-                cand = home / libdir / name
-                if cand.exists():
-                    return cand
-    return None
 
 
 def _nvshmem_home_candidates() -> list[Path]:
@@ -104,9 +153,9 @@ def _nvshmem_home_candidates() -> list[Path]:
 def _prepare_nvshmem_home(build_temp: Path) -> Path | None:
     for home in _nvshmem_home_candidates():
         if (home / "include" / "nvshmem.h").exists() and (
-            (home / "lib" / NVSHMEM_SO).exists() or (home / "lib" / f"{NVSHMEM_SO}.3").exists()
+            (home / "lib" / "libnvshmem_host.so").exists() or (home / "lib" / "libnvshmem_host.so.3").exists()
         ):
-            if (home / "lib" / NVSHMEM_SO).exists():
+            if (home / "lib" / "libnvshmem_host.so").exists():
                 return home
             compat = build_temp / "nvshmem_home"
             compat_lib = compat / "lib"
@@ -128,28 +177,6 @@ def _prepare_nvshmem_home(build_temp: Path) -> Path | None:
     return None
 
 
-def _stage_nvshmem(out_dir: Path) -> None:
-    """Copy nvshmem's host .so into out_dir (next to the core)."""
-    nvshmem = _find_nvshmem_so()
-    if nvshmem is not None:
-        shutil.copy2(nvshmem, out_dir / NVSHMEM_SO)
-        versioned_host = nvshmem.parent / f"{NVSHMEM_SO}.3"
-        if versioned_host.exists():
-            shutil.copy2(versioned_host, out_dir / versioned_host.name)
-        elif nvshmem.name != NVSHMEM_SO:
-            shutil.copy2(nvshmem, out_dir / nvshmem.name)
-        for plugin in nvshmem.parent.glob("nvshmem_*.so*"):
-            shutil.copy2(plugin, out_dir / plugin.name)
-            versioned_plugin = plugin.parent / f"{plugin.name}.3"
-            if versioned_plugin.exists():
-                shutil.copy2(versioned_plugin, out_dir / versioned_plugin.name)
-    else:
-        print(
-            f"WARNING: {NVSHMEM_SO} not found under NVSHMEM_HOME; the native wheel will not bundle nvshmem",
-            file=sys.stderr,
-        )
-
-
 def _stage_optional_core_artifacts(source_root: Path, out_dir: Path, *, required: bool) -> None:
     direct = source_root / SM90_NONRDC_MOE_CUBIN
     matches = [direct] if direct.is_file() else list(source_root.rglob(SM90_NONRDC_MOE_CUBIN))
@@ -162,11 +189,46 @@ def _stage_optional_core_artifacts(source_root: Path, out_dir: Path, *, required
     shutil.copy2(matches[0], out_dir / SM90_NONRDC_MOE_CUBIN)
 
 
+def _strip_native_binary(path: Path) -> None:
+    if not _env_flag(STRIP_NATIVE_ENV):
+        return
+    strip = shutil.which("strip")
+    if strip is None:
+        raise RuntimeError(f"{STRIP_NATIVE_ENV}=1 requires the strip executable")
+    subprocess.check_call([strip, "--strip-unneeded", str(path)])
+
+
+def _build_core_for_arch(build_temp: Path, cuda_arch: str) -> Path:
+    build_temp.mkdir(parents=True, exist_ok=True)
+    cmake_args = [*_cmake_base_args(cuda_arch), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
+    nvshmem_home = _prepare_nvshmem_home(build_temp)
+    if nvshmem_home is not None:
+        cmake_args.append(f"-DNVSHMEM_HOME={nvshmem_home}")
+    subprocess.check_call(["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args])
+    build_command = [
+        "cmake",
+        "--build",
+        str(build_temp),
+        "--config",
+        "Release",
+        "--target",
+        "liger_cute_kernels",
+    ]
+    jobs = os.environ.get(BUILD_JOBS_ENV)
+    if jobs:
+        if not jobs.isdigit() or int(jobs) < 1:
+            raise ValueError(f"{BUILD_JOBS_ENV} must be a positive integer, got {jobs!r}")
+        build_command.extend(["-j", jobs])
+    else:
+        build_command.append("-j")
+    subprocess.check_call(build_command)
+    return next(build_temp.rglob(CORE_SO))
+
+
 def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Path:
     """Build the torch-free core. Returns the path to the core .so.
 
-    Stages the core, optional SM90 non-RDC MoE cubin, and NVSHMEM runtime into
-    ``out_dir``. Requires
+    Stages the core and optional SM90 non-RDC MoE cubin into ``out_dir``. Requires
     NVSHMEM_HOME / CUTLASS_HOME to be discoverable but does NOT require torch
     (configured with -DLIGER_CUTE_BUILD_BINDINGS=OFF).
     """
@@ -175,22 +237,16 @@ def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Pat
     build_temp = Path(build_temp or (out_dir / "_cmake_core"))
     build_temp.mkdir(parents=True, exist_ok=True)
 
-    cmake_args = [*_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
-    nvshmem_home = _prepare_nvshmem_home(build_temp)
-    if nvshmem_home is not None:
-        cmake_args.append(f"-DNVSHMEM_HOME={nvshmem_home}")
-    subprocess.check_call(["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args])
-    subprocess.check_call(
-        ["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", "liger_cute_kernels"]
-    )
-
-    shutil.copy2(next(build_temp.rglob(CORE_SO)), out_dir / CORE_SO)
+    arches = lck_cuda_arches()
+    if len(arches) != 1:
+        raise ValueError(f"build_core requires one architecture, got {arches}")
+    shutil.copy2(_build_core_for_arch(build_temp, arches[0]), out_dir / CORE_SO)
+    _strip_native_binary(out_dir / CORE_SO)
     _stage_optional_core_artifacts(
         build_temp,
         out_dir,
-        required=_env_flag(SM90_NONRDC_MOE_BUILD_ENV),
+        required=_env_flag(SM90_NONRDC_MOE_BUILD_ENV) and arches[0] == "90a",
     )
-    _stage_nvshmem(out_dir)
     return out_dir / CORE_SO
 
 
@@ -204,6 +260,14 @@ class CMakeExtension(Extension):
         super().__init__(name, sources=[])
 
 
+class LckBdistWheel(bdist_wheel):
+    """Tag the native TVM FFI libraries independently of the build Python ABI."""
+
+    def get_tag(self) -> tuple[str, str, str]:
+        _, _, platform_tag = super().get_tag()
+        return lck_wheel_tag(platform_tag)
+
+
 class LckBuildExt(build_ext):
     """Build the native wheel: compile the core plus TVM FFI shim.
 
@@ -212,57 +276,35 @@ class LckBuildExt(build_ext):
     """
 
     def build_extension(self, ext: Extension) -> None:  # noqa: ARG002
-        build_temp = Path(self.build_temp) / "cute"
-        build_temp.mkdir(parents=True, exist_ok=True)
-
+        build_root = Path(self.build_temp) / "cute"
         core_dir = os.environ.get("LIGER_CUTE_CORE_DIR")
-        use_prebuilt = bool(core_dir) and (Path(core_dir) / CORE_SO).exists()
-
-        cmake_args = [*_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
-        nvshmem_home = _prepare_nvshmem_home(build_temp)
-        if nvshmem_home is not None:
-            cmake_args.append(f"-DNVSHMEM_HOME={nvshmem_home}")
-        if use_prebuilt:
-            cmake_args.append(f"-DLIGER_CUTE_CORE_IMPORTED_DIR={core_dir}")
-        subprocess.check_call(["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args])
-        if not use_prebuilt:
-            subprocess.check_call(
-                ["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", "liger_cute_kernels"]
-            )
-
-        # Place native artifacts into the wheel's own liger_cute_kernels package.
+        arches = lck_cuda_arches()
+        multi_arch = len(arches) > 1
         dest = Path(self.build_lib) / PKG_REL
         dest.mkdir(parents=True, exist_ok=True)
-        if use_prebuilt:
-            shutil.copy2(Path(core_dir) / CORE_SO, dest / CORE_SO)
-            artifact_root = Path(core_dir)
-        else:
-            shutil.copy2(next(build_temp.rglob(CORE_SO)), dest / CORE_SO)
-            artifact_root = build_temp
-        _stage_optional_core_artifacts(
-            artifact_root,
-            dest,
-            required=_env_flag(SM90_NONRDC_MOE_BUILD_ENV),
-        )
-        _stage_nvshmem(dest)
+        for arch in arches:
+            arch_build = build_root / arch
+            packaged_name = packaged_core_name(arch, multi_arch=multi_arch)
+            prebuilt = None
+            if core_dir:
+                candidates = [
+                    Path(core_dir) / packaged_name,
+                    Path(core_dir) / arch / CORE_SO,
+                ]
+                if not multi_arch:
+                    candidates.insert(0, Path(core_dir) / CORE_SO)
+                prebuilt = next((candidate for candidate in candidates if candidate.is_file()), None)
+                if prebuilt is None:
+                    raise RuntimeError(f"no prebuilt {arch} core found under {core_dir}")
+            core = prebuilt or _build_core_for_arch(arch_build, arch)
+            shutil.copy2(core, dest / packaged_name)
+            _strip_native_binary(dest / packaged_name)
+            if arch == "90a":
+                _stage_optional_core_artifacts(
+                    Path(core_dir) if prebuilt else arch_build,
+                    dest,
+                    required=_env_flag(SM90_NONRDC_MOE_BUILD_ENV),
+                )
+            if prebuilt is None and _env_flag(CLEAN_BUILD_ENV):
+                shutil.rmtree(arch_build)
         print(f"staged native artifacts -> {dest}")
-
-
-def lck_local_version() -> str:
-    """PEP 440 local-version segment encoding the CUDA + torch build variant,
-    e.g. ``cu130.torch2.9.1``. Override with ``LIGER_CUTE_LOCAL_VERSION``.
-    """
-    override = os.environ.get("LIGER_CUTE_LOCAL_VERSION")
-    if override:
-        return override
-    try:
-        import torch
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            "building the native wheel needs torch importable to tag the wheel "
-            "with the CUDA/torch version; install torch or set "
-            "LIGER_CUTE_LOCAL_VERSION"
-        ) from exc
-    cuda = (torch.version.cuda or "nocuda").replace(".", "")
-    torch_ver = torch.__version__.split("+")[0]
-    return f"cu{cuda}.torch{torch_ver}"
