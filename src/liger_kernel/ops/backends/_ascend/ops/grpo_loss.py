@@ -26,7 +26,13 @@ _str_to_loss_type = {
 
 
 def calculate_tile_count_2d(batch_size, seq_len, num_cores):
-    """Compute optimal grid configuration for parallel processing."""
+    """Compute grid; cap programs at core count.
+
+    ``(B, T)`` (one program per token) is not sufficient for CISPO on
+    910_95 and regresses GRPO 1-trip cases when ``pid_l`` exceeds the
+    core-capped width. Keep the A3 launch shape; CISPO / ``beta != 0``
+    1-trip issues are handled by ``ensure_two_real_vocab_trips``.
+    """
     grid_batch = batch_size
     cores_per_sample = min(seq_len, num_cores // batch_size)
     cores_per_sample = max(1, cores_per_sample)
@@ -35,6 +41,45 @@ def calculate_tile_count_2d(batch_size, seq_len, num_cores):
     if total > num_cores:
         grid_seq = max(1, num_cores // grid_batch)
     return (grid_batch, grid_seq)
+
+
+def ensure_two_real_vocab_trips(n, block_n):
+    """Shrink BLOCK_N so a 1-tile vocab scan becomes two real tiles.
+
+    ``V=1000 / BLOCK_N=1024`` plus ``BETA != 0`` faults runtime UB 341 on
+    910_95. A fully-masked dummy extra trip avoids UB but poisons CISPO.
+    Two tiles that both contain real columns (``N=1000 → 512``) compile
+    and run. Call when ``beta != 0`` (UB) or ``loss_type == cispo``
+    (later-token store).
+    """
+    if n <= 1 or block_n <= 0:
+        return block_n
+    if (n + block_n - 1) // block_n >= 2:
+        return block_n
+    candidate = 1
+    while candidate * 2 < n:
+        candidate *= 2
+    return max(1, candidate)
+
+
+def token_launch_windows(seq_len, grid_seq, vocab_n, block_n, use_bias_correction_kl):
+    """Outer-axis windows so each program handles one token.
+
+    ``grid=(B, cores)`` walks ``0, stride, 2*stride, ...``. On 910_95 the
+    2nd+ token of that loop either stores the first token's loss (fp32
+    GRPO ``beta==0`` 1-trip, ``tok28==tok0``) or faults UB 341 (fp32 +
+    ``use_bias_correction_kl``). ``T<=stride`` is bit-exact. Do not
+    change the core-capped grid and do not two-tile GRPO ``beta==0``.
+    """
+    if seq_len <= 0:
+        return [(0, 0)]
+    if grid_seq <= 0:
+        grid_seq = 1
+    trips = (vocab_n + block_n - 1) // block_n if block_n > 0 else 1
+    need = seq_len > grid_seq and (use_bias_correction_kl or trips == 1)
+    if not need:
+        return [(0, seq_len)]
+    return [(base, min(seq_len, base + grid_seq)) for base in range(0, seq_len, grid_seq)]
 
 
 def compute_block_size_softmax(seq_vocab_size):
@@ -122,8 +167,10 @@ def _selective_log_softmax_kernel(
 
             m_i = float("-inf")
             l_i = 0.0
-            # Use tl.static_range for inner softmax loop (BLOCK_N is constexpr)
-            for start in tl.static_range(0, N, BLOCK_N):
+            # tl.range reuses 1-2 UB tiles. static_range unrolls on 910_95
+            # and overflows at large V. Bounds stay (0, N, BLOCK_N) — same
+            # trip count as the A3 kernel; do not pad to BLOCK_N+1.
+            for start in tl.range(0, N, BLOCK_N):
                 cols = start + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=float("-inf")).to(tl.float32) * inv_temp
@@ -163,6 +210,8 @@ def _grpo_loss_fwd_kernel(
     SAPO_TEMP_NEG,
     DELTA,
     USE_BIAS_CORRECTION_KL: tl.constexpr,
+    TOKEN_BASE,
+    TOKEN_LIMIT,
     L: tl.constexpr,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr = 4096,
@@ -172,14 +221,14 @@ def _grpo_loss_fwd_kernel(
     num_progs_l = tl.num_programs(1)
 
     batch_start = pid_b * L
-    batch_end = batch_start + L
-    start_token = batch_start + pid_l
+    start_token = batch_start + TOKEN_BASE + pid_l
+    end_token = batch_start + TOKEN_LIMIT
     stride = num_progs_l
 
     # Precompute 1/TEMPERATURE to replace repeated division with multiplication
     inv_temp = 1.0 / TEMPERATURE
 
-    for token_idx in tl.range(start_token, batch_end, stride):
+    for token_idx in tl.range(start_token, end_token, stride):
         off_b = token_idx // L
         off_l = token_idx % L
 
@@ -199,9 +248,10 @@ def _grpo_loss_fwd_kernel(
 
             m_i = float("-inf")
             l_i = 0.0
-            # Use tl.static_range for inner softmax loop (BLOCK_N is constexpr)
-            # to give the compiler unrolling hints for better instruction scheduling
-            for start in tl.static_range(0, N, BLOCK_N):
+            # tl.range reuses 1-2 UB tiles. static_range unrolls on 910_95
+            # and overflows at large V. Bounds stay (0, N, BLOCK_N) — same
+            # trip count as the A3 kernel; do not pad to BLOCK_N+1.
+            for start in tl.range(0, N, BLOCK_N):
                 cols = start + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=float("-inf")).to(tl.float32) * inv_temp
@@ -332,8 +382,10 @@ def _grpo_loss_fwd_kernel_seq(
 
             m_i = float("-inf")
             l_i = 0.0
-            # Use tl.static_range for inner softmax loop (BLOCK_N is constexpr)
-            for start in tl.static_range(0, N, BLOCK_N):
+            # tl.range reuses 1-2 UB tiles. static_range unrolls on 910_95
+            # and overflows at large V. Bounds stay (0, N, BLOCK_N) — same
+            # trip count as the A3 kernel; do not pad to BLOCK_N+1.
+            for start in tl.range(0, N, BLOCK_N):
                 cols = start + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=float("-inf")).to(tl.float32) * inv_temp
@@ -429,7 +481,7 @@ def _grpo_loss_bwd_kernel_seq(
             should_process = not_skip
 
         if should_process == 0:
-            for start in tl.static_range(0, N, BLOCK_N):
+            for start in tl.range(0, N, BLOCK_N):
                 cols = tl.arange(0, BLOCK_N) + start
                 tl.store(DLOGITS_local + cols, 0.0, mask=cols < N)
         else:
@@ -475,8 +527,8 @@ def _grpo_loss_bwd_kernel_seq(
                     dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
             dlogp = dlogp * inv_temp
-            # Use tl.static_range for inner loop (BLOCK_N is constexpr)
-            for start_n in tl.static_range(0, N, BLOCK_N):
+            # Same bounds as A3: (0, N, BLOCK_N). Do not pad trip count.
+            for start_n in tl.range(0, N, BLOCK_N):
                 cols = start_n + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) * inv_temp
@@ -509,6 +561,8 @@ def _grpo_loss_bwd_kernel(
     SAPO_TEMP_NEG,
     DELTA,
     USE_BIAS_CORRECTION_KL: tl.constexpr,
+    TOKEN_BASE,
+    TOKEN_LIMIT,
     loss_stride0,
     loss_stride1,
     L: tl.constexpr,
@@ -520,14 +574,14 @@ def _grpo_loss_bwd_kernel(
     num_progs_l = tl.num_programs(1)
 
     batch_start = pid_b * L
-    batch_end = batch_start + L
-    start_token = batch_start + pid_l
+    start_token = batch_start + TOKEN_BASE + pid_l
+    end_token = batch_start + TOKEN_LIMIT
     stride = num_progs_l
 
     # Precompute 1/TEMPERATURE to replace repeated division with multiplication
     inv_temp = 1.0 / TEMPERATURE
 
-    for token_idx in tl.range(start_token, batch_end, stride):
+    for token_idx in tl.range(start_token, end_token, stride):
         off_b = token_idx // L
         off_l = token_idx % L
 
@@ -540,7 +594,7 @@ def _grpo_loss_bwd_kernel(
             should_process = not_skip
 
         if should_process == 0:
-            for start in tl.static_range(0, N, BLOCK_N):
+            for start in tl.range(0, N, BLOCK_N):
                 cols = tl.arange(0, BLOCK_N) + start
                 tl.store(DLOGITS_local + cols, 0.0, mask=cols < N)
         else:
@@ -607,8 +661,8 @@ def _grpo_loss_bwd_kernel(
                     dlogp += BETA * (1 - tl.exp(ref_logp - logp))
 
             dlogp = dlogp * dloss * inv_temp
-            # Use tl.static_range for inner loop (BLOCK_N is constexpr)
-            for start_n in tl.static_range(0, N, BLOCK_N):
+            # Same bounds as A3: (0, N, BLOCK_N). Do not pad trip count.
+            for start_n in tl.range(0, N, BLOCK_N):
                 cols = start_n + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) * inv_temp
@@ -759,6 +813,10 @@ def grpo_loss_forward_triton(
 
     vllm_is_ratio_ptr = None
     vllm_is_ratio_stride = L
+    # None vs ones disagree on later tokens (pytest 1e-5) for CISPO and
+    # GRPO. Multiply-by-one is the same math and keeps one compiled path.
+    if vllm_is_ratio is None:
+        vllm_is_ratio = torch.ones(B, L, device=logits.device, dtype=torch.float32)
     if vllm_is_ratio is not None:
         assert vllm_is_ratio.dim() in (1, 2), (
             f"vllm_is_ratio must be 1D (B,) or 2D (B, L) / (B, 1), got {vllm_is_ratio.dim()}D"
@@ -770,8 +828,15 @@ def grpo_loss_forward_triton(
         else:
             assert vllm_is_ratio.shape[0] == B, f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
         vllm_is_ratio = vllm_is_ratio.contiguous()
+        # Broadcast (B,) / (B, 1) on the host. Kernel `off_l % stride` with
+        # stride=1 is miscompiled on 910_95 (later tokens load OOB, implied
+        # ratio 0.75 instead of 0.42) even when each program has one token.
+        if vllm_is_ratio.dim() == 1:
+            vllm_is_ratio = vllm_is_ratio.unsqueeze(-1)
+        if vllm_is_ratio.shape[1] == 1:
+            vllm_is_ratio = vllm_is_ratio.expand(B, L).contiguous()
         vllm_is_ratio_ptr = vllm_is_ratio
-        vllm_is_ratio_stride = vllm_is_ratio.shape[1] if vllm_is_ratio.dim() > 1 else 1
+        vllm_is_ratio_stride = L
 
     loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
     lse = torch.zeros_like(loss)
@@ -779,6 +844,13 @@ def grpo_loss_forward_triton(
     kl = torch.zeros_like(loss) if beta != 0.0 else None
 
     block_n = compute_block_size_forward(N)
+    # 1-trip + BETA faults UB 341; 1-trip CISPO stores 0 / garbage on
+    # later tokens. Two real vocab tiles fix both (including SAPO+beta).
+    # Do not apply to GRPO ``beta==0`` (1-trip is correct; shrinking
+    # BLOCK_N misses 1e-4 vllm and can UB with fp32+vllm). Do not pad
+    # a dummy masked trip.
+    if loss_type == "cispo" or beta != 0.0:
+        block_n = ensure_two_real_vocab_trips(N, block_n)
     num_cores = get_npu_core_count()
     grid = calculate_tile_count_2d(B, L, num_cores)
 
@@ -842,33 +914,36 @@ def grpo_loss_forward_triton(
             vllm_is_ratio_ptr,
         )
     else:
-        _grpo_loss_fwd_kernel[grid](
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            completion_mask,
-            advantages,
-            vllm_is_ratio_ptr,
-            vllm_is_ratio_stride,
-            phi_seq,
-            loss,
-            lse,
-            kl,
-            is_clipped,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-            loss_type_int,
-            sapo_temperature_pos,
-            sapo_temperature_neg,
-            delta_val,
-            use_bias_correction_kl,
-            L,
-            N,
-            BLOCK_N=block_n,
-        )
+        for token_base, token_limit in token_launch_windows(L, grid[1], N, block_n, use_bias_correction_kl):
+            _grpo_loss_fwd_kernel[grid](
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                completion_mask,
+                advantages,
+                vllm_is_ratio_ptr,
+                vllm_is_ratio_stride,
+                phi_seq,
+                loss,
+                lse,
+                kl,
+                is_clipped,
+                temperature,
+                beta,
+                eps_low,
+                eps_high,
+                loss_type_int,
+                sapo_temperature_pos,
+                sapo_temperature_neg,
+                delta_val,
+                use_bias_correction_kl,
+                token_base,
+                token_limit,
+                L,
+                N,
+                BLOCK_N=block_n,
+            )
         ctx.save_for_backward(
             logits,
             old_logp,
@@ -996,6 +1071,8 @@ def grpo_loss_backward_triton(ctx, *args):
     dlogits = logits.data if inplace else torch.empty_like(logits)
 
     block_n = compute_block_size_backward(N)
+    if loss_type == "cispo" or beta != 0.0:
+        block_n = ensure_two_real_vocab_trips(N, block_n)
     num_cores = get_npu_core_count()
     grid = calculate_tile_count_2d(B, L, num_cores)
 
@@ -1033,33 +1110,36 @@ def grpo_loss_backward_triton(ctx, *args):
             BLOCK_N=block_n,
         )
     else:
-        _grpo_loss_bwd_kernel[grid](
-            dloss,
-            dlogits,
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            advantages,
-            completion_mask,
-            lse,
-            vllm_is_ratio,
-            vllm_is_ratio_stride,
-            phi_seq,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-            loss_type_int,
-            sapo_temperature_pos,
-            sapo_temperature_neg,
-            delta_val,
-            use_bias_correction_kl,
-            *dloss.stride(),
-            L,
-            N,
-            BLOCK_N=block_n,
-        )
+        for token_base, token_limit in token_launch_windows(L, grid[1], N, block_n, use_bias_correction_kl):
+            _grpo_loss_bwd_kernel[grid](
+                dloss,
+                dlogits,
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                vllm_is_ratio,
+                vllm_is_ratio_stride,
+                phi_seq,
+                temperature,
+                beta,
+                eps_low,
+                eps_high,
+                loss_type_int,
+                sapo_temperature_pos,
+                sapo_temperature_neg,
+                delta_val,
+                use_bias_correction_kl,
+                token_base,
+                token_limit,
+                *dloss.stride(),
+                L,
+                N,
+                BLOCK_N=block_n,
+            )
 
     dlogits[:, -1, :] = 0
     return (
