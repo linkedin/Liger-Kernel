@@ -47,3 +47,7 @@ jobs:
     - name: Create release notes
       run: |
         echo "Nightly build published to PyPI with the name 'liger-kernel-nightly'."
+
+  build-liger-cute-kernels:
+    name: Build Liger Cute Kernels integration wheel
+    uses: ./.github/workflows/publish-liger-cute-kernels.yml

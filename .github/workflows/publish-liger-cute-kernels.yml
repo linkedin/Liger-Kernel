@@ -4,6 +4,7 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -248,6 +249,8 @@ jobs:
 
   publish-wheel:
     name: Publish Liger Cute Kernels to PyPI
+    # Reusable nightly runs build and validate the wheel but never receive
+    # publishing credentials or execute this job.
     if: github.event_name == 'release'
     needs: package-wheel
     runs-on: ubuntu-latest
