@@ -487,10 +487,10 @@ LIGER_CUTE_CORE_DIR=/abs/dir-with-core \
 Install order at the consumer side: the `liger_kernel` wheel first, then
 optionally the matching native wheel.
 
-The release workflow is also invoked by the repository's nightly workflow on
-every push to `main`. Nightly runs build, package, validate, and retain the
-wheel as a workflow artifact, but the PyPI upload job runs only for a published
-GitHub release.
+The wheel workflow also runs directly on every push to `main` as a nightly
+integration build. These runs build, package, validate, and retain the wheel as
+a workflow artifact, but the PyPI upload job runs only for a published GitHub
+release.
 
 ## Source-tree Python verification
 
