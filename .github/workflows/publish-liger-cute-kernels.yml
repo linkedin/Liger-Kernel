@@ -91,7 +91,7 @@ jobs:
         python - <<'PY'
         from cute_build import build_core
 
-        build_core("release-core")
+        build_core("release-core", "release-build")
         PY
         completed_at=$(date +%s)
         nm -D --defined-only release-core/libliger_cute_kernels.so |
