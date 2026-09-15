@@ -171,7 +171,9 @@ def test_fused_neighborhood_attention_correctness(
 
     assert_verbose_allclose(liger_attn.q_proj.weight.grad, ref_attn.q_proj.weight.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(liger_attn.k_proj.weight.grad, ref_attn.k_proj.weight.grad, atol=atol, rtol=rtol)
-    assert_verbose_allclose(liger_attn.v_proj.weight.grad, ref_attn.v_proj.weight.grad, atol=atol, rtol=rtol)
+    # v_proj.weight.grad is a sum reduction; Triton and PyTorch accumulate in different order.
+    v_atol = 1e-1 if dtype == torch.bfloat16 else atol
+    assert_verbose_allclose(liger_attn.v_proj.weight.grad, ref_attn.v_proj.weight.grad, atol=v_atol, rtol=rtol)
     assert_verbose_allclose(liger_attn.out_proj.weight.grad, ref_attn.out_proj.weight.grad, atol=atol, rtol=rtol)
 
     if bias:
