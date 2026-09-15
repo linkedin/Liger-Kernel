@@ -29,7 +29,7 @@ def calculate_tile_count_2d(batch_size, seq_len, num_cores):
     """Compute grid; cap programs at core count.
 
     ``(B, T)`` (one program per token) is not sufficient for CISPO on
-    910_95 and regresses GRPO 1-trip cases when ``pid_l`` exceeds the
+    A5 and regresses GRPO 1-trip cases when ``pid_l`` exceeds the
     core-capped width. Keep the A3 launch shape; CISPO / ``beta != 0``
     1-trip issues are handled by ``ensure_two_real_vocab_trips``.
     """
@@ -47,7 +47,7 @@ def ensure_two_real_vocab_trips(n, block_n):
     """Shrink BLOCK_N so a 1-tile vocab scan becomes two real tiles.
 
     ``V=1000 / BLOCK_N=1024`` plus ``BETA != 0`` faults runtime UB 341 on
-    910_95. A fully-masked dummy extra trip avoids UB but poisons CISPO.
+    A5. A fully-masked dummy extra trip avoids UB but poisons CISPO.
     Two tiles that both contain real columns (``N=1000 → 512``) compile
     and run. Call when ``beta != 0`` (UB) or ``loss_type == cispo``
     (later-token store).
@@ -65,7 +65,7 @@ def ensure_two_real_vocab_trips(n, block_n):
 def token_launch_windows(seq_len, grid_seq, vocab_n, block_n, use_bias_correction_kl):
     """Outer-axis windows so each program handles one token.
 
-    ``grid=(B, cores)`` walks ``0, stride, 2*stride, ...``. On 910_95 the
+    ``grid=(B, cores)`` walks ``0, stride, 2*stride, ...``. On A5 the
     2nd+ token of that loop either stores the first token's loss (fp32
     GRPO ``beta==0`` 1-trip, ``tok28==tok0``) or faults UB 341 (fp32 +
     ``use_bias_correction_kl``). ``T<=stride`` is bit-exact. Do not
@@ -167,7 +167,7 @@ def _selective_log_softmax_kernel(
 
             m_i = float("-inf")
             l_i = 0.0
-            # tl.range reuses 1-2 UB tiles. static_range unrolls on 910_95
+            # tl.range reuses 1-2 UB tiles. static_range unrolls on A5
             # and overflows at large V. Bounds stay (0, N, BLOCK_N) — same
             # trip count as the A3 kernel; do not pad to BLOCK_N+1.
             for start in tl.range(0, N, BLOCK_N):
@@ -248,7 +248,7 @@ def _grpo_loss_fwd_kernel(
 
             m_i = float("-inf")
             l_i = 0.0
-            # tl.range reuses 1-2 UB tiles. static_range unrolls on 910_95
+            # tl.range reuses 1-2 UB tiles. static_range unrolls on A5
             # and overflows at large V. Bounds stay (0, N, BLOCK_N) — same
             # trip count as the A3 kernel; do not pad to BLOCK_N+1.
             for start in tl.range(0, N, BLOCK_N):
@@ -382,7 +382,7 @@ def _grpo_loss_fwd_kernel_seq(
 
             m_i = float("-inf")
             l_i = 0.0
-            # tl.range reuses 1-2 UB tiles. static_range unrolls on 910_95
+            # tl.range reuses 1-2 UB tiles. static_range unrolls on A5
             # and overflows at large V. Bounds stay (0, N, BLOCK_N) — same
             # trip count as the A3 kernel; do not pad to BLOCK_N+1.
             for start in tl.range(0, N, BLOCK_N):
@@ -811,32 +811,27 @@ def grpo_loss_forward_triton(
 
     mask = completion_mask.float() if completion_mask is not None else torch.ones(B, L, device=logits.device)
 
-    vllm_is_ratio_ptr = None
     vllm_is_ratio_stride = L
-    # None vs ones disagree on later tokens (pytest 1e-5) for CISPO and
-    # GRPO. Multiply-by-one is the same math and keeps one compiled path.
+    # Normalize None / (B,) / (B,1) to (B, L) on the host with stride=L.
+    # None vs ones differ on later tokens (pytest 1e-5); the kernel's
+    # `off_l % stride` with stride=1 is miscompiled on A5. Both resolve by
+    # materializing a full (B, L) table.
     if vllm_is_ratio is None:
         vllm_is_ratio = torch.ones(B, L, device=logits.device, dtype=torch.float32)
-    if vllm_is_ratio is not None:
-        assert vllm_is_ratio.dim() in (1, 2), (
-            f"vllm_is_ratio must be 1D (B,) or 2D (B, L) / (B, 1), got {vllm_is_ratio.dim()}D"
+    assert vllm_is_ratio.dim() in (1, 2), (
+        f"vllm_is_ratio must be 1D (B,) or 2D (B, L) / (B, 1), got {vllm_is_ratio.dim()}D"
+    )
+    if vllm_is_ratio.dim() == 2:
+        assert vllm_is_ratio.shape[0] == B and vllm_is_ratio.shape[1] in (1, L), (
+            f"vllm_is_ratio shape must be ({B}, 1) or ({B}, {L}), got {tuple(vllm_is_ratio.shape)}"
         )
-        if vllm_is_ratio.dim() == 2:
-            assert vllm_is_ratio.shape[0] == B and vllm_is_ratio.shape[1] in (1, L), (
-                f"vllm_is_ratio shape must be ({B}, 1) or ({B}, {L}), got {tuple(vllm_is_ratio.shape)}"
-            )
-        else:
-            assert vllm_is_ratio.shape[0] == B, f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
-        vllm_is_ratio = vllm_is_ratio.contiguous()
-        # Broadcast (B,) / (B, 1) on the host. Kernel `off_l % stride` with
-        # stride=1 is miscompiled on 910_95 (later tokens load OOB, implied
-        # ratio 0.75 instead of 0.42) even when each program has one token.
-        if vllm_is_ratio.dim() == 1:
-            vllm_is_ratio = vllm_is_ratio.unsqueeze(-1)
-        if vllm_is_ratio.shape[1] == 1:
-            vllm_is_ratio = vllm_is_ratio.expand(B, L).contiguous()
-        vllm_is_ratio_ptr = vllm_is_ratio
-        vllm_is_ratio_stride = L
+    else:
+        assert vllm_is_ratio.shape[0] == B, f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
+        vllm_is_ratio = vllm_is_ratio.unsqueeze(-1)
+    if vllm_is_ratio.shape[1] == 1:
+        vllm_is_ratio = vllm_is_ratio.expand(B, L)
+    vllm_is_ratio = vllm_is_ratio.contiguous()
+    vllm_is_ratio_ptr = vllm_is_ratio
 
     loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
     lse = torch.zeros_like(loss)
@@ -1077,14 +1072,8 @@ def grpo_loss_backward_triton(ctx, *args):
     grid = calculate_tile_count_2d(B, L, num_cores)
 
     if importance_sampling_level == "sequence":
-        if vllm_is_ratio is None:
-            dloss_sum = dloss.sum(-1).contiguous()
-        else:
-            if vllm_is_ratio.dim() == 1:
-                ratio = vllm_is_ratio.unsqueeze(-1)
-            else:
-                ratio = vllm_is_ratio
-            dloss_sum = (dloss * ratio).sum(-1).contiguous()
+        # Forward always saves vllm_is_ratio materialized to (B, L).
+        dloss_sum = (dloss * vllm_is_ratio).sum(-1).contiguous()
         _grpo_loss_bwd_kernel_seq[grid](
             dloss,
             dloss_sum,

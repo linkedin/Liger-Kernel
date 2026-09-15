@@ -36,15 +36,6 @@ from .fused_moe_kernels import _token_gather_weighted_sum_kernel
 BLOCK_M_TOKEN = 32
 
 
-def _pow2_cap(dim: int, cap: int) -> int:
-    """GEMM tile along a dim, capped and rounded up to pow2.
-
-    910_95 miscompiles some strict-subset N-tiles of 192 (H=128 @ T=512
-    forward). Using next_pow2(dim) when it is < cap removes that padding.
-    """
-    return min(cap, max(16, triton.next_power_of_2(max(int(dim), 1))))
-
-
 # ---------------------------------------------------------------------------
 # Routing metadata
 # ---------------------------------------------------------------------------
@@ -164,7 +155,7 @@ def _token_gather_block_k(K: int) -> int:
 def _token_gather_block_h(H: int) -> int:
     """H-tile for token gather.
 
-    910_95 drops a 1-trip gather when H == BLOCK_H (exact, no h_mask padding)
+    A5 drops a 1-trip gather when H == BLOCK_H (exact, no h_mask padding)
     at T >= 128. H=128 / BLOCK_H=128 is the fused_moe correctness hole
     (Y matches torch; aggregated out does not). Use a padded 192-wide tile
     (same pattern as H=64 / BLOCK_H=128, which is already exact). Two exact
@@ -224,7 +215,7 @@ def _token_aggregation(Y, topk_weights_flat, s_reverse_scatter_idx, T, K, H):
 def _token_scatter_sum(src, s_reverse_scatter_idx, T, K, H):
     """Unweighted gather-sum for backward dx: out[t] = sum_k src[s_rev[t*K+k]].
 
-    Do not use the kernel's w_is_None path: on 910_95, bf16 `tl.sum(y, axis=0)`
+    Do not use the kernel's w_is_None path: on A5, bf16 `tl.sum(y, axis=0)`
     drops lanes (Mixtral x.grad zeros). The weighted formula with ones is the
     path already proven by forward aggregation.
     """
@@ -282,30 +273,27 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         post_act = torch.empty(TK, intermediate_dim, dtype=x.dtype, device=x.device)
 
         if num_m_tiles > 0:
-            n_k_tiles = triton.cdiv(H, ASCEND_GEMM_BLOCK_K)
-            for k_tile in range(n_k_tiles):
-                _fused_up_proj_swiglu_kernel[(num_m_tiles,)](
-                    x,
-                    gate_up_proj,
-                    x_gather_idx,
-                    expert_start_idx,
-                    tile_row_start,
-                    tile_expert,
-                    pre_act,
-                    H_dim=H,
-                    I_dim=intermediate_dim,
-                    stride_x_T=x.stride(0),
-                    stride_x_H=x.stride(1),
-                    stride_w_E=gate_up_proj.stride(0),
-                    stride_w_N=gate_up_proj.stride(1),
-                    stride_w_K=gate_up_proj.stride(2),
-                    stride_pre_TK=pre_act.stride(0),
-                    stride_pre_N=pre_act.stride(1),
-                    BLOCK_M=BLOCK_M_TOKEN,
-                    BLOCK_N=_pow2_cap(intermediate_dim, ASCEND_GEMM_BLOCK_N),
-                    BLOCK_K=ASCEND_GEMM_BLOCK_K,
-                    K_TILE=k_tile,
-                )
+            _fused_up_proj_swiglu_kernel[(num_m_tiles,)](
+                x,
+                gate_up_proj,
+                x_gather_idx,
+                expert_start_idx,
+                tile_row_start,
+                tile_expert,
+                pre_act,
+                H_dim=H,
+                I_dim=intermediate_dim,
+                stride_x_T=x.stride(0),
+                stride_x_H=x.stride(1),
+                stride_w_E=gate_up_proj.stride(0),
+                stride_w_N=gate_up_proj.stride(1),
+                stride_w_K=gate_up_proj.stride(2),
+                stride_pre_TK=pre_act.stride(0),
+                stride_pre_N=pre_act.stride(1),
+                BLOCK_M=BLOCK_M_TOKEN,
+                BLOCK_N=ASCEND_GEMM_BLOCK_N,
+                BLOCK_K=ASCEND_GEMM_BLOCK_K,
+            )
             _swiglu_from_pre_act_kernel[(min(TK, ASCEND_MAX_GRID_PROGRAMS),)](
                 pre_act,
                 post_act,
@@ -315,7 +303,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 stride_pre_N=pre_act.stride(1),
                 stride_post_TK=post_act.stride(0),
                 stride_post_N=post_act.stride(1),
-                BLOCK_N=_pow2_cap(intermediate_dim, ASCEND_GEMM_BLOCK_N),
+                BLOCK_N=ASCEND_GEMM_BLOCK_N,
             )
 
         Y = torch.empty(TK, H, dtype=x.dtype, device=x.device)
@@ -337,7 +325,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 stride_Y_TK=Y.stride(0),
                 stride_Y_H=Y.stride(1),
                 BLOCK_M=BLOCK_M_TOKEN,
-                BLOCK_N=_pow2_cap(H, ASCEND_GEMM_BLOCK_N),
+                BLOCK_N=ASCEND_GEMM_BLOCK_N,
                 BLOCK_K=ASCEND_GEMM_BLOCK_K,
             )
 
@@ -400,8 +388,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         dS = torch.zeros(TK, dtype=dO.dtype, device=dO.device)  # atomic_add accumulates across N-tiles
 
         if num_m_tiles > 0:
-            bwd_block_n = _pow2_cap(intermediate_dim, ASCEND_BWD_BLOCK_N)
-            n_i_tiles = triton.cdiv(intermediate_dim, bwd_block_n)
+            n_i_tiles = triton.cdiv(intermediate_dim, ASCEND_BWD_BLOCK_N)
             row1, exp1 = _expand_m_tiles_block1(tile_row_start, tile_expert, expert_start_idx, BLOCK_M_TOKEN)
             num_m1 = int(row1.shape[0])
             max_m_per_launch = max(1, ASCEND_MAX_GRID_PROGRAMS // n_i_tiles)
@@ -434,7 +421,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                     stride_wact_TK=weighted_act.stride(0),
                     stride_wact_I=weighted_act.stride(1),
                     BLOCK_M=BLOCK_M_TOKEN,
-                    BLOCK_N=bwd_block_n,
+                    BLOCK_N=ASCEND_BWD_BLOCK_N,
                     BLOCK_K=ASCEND_GEMM_BLOCK_K,
                     ROW_VALID=1,
                 )
@@ -470,8 +457,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         # Mixtral bf16 x.grad occasionally exceeds atol=100 (1–2 elems).
         dx_expanded = torch.zeros(TK, H, dtype=torch.float32, device=dO.device)
         if num_m_tiles > 0:
-            dx_block_n = _pow2_cap(H, ASCEND_GEMM_BLOCK_N)
-            n_h_tiles = triton.cdiv(H, dx_block_n)
+            n_h_tiles = triton.cdiv(H, ASCEND_GEMM_BLOCK_N)
             n_i_tiles = triton.cdiv(intermediate_dim, ASCEND_GEMM_BLOCK_K)
             max_m_per_launch = max(1, ASCEND_MAX_GRID_PROGRAMS // n_h_tiles)
             for i_tile in range(n_i_tiles):
@@ -494,7 +480,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                         stride_dxe_TK=dx_expanded.stride(0),
                         stride_dxe_H=dx_expanded.stride(1),
                         BLOCK_M=BLOCK_M_TOKEN,
-                        BLOCK_N=dx_block_n,
+                        BLOCK_N=ASCEND_GEMM_BLOCK_N,
                         BLOCK_K=ASCEND_GEMM_BLOCK_K,
                         I_TILE=i_tile,
                     )

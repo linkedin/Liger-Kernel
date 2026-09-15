@@ -150,7 +150,7 @@ def _group_norm_forward_single_task_kernel(
 
         X_vals = tl.load(X_ptr + ptrs, mask=mask, other=0.0).to(tl.float32)
         # Axis-free sum: same full-tile reduction, but avoids BiShengHIR
-        # extract_strided_metadata (1D vs 2D) on 910_95 when BLOCK_CH=1 and
+        # extract_strided_metadata (1D vs 2D) on A5 when BLOCK_CH=1 and
         # BLOCK_H > hidden_size_per_channel (e.g. hidden=3, BLOCK_H=4).
         sum_acc = tl.sum(X_vals)
         sum_sq_acc = tl.sum(X_vals * X_vals)

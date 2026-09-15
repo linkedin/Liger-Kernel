@@ -51,7 +51,6 @@ def _moe_router_histogram_kernel(
     next_power_of_2(K) and is unchanged.
     """
     tile_id = tl.program_id(0)
-    # Compile-time pad: 2-D atomic/sum drop lanes when inner dim < 8 i32.
     HIST_K_POW2: tl.constexpr = 8 if K_POW2 < 8 else K_POW2
 
     e_offs = tl.arange(0, E_POW2)
@@ -232,16 +231,12 @@ def _fused_up_proj_swiglu_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
-    K_TILE: tl.constexpr,
 ):
     """Grid: (num_m_tiles,). One CTA per M-tile; N-tiles iterated in-kernel.
 
     Cube-only: writes pre-SwiGLU [gate, up]. SwiGLU is a separate vector kernel
     because triton-ascend 3.2.2 ConvertLinalgRToBinary cannot lower mix
     cube+vector (gather + dual tl.dot + silu + GM stores) to static UB shapes.
-
-    K_TILE is launched from host so the GEMM-K / H loop is not a nested
-    tl.range (910_95 miscompiles H=128 → 2 inner trips at large T).
     """
     pid_m = tl.program_id(0)
 
@@ -264,39 +259,34 @@ def _fused_up_proj_swiglu_kernel(
         acc_gate = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
         acc_up = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-        k_idx = K_TILE * BLOCK_K + k_offs
-        k_mask = k_idx < H_dim
+        for k in tl.range(0, H_dim, BLOCK_K):
+            k_idx = k + k_offs
+            k_mask = k_idx < H_dim
 
-        x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + k_idx[None, :] * stride_x_H
-        x_tile = tl.load(
-            x_ptrs,
-            mask=row_mask[:, None] & k_mask[None, :],
-            other=0.0,
-        )
+            x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + k_idx[None, :] * stride_x_H
+            x_tile = tl.load(
+                x_ptrs,
+                mask=row_mask[:, None] & k_mask[None, :],
+                other=0.0,
+            )
 
-        w_mask = n_mask[:, None] & k_mask[None, :]
-        w_gate_ptrs = (
-            gate_up_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_N + k_idx[None, :] * stride_w_K
-        )
-        w_gate = tl.load(w_gate_ptrs, mask=w_mask, other=0.0)
-        acc_gate += tl.dot(x_tile, tl.trans(w_gate))
+            w_mask = n_mask[:, None] & k_mask[None, :]
+            w_gate_ptrs = (
+                gate_up_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_N + k_idx[None, :] * stride_w_K
+            )
+            w_gate = tl.load(w_gate_ptrs, mask=w_mask, other=0.0)
+            acc_gate += tl.dot(x_tile, tl.trans(w_gate))
 
-        w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
-        w_up = tl.load(w_up_ptrs, mask=w_mask, other=0.0)
-        acc_up += tl.dot(x_tile, tl.trans(w_up))
+            w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
+            w_up = tl.load(w_up_ptrs, mask=w_mask, other=0.0)
+            acc_up += tl.dot(x_tile, tl.trans(w_up))
 
         out_mask = row_mask[:, None] & n_mask[None, :]
 
         pre_gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
         pre_up_ptrs = pre_gate_ptrs + I_dim * stride_pre_N
-        if K_TILE == 0:
-            tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
-            tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
-        else:
-            prev_g = tl.load(pre_gate_ptrs, mask=out_mask, other=0.0).to(tl.float32)
-            prev_u = tl.load(pre_up_ptrs, mask=out_mask, other=0.0).to(tl.float32)
-            tl.store(pre_gate_ptrs, (prev_g + acc_gate).to(pre_act_ptr.dtype.element_ty), mask=out_mask)
-            tl.store(pre_up_ptrs, (prev_u + acc_up).to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+        tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+        tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
 
 
 @triton.jit
@@ -502,7 +492,7 @@ def _moe_bwd_down_proj_kernel(
     Recomputes dA' = dO @ W2^T, applies SwiGLU backward, and writes d_pre_act,
     weighted_act, and dS. Caller chunks the M dimension when the grid overflows.
 
-    ROW_VALID caps live M rows inside BLOCK_M. 910_95 tl.dot is wrong with
+    ROW_VALID caps live M rows inside BLOCK_M. A5 tl.dot is wrong with
     3+ live rows in a tile (T>=4) and also with exact BLOCK_M=1 at Mixtral
     I=512. Caller expands to one start per row and sets ROW_VALID=1 so each
     program is 1 live row + BLOCK_M-1 padding (the T=1 shape that is exact).
