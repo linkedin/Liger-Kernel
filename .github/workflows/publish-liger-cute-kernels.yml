@@ -42,11 +42,12 @@ jobs:
         ref: 4370102f9dacab813282e1d67722fceb0b90a019
         path: .release-deps/cutlass
 
+    # setup-python's pip cache helper cannot execute its host-toolcache pip
+    # launcher from inside a container job.
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
         python-version: '3.12'
-        cache: pip
 
     - name: Install build dependencies
       run: |
