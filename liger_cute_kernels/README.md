@@ -6,61 +6,97 @@
 It currently provides expert-parallel MoE and tensor-parallel fused scaled
 linear cross entropy, with a Torch-ABI-independent core exposed through TVM FFI.
 
-Liger MoE is a fused expert-parallel MoE implementation for NVIDIA Hopper and
-Blackwell GPUs. A persistent kernel uses warp specialization to overlap
-NVSHMEM communication with CUTLASS matrix multiplication: communication warps
-move remote token tiles while the remaining warps execute the expert MLP. Both
-the forward and backward passes are fused, use statically sized symmetric
-buffers, and support CUDA Graph execution without a token-capacity limit.
+LigerMoE provides persistent expert-parallel forward and backward kernels for
+NVIDIA Hopper and Blackwell GPUs. Each participating CTA uses warp
+specialization so communication and tensor-core computation make progress on
+the same SM: dedicated warps move routed token tiles while the MMA warps execute
+the expert MLP. One-sided NVSHMEM RDMA removes sender/receiver coordination, and
+preallocated symmetric buffers are sized from the total routed-token capacity
+rather than a fixed per-expert capacity. This keeps the execution compatible
+with CUDA Graphs despite dynamic routing.
 
 The tensor-parallel fused scaled linear cross-entropy implementation fuses the
 classifier projection with per-token NLL and optional entropy. Local MAX/SUM
-reductions run in the WGMMA epilogue through NVLS or DirectPeer, with a sharded
-inter-host ring follow-up for multi-host execution.
+reductions run in the tensor-core epilogue through NVLS or DirectPeer, with a
+sharded inter-host ring follow-up for multi-host execution.
 
-### Hopper results
+## LigerMoE design
 
-The evaluation reports the following BF16 results. These are benchmark
-snapshots from the CUDA 12.9 environment, not performance guarantees for every
-model or system.
+### Forward pass
 
-| Evaluation | Headline result |
+![LigerMoE forward-pass pipeline](assets/moe_forward_flow.png)
+
+The forward path sorts routed tokens and copies them to symmetric memory before
+entering the persistent main loop. Within that loop, get, TMA, MMA, and put
+warps pipeline remote reads, tensor-core work, and result delivery. Intra-host
+traffic uses direct TMA access over NVLink or PCIe; inter-host traffic uses
+NVSHMEM get/put operations. A final local combine applies the router weights
+after every expert result has arrived.
+
+### Backward pass
+
+![LigerMoE backward-pass pipeline](assets/moe_backward_flow.png)
+
+The backward path first produces routed expert-output gradients, then overlaps
+remote `X`/`dY` movement with activation recomputation, input-gradient
+calculation, and expert-weight gradients. TMA reduce stores accumulate weight
+gradients across token-tile batches. The final local dispatch reduces the
+routed `dX` contributions back to the original tokens.
+
+## MoE performance
+
+The current evaluation uses BF16 and the CUDA 12.9 environment. These are
+benchmark snapshots rather than performance guarantees for every model or
+system.
+
+| Evaluation | Current result |
 |---|---|
-| Standalone MoE kernels | Up to **32% lower forward latency** and **7% lower backward latency** than the strongest compared implementation |
-| Communication-intensive H200 cases | **10–35% higher forward throughput** than Comet; selected backward cases reach up to **~108% higher throughput** than DeepEP |
-| Tensor-parallel fused scaled linear cross entropy | At M8192/H4096/global-V131072: forward reaches **1,531 TFLOP/s/GPU at TP1**, **1,386 at TP8**, and **722 at two-host TP16**; full forward+backward reaches **1,580**, **1,043**, and **547 TFLOP/s/GPU** across forward, dZ recompute, dX, and dW |
-| Qwen3-30B-A3B training on 8 H100 GPUs | **2.35× speedup / 57% lower step time** than Megatron and **~17% lower step time** than Transformer Engine |
-| End-to-end convergence | **5.06% final-loss improvement** over the Megatron baseline |
+| Qwen3-30B-A3B, 8 H200 GPUs, 8,192 tokens/rank | **233 TFLOP/s forward** and **209 TFLOP/s backward**, respectively 49% and 31% above the strongest plotted baselines |
+| Qwen3-30B-A3B, 8 B300 GPUs, 8,192 tokens/rank | **468 TFLOP/s forward** and **402 TFLOP/s backward** |
+| Qwen3-30B-A3B training, 8 H200 GPUs | **44.936 s mean step time**, a **1.472x speedup** over the Megatron baseline |
+| Qwen3.5-122B-A10B training, 16 B200 GPUs | **126.489 s mean step time**, a **1.070x speedup** over the Megatron baseline |
 
-#### Throughput across expert-parallel GPU counts
+### Throughput across expert-parallel GPU counts
 
-![H200 MoE throughput across GPU counts](assets/hopper_gpu_scaling.png)
+![H200 MoE throughput across GPU counts](assets/h200_gpu_scaling.png)
 
-BF16 throughput at 8,192 tokens per rank on H200 GPUs. Top: Qwen3-30B-A3B
-(`D=2048`, `I=768`). Bottom: Mixtral-8x7B (`D=4096`, `I=14336`). Forward and
-backward results are shown from 1 to 8 expert-parallel GPUs; Comet and DeepEP
-require multiple GPUs, and FlashMoE is forward-only.
+H200 throughput at 8,192 tokens per rank from 1 to 16 expert-parallel GPUs.
+Top: Qwen3-30B-A3B (`D=2048`, `I=768`). Bottom: Llama-4-Scout (`D=5120`,
+`I=8192`). Left: forward. Right: backward. DeepEP and Comet require multiple
+GPUs, and FlashMoE is forward-only.
 
-#### Throughput across token counts
+![B300 MoE throughput across GPU counts](assets/b300_gpu_scaling.png)
 
-![H200 MoE throughput across token counts](assets/hopper_token_scaling.png)
+B300 throughput for the same model shapes and token count. Comet and FlashMoE
+are omitted because they do not support Blackwell. The 16-GPU points span two
+hosts.
 
-BF16 throughput from 1,024 to 16,384 tokens per rank on 8 H200 GPUs. Longer
-sequences deepen Liger's token-transport pipeline and increase communication
-and compute overlap.
+### Throughput across token counts
 
-#### End-to-end training
+![H200 MoE throughput across token counts](assets/h200_token_scaling.png)
 
-![H100 end-to-end training loss and step time](assets/hopper_training.png)
+H200 throughput from 1,024 to 16,384 tokens per rank on 8 GPUs. Longer token
+sequences deepen the transport/compute pipeline and improve SM utilization.
 
-Qwen3-30B-A3B pre-training on 8 H100 GPUs for 500 steps using OpenWebText,
-global batch size 512, and sequence length 4,096. Left: cross-entropy loss.
-Right: per-step wall time. The paper excludes the initial CUDA Graph build from
-its aggregate step-time statistics.
+![B300 MoE throughput across token counts](assets/b300_token_scaling.png)
+
+B300 throughput over the same token range on 8 GPUs. The panels use
+Qwen3-30B-A3B (`E=128`, `K=8`) and Llama-4-Scout (`E=16`, `K=1`).
+
+### End-to-end training
+
+![Qwen3 and Qwen3.5 end-to-end training](assets/end_to_end_training.png)
+
+OpenWebText pre-training with sequence length 8,192 for 300 steps. Panels (a)
+and (b) show Qwen3-30B-A3B on 8 H200 GPUs (`EP=8`, global batch size 256);
+panels (c) and (d) show Qwen3.5-122B-A10B on 16 B200 GPUs across two hosts
+(`EP=16`, global batch size 512). Mean step-time statistics exclude the first
+ten CUDA-Graph warm-up steps. The three backends retain effectively equivalent
+loss convergence in both experiments.
 
 ## Fused linear scaled cross entropy
 
-The Hopper native core also provides
+The native cores also provide
 `fused_linear_scaled_cross_entropy_forward` and
 `fused_linear_scaled_cross_entropy_backward`. The backward path uses a
 three-stage cluster-2 dZ handoff followed by a four-stage combined dX+dW
