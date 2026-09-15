@@ -116,7 +116,11 @@ def _default_strategy(
 
         # Solve: memory_multiplier * BLOCK_SIZE * unit_param * dtype_size * 8 <= SAFE_UB_CAPACITY_BITS
         # BLOCK_SIZE <= SAFE_UB_CAPACITY_BITS / (memory_multiplier * unit_param * dtype_size * 8)
-        max_block_size = int(SAFE_UB_CAPACITY_BITS // (memory_multiplier * unit_param * dtype_size * 8))
+        bits_per_block = memory_multiplier * unit_param * dtype_size * 8
+        max_block_size = int(SAFE_UB_CAPACITY_BITS // bits_per_block)
+        # Auto-multi-buffer (default on): ~4/3 live-set tiles vs full UB.
+        # A3=192KB, A5=256KB; do not take A5 tiles unless actual UB fits.
+        max_block_size = min(max_block_size, int(ub_capacity_bits // (bits_per_block * 4.0 / 3.0)))
         max_block_size = max(1, max_block_size)
 
         # Find largest power of 2 <= max_block_size

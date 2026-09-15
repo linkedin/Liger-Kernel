@@ -152,6 +152,40 @@ def _token_gather_block_k(K: int) -> int:
     return min(ASCEND_TOKEN_GATHER_BLOCK_K, K)
 
 
+def _token_gather_block_h(H: int) -> int:
+    """H-tile for token gather.
+
+    A5 drops a 1-trip gather when H == BLOCK_H (exact, no h_mask padding)
+    at T >= 128. H=128 / BLOCK_H=128 is the fused_moe correctness hole
+    (Y matches torch; aggregated out does not). Use a padded 192-wide tile
+    (same pattern as H=64 / BLOCK_H=128, which is already exact). Two exact
+    BLOCK_H=64 tiles fix fp32 but still fail bf16.
+    """
+    bh = ASCEND_TOKEN_GATHER_BLOCK_H
+    if H == bh:
+        return ASCEND_GEMM_BLOCK_N  # 192, padded 1-trip
+    return bh
+
+
+def _expand_m_tiles_block1(tile_row_start, tile_expert, expert_start_idx, block_m: int):
+    """Expand BLOCK_M tiles to one program per valid row.
+
+    Combined with ROW_VALID=1 and BLOCK_M=32 this is 1 live row + 31 pad
+    (the T=1 shape). Exact BLOCK_M=1 (no pad) fixes T>=4 ones-grads but
+    breaks Mixtral random dO at I=512.
+    """
+    if tile_row_start.numel() == 0:
+        return tile_row_start, tile_expert
+    ends = expert_start_idx[tile_expert.long() + 1]
+    offs = torch.arange(block_m, device=tile_row_start.device, dtype=tile_row_start.dtype)
+    rows = tile_row_start[:, None] + offs[None, :]
+    valid = rows < ends[:, None]
+    return (
+        rows[valid].contiguous(),
+        tile_expert[:, None].expand_as(rows)[valid].contiguous(),
+    )
+
+
 def _launch_token_gather_kernel(src, weights, s_reverse_scatter_idx, out, T, K, H, *, weighted: bool):
     """Gather K routed rows per token and reduce along K (weighted or sum)."""
     _token_gather_weighted_sum_kernel[(T,)](
@@ -166,7 +200,7 @@ def _launch_token_gather_kernel(src, weights, s_reverse_scatter_idx, out, T, K, 
         stride_out_T=out.stride(0),
         stride_out_H=out.stride(1),
         w_is_None=not weighted,
-        BLOCK_H=ASCEND_TOKEN_GATHER_BLOCK_H,
+        BLOCK_H=_token_gather_block_h(H),
         BLOCK_K=_token_gather_block_k(K),
     )
 
@@ -179,10 +213,16 @@ def _token_aggregation(Y, topk_weights_flat, s_reverse_scatter_idx, T, K, H):
 
 
 def _token_scatter_sum(src, s_reverse_scatter_idx, T, K, H):
-    """Unweighted gather-sum for backward dx: out[t] = sum_k src[s_rev[t*K+k]]."""
+    """Unweighted gather-sum for backward dx: out[t] = sum_k src[s_rev[t*K+k]].
+
+    Do not use the kernel's w_is_None path: on A5, bf16 `tl.sum(y, axis=0)`
+    drops lanes (Mixtral x.grad zeros). The weighted formula with ones is the
+    path already proven by forward aggregation.
+    """
     out = torch.zeros(T, H, dtype=src.dtype, device=src.device)
     if T * K > 0:
-        _launch_token_gather_kernel(src, src, s_reverse_scatter_idx, out, T, K, H, weighted=False)
+        ones = torch.ones(T * K, dtype=src.dtype, device=src.device)
+        _launch_token_gather_kernel(src, ones, s_reverse_scatter_idx, out, T, K, H, weighted=True)
     return out
 
 
@@ -349,9 +389,11 @@ class LigerFusedMoEFunction(torch.autograd.Function):
 
         if num_m_tiles > 0:
             n_i_tiles = triton.cdiv(intermediate_dim, ASCEND_BWD_BLOCK_N)
+            row1, exp1 = _expand_m_tiles_block1(tile_row_start, tile_expert, expert_start_idx, BLOCK_M_TOKEN)
+            num_m1 = int(row1.shape[0])
             max_m_per_launch = max(1, ASCEND_MAX_GRID_PROGRAMS // n_i_tiles)
-            for m_off in range(0, num_m_tiles, max_m_per_launch):
-                m_count = min(max_m_per_launch, num_m_tiles - m_off)
+            for m_off in range(0, num_m1, max_m_per_launch):
+                m_count = min(max_m_per_launch, num_m1 - m_off)
                 _moe_bwd_down_proj_kernel[(m_count, n_i_tiles)](
                     dO,
                     x_gather_idx,
@@ -360,8 +402,8 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                     down_proj,
                     pre_act,
                     expert_start_idx,
-                    tile_row_start[m_off : m_off + m_count],
-                    tile_expert[m_off : m_off + m_count],
+                    row1[m_off : m_off + m_count],
+                    exp1[m_off : m_off + m_count],
                     d_pre_act,
                     weighted_act,
                     dS,
@@ -381,6 +423,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                     BLOCK_M=BLOCK_M_TOKEN,
                     BLOCK_N=ASCEND_BWD_BLOCK_N,
                     BLOCK_K=ASCEND_GEMM_BLOCK_K,
+                    ROW_VALID=1,
                 )
 
         ddown_proj = torch.zeros_like(down_proj)
@@ -409,30 +452,42 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             BLOCK_K=ASCEND_DW_BLOCK_K,
         )
 
-        dx_expanded = torch.empty(TK, H, dtype=dO.dtype, device=dO.device)
+        # fp32 workspace: I_TILE is host-serial load-add-store. Storing bf16
+        # after every I-chunk (I=512 → 8 tiles) rounds the K-reduction and
+        # Mixtral bf16 x.grad occasionally exceeds atol=100 (1–2 elems).
+        dx_expanded = torch.zeros(TK, H, dtype=torch.float32, device=dO.device)
         if num_m_tiles > 0:
-            _moe_bwd_dX_expanded_kernel[(num_m_tiles,)](
-                d_pre_act,
-                gate_up_proj,
-                expert_start_idx,
-                tile_row_start,
-                tile_expert,
-                dx_expanded,
-                H_dim=H,
-                I_dim=intermediate_dim,
-                stride_d_pre_TK=d_pre_act.stride(0),
-                stride_d_pre_N=d_pre_act.stride(1),
-                stride_w_E=gate_up_proj.stride(0),
-                stride_w_N=gate_up_proj.stride(1),
-                stride_w_K=gate_up_proj.stride(2),
-                stride_dxe_TK=dx_expanded.stride(0),
-                stride_dxe_H=dx_expanded.stride(1),
-                BLOCK_M=BLOCK_M_TOKEN,
-                BLOCK_N=ASCEND_GEMM_BLOCK_N,
-                BLOCK_K=ASCEND_GEMM_BLOCK_K,
-            )
+            n_h_tiles = triton.cdiv(H, ASCEND_GEMM_BLOCK_N)
+            n_i_tiles = triton.cdiv(intermediate_dim, ASCEND_GEMM_BLOCK_K)
+            max_m_per_launch = max(1, ASCEND_MAX_GRID_PROGRAMS // n_h_tiles)
+            for i_tile in range(n_i_tiles):
+                for m_off in range(0, num_m_tiles, max_m_per_launch):
+                    m_count = min(max_m_per_launch, num_m_tiles - m_off)
+                    _moe_bwd_dX_expanded_kernel[(m_count, n_h_tiles)](
+                        d_pre_act,
+                        gate_up_proj,
+                        expert_start_idx,
+                        tile_row_start[m_off : m_off + m_count],
+                        tile_expert[m_off : m_off + m_count],
+                        dx_expanded,
+                        H_dim=H,
+                        I_dim=intermediate_dim,
+                        stride_d_pre_TK=d_pre_act.stride(0),
+                        stride_d_pre_N=d_pre_act.stride(1),
+                        stride_w_E=gate_up_proj.stride(0),
+                        stride_w_N=gate_up_proj.stride(1),
+                        stride_w_K=gate_up_proj.stride(2),
+                        stride_dxe_TK=dx_expanded.stride(0),
+                        stride_dxe_H=dx_expanded.stride(1),
+                        BLOCK_M=BLOCK_M_TOKEN,
+                        BLOCK_N=ASCEND_GEMM_BLOCK_N,
+                        BLOCK_K=ASCEND_GEMM_BLOCK_K,
+                        I_TILE=i_tile,
+                    )
 
         dx = _token_scatter_sum(dx_expanded, s_reverse_scatter_idx, T, K, H)
+        if dx.dtype != dO.dtype:
+            dx = dx.to(dO.dtype)
 
         dgate_up_proj = torch.zeros_like(gate_up_proj)
         _moe_bwd_dW1_kernel[

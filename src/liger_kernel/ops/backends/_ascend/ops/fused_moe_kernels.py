@@ -44,8 +44,14 @@ def _moe_router_histogram_kernel(
 
     Ascend: 2-D block loads + batched atomic_add with safe expert indices.
     A 1-D flatten path can fault on vector-core UB/D-cache under long MoE runs.
+
+    2-D reductions (atomic_add / sum) drop lanes when the inner dim is
+    narrower than one int32 vector (8 x i32 = 32B). Pad K_POW2 up to that
+    width; extra columns stay masked by k < K. Scatter still uses the true
+    next_power_of_2(K) and is unchanged.
     """
     tile_id = tl.program_id(0)
+    HIST_K_POW2: tl.constexpr = 8 if K_POW2 < 8 else K_POW2
 
     e_offs = tl.arange(0, E_POW2)
     tl.store(
@@ -55,7 +61,7 @@ def _moe_router_histogram_kernel(
     )
 
     tok_offs = tile_id * TOKENS_PER_TILE + tl.arange(0, TOKENS_PER_TILE)
-    k_offs = tl.arange(0, K_POW2)
+    k_offs = tl.arange(0, HIST_K_POW2)
     tok_mask = tok_offs < T
     load_mask = tok_mask[:, None] & (k_offs[None, :] < K)
     safe_k = tl.minimum(k_offs, K - 1)
@@ -65,15 +71,15 @@ def _moe_router_histogram_kernel(
         other=-1,
     )
 
-    flat_experts = tl.reshape(expert_ids, [TOKENS_PER_TILE * K_POW2])
-    flat_mask = tl.reshape(load_mask, [TOKENS_PER_TILE * K_POW2])
+    flat_experts = tl.reshape(expert_ids, [TOKENS_PER_TILE * HIST_K_POW2])
+    flat_mask = tl.reshape(load_mask, [TOKENS_PER_TILE * HIST_K_POW2])
     in_bounds = (flat_experts >= 0) & (flat_experts < E)
     valid = flat_mask & in_bounds
     safe_experts = tl.where(valid, flat_experts, 0)
 
     tl.atomic_add(
         partial_sum_ptr + safe_experts * n_tiles + tile_id,
-        tl.full([TOKENS_PER_TILE * K_POW2], 1, dtype=tl.int32),
+        tl.full([TOKENS_PER_TILE * HIST_K_POW2], 1, dtype=tl.int32),
         mask=valid,
     )
 
@@ -479,11 +485,17 @@ def _moe_bwd_down_proj_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    ROW_VALID: tl.constexpr,
 ):
     """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
 
     Recomputes dA' = dO @ W2^T, applies SwiGLU backward, and writes d_pre_act,
     weighted_act, and dS. Caller chunks the M dimension when the grid overflows.
+
+    ROW_VALID caps live M rows inside BLOCK_M. A5 tl.dot is wrong with
+    3+ live rows in a tile (T>=4) and also with exact BLOCK_M=1 at Mixtral
+    I=512. Caller expands to one start per row and sets ROW_VALID=1 so each
+    program is 1 live row + BLOCK_M-1 padding (the T=1 shape that is exact).
     """
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -498,7 +510,7 @@ def _moe_bwd_down_proj_kernel(
     k_offs = tl.arange(0, BLOCK_K)
 
     row_offs = row_start + m_offs
-    row_mask = row_offs < expert_end
+    row_mask = (m_offs < ROW_VALID) & (row_offs < expert_end)
     n_idx = n_start + n_offs
     n_mask = n_idx < I_dim
     out_mask = row_mask[:, None] & n_mask[None, :]
@@ -644,9 +656,16 @@ def _moe_bwd_dX_expanded_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    I_TILE: tl.constexpr,
 ):
-    """Grid: (num_m_tiles,). dx_expanded[sorted_pos] = d_gate @ W1_gate^T + d_up @ W1_up^T."""
+    """Grid: (num_m_tiles, ceil(H/BLOCK_N)).
+
+    dx_expanded[sorted_pos] = d_gate @ W1_gate^T + d_up @ W1_up^T.
+    H is on the grid and I_TILE is launched from host so neither GEMM loop is
+    a nested tl.range.
+    """
     pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
     expert_idx = tl.load(tile_expert_ptr + pid_m)
@@ -654,44 +673,41 @@ def _moe_bwd_dX_expanded_kernel(
 
     m_offs = tl.arange(0, BLOCK_M)
     k_offs = tl.arange(0, BLOCK_K)
+    n_offs = tl.arange(0, BLOCK_N)
 
     row_offs = row_start + m_offs
     row_mask = row_offs < expert_end
 
-    for n_start in tl.range(0, H_dim, BLOCK_N):
-        n_offs = tl.arange(0, BLOCK_N)
-        h_idx = n_start + n_offs
-        h_mask = h_idx < H_dim
+    h_idx = pid_n * BLOCK_N + n_offs
+    h_mask = h_idx < H_dim
 
-        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    k_idx = I_TILE * BLOCK_K + k_offs
+    k_mask = k_idx < I_dim
 
-        for k in tl.range(0, I_dim, BLOCK_K):
-            k_idx = k + k_offs
-            k_mask = k_idx < I_dim
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-            d_gate_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + k_idx[None, :] * stride_d_pre_N
-            d_gate = tl.load(d_gate_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
+    d_gate_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + k_idx[None, :] * stride_d_pre_N
+    d_gate = tl.load(d_gate_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-            w_gate_ptrs = (
-                gate_up_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
-            )
-            w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-            acc += tl.dot(d_gate, w_gate)
+    w_gate_ptrs = gate_up_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
+    w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
+    acc += tl.dot(d_gate, w_gate)
 
-            d_up_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + (I_dim + k_idx)[None, :] * stride_d_pre_N
-            d_up = tl.load(d_up_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
+    d_up_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + (I_dim + k_idx)[None, :] * stride_d_pre_N
+    d_up = tl.load(d_up_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-            w_up_ptrs = (
-                gate_up_proj_ptr
-                + expert_idx * stride_w_E
-                + (I_dim + k_idx)[:, None] * stride_w_N
-                + h_idx[None, :] * stride_w_K
-            )
-            w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-            acc += tl.dot(d_up, w_up)
+    w_up_ptrs = (
+        gate_up_proj_ptr + expert_idx * stride_w_E + (I_dim + k_idx)[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
+    )
+    w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
+    acc += tl.dot(d_up, w_up)
 
-        dxe_ptrs = dx_expanded_ptr + row_offs[:, None] * stride_dxe_TK + h_idx[None, :] * stride_dxe_H
+    dxe_ptrs = dx_expanded_ptr + row_offs[:, None] * stride_dxe_TK + h_idx[None, :] * stride_dxe_H
+    if I_TILE == 0:
         tl.store(dxe_ptrs, acc.to(dx_expanded_ptr.dtype.element_ty), mask=row_mask[:, None] & h_mask[None, :])
+    else:
+        prev = tl.load(dxe_ptrs, mask=row_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
+        tl.store(dxe_ptrs, (prev + acc).to(dx_expanded_ptr.dtype.element_ty), mask=row_mask[:, None] & h_mask[None, :])
 
 
 @triton.jit
