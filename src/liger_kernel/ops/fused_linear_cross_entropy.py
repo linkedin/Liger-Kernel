@@ -40,6 +40,25 @@ _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
+def _can_use_mm_out(_input, weight):
+    # out= bypasses autocast. Only use it when @ would use these exact operands
+    # and return their dtype; keep AMP casts/rounding on the original path.
+    if (
+        _input.device.type != "cuda"
+        or is_hip()
+        or torch.is_grad_enabled()
+        or _input.dtype != weight.dtype
+        or _input.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+    ):
+        return False
+    if torch.is_autocast_enabled():
+        autocast_dtype = (
+            torch.get_autocast_dtype("cuda") if _TORCH_VERSION >= Version("2.4.0") else torch.get_autocast_gpu_dtype()
+        )
+        return _input.dtype == autocast_dtype
+    return True
+
+
 def fused_linear_cross_entropy_forward(
     _input,
     weight,
@@ -133,15 +152,30 @@ def fused_linear_cross_entropy_forward(
         if ce_weight.stride(-1) != 1:
             ce_weight = ce_weight.contiguous()
 
+    use_mm_out = _can_use_mm_out(_input, weight)
+    # A promoted bias needs the original out-of-place add. Do not reserve an
+    # unused low-precision buffer alongside those promoted logits.
+    logits_storage = (
+        torch.empty((chunk_size, V), dtype=_input.dtype, device=device)
+        if use_mm_out and (bias is None or bias.dtype == _input.dtype)
+        else None
+    )
+
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = min((chunk_id + 1) * chunk_size, BT)
         _input_chunk = _input[start_idx:end_idx]  # chunk_size x H
 
         # when doing matmul, use the original precision
-        logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
-        if bias is not None:
-            logits_chunk = logits_chunk + bias
+        if logits_storage is not None:
+            logits_chunk = logits_storage[: end_idx - start_idx]
+            torch.mm(_input_chunk, weight.t(), out=logits_chunk)
+            if bias is not None:
+                logits_chunk.add_(bias)
+        else:
+            logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
+            if bias is not None:
+                logits_chunk = logits_chunk + bias
 
         target_chunk = target[start_idx:end_idx]  # chunk_size,
 
@@ -155,6 +189,7 @@ def fused_linear_cross_entropy_forward(
 
             # Compute softmax to get predicted probabilities
             probs = torch.softmax(logits_for_softmax, dim=-1)
+            del logits_for_softmax
 
             # Get predicted probabilities for token scaling, handling ignored targets
             valid_target_mask = target_chunk != ignore_index
@@ -164,16 +199,19 @@ def fused_linear_cross_entropy_forward(
                 # Gather probabilities only for valid targets
                 valid_probs = probs[valid_target_mask]
                 pred_probs_valid = torch.gather(valid_probs, -1, valid_targets.unsqueeze(-1)).squeeze(-1)
+                del valid_probs
 
                 # Create full tensor with zeros for ignored targets
                 pred_probs = torch.zeros_like(target_chunk, dtype=probs.dtype, device=probs.device)
                 pred_probs[valid_target_mask] = pred_probs_valid
+                del pred_probs_valid
             else:
                 # All targets are ignored
                 pred_probs = torch.zeros_like(target_chunk, dtype=probs.dtype, device=probs.device)
 
             # Store the scaling factors
             scaling_factors = pred_probs.detach()  # Detach to ensure no gradient flow
+            del probs, pred_probs, valid_target_mask, valid_targets
 
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
@@ -248,6 +286,11 @@ def fused_linear_cross_entropy_forward(
                 impl=ce_impl,
                 mode=ce_mode,
             )
+            del ce_args
+
+        # CE may return an alias of logits. Keep only the gradient reference so
+        # replacing it with scaled gradients also releases fallback logits.
+        del logits_chunk
 
         # Apply token scaling if requested
         if use_token_scaling:
@@ -268,6 +311,7 @@ def fused_linear_cross_entropy_forward(
             # Expand scaling factors to match gradient dimensions
             scaling_factors_expanded = scaling_factors.unsqueeze(-1)  # chunk_size x 1
             grad_logits_chunk = grad_logits_chunk * scaling_factors_expanded
+            del scaling_factors, scaling_factors_expanded
 
         # reduction="none": fold the per-token upstream gradient in HERE, before the
         # projections below sum over the token dimension. grad_weight is
@@ -280,7 +324,10 @@ def fused_linear_cross_entropy_forward(
             )
 
         if input_requires_grad:
-            grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
+            if use_mm_out and grad_logits_chunk.dtype == grad_input.dtype:
+                torch.mm(grad_logits_chunk, weight, out=grad_input[start_idx:end_idx])
+            else:
+                grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None and input_requires_grad:
             grad_logits_t = grad_logits_chunk.t()
@@ -306,6 +353,7 @@ def fused_linear_cross_entropy_forward(
                     out_dtype=torch.float32,
                     out=grad_weight,
                 )
+                del input_chunk
             elif (
                 grad_weight.device.type == "cuda"
                 and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
@@ -327,11 +375,13 @@ def fused_linear_cross_entropy_forward(
                     input_chunk,
                     out=grad_weight,
                 )
+                del input_chunk
             else:
                 # Legacy fallback: unsupported torch/device (no out_dtype), fp64 accumulators,
                 # or a dtype mismatch (e.g. fp32 grad_logits promoted under AMP). Correct but
                 # allocates a parameter-sized fp32 temporary before summing into grad_weight.
                 grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
+            del grad_logits_t
 
         if bias is not None and input_requires_grad:
             torch.add(
@@ -340,6 +390,13 @@ def fused_linear_cross_entropy_forward(
                 out=grad_bias,
                 alpha=1.0,
             )
+
+        # In particular, no transposed/scaled gradient or CE argument tuple may
+        # keep the previous chunk alive when the fallback allocates new logits.
+        del grad_logits_chunk, _input_chunk, target_chunk
+
+    # Release even the persistent buffer before allocating a dtype-converted dW.
+    del logits_storage
 
     # Need extra calculations for backward if reduction=='none'. Not supporting reduction='none' now.
     # if reduction == "none":
