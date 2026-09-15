@@ -193,12 +193,14 @@ torchrun --standalone --nproc_per_node=8 \
 
 ## Package architecture
 
-The native wheel packages one shared core library containing the CUTLASS +
-NVSHMEM operators and Python-facing TVM FFI functions:
+The release wheel packages one core for Hopper and one for the common
+Blackwell-family ISA. The Python facade selects the matching core for the
+active GPU:
 
 | Artifact | Sources | Links | Boundary | Built |
 |---|---|---|---|---|
-| `libliger_cute_kernels.so` (the core) | `csrc/core` + `liger_cute_kernels/tvm_ffi_bindings.cpp` | CUTLASS + NVSHMEM + CUDA + TVM FFI — **no torch** | flat `extern "C"` (`liger_cute.h`) and TVM FFI exports (`__tvm_ffi_*`) | **once** |
+| `libliger_cute_kernels_sm90a.so` | `csrc/core` + `liger_cute_kernels/tvm_ffi_bindings.cpp` | CUTLASS + NVSHMEM + CUDA + TVM FFI — **no torch** | flat `extern "C"` (`liger_cute.h`) and TVM FFI exports (`__tvm_ffi_*`) | once per release |
+| `libliger_cute_kernels_sm100f.so` | same | same | same | once per release |
 
 The core's public ABI is `extern "C"` only (no `std::`/torch types cross it),
 symbols are hidden except `liger_cute_*` and `__tvm_ffi_*`, and libstdc++/libgcc
@@ -210,9 +212,9 @@ compile.
 
 The top-level **`liger_kernel` wheel is pure Python/Triton** and does **not**
 build or contain any of this native code. The native libraries ship as a
-**separate, CUDA/torch-version-prefixed wheel** that installs its own
-standalone top-level package **`liger_cute_kernels`** (kept separate from
-`liger_kernel` so the native libs don't mix in). `liger_kernel.ops.cute` imports
+separate **`liger-cute-kernels` distribution with the same public version**.
+It installs its own standalone top-level package **`liger_cute_kernels`**.
+`liger_kernel.ops.cute` imports
 `liger_cute_kernels.tvm_ffi` at runtime. Intended order:
 
 1. Install the top-level `liger_kernel` wheel (pure Python).
@@ -273,12 +275,11 @@ src/liger_kernel/ops/cute/
   supported:
   - Native/system install: point `NVSHMEM_HOME` at it, or use the default
     `/usr/local/nvshmem`.
-  - PyPI install: install `nvidia-nvshmem-cu13` (or the optional
-    `liger_cute_kernels[nvshmem-pypi]` extra). The Python wheel builder and
-    `build_core()` auto-detect that package layout and create unversioned
-    compatibility symlinks for CMake when needed. For direct CMake invocation,
-    pass the package root as `-DNVSHMEM_HOME=...`; the find module accepts its
-    versioned `libnvshmem_host.so.3`.
+  - PyPI install: install `nvidia-nvshmem-cu12==3.6.5`. The Python wheel
+    builder and `build_core()` auto-detect that package layout and create
+    unversioned compatibility symlinks for CMake when needed. For direct CMake
+    invocation, pass the package root as `-DNVSHMEM_HOME=...`; the find module
+    accepts its versioned `libnvshmem_host.so.3`.
 - **CUTLASS** headers (4.x) — point `CUTLASS_HOME` at the repo root (so that
   `$CUTLASS_HOME/include/cutlass/cutlass.h` and
   `$CUTLASS_HOME/tools/util/include` exist). *Not needed when linking a prebuilt
@@ -353,7 +354,7 @@ Or from Python (with `liger_cute_kernels/` on `sys.path`):
 
 ```python
 from cute_build import build_core
-build_core("build/core")   # stages libliger_cute_kernels.so + libnvshmem_host.so
+build_core("build/core")   # stages one core and an optional SM90 cubin
 ```
 
 `build_core()` auto-detects both native and PyPI NVSHMEM installations. Direct
@@ -441,17 +442,19 @@ shape and requires the `T`, `D`, `I`, and local-`E` overrides (plus optional
 ## Building the native wheel
 
 This module's `setup.py` packages the native libraries into the independent
-wheel whose package is the standalone top-level **`liger_cute_kernels`**.
-It builds the core and ships
-`liger_cute_kernels/{libliger_cute_kernels.so, libnvshmem_host.so,
-tvm_ffi.py, tvm_ffi_bindings.cpp}`. Build against the **local** CUDA/NVSHMEM
-environment (no build isolation), from this module directory:
+**`liger-cute-kernels`** distribution. The release wheel contains both
+`libliger_cute_kernels_sm90a.so` and
+`libliger_cute_kernels_sm100f.so`; NVSHMEM is installed independently through
+the pinned `nvidia-nvshmem-cu12` dependency. Build against the local
+CUDA/NVSHMEM environment (no build isolation), from this module directory:
 
 ```bash
 cd liger_cute_kernels
-python -m pip install apache-tvm-ffi
-pip wheel . --no-deps --no-build-isolation -w dist
-# -> dist/liger_cute_kernels-0.1.0+cu130.torch2.9.1-cp312-cp312-linux_x86_64.whl
+python -m pip install apache-tvm-ffi nvidia-nvshmem-cu12==3.6.5
+LIGER_CUTE_CUDA_ARCHS=90a,100f \
+    pip wheel . --no-deps --no-build-isolation -w dist
+# Release build:
+# -> dist/liger_cute_kernels-<liger-version>-py3-none-manylinux_2_35_x86_64.whl
 ```
 
 For a native NVSHMEM install:
@@ -465,15 +468,18 @@ NVSHMEM_HOME=/usr/local/nvshmem \
 For the PyPI NVSHMEM layout:
 
 ```bash
-pip install nvidia-nvshmem-cu13
+pip install nvidia-nvshmem-cu12==3.6.5
 pip wheel . --no-deps --no-build-isolation -w dist
 ```
 
-The wheel is tagged with the CUDA + torch version as a PEP 440 local version
-(`+cu<ver>.torch<ver>`), so wheels for different environments coexist. To reuse
-a core built once across the torch matrix (no core recompile), point at its dir:
+The wheel reads its version from the repository's root `pyproject.toml`, so
+`liger-kernel` and `liger-cute-kernels` are released with the same version. To
+reuse architecture cores built in separate jobs, place them under
+`<core-dir>/90a/libliger_cute_kernels.so` and
+`<core-dir>/100f/libliger_cute_kernels.so`, then point packaging at the root:
 
 ```bash
+LIGER_CUTE_CUDA_ARCHS=90a,100f \
 LIGER_CUTE_CORE_DIR=/abs/dir-with-core \
     pip wheel . --no-deps --no-build-isolation -w dist
 ```
@@ -483,11 +489,10 @@ optionally the matching native wheel.
 
 ## Source-tree Python verification
 
-The Python facade is intentionally thin: it imports the external `tvm_ffi`
-package and loads `liger_cute_kernels/libliger_cute_kernels.so` from beside
-`liger_cute_kernels/tvm_ffi.py`. In a source checkout, `pytest` skips the Python
-tests until both pieces exist. To run those tests without installing a wheel,
-build the core and stage the shared libraries into the package directory:
+The Python facade imports the external `tvm_ffi` package, preloads NVSHMEM from
+`nvidia/nvshmem/lib`, and selects the packaged SM90a or SM100f core from the
+active GPU capability. In a source checkout, `pytest` skips the Python tests
+until the required pieces exist.
 
 ```bash
 cd liger_cute_kernels
@@ -498,9 +503,8 @@ cmake -S . -B build/core \
       -DCMAKE_BUILD_TYPE=Release -GNinja
 cmake --build build/core --target liger_cute_kernels -j
 
-cp build/core/csrc/core/libliger_cute_kernels.so liger_cute_kernels/
-cp "${NVSHMEM_HOME:-/usr/local/nvshmem}"/lib/libnvshmem_host.so* liger_cute_kernels/
-cp "${NVSHMEM_HOME:-/usr/local/nvshmem}"/lib/nvshmem_bootstrap_uid.so* liger_cute_kernels/ 2>/dev/null || true
+cp build/core/csrc/core/libliger_cute_kernels.so \
+    liger_cute_kernels/libliger_cute_kernels_sm90a.so
 
 python - <<'PY'
 import liger_cute_kernels.tvm_ffi as tvm_ffi
@@ -511,8 +515,7 @@ PY
 python -m pytest -q test
 ```
 
-Alternatively, install the built wheel; it stages the core and NVSHMEM host
-libraries into the package automatically.
+Alternatively, install the built wheel and its dependencies.
 
 ## CMake options
 
@@ -521,6 +524,9 @@ libraries into the package automatically.
 | `LIGER_CUTE_BUILD_BINDINGS` | `OFF` | Deprecated compatibility option. Leave OFF; tensor APIs are exposed through TVM FFI only. |
 | `LIGER_CUTE_CORE_IMPORTED_DIR` | *(empty)* | Dir holding a prebuilt `libliger_cute_kernels.so`. When set, the core is linked as an imported library (not compiled) and CUTLASS is not required. |
 | `LIGER_CUTE_CUDA_ARCH` | `90a` | CUDA target architecture. Use `100f` for one B200/B300 Blackwell-family build. |
+| `LIGER_CUTE_CUDA_ARCHS` | *(empty)* | Comma-separated architecture cores to package in one wheel, for example `90a,100f`. Mutually exclusive with `LIGER_CUTE_CUDA_ARCH`. |
+| `LIGER_CUTE_VERSION` | root package version | Explicit wheel-version override; release builds validate it against the root `liger-kernel` version. |
+| `LIGER_CUTE_STRIP_NATIVE` | `0` | Set to `1` to strip packaged core libraries. |
 | `LIGER_CUTE_FSLCE_SM100_STAGES` | `5` | SM100 forward TMA mainloop stages. |
 | `LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES` | `64` | SM100 forward communication wave width in N256 tiles. |
 | `LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES` | `5` | SM100 fused backward dZ TMA mainloop stages. |
@@ -544,8 +550,12 @@ is configurable with `-DLIGER_CUTE_CUDA_ARCH=100f` for B200 and B300.
 | `NVSHMEM_HOME` | CMake / `cute_build` | NVSHMEM install root (default `/usr/local/nvshmem`). |
 | `CUTLASS_HOME` | CMake | CUTLASS repo root (core compile only). |
 | `LIGER_CUTE_CUDA_ARCH` | CMake / `cute_build` | CUDA target architecture; use `100f` for a shared Blackwell-family build. |
+| `LIGER_CUTE_CUDA_ARCHS` | `cute_build` | Comma-separated architecture cores to package in one wheel, for example `90a,100f`. |
 | `LIGER_CUTE_CORE_DIR` | `setup.py` | Dir with a prebuilt core. Set → link it (no core recompile); unset → build the core from source. |
-| `LIGER_CUTE_LOCAL_VERSION` | `setup.py` | Override the auto-detected `cu<ver>.torch<ver>` local version tag. |
+| `LIGER_CUTE_BUILD_JOBS` | `cute_build` | Maximum parallel native build jobs. The release workflow uses `4`. |
+| `LIGER_CUTE_VERSION` | `setup.py` | Override the root `liger-kernel` version used by the native wheel. |
+| `LIGER_CUTE_STRIP_NATIVE` | `cute_build` | Set to `1` to strip packaged native libraries. |
+| `LIGER_CUTE_WHEEL_PLATFORM_TAG` | `setup.py` | Override the native wheel platform tag. The pinned release container uses `manylinux_2_35_x86_64`. |
 
 ## Verifying a core build
 
@@ -561,7 +571,9 @@ The core should export only `liger_cute_*` symbols and have no direct
 
 ## Runtime notes
 
-- `tvm_ffi.py` loads `libliger_cute_kernels.so` directly with
-  `tvm_ffi.load_module`. The TVM FFI exports live in that same library, so no
-  separate shim `.so`, `LD_LIBRARY_PATH`, or runtime JIT compile is needed once
-  the wheel is installed.
+- `tvm_ffi.py` selects `libliger_cute_kernels_sm90a.so` for H100/H200 and
+  `libliger_cute_kernels_sm100f.so` for the Blackwell family, then loads it with
+  `tvm_ffi.load_module`.
+- NVSHMEM is not copied into the LCK wheel. The loader preloads
+  `libnvshmem_host.so.3` from the separately installed
+  `nvidia-nvshmem-cu12==3.6.5` package.
