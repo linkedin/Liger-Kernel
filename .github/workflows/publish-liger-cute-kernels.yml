@@ -48,6 +48,7 @@ jobs:
         apt-get install --yes --no-install-recommends \
           binutils \
           build-essential \
+          libibverbs-dev \
           python3 \
           python3-pip \
           python-is-python3
