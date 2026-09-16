@@ -42,17 +42,16 @@ jobs:
         ref: 4370102f9dacab813282e1d67722fceb0b90a019
         path: .release-deps/cutlass
 
-    # setup-python's pip cache helper cannot execute its host-toolcache pip
-    # launcher from inside a container job.
-    - name: Set up Python
-      uses: actions/setup-python@v7
-      with:
-        python-version: '3.12'
-
     - name: Install build dependencies
       run: |
         apt-get update
-        apt-get install --yes --no-install-recommends build-essential binutils
+        apt-get install --yes --no-install-recommends \
+          binutils \
+          build-essential \
+          libibverbs-dev \
+          python3 \
+          python3-pip \
+          python-is-python3
         rm -rf /var/lib/apt/lists/*
         python -m pip install --upgrade pip
         python -m pip install \
@@ -92,7 +91,7 @@ jobs:
         python - <<'PY'
         from cute_build import build_core
 
-        build_core("release-core")
+        build_core("release-core", "release-build")
         PY
         completed_at=$(date +%s)
         nm -D --defined-only release-core/libliger_cute_kernels.so |

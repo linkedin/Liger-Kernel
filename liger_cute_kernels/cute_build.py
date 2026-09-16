@@ -301,7 +301,7 @@ class LckBuildExt(build_ext):
             _strip_native_binary(dest / packaged_name)
             if arch == "90a":
                 _stage_optional_core_artifacts(
-                    Path(core_dir) if prebuilt else arch_build,
+                    prebuilt.parent if prebuilt is not None else arch_build,
                     dest,
                     required=_env_flag(SM90_NONRDC_MOE_BUILD_ENV),
                 )
