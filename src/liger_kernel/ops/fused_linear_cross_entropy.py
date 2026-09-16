@@ -21,10 +21,9 @@ from liger_kernel.utils import infer_device
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 65536 // 2
 
-# Keep the historical minimum transient-logits budget: approximately BT x H
-# elements regardless of vocabulary size. Larger values reduce chunk-loop
-# launches but scale the reusable logits allocation proportionally; release
-# builds prioritize the bounded C=1 memory footprint.
+# Public callers default to the historical minimum transient-logits budget:
+# approximately BT x H elements regardless of vocabulary size. Integrations
+# with stricter reduction-order requirements may explicitly request more.
 _CHUNK_MEM_CONST = 1
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
@@ -70,6 +69,7 @@ def fused_linear_cross_entropy_forward(
     token_grad_output=None,
     compute_gradients=None,
     weight_requires_grad=None,
+    chunk_mem_const: int = _CHUNK_MEM_CONST,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
@@ -78,6 +78,8 @@ def fused_linear_cross_entropy_forward(
     assert isinstance(return_predicted_tokens, bool), (
         f"return_predicted_tokens must be True or False. Got: {return_predicted_tokens}"
     )
+    if isinstance(chunk_mem_const, bool) or not isinstance(chunk_mem_const, int) or chunk_mem_const < 1:
+        raise ValueError(f"chunk_mem_const must be a positive integer. Got: {chunk_mem_const!r}")
     device = _input.device
     # ``compute_gradients`` / ``weight_requires_grad`` let backward re-enter this
     # function with *detached* saved tensors (whose ``.requires_grad`` is False) and
@@ -97,8 +99,8 @@ def fused_linear_cross_entropy_forward(
     BT, H = _input.shape
     V = weight.shape[0]
 
-    # Bound transient logits to C x BT x H; production keeps the minimum C=1 budget.
-    inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
+    # Bound transient logits to C x BT x H.
+    inc_factor = triton.cdiv(V, chunk_mem_const * H)
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
     chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
@@ -484,6 +486,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         return_predicted_tokens: bool = False,
         ce_impl=None,
         ce_mode=None,
+        chunk_mem_const: int = _CHUNK_MEM_CONST,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -509,6 +512,8 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             Default: False.
         return_token_accuracy (bool): When `return_token_accuracy` is `True`, computes and returns per-token accuracy without materializing logits. Default: `False`
         return_predicted_tokens (bool): When `return_predicted_tokens` is `True`, returns per-token predicted class indices (argmax) without materializing logits. Default: `False`
+        chunk_mem_const (int): transient-logits budget multiplier. Defaults to
+            `1`; larger values trade memory for fewer chunk reductions.
         """
 
         # With reduction="none" the loss is per-token, so backward receives a
@@ -540,6 +545,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 ce_impl=ce_impl,
                 ce_mode=ce_mode,
                 compute_gradients=False if ctx.defer_grads else None,
+                chunk_mem_const=chunk_mem_const,
             )
         )
 
@@ -558,6 +564,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 # reduction="none" path re-enters forward from backward to recompute grads.
                 ce_impl=ce_impl,
                 ce_mode=ce_mode,
+                chunk_mem_const=chunk_mem_const,
             )
             ctx.weight_requires_grad = weight.requires_grad
         else:
@@ -602,7 +609,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
                 grad_output, grad_input, grad_weight, grad_bias
             )
-        return (
+        gradients = (
             grad_input,
             grad_weight,
             None,
@@ -620,4 +627,6 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             None,  # return_predicted_tokens
             None,  # ce_impl
             None,  # ce_mode
+            None,  # chunk_mem_const
         )
+        return gradients[: len(ctx.needs_input_grad)]

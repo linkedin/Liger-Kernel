@@ -273,9 +273,8 @@ def test_fused_linear_cross_entropy_propagates_backend_to_inner_ce(monkeypatch, 
 # fixture, and the accumulation path itself requires a CUDA SM80+ device.
 #
 # The production token-chunk loop sizes chunks from the ``_CHUNK_MEM_CONST``
-# memory budget (``inc_factor = cdiv(V, C * H)``). Production uses ``C=1``, so
-# the small shapes below naturally split into multiple chunks and exercise the
-# real per-chunk grad_weight accumulation path without a test-only override.
+# memory budget (``inc_factor = cdiv(V, C * H)``). The public default is C=1,
+# so the small shapes below naturally exercise the real multi-chunk path.
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
@@ -321,16 +320,18 @@ requires_nvidia_cuda = pytest.mark.skipif(
 )
 
 
-def _production_chunk_size(BT: int, V: int, H: int) -> int:
+def _production_chunk_size(BT: int, V: int, H: int, chunk_mem_const: int | None = None) -> int:
     """Mirror the production token-chunk geometry for the given dimensions."""
-    inc_factor = triton.cdiv(V, flce_ops._CHUNK_MEM_CONST * H)
+    chunk_mem_const = flce_ops._CHUNK_MEM_CONST if chunk_mem_const is None else chunk_mem_const
+    inc_factor = triton.cdiv(V, chunk_mem_const * H)
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))
     return min(chunk_size, BT)
 
 
-def test_triton_flce_uses_minimum_chunk_memory_budget():
+def test_triton_flce_chunk_memory_budget():
     assert flce_ops._CHUNK_MEM_CONST == 1
     assert _production_chunk_size(BT=8192, V=128256, H=4096) == 256
+    assert _production_chunk_size(BT=8192, V=128256, H=4096, chunk_mem_const=8) == 2048
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +597,7 @@ def _mk_inputs(
 
 
 class TestFusedLinearCrossEntropyAddmm:
-    """Regression suite for production chunk buffers and dW accumulation."""
+    """Regression suite for chunk buffers and dW accumulation."""
 
     # -----------------------------------------------------------------------
     # 1. Dispatch: the low-precision default path uses addmm(out=) and no param upcast
