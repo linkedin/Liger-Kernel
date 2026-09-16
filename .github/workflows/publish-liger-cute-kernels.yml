@@ -264,13 +264,15 @@ jobs:
     needs: package-wheel
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment:
+      name: liger-cute-kernels
+      url: https://pypi.org/p/liger-cute-kernels
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
 
     steps:
-    - name: Set up Python
-      uses: actions/setup-python@v7
-      with:
-        python-version: '3.12'
-
     - name: Download release wheel
       uses: actions/download-artifact@v8
       with:
@@ -278,13 +280,7 @@ jobs:
         path: dist
 
     - name: Publish standalone package
-      env:
-        TWINE_USERNAME: ${{ secrets.PYPI_LCK_USERNAME }}
-        TWINE_PASSWORD: ${{ secrets.PYPI_LCK_PASSWORD }}
-      run: |
-        if [[ -z "${TWINE_USERNAME}" || -z "${TWINE_PASSWORD}" ]]; then
-          echo "PYPI_LCK_USERNAME and PYPI_LCK_PASSWORD must be configured" >&2
-          exit 1
-        fi
-        python -m pip install --upgrade pip twine
-        python -m twine upload --verbose dist/*
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: dist/
+        verbose: true
