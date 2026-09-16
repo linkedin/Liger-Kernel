@@ -152,6 +152,14 @@ def _token_gather_block_k(K: int) -> int:
     return min(ASCEND_TOKEN_GATHER_BLOCK_K, K)
 
 
+def _row_launch_chunks(num_m_tiles, n_n_tiles):
+    """One program per (tile, row) so tl.dot sees a single live row."""
+    n_row = num_m_tiles * BLOCK_M_TOKEN
+    step = max(1, ASCEND_MAX_GRID_PROGRAMS // max(int(n_n_tiles), 1))
+    for base in range(0, n_row, step):
+        yield min(step, n_row - base), base
+
+
 def _launch_token_gather_kernel(src, weights, s_reverse_scatter_idx, out, T, K, H, *, weighted: bool):
     """Gather K routed rows per token and reduce along K (weighted or sum)."""
     _token_gather_weighted_sum_kernel[(T,)](
@@ -349,9 +357,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
 
         if num_m_tiles > 0:
             n_i_tiles = triton.cdiv(intermediate_dim, ASCEND_BWD_BLOCK_N)
-            max_m_per_launch = max(1, ASCEND_MAX_GRID_PROGRAMS // n_i_tiles)
-            for m_off in range(0, num_m_tiles, max_m_per_launch):
-                m_count = min(max_m_per_launch, num_m_tiles - m_off)
+            for m_count, m_off in _row_launch_chunks(num_m_tiles, n_i_tiles):
                 _moe_bwd_down_proj_kernel[(m_count, n_i_tiles)](
                     dO,
                     x_gather_idx,
@@ -360,8 +366,8 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                     down_proj,
                     pre_act,
                     expert_start_idx,
-                    tile_row_start[m_off : m_off + m_count],
-                    tile_expert[m_off : m_off + m_count],
+                    tile_row_start,
+                    tile_expert,
                     d_pre_act,
                     weighted_act,
                     dS,
@@ -381,6 +387,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                     BLOCK_M=BLOCK_M_TOKEN,
                     BLOCK_N=ASCEND_BWD_BLOCK_N,
                     BLOCK_K=ASCEND_GEMM_BLOCK_K,
+                    pid_base=m_off,
                 )
 
         ddown_proj = torch.zeros_like(down_proj)
@@ -411,26 +418,29 @@ class LigerFusedMoEFunction(torch.autograd.Function):
 
         dx_expanded = torch.empty(TK, H, dtype=dO.dtype, device=dO.device)
         if num_m_tiles > 0:
-            _moe_bwd_dX_expanded_kernel[(num_m_tiles,)](
-                d_pre_act,
-                gate_up_proj,
-                expert_start_idx,
-                tile_row_start,
-                tile_expert,
-                dx_expanded,
-                H_dim=H,
-                I_dim=intermediate_dim,
-                stride_d_pre_TK=d_pre_act.stride(0),
-                stride_d_pre_N=d_pre_act.stride(1),
-                stride_w_E=gate_up_proj.stride(0),
-                stride_w_N=gate_up_proj.stride(1),
-                stride_w_K=gate_up_proj.stride(2),
-                stride_dxe_TK=dx_expanded.stride(0),
-                stride_dxe_H=dx_expanded.stride(1),
-                BLOCK_M=BLOCK_M_TOKEN,
-                BLOCK_N=ASCEND_GEMM_BLOCK_N,
-                BLOCK_K=ASCEND_GEMM_BLOCK_K,
-            )
+            n_h_tiles = triton.cdiv(H, ASCEND_GEMM_BLOCK_N)
+            for m_count, m_off in _row_launch_chunks(num_m_tiles, n_h_tiles):
+                _moe_bwd_dX_expanded_kernel[(m_count, n_h_tiles)](
+                    d_pre_act,
+                    gate_up_proj,
+                    expert_start_idx,
+                    tile_row_start,
+                    tile_expert,
+                    dx_expanded,
+                    H_dim=H,
+                    I_dim=intermediate_dim,
+                    stride_d_pre_TK=d_pre_act.stride(0),
+                    stride_d_pre_N=d_pre_act.stride(1),
+                    stride_w_E=gate_up_proj.stride(0),
+                    stride_w_N=gate_up_proj.stride(1),
+                    stride_w_K=gate_up_proj.stride(2),
+                    stride_dxe_TK=dx_expanded.stride(0),
+                    stride_dxe_H=dx_expanded.stride(1),
+                    BLOCK_M=BLOCK_M_TOKEN,
+                    BLOCK_N=ASCEND_GEMM_BLOCK_N,
+                    BLOCK_K=ASCEND_GEMM_BLOCK_K,
+                    pid_base=m_off,
+                )
 
         dx = _token_scatter_sum(dx_expanded, s_reverse_scatter_idx, T, K, H)
 
