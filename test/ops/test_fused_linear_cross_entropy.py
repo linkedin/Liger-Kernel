@@ -273,12 +273,8 @@ def test_fused_linear_cross_entropy_propagates_backend_to_inner_ce(monkeypatch, 
 # fixture, and the accumulation path itself requires a CUDA SM80+ device.
 #
 # The production token-chunk loop sizes chunks from the ``_CHUNK_MEM_CONST``
-# memory budget (``inc_factor = cdiv(V, C * H)``). At the tiny shapes used here
-# the default ``C=16`` collapses to a single chunk, which would never exercise
-# the per-chunk grad_weight accumulation these tests target. The class-local
-# autouse ``_force_multichunk`` fixture pins that budget knob to ``C=1`` *only
-# for these migrated tests* so the real production loop splits these shapes into
-# multiple chunks -- the cross-backend tests above keep the production ``C=16``.
+# memory budget (``inc_factor = cdiv(V, C * H)``). The public default is C=1,
+# so the small shapes below naturally exercise the real multi-chunk path.
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
@@ -324,14 +320,18 @@ requires_nvidia_cuda = pytest.mark.skipif(
 )
 
 
-def _production_chunk_size(BT: int, V: int, H: int) -> int:
-    """The chunk size the production loop will pick for these dims, using the
-    *current* module-level ``_CHUNK_MEM_CONST`` (pinned to 1 by the class-local
-    autouse fixture). Mirrors the arithmetic in
-    ``fused_linear_cross_entropy_forward``."""
-    inc_factor = triton.cdiv(V, flce_ops._CHUNK_MEM_CONST * H)
+def _production_chunk_size(BT: int, V: int, H: int, chunk_mem_const: int | None = None) -> int:
+    """Mirror the production token-chunk geometry for the given dimensions."""
+    chunk_mem_const = flce_ops._CHUNK_MEM_CONST if chunk_mem_const is None else chunk_mem_const
+    inc_factor = triton.cdiv(V, chunk_mem_const * H)
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))
     return min(chunk_size, BT)
+
+
+def test_triton_flce_chunk_memory_budget():
+    assert flce_ops._CHUNK_MEM_CONST == 1
+    assert _production_chunk_size(BT=8192, V=128256, H=4096) == 256
+    assert _production_chunk_size(BT=8192, V=128256, H=4096, chunk_mem_const=8) == 2048
 
 
 # ---------------------------------------------------------------------------
@@ -597,24 +597,7 @@ def _mk_inputs(
 
 
 class TestFusedLinearCrossEntropyAddmm:
-    """Regression suite for chunk buffers and the ``grad_weight`` addmm path.
-
-    Grouped in a class so the ``_force_multichunk`` autouse fixture (which pins
-    ``_CHUNK_MEM_CONST=1``) is scoped to *only* these migrated tests and never
-    perturbs the production ``C=16`` used by the cross-backend tests above.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _force_multichunk(self, monkeypatch):
-        """Pin the existing ``_CHUNK_MEM_CONST`` memory budget to 1 for each test.
-
-        This is the *production* chunk-sizing knob (``inc_factor = cdiv(V, C*H)``),
-        not a test-only chunk API. At ``C=1`` the small shapes below split into
-        several token chunks, so the genuine per-chunk grad_weight accumulation
-        loop runs more than once -- which is exactly what these regression tests
-        cover. Being class-local, it does not affect any other test in the module.
-        """
-        monkeypatch.setattr(flce_ops, "_CHUNK_MEM_CONST", 1)
+    """Regression suite for chunk buffers and dW accumulation."""
 
     # -----------------------------------------------------------------------
     # 1. Dispatch: the low-precision default path uses addmm(out=) and no param upcast
