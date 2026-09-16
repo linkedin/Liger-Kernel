@@ -1871,6 +1871,8 @@ def apply_liger_kernel_to_qwen3(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.q_norm)
+                _patch_rms_norm_module(decoder_layer.self_attn.k_norm)
 
 
 def apply_liger_kernel_to_qwen3_moe(
@@ -1936,6 +1938,8 @@ def apply_liger_kernel_to_qwen3_moe(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.q_norm)
+                _patch_rms_norm_module(decoder_layer.self_attn.k_norm)
 
 
 def apply_liger_kernel_to_gpt_oss(
@@ -3192,6 +3196,9 @@ def apply_liger_kernel_to_qwen3_next(
             if rms_norm:
                 _patch_rms_norm_module_for_qwen3_next(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_qwen3_next(decoder_layer.post_attention_layernorm)
+                if hasattr(decoder_layer, "self_attn"):
+                    _patch_rms_norm_module_for_qwen3_next(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_qwen3_next(decoder_layer.self_attn.k_norm)
 
             # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
             if swiglu:
@@ -3300,6 +3307,9 @@ def apply_liger_kernel_to_qwen3_5(
             if rms_norm:
                 _patch_rms_norm_module_for_qwen3_5(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_qwen3_5(decoder_layer.post_attention_layernorm)
+                if hasattr(decoder_layer, "self_attn"):
+                    _patch_rms_norm_module_for_qwen3_5(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_qwen3_5(decoder_layer.self_attn.k_norm)
 
             if swiglu:
                 _patch_swiglu_module(decoder_layer.mlp, LigerQwen3MoeSwiGLUMLP)
@@ -3400,6 +3410,9 @@ def apply_liger_kernel_to_qwen3_5_moe(
             if rms_norm:
                 _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.post_attention_layernorm)
+                if hasattr(decoder_layer, "self_attn"):
+                    _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.self_attn.k_norm)
 
             if swiglu:
                 _patch_swiglu_module(decoder_layer.mlp.shared_expert, LigerQwen3MoeSwiGLUMLP)
