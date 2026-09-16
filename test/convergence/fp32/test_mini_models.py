@@ -24,6 +24,7 @@ from transformers.models.phi3 import Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
 
+from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v4
 from liger_kernel.transformers import apply_liger_kernel_to_exaone4
 from liger_kernel.transformers import apply_liger_kernel_to_falcon_h1
@@ -60,12 +61,15 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
+from liger_kernel.transformers import apply_liger_kernel_to_qwen4_exp
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
+from liger_kernel.transformers.qwen4_exp import liger_qwen4_exp_gated_residual_forward
 from liger_kernel.utils import infer_device
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import get_logprobs
+from test.utils import get_qwen4_exp_mini_config
 from test.utils import get_topk
 from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_deepseek_v4
@@ -104,6 +108,7 @@ from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import revert_liger_kernel_to_qwen3_next
 from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl_moe
+from test.utils import revert_liger_kernel_to_qwen4_exp
 from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
@@ -326,6 +331,13 @@ try:
     QWEN3NEXT_AVAILABLE = True
 except ImportError:
     QWEN3NEXT_AVAILABLE = False
+
+try:
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpForCausalLM
+
+    QWEN4EXP_AVAILABLE = True
+except ImportError:
+    QWEN4EXP_AVAILABLE = False
 
 try:
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
@@ -1490,6 +1502,18 @@ if FALCONH1_AVAILABLE:
         ),
     )
 
+if QWEN4EXP_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen4_exp"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen4_exp,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen4_exp,
+        model_class=Qwen4ExpForCausalLM,
+        mini_model_config=get_qwen4_exp_mini_config(
+            ple_layer_ids=[],
+            layer_types=["qwen_sparse_attention"] * 4,
+            dtype=torch.float32,
+        ),
+    )
+
 if QWEN3NEXT_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen3_next"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_qwen3_next,
@@ -1766,7 +1790,13 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name or "qwen3_next" in model_name or "qwen3_5" in model_name or "deepseek_v4" in model_name:
+        if (
+            "glm4" in model_name
+            or "qwen3_next" in model_name
+            or "qwen3_5" in model_name
+            or "qwen4_exp" in model_name
+            or "deepseek_v4" in model_name
+        ):
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -1793,6 +1823,16 @@ def run_mini_model(
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
     model = create_model(model_name).to(dtype).to(device)
+    if model_name == "mini_qwen4_exp":
+        assert dtype == torch.float32
+        assert all(layer.layer_type == "qwen_sparse_attention" for layer in model.model.layers)
+        gated_residuals = [module for module in model.modules() if type(module).__name__ == "Qwen4ExpTextGatedResidual"]
+        assert gated_residuals
+        uses_liger_gated_residual = bool(with_liger) and device == "cuda" and not is_hip()
+        assert all(
+            (module.forward.__func__ is liger_qwen4_exp_gated_residual_forward) == uses_liger_gated_residual
+            for module in gated_residuals
+        )
 
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
     loader = DataLoader(train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn)
@@ -1805,6 +1845,10 @@ def run_mini_model(
         optimizer.zero_grad()
         output = model(**batch)
         output.loss.backward()
+        if model_name == "mini_qwen4_exp":
+            finite = [torch.isfinite(output.loss).all()]
+            finite.extend(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+            assert torch.stack(finite).all()
         optimizer.step()
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
@@ -2244,6 +2288,22 @@ def run_mini_model(
                     + " Torch's implementation takes too long"
                 ),
             ],
+        ),
+        pytest.param(
+            "mini_qwen4_exp",
+            32,
+            1e-5,
+            torch.float32,
+            1e-5,
+            1e-4,
+            1e-2,
+            1e-3,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not QWEN4EXP_AVAILABLE,
+                reason="Qwen4Exp not available in this version of transformers",
+            ),
         ),
         pytest.param(
             "mini_qwen3_5_moe",

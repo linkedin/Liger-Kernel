@@ -8,13 +8,13 @@ device = infer_device()
 
 
 @pytest.mark.parametrize(
-    "batch_size, num_channels, num_groups, hidden_size",
+    "batch_size, num_channels, num_groups, hidden_size, weight_grad_atol_factor",
     [
-        (1, 1, 1, 3),  # minimal
-        (1, 32, 32, 4),  # group == channel
-        (16, 32, 1, 4096),  # single group
-        (2, 63, 21, 2163),  # non-aligned hidden
-        (16, 48, 12, 8192),  # large hidden
+        (1, 1, 1, 3, 1),  # minimal
+        (1, 32, 32, 4, 1),  # group == channel
+        (16, 32, 1, 4096, 1),  # single group
+        (2, 63, 21, 2163, 1),  # non-aligned hidden
+        (16, 48, 12, 8192, 3),  # large hidden
     ],
 )
 @pytest.mark.parametrize(
@@ -23,7 +23,9 @@ device = infer_device()
         (torch.float32, 1e-4, 1e-4),
     ],
 )
-def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dtype, atol, rtol):
+def test_liger_group_norm(
+    batch_size, num_channels, num_groups, hidden_size, weight_grad_atol_factor, dtype, atol, rtol
+):
     torch.manual_seed(0)
 
     _tensor = torch.randn(batch_size, num_channels, hidden_size, dtype=dtype, device=device)
@@ -49,4 +51,12 @@ def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dty
     torch_output.backward(grad_output, retain_graph=True)
     assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
     assert torch.allclose(liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol), "Bias grads different"
-    assert torch.allclose(liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol), "Weight grads different"
+    # dWeight combines one partial per batch item with atomic adds. For large,
+    # cancellation-heavy reductions, the scheduling-dependent FP32 sum needs a
+    # slightly larger absolute tolerance than the elementwise results.
+    assert torch.allclose(
+        liger_ln.weight.grad,
+        torch_ln.weight.grad,
+        atol=weight_grad_atol_factor * atol,
+        rtol=rtol,
+    ), "Weight grads different"

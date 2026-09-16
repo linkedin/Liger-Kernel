@@ -85,6 +85,8 @@ from liger_kernel.ops.poly_norm import LigerPolyNormFunction  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_backward  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_forward  # noqa: F401
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction  # noqa: F401
+from liger_kernel.ops.qwen4_exp import LigerQwen4ExpGRWriteFunction  # noqa: F401
+from liger_kernel.ops.qwen4_exp import LigerQwen4ExpHyperConnectionPreFunction  # noqa: F401
 from liger_kernel.ops.relu_squared import LigerReLUSquaredFunction  # noqa: F401
 from liger_kernel.ops.relu_squared import relu_squared_backward  # noqa: F401
 from liger_kernel.ops.relu_squared import relu_squared_forward  # noqa: F401
