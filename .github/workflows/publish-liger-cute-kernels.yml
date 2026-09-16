@@ -7,6 +7,12 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the validated wheel to PyPI
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -251,8 +257,10 @@ jobs:
 
   publish-wheel:
     name: Publish Liger Cute Kernels to PyPI
-    # Main-branch integration builds and manual runs stop after packaging.
-    if: github.event_name == 'release' && github.event.action == 'published'
+    # Main-branch integration builds and default manual runs stop after packaging.
+    if: >-
+      (github.event_name == 'release' && github.event.action == 'published') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
     needs: package-wheel
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -271,8 +279,12 @@ jobs:
 
     - name: Publish standalone package
       env:
-        TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
-        TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+        TWINE_USERNAME: ${{ secrets.PYPI_LCK_USERNAME }}
+        TWINE_PASSWORD: ${{ secrets.PYPI_LCK_PASSWORD }}
       run: |
+        if [[ -z "${TWINE_USERNAME}" || -z "${TWINE_PASSWORD}" ]]; then
+          echo "PYPI_LCK_USERNAME and PYPI_LCK_PASSWORD must be configured" >&2
+          exit 1
+        fi
         python -m pip install --upgrade pip twine
-        python -m twine upload dist/*
+        python -m twine upload --verbose dist/*
