@@ -21,21 +21,11 @@ from liger_kernel.utils import infer_device
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 65536 // 2
 
-# Memory-budget constant for the token-chunk geometry below. The historical
-# formula (inc_factor = cdiv(V, H), i.e. budget C=1) sizes chunks to a memory
-# FLOOR of ~BT x H transient logits, which at LLM vocab shapes forces many tiny
-# chunks and a launch-bound wall. At llama_3 shapes (V=128256, H=4096) C=1 gives
-# inc_factor=32 -> chunk_size=BT/32 (256 rows @ BT=8192) = 32 loop iterations.
-# Widening the transient budget to C x BT x H collapses the loop. Measured
-# Blackwell B200 (full fwd+bwd, bf16): V=128256/H=4096 BT=8192 123.4ms (C=1) ->
-# 24.7ms (C=16) = 5.0x; BT=4096 119.3 -> 15.1 = 7.9x; BT=1024 116.9 -> 9.07 =
-# 12.9x; small V=32000 BT=8192 11.0 -> 5.4 = 2.0x (flat for C>=8). C=16 is the
-# knee (gains flatten beyond it at BT>=4096). Numerics are partition-invariant
-# per row: loss is bit-identical across C; input-grad differs only at the ~1e-5
-# GEMM reduction-order level; weight-grad differs only in addmm chunk-accumulation
-# order (same class as the fused_linear_jsd chunk-memory idiom). Same constant on
-# all devices.
-_CHUNK_MEM_CONST = 16
+# Keep the historical minimum transient-logits budget: approximately BT x H
+# elements regardless of vocabulary size. Larger values reduce chunk-loop
+# launches but scale the reusable logits allocation proportionally; release
+# builds prioritize the bounded C=1 memory footprint.
+_CHUNK_MEM_CONST = 1
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
@@ -107,7 +97,7 @@ def fused_linear_cross_entropy_forward(
     BT, H = _input.shape
     V = weight.shape[0]
 
-    # widen the transient logits budget to C x BT x H (C=1 is a memory floor, not a perf target)
+    # Bound transient logits to C x BT x H; production keeps the minimum C=1 budget.
     inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
     chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
