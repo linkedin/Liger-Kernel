@@ -190,13 +190,19 @@ def test_frontend_fallback_supports_entropy_only_backward():
     assert weight.grad is not None
 
 
-def test_tp_frontend_dispatches_hopper_bf16_to_native(monkeypatch):
+@pytest.mark.parametrize(
+    "capability",
+    [(9, 0), (10, 0), (10, 3)],
+    ids=["hopper", "blackwell-b200", "blackwell-b300"],
+)
+def test_tp_frontend_dispatches_supported_bf16_cuda_to_native(monkeypatch, capability):
     process_group = object()
     device = torch.device("cuda:3")
     _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
     weight = SimpleNamespace(shape=(16, 32))
     target = object()
     calls = []
+    seen = []
 
     class StubNativeFunction:
         @staticmethod
@@ -206,7 +212,13 @@ def test_tp_frontend_dispatches_hopper_bf16_to_native(monkeypatch):
 
     monkeypatch.setattr(_FRONTEND, "_tp_group_info", lambda actual: (actual, 2))
     monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
-    monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: actual == device)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(
+        _FRONTEND.torch.cuda,
+        "get_device_capability",
+        lambda actual: seen.append(actual) or capability,
+    )
     monkeypatch.setattr(_FRONTEND, "_load_native_tp_function", lambda: StubNativeFunction)
     monkeypatch.setattr(
         _FRONTEND,
@@ -227,6 +239,42 @@ def test_tp_frontend_dispatches_hopper_bf16_to_native(monkeypatch):
 
     assert result == "native-result"
     assert calls == [(_input, weight, target, 32, 0.5, -1, 2, True, process_group)]
+    assert seen == [device]
+
+
+def test_tp_frontend_uses_fallback_for_unsupported_nvidia_capability(monkeypatch):
+    process_group = object()
+    device = torch.device("cuda:0")
+    _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
+    weight = SimpleNamespace(shape=(8, 16))
+    target = object()
+    calls = []
+
+    monkeypatch.setattr(_FRONTEND, "_tp_group_info", lambda actual: (actual, 1))
+    monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda actual: (8, 9))
+    monkeypatch.setattr(
+        _FRONTEND,
+        "_load_native_tp_function",
+        lambda: pytest.fail("native TP must not load for an unsupported capability"),
+    )
+    monkeypatch.setattr(
+        _FRONTEND,
+        "_apply_tp_fallback",
+        lambda *args: calls.append(args) or "fallback-result",
+    )
+
+    result = _FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+        _input,
+        weight,
+        target,
+        process_group,
+    )
+
+    assert result == "fallback-result"
+    assert calls == [(_input, weight, target, 1.0, -100, False, process_group)]
 
 
 def test_tp_group_is_a_call_argument():
@@ -246,7 +294,9 @@ def test_tp_frontend_uses_liger_fallback_when_native_is_unavailable(monkeypatch,
 
     monkeypatch.setattr(_FRONTEND, "_tp_group_info", lambda actual: (actual, 1))
     monkeypatch.setattr(_FRONTEND, "_validate_tp_inputs", lambda *args: None)
-    monkeypatch.setattr(_FRONTEND, "_is_hopper", lambda actual: True)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda actual: (10, 3))
 
     def load_native():
         if isinstance(native_result, BaseException):

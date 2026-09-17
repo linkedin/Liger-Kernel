@@ -1,0 +1,286 @@
+name: Build and Publish Liger Cute Kernels
+
+on:
+  push:
+    branches:
+      - main
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the validated wheel to PyPI
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-liger-cute-kernels-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NVSHMEM_VERSION: 3.6.5
+  TVM_FFI_VERSION: 0.1.14
+
+jobs:
+  build-core:
+    name: Build ${{ matrix.cuda_arch }} core
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    container:
+      image: nvidia/cuda:12.9.1-devel-ubuntu22.04@sha256:38804006c937a83f28f63a959abcee688042072319c8614ad57b350958a30bd3
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda_arch: [90a, 100f]
+
+    steps:
+    - name: Checkout Liger Kernel
+      uses: actions/checkout@v7
+
+    - name: Checkout CUTLASS
+      uses: actions/checkout@v7
+      with:
+        repository: NVIDIA/cutlass
+        ref: 4370102f9dacab813282e1d67722fceb0b90a019
+        path: .release-deps/cutlass
+
+    - name: Install build dependencies
+      run: |
+        apt-get update
+        apt-get install --yes --no-install-recommends \
+          binutils \
+          build-essential \
+          libibverbs-dev \
+          python3 \
+          python3-pip \
+          python-is-python3
+        rm -rf /var/lib/apt/lists/*
+        python -m pip install --upgrade pip
+        python -m pip install \
+          "apache-tvm-ffi==${TVM_FFI_VERSION}" \
+          "cmake>=3.24" \
+          ninja \
+          "nvidia-nvshmem-cu12==${NVSHMEM_VERSION}" \
+          "setuptools>=70.1" \
+          wheel
+
+    - name: Configure CUDA 12.9 dependencies
+      run: |
+        nvcc --version | tee nvcc-version.txt
+        grep -q 'release 12.9' nvcc-version.txt
+        test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.35"
+        python - <<'PY' >> "$GITHUB_ENV"
+        import importlib.util
+        from pathlib import Path
+
+        spec = importlib.util.find_spec("nvidia.nvshmem")
+        if spec is None or not spec.submodule_search_locations:
+            raise SystemExit("nvidia-nvshmem-cu12 did not expose nvidia.nvshmem")
+        print(f"NVSHMEM_HOME={Path(next(iter(spec.submodule_search_locations))).resolve()}")
+        PY
+        echo "CUTLASS_HOME=${GITHUB_WORKSPACE}/.release-deps/cutlass" >> "$GITHUB_ENV"
+
+    - name: Build architecture core
+      env:
+        LIGER_CUTE_CUDA_ARCH: ${{ matrix.cuda_arch }}
+        LIGER_CUTE_BUILD_JOBS: '4'
+        LIGER_CUTE_ENABLE_SM90_NONRDC_MOE: '1'
+        LIGER_CUTE_SM90_NONRDC_ALL_CONFIGS: '1'
+        LIGER_CUTE_STRIP_NATIVE: '1'
+      run: |
+        started_at=$(date +%s)
+        cd liger_cute_kernels
+        python - <<'PY'
+        from cute_build import build_core
+
+        build_core("release-core", "release-build")
+        PY
+        completed_at=$(date +%s)
+        nm -D --defined-only release-core/libliger_cute_kernels.so |
+          grep -q '__tvm_ffi_fused_linear_scaled_cross_entropy_forward'
+        nm -D --defined-only release-core/libliger_cute_kernels.so |
+          grep -q '__tvm_ffi_fused_linear_scaled_cross_entropy_backward'
+        {
+          echo "cuda_arch=${{ matrix.cuda_arch }}"
+          echo "fslce_forward_export=present"
+          echo "fslce_backward_export=present"
+          echo "elapsed_seconds=$((completed_at - started_at))"
+          sha256sum release-core/*
+        } | tee "release-core/build-metadata.txt"
+
+    - name: Upload architecture core
+      uses: actions/upload-artifact@v7
+      with:
+        name: liger-cute-core-${{ matrix.cuda_arch }}
+        path: liger_cute_kernels/release-core/
+        if-no-files-found: error
+        retention-days: 7
+
+  package-wheel:
+    name: Package Liger Cute Kernels wheel
+    needs: build-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout Liger Kernel
+      uses: actions/checkout@v7
+
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+        cache: pip
+
+    - name: Download SM90a core
+      uses: actions/download-artifact@v8
+      with:
+        name: liger-cute-core-90a
+        path: release-cores/90a
+
+    - name: Download SM100f core
+      uses: actions/download-artifact@v8
+      with:
+        name: liger-cute-core-100f
+        path: release-cores/100f
+
+    - name: Install packaging dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install "setuptools>=70.1" twine wheel
+
+    - name: Resolve and validate release version
+      id: version
+      run: |
+        version=$(python - <<'PY'
+        import re
+        from pathlib import Path
+
+        text = Path("pyproject.toml").read_text()
+        match = re.search(r'(?m)^version\s*=\s*"([^"]+)"\s*$', text)
+        if match is None:
+            raise SystemExit("root project version not found")
+        print(match.group(1))
+        PY
+        )
+        if [[ "${GITHUB_EVENT_NAME}" == "release" &&
+              "${{ github.event.release.tag_name }}" != "v${version}" ]]; then
+          echo "Release tag ${{ github.event.release.tag_name }} does not match v${version}" >&2
+          exit 1
+        fi
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+    - name: Build combined wheel
+      env:
+        LIGER_CUTE_CORE_DIR: ${{ github.workspace }}/release-cores
+        LIGER_CUTE_CUDA_ARCHS: 90a,100f
+        LIGER_CUTE_ENABLE_SM90_NONRDC_MOE: '1'
+        LIGER_CUTE_SM90_NONRDC_ALL_CONFIGS: '1'
+        LIGER_CUTE_STRIP_NATIVE: '1'
+        LIGER_CUTE_WHEEL_PLATFORM_TAG: manylinux_2_35_x86_64
+        LIGER_CUTE_VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        cd liger_cute_kernels
+        python -m pip wheel . \
+          --no-deps \
+          --no-build-isolation \
+          --wheel-dir dist
+        python -m twine check dist/*
+
+    - name: Validate wheel contents and size
+      env:
+        EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        python - <<'PY'
+        import email
+        import os
+        import zipfile
+        from pathlib import Path
+
+        from packaging.requirements import Requirement
+        from packaging.utils import parse_wheel_filename
+
+        wheels = list(Path("liger_cute_kernels/dist").glob("*.whl"))
+        if len(wheels) != 1:
+            raise SystemExit(f"expected one wheel, found {wheels}")
+        wheel = wheels[0]
+        _, _, _, tags = parse_wheel_filename(wheel.name)
+        if {str(tag) for tag in tags} != {"py3-none-manylinux_2_35_x86_64"}:
+            raise SystemExit(f"unexpected wheel tags: {sorted(str(tag) for tag in tags)}")
+        if wheel.stat().st_size >= 100 * 1024 * 1024:
+            raise SystemExit(f"{wheel.name} is {wheel.stat().st_size / 1024**2:.1f} MiB; PyPI limit is 100 MiB")
+        with zipfile.ZipFile(wheel) as archive:
+            names = set(archive.namelist())
+            required = {
+                "liger_cute_kernels/libliger_cute_kernels_sm90a.so",
+                "liger_cute_kernels/libliger_cute_kernels_sm100f.so",
+                "liger_cute_kernels/liger_moe_sm90_nonrdc.cubin",
+            }
+            missing = required - names
+            if missing:
+                raise SystemExit(f"missing release artifacts: {sorted(missing)}")
+            if not any(name.endswith(".dist-info/licenses/LICENSE") for name in names):
+                raise SystemExit("wheel is missing the BSD license text")
+            bundled_nvshmem = [
+                name for name in names
+                if name.startswith("liger_cute_kernels/")
+                and "nvshmem" in Path(name).name
+                and (Path(name).suffix == ".so" or ".so." in Path(name).name)
+            ]
+            if bundled_nvshmem:
+                raise SystemExit(f"NVSHMEM must remain an external dependency: {bundled_nvshmem}")
+            metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+            metadata = email.message_from_bytes(archive.read(metadata_name))
+        if metadata["Version"] != os.environ["EXPECTED_VERSION"]:
+            raise SystemExit(f"wheel version {metadata['Version']} != {os.environ['EXPECTED_VERSION']}")
+        requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
+        nvshmem = next(
+            (requirement for requirement in requirements if requirement.name == "nvidia-nvshmem-cu12"),
+            None,
+        )
+        if nvshmem is None or str(nvshmem.specifier) != "==3.6.5":
+            raise SystemExit(f"missing pinned NVSHMEM dependency: {requirements}")
+        print(f"{wheel.name}: {wheel.stat().st_size / 1024**2:.1f} MiB")
+        PY
+
+    - name: Upload release wheel
+      uses: actions/upload-artifact@v7
+      with:
+        name: liger-cute-kernels-wheel
+        path: liger_cute_kernels/dist/*.whl
+        if-no-files-found: error
+        retention-days: 7
+
+  publish-wheel:
+    name: Publish Liger Cute Kernels to PyPI
+    # Main-branch integration builds and default manual runs stop after packaging.
+    if: >-
+      (github.event_name == 'release' && github.event.action == 'published') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    needs: package-wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: liger-cute-kernels
+      url: https://pypi.org/p/liger-cute-kernels
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Download release wheel
+      uses: actions/download-artifact@v8
+      with:
+        name: liger-cute-kernels-wheel
+        path: dist
+
+    - name: Publish standalone package
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: dist/
+        verbose: true
