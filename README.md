@@ -124,7 +124,7 @@ y = orpo_loss(lm_head.weight, x, target)
 #### CUDA
 
 - `torch >= 2.1.2`
-- `triton >= 2.3.0`
+- `triton >= 2.3.1`
 
 #### ROCm
 
