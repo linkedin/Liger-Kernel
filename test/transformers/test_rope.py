@@ -253,3 +253,83 @@ def test_vision_2d_cos_sin(seq_len, num_heads, head_dim, dtype, atol, rtol):
 
     assert torch.allclose(q_hf_grad, q_tt_grad, atol=atol, rtol=rtol)
     assert torch.allclose(k_hf_grad, k_tt_grad, atol=atol, rtol=rtol)
+
+
+def _hf_rotate_half(x):
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def _hf_partial_rope(q, k, cos, sin):
+    cos_u = cos.unsqueeze(1) if cos.ndim == 3 else cos
+    sin_u = sin.unsqueeze(1) if sin.ndim == 3 else sin
+    rotary_dim = cos_u.shape[-1]
+    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+    q_embed = (q_rot * cos_u) + (_hf_rotate_half(q_rot) * sin_u)
+    k_embed = (k_rot * cos_u) + (_hf_rotate_half(k_rot) * sin_u)
+    return torch.cat([q_embed, q_pass], dim=-1), torch.cat([k_embed, k_pass], dim=-1)
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, num_q_heads, num_kv_heads, head_dim, rotary_dim",
+    [
+        (2, 128, 32, 32, 128, 32),  # GPT-NeoX style
+        (2, 128, 32, 32, 80, 20),  # Phi-2 style
+        (2, 128, 32, 8, 64, 16),  # StableLM style
+        (2, 128, 16, 4, 128, 64),  # 50% partial RoPE
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        (torch.float16, 1e-2, 1e-5),
+    ],
+)
+def test_partial_rope_transformers_correctness(
+    bsz,
+    seq_len,
+    num_q_heads,
+    num_kv_heads,
+    head_dim,
+    rotary_dim,
+    dtype,
+    atol,
+    rtol,
+):
+    torch.manual_seed(0)
+    _tensor_q = torch.randn((bsz, num_q_heads, seq_len, head_dim), device=device, dtype=dtype)
+    _tensor_k = torch.randn((bsz, num_kv_heads, seq_len, head_dim), device=device, dtype=dtype)
+
+    q1 = _tensor_q.clone().requires_grad_(True)
+    k1 = _tensor_k.clone().requires_grad_(True)
+    q2 = _tensor_q.clone().requires_grad_(True)
+    k2 = _tensor_k.clone().requires_grad_(True)
+
+    freqs = torch.randn(bsz, seq_len, rotary_dim // 2, device=device, dtype=torch.float32)
+    emb = torch.cat((freqs, freqs), dim=-1)
+    cos = emb.cos().to(dtype)
+    sin = emb.sin().to(dtype)
+
+    ref_q, ref_k = _hf_partial_rope(q1, k1, cos, sin)
+    tt_q, tt_k = liger_rotary_pos_emb(q2, k2, cos, sin)
+
+    assert torch.allclose(ref_q, tt_q, atol=atol, rtol=rtol)
+    assert torch.allclose(ref_k, tt_k, atol=atol, rtol=rtol)
+
+    dq = torch.randn_like(ref_q)
+    dk = torch.randn_like(ref_k)
+
+    q1_grad, k1_grad = torch.autograd.grad((ref_q, ref_k), (q1, k1), (dq, dk), allow_unused=True)
+    q2_grad, k2_grad = torch.autograd.grad((tt_q, tt_k), (q2, k2), (dq.clone(), dk.clone()), allow_unused=True)
+
+    assert torch.allclose(q1_grad, q2_grad, atol=atol, rtol=rtol)
+    assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol)

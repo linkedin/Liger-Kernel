@@ -177,9 +177,9 @@ def rope_cutedsl(
         raise ValueError(f"CuTe DSL rope has only mode='default'; got mode={mode!r}.")
     if q.shape[-1] % 2 != 0 or k.shape[-1] % 2 != 0:
         raise ValueError(f"CuTe DSL RoPE requires even q/k head dimensions; got q={q.shape[-1]}, k={k.shape[-1]}")
-    if not _rope_auto_select_ok(q):
+    if not _rope_auto_select_ok(q) or cos.shape[-1] < q.shape[-1]:
         # Outside the measured win zone (small shapes / no-grad fwd-only /
-        # fp32): the Triton kernel is faster on B200 -- keep it, silently
+        # fp32) or partial RoPE (rotary_dim < head_dim): Triton handles it -- keep it, silently
         # (neither backend was ever selected here, so this is plain routing).
         from liger_kernel.ops.backends._triton.rope import rope_triton
 
