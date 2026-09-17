@@ -950,8 +950,9 @@ __device__ __forceinline__ void forward_finalize_splits_and_reduce_sm90(
 					0);
 
 			constexpr std::size_t kFields =
-				ReturnEntropy ? kForwardReducedFields : 2;
-			constexpr std::size_t kStateFields = 1 + kFields;
+				forward_reduced_fields<ReturnEntropy>();
+			constexpr std::size_t kStateFields =
+				forward_reduced_state_fields<ReturnEntropy>();
 			int padded_tokens = ceil_div(
 				params.tokens, mapping.size) * mapping.size;
 			int rows_per_rank = padded_tokens / mapping.size;
@@ -1005,7 +1006,8 @@ __device__ __forceinline__ void forward_finalize_splits_and_reduce_sm90(
 				}
 				if constexpr (RequiresRemote) {
 					// Every local GPU has the complete node state. Pack only
-					// this rank's contiguous token shard for the IBRC pair.
+					// this rank's contiguous token shard for the inter-host
+					// matching-rank ring.
 					if (row >= owned_row_begin &&
 						row < owned_row_begin + rows_per_rank) {
 						int local_row = row - owned_row_begin;

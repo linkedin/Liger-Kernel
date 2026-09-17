@@ -40,7 +40,7 @@ set(CMAKE_CUDA_ARCHITECTURES OFF)
 string(REGEX REPLACE "-gencode[= ]+arch=compute_[0-9a-z]+,code=sm_[0-9a-z]+" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 string(STRIP "${CMAKE_CUDA_FLAGS}" CMAKE_CUDA_FLAGS)
 set(LIGER_CUTE_CUDA_ARCH "90a" CACHE STRING
-    "CUDA architecture for -gencode (e.g. 90a for Hopper, 100a for Blackwell)")
+    "CUDA architecture for -gencode (e.g. 90a for Hopper, 100f for Blackwell)")
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_${LIGER_CUTE_CUDA_ARCH},code=sm_${LIGER_CUTE_CUDA_ARCH} --use_fast_math --extra-device-vectorization --fmad=true --prec-div=false --prec-sqrt=false --ptxas-options=-O3,--allow-expensive-optimizations=true")
 if(LIGER_CUTE_CUDA_ARCH MATCHES "^90")
     add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=90)
