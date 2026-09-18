@@ -7,6 +7,7 @@ torch-free native core through TVM FFI and passes tensors through DLPack views.
 from __future__ import annotations
 
 import ctypes
+import importlib.util
 
 from pathlib import Path
 
@@ -14,6 +15,10 @@ import torch
 
 _MOD = None
 _NVSHMEM_LIBS_LOADED = False
+_ARCH_CORE_NAMES = {
+    9: "libliger_cute_kernels_sm90a.so",
+    10: "libliger_cute_kernels_sm100f.so",
+}
 
 
 def is_available() -> bool:
@@ -31,23 +36,66 @@ def _load_module():
 
         pkg_dir = Path(__file__).resolve().parent
         _load_nvshmem_libraries(pkg_dir)
-        module = pkg_dir / "libliger_cute_kernels.so"
-        if not module.exists():
-            raise FileNotFoundError(f"Missing packaged TVM FFI module: {module}")
+        module = _select_core_module(pkg_dir)
         _MOD = tvm_ffi.load_module(str(module))
     return _MOD
+
+
+def _select_core_module(pkg_dir: Path) -> Path:
+    legacy = pkg_dir / "libliger_cute_kernels.so"
+    architecture_cores = {
+        major: pkg_dir / name for major, name in _ARCH_CORE_NAMES.items() if (pkg_dir / name).is_file()
+    }
+    if not architecture_cores:
+        if legacy.is_file():
+            return legacy
+        raise FileNotFoundError(f"Missing packaged TVM FFI modules under {pkg_dir}")
+    if not torch.cuda.is_available():
+        raise RuntimeError("selecting an architecture-specific Liger core requires a CUDA device")
+    major = torch.cuda.get_device_capability()[0]
+    module = architecture_cores.get(major)
+    if module is None:
+        supported = ", ".join(
+            _ARCH_CORE_NAMES[value].removeprefix("libliger_cute_kernels_").removesuffix(".so")
+            for value in sorted(architecture_cores)
+        )
+        raise RuntimeError(f"no Liger core for CUDA capability SM{major}; packaged capabilities: {supported}")
+    return module
+
+
+def _nvshmem_library_dirs(pkg_dir: Path) -> list[Path]:
+    directories = [pkg_dir]
+    try:
+        spec = importlib.util.find_spec("nvidia.nvshmem")
+    except ModuleNotFoundError:
+        spec = None
+    if spec is not None:
+        locations = list(spec.submodule_search_locations or [])
+        if spec.origin:
+            locations.append(str(Path(spec.origin).resolve().parent))
+        directories.extend(Path(location).resolve() / "lib" for location in locations)
+    return directories
 
 
 def _load_nvshmem_libraries(pkg_dir: Path) -> None:
     global _NVSHMEM_LIBS_LOADED
     if _NVSHMEM_LIBS_LOADED:
         return
-    for host in (pkg_dir / "libnvshmem_host.so.3", pkg_dir / "libnvshmem_host.so"):
-        if host.exists():
-            ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
-            break
-    uid_bootstrap = pkg_dir / "nvshmem_bootstrap_uid.so.3"
-    if uid_bootstrap.exists():
+    directories = _nvshmem_library_dirs(pkg_dir)
+    host = next(
+        (
+            directory / name
+            for directory in directories
+            for name in ("libnvshmem_host.so.3", "libnvshmem_host.so")
+            if (directory / name).is_file()
+        ),
+        None,
+    )
+    if host is None:
+        raise ImportError("NVSHMEM runtime not found; install nvidia-nvshmem-cu12==3.6.5")
+    ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
+    uid_bootstrap = host.parent / "nvshmem_bootstrap_uid.so.3"
+    if uid_bootstrap.is_file():
         ctypes.CDLL(str(uid_bootstrap), mode=ctypes.RTLD_GLOBAL)
     _NVSHMEM_LIBS_LOADED = True
 

@@ -96,6 +96,7 @@ def liger_fused_linear_cross_entropy(
     use_token_scaling: bool = False,
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
+    chunk_mem_const: int = 1,
 ):
     apply_args = (
         input,
@@ -116,6 +117,7 @@ def liger_fused_linear_cross_entropy(
     )
     if getattr(LigerFusedLinearCrossEntropyFunction, "supports_inner_impl_dispatch", False):
         apply_args += (None, None)
+    apply_args += (chunk_mem_const,)
     loss, z_loss, token_accuracy, predicted_tokens = LigerFusedLinearCrossEntropyFunction.apply(*apply_args)
 
     if not return_z_loss and not return_token_accuracy and not return_predicted_tokens:

@@ -17,8 +17,8 @@ MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536 // 2
 # Memory-budget constant for the token-chunk geometry below. The historical
 # formula (inc_factor = cdiv(V, H), i.e. budget C=1) sizes chunks to a memory
 # FLOOR of ~BT x H transient logits, which at LLM vocab shapes forces many tiny
-# chunks and a launch-bound wall. Same constant and rationale as
-# fused_linear_cross_entropy.py; see the measured numbers in its comment.
+# chunks and a launch-bound wall. Fused KL retains its independently tuned
+# C=16 policy; fused linear cross entropy defaults to the C=1 floor.
 _CHUNK_MEM_CONST = 16
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
