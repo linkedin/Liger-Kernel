@@ -24,8 +24,10 @@
 #include "mlp4_sm90.cuh"          // Mlp4Traits, Mlp4FusedSmem
 #include "silu_bwd_fused_sm90.cuh"  // silu_bwd_pair_tile — separate elementwise phase
 #include "cta_barrier_sm90.cuh"   // target-based CtaCounterBarrier
+#include "tile_iterator_bwd_sm90.cuh"
 
 #include <climits>           // INT_MAX for Phase 2 per-batch range scan
+#include <new>
 
 namespace liger {
 
@@ -108,6 +110,16 @@ static_assert(kMlpBwdBarrierThreadsFor<100> == 320);
 // binary; there is no preprocessor knob.
 static constexpr int kBwdSubBatchMax = 8;   // upper bound for the per-group save arrays
 
+template <typename Pipeline>
+struct MlpBwdPipelineObjects {
+	alignas(Pipeline) unsigned char bytes[3 * sizeof(Pipeline)];
+
+	CUTE_DEVICE Pipeline* get(int index) {
+		return reinterpret_cast<Pipeline*>(
+			bytes + index * sizeof(Pipeline));
+	}
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // Fused backward shared memory — union of all phases
 // ═══════════════════════════════════════════════════════════════════
@@ -147,6 +159,24 @@ struct MlpFusedBwdSmem {
 	// needed.
 	typename Mlp3MainloopPipelineFor<Traits3, Compute>::SharedStorage p3_pipe;
 	typename Mlp4MainloopPipelineFor<Traits4, Compute>::SharedStorage p4_pipe;
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	MlpBwdPipelineObjects<
+		Mlp1MainloopPipelineFor<Traits1, Compute>> pa_objects;
+	MlpBwdPipelineObjects<
+		Mlp2TMainloopPipelineFor<Traits2T, Compute>> pb_objects;
+	MlpBwdPipelineObjects<
+		Mlp5MainloopPipelineFor<Traits5, Compute>> pd_objects;
+	MlpBwdPipelineObjects<
+		Mlp3MainloopPipelineFor<Traits3, Compute>> p3_objects;
+	MlpBwdPipelineObjects<
+		Mlp4MainloopPipelineFor<Traits4, Compute>> p4_objects;
+	uint32_t pipe_counts[5];
+	uint32_t acc_pair_phase_state;
+	int phase1_m;
+	int phase1_expert;
+	int phase1_has_tile;
+	int phase1_compute_tile;
+#endif
 	alignas(16) uint32_t tmem_base;
 	// Rendezvous barrier for the paired-CTA TMEM allocation window
 	// (Compute == 100 only — one CTA-pair shares one TMEM allocation, so
@@ -407,6 +437,17 @@ using MlpBwdCtaBarrierT =
 // (T4096_D4096_I14336_E16_K4: dA off by 10% on expert 7 when num_iter %
 // (2*Stages) != 0).
 
+#if defined(LIGER_CUTE_SM90_NONRDC_NOINLINE_BWD_PHASE1)
+#define LIGER_MOE_BWD_PHASE1_DEVICE __device__ __noinline__
+#else
+#define LIGER_MOE_BWD_PHASE1_DEVICE __device__ __forceinline__
+#endif
+#if defined(LIGER_CUTE_SM90_NONRDC_NOINLINE_BWD_PHASE2)
+#define LIGER_MOE_BWD_PHASE2_DEVICE __device__ __noinline__
+#else
+#define LIGER_MOE_BWD_PHASE2_DEVICE __device__ __forceinline__
+#endif
+
 template <typename Pipeline>
 __device__ __forceinline__ cutlass::PipelineState<Pipeline::Stages>
 mlp_bwd_resume_state(uint32_t count, bool is_producer) {
@@ -417,9 +458,57 @@ mlp_bwd_resume_state(uint32_t count, bool is_producer) {
 	return s;
 }
 
-template <typename Traits1, int Compute = 90, typename TmaLoadX, typename TmaLoadW1,
+template <
+	int WarpGroupRole,
+	typename Pipeline,
+	typename SharedStorage,
+	typename ObjectStorage>
+__device__ __forceinline__ void mlp_bwd_init_shared_pipe(
+		SharedStorage& storage,
+		ObjectStorage& objects,
+		uint32_t transaction_bytes,
+		uint32_t consumer_threads) {
+	using Category = typename Pipeline::ThreadCategory;
+	typename Pipeline::Params params;
+	params.transaction_bytes = transaction_bytes;
+	params.num_producers = 1;
+	params.num_consumers = consumer_threads;
+	Pipeline::init_barriers(
+		storage, params, Shape<_1, _1, _1>{});
+
+	if constexpr (WarpGroupRole == 1) {
+		if (threadIdx.x == 0 || threadIdx.x == 1) {
+			params.role = Category::Producer;
+			params.is_leader = (threadIdx.x == 0);
+			::new (objects.get(threadIdx.x))
+				Pipeline(
+					storage, params, Shape<_1, _1, _1>{},
+					cute::false_type{}, cute::true_type{});
+		}
+	} else {
+		if (threadIdx.x == 128) {
+			params.role = Category::Consumer;
+			::new (objects.get(2))
+				Pipeline(
+					storage, params, Shape<_1, _1, _1>{},
+					cute::false_type{}, cute::true_type{});
+		}
+	}
+}
+
+template <int WarpGroupRole, typename Pipeline, typename ObjectStorage>
+__device__ __forceinline__ Pipeline& mlp_bwd_shared_pipe(
+		ObjectStorage& objects) {
+	if constexpr (WarpGroupRole == 1)
+		return *objects.get(threadIdx.x == 0 ? 0 : 1);
+	else
+		return *objects.get(2);
+}
+
+template <typename Traits1, int Compute = 90, int WarpGroupRole = 0,
+          typename TmaLoadX, typename TmaLoadW1,
           typename TmaStoreU, typename TmaStoreV, typename TmaStoreZ>
-__device__ __forceinline__ void mlp_bwd_run_phase_1a(
+LIGER_MOE_BWD_PHASE1_DEVICE void mlp_bwd_run_phase_1a(
 		Mlp1MainloopPipelineFor<Traits1, Compute>& pa_pipe,
 		uint32_t& pa_count,
 		Mlp1FusedActSmem<Traits1>& smem_mlp1,
@@ -435,9 +524,15 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1a(
 		int split_idx = -1, int num_splits = -1) {
 	int ns = (split_idx  >= 0) ? split_idx  : (int)blockIdx.y;
 	int nc = (num_splits >= 0) ? num_splits : (int)gridDim.y;
+	const bool is_producer =
+		WarpGroupRole == 1 || (WarpGroupRole == 0 && warp_id == 0);
+	const bool is_consumer =
+		WarpGroupRole == 2 ||
+		(WarpGroupRole == 0 &&
+			warp_id >= ((Compute == 100) ? 3 : 4));
 	auto s = mlp_bwd_resume_state<Mlp1MainloopPipelineFor<Traits1, Compute>>(
-		pa_count, warp_id == 0);
-	if (warp_id == 0) {
+		pa_count, is_producer);
+	if (is_producer) {
 		mlp1_fused_act_producer<Traits1, Compute == 90>(pa_pipe, s,
 			smem_mlp1, tma_load_x, tma_load_b_fwd, tma_load_c_fwd,
 			m, (Compute == 90) ? expert : expert * dims.num_n_tiles_1,
@@ -451,19 +546,27 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1a(
 	if constexpr (Compute == 100)
 		if (warp_id == 3 && threadIdx.x % Traits1::WarpSize == 0)
 			smem_mlp1.tmem_base = tmem_base;
-	constexpr int kFirstMlp12ConsumerWarp = (Compute == 100) ? 3 : 4;
-	if (warp_id >= kFirstMlp12ConsumerWarp)
+	if (is_consumer)
 		mlp1_fused_act_consumer<Traits1, Compute>(pa_pipe, s,
 			smem_mlp1, tma_store_du, tma_store_dv, tma_store_z,
 			m, dims.intermediate_dim, dims.num_m_tiles,
 			dims.num_n_tiles_1, dims.num_k_tiles_1,
 			ns, nc);
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+	if constexpr (WarpGroupRole == 0)
+		pa_count = s.count();
+	else if constexpr (WarpGroupRole == 1)
+		if (threadIdx.x == 0)
+			pa_count = s.count();
+#else
 	pa_count = s.count();
+#endif
 }
 
-template <typename Traits2T, int Compute = 90, typename TmaLoadDY, typename TmaLoadW2T,
+template <typename Traits2T, int Compute = 90, int WarpGroupRole = 0,
+          typename TmaLoadDY, typename TmaLoadW2T,
           typename TmaStoreDZ>
-__device__ __forceinline__ void mlp_bwd_run_phase_1b(
+LIGER_MOE_BWD_PHASE1_DEVICE void mlp_bwd_run_phase_1b(
 		Mlp2TMainloopPipelineFor<Traits2T, Compute>& pb_pipe,
 		uint32_t& pb_count,
 		Mlp2TFusedSmem<Traits2T>& smem_mlp2t,
@@ -476,9 +579,15 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1b(
 		int split_idx = -1, int num_splits = -1) {
 	int ns = (split_idx  >= 0) ? split_idx  : (int)blockIdx.y;
 	int nc = (num_splits >= 0) ? num_splits : (int)gridDim.y;
+	const bool is_producer =
+		WarpGroupRole == 1 || (WarpGroupRole == 0 && warp_id == 0);
+	const bool is_consumer =
+		WarpGroupRole == 2 ||
+		(WarpGroupRole == 0 &&
+			warp_id >= ((Compute == 100) ? 3 : 4));
 	auto s = mlp_bwd_resume_state<Mlp2TMainloopPipelineFor<Traits2T, Compute>>(
-		pb_count, warp_id == 0);
-	if (warp_id == 0) {
+		pb_count, is_producer);
+	if (is_producer) {
 		mlp2_t_fused_producer<Traits2T, /*Expert3D=*/true,
 			/*ThrottleTma=*/false>(pb_pipe, s,
 			smem_mlp2t, tma_load_dy, tma_load_a_col,
@@ -493,19 +602,27 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1b(
 	if constexpr (Compute == 100)
 		if (warp_id == 3 && threadIdx.x % Traits2T::WarpSize == 0)
 			smem_mlp2t.tmem_base = tmem_base;
-	constexpr int kFirstMlp12ConsumerWarp = (Compute == 100) ? 3 : 4;
-	if (warp_id >= kFirstMlp12ConsumerWarp)
+	if (is_consumer)
 		mlp2_t_fused_consumer<Traits2T, Compute>(pb_pipe, s,
 			smem_mlp2t, tma_store_dz,
 			m, dims.intermediate_dim, dims.num_m_tiles,
 			dims.num_n_tiles_2t, dims.num_k_tiles_2t,
 			ns, nc);
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+	if constexpr (WarpGroupRole == 0)
+		pb_count = s.count();
+	else if constexpr (WarpGroupRole == 1)
+		if (threadIdx.x == 0)
+			pb_count = s.count();
+#else
 	pb_count = s.count();
+#endif
 }
 
-template <typename Traits5, int Compute = 90, typename TmaLoadDU, typename TmaLoadDV,
+template <typename Traits5, int Compute = 90, int WarpGroupRole = 0,
+          typename TmaLoadDU, typename TmaLoadDV,
           typename TmaLoadB, typename TmaLoadC, typename TmaStoreDX>
-__device__ __forceinline__ void mlp_bwd_run_phase_1d(
+LIGER_MOE_BWD_PHASE1_DEVICE void mlp_bwd_run_phase_1d(
 		Mlp5MainloopPipelineFor<Traits5, Compute>& pd_pipe,
 		uint32_t& pd_count,
 		Mlp5Smem<Traits5>& smem_mlp5,
@@ -520,9 +637,15 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1d(
 		int split_idx = -1, int num_splits = -1) {
 	int ns = (split_idx  >= 0) ? split_idx  : (int)blockIdx.y;
 	int nc = (num_splits >= 0) ? num_splits : (int)gridDim.y;
+	const bool is_producer =
+		WarpGroupRole == 1 || (WarpGroupRole == 0 && warp_id == 0);
+	const bool is_consumer =
+		WarpGroupRole == 2 ||
+		(WarpGroupRole == 0 &&
+			warp_id >= ((Compute == 100) ? 3 : 4));
 	auto s = mlp_bwd_resume_state<Mlp5MainloopPipelineFor<Traits5, Compute>>(
-		pd_count, warp_id == 0);
-	if (warp_id == 0) {
+		pd_count, is_producer);
+	if (is_producer) {
 		mlp5_fused_producer<Traits5, Compute == 90>(pd_pipe, s,
 			smem_mlp5,
 			tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col,
@@ -537,14 +660,21 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1d(
 	if constexpr (Compute == 100)
 		if (warp_id == 3 && threadIdx.x % Traits5::WarpSize == 0)
 			smem_mlp5.tmem_base = tmem_base;
-	constexpr int kFirstMlp5ConsumerWarp = (Compute == 100) ? 3 : 4;
-	if (warp_id >= kFirstMlp5ConsumerWarp)
+	if (is_consumer)
 		mlp5_fused_consumer<Traits5, Compute>(pd_pipe, s,
 			smem_mlp5, tma_store_dx,
 			m, dims.hidden_dim,
 			dims.num_m_tiles, dims.num_n_tiles_5, dims.num_k_tiles_5,
 			ns, nc);
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+	if constexpr (WarpGroupRole == 0)
+		pd_count = s.count();
+	else if constexpr (WarpGroupRole == 1)
+		if (threadIdx.x == 0)
+			pd_count = s.count();
+#else
 	pd_count = s.count();
+#endif
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -566,7 +696,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1d(
 // k_start/k_end ranges stay UNWRAPPED so each expert's range is contiguous even
 // when the grouped window straddles the ring wrap. ring_kb == 0 (default) means
 // no wrap (the un-grouped / local-pass callers, whose window already fits).
-template <int Compute = 90>
+template <int Compute = 90, int WarpGroupRole = 0>
 __device__ __forceinline__ void mlp_bwd_phase_2_build_ranges(
 		int* k_starts,
 		int* k_ends,
@@ -581,7 +711,9 @@ __device__ __forceinline__ void mlp_bwd_phase_2_build_ranges(
 		int warp_id,
 		int ring_kb = 0) {
 	constexpr int kMlpBwdBarrierThreads = kMlpBwdBarrierThreadsFor<Compute>;
-	if (blockIdx.x == 0 && blockIdx.y == 0 && warp_id == 0) {
+	const bool is_producer =
+		WarpGroupRole == 1 || (WarpGroupRole == 0 && warp_id == 0);
+	if (blockIdx.x == 0 && blockIdx.y == 0 && is_producer) {
 		int lane = threadIdx.x;
 		for (int e = lane; e < experts_per_pe; e += 32) {
 			k_starts[e] = INT_MAX;
@@ -621,9 +753,10 @@ __device__ __forceinline__ void mlp_bwd_phase_2_build_ranges(
 // mlp4.cuh's Mlp4FusedSmem is traits-compatible internally, no separate
 // Compute-conditional smem needed here).
 template <typename Traits1, typename Traits4, int NSplit2, int Compute = 90,
+          int WarpGroupRole = 0,
           typename TmaLoadXT4, typename TmaLoaddUT4, typename TmaLoaddVT4,
           typename TmaReduceDB, typename TmaReduceDC>
-__device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
+LIGER_MOE_BWD_PHASE2_DEVICE void mlp_bwd_run_phase_2_mlp4(
 		Mlp4MainloopPipelineFor<Traits4, Compute>& p4_pipe,
 		uint32_t& p4_count,
 		Mlp4FusedSmem<Traits4>& smem_mlp4,
@@ -646,10 +779,16 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 		"100 (Blackwell ClusterM=2 paired-CTA) — only Compute == 100 "
 		"executes the paired-CTA (ClusterM/NumPairs) code below.");
 	constexpr int kMlpBwdBarrierThreads = kMlpBwdBarrierThreadsFor<Compute>;
+	const bool is_producer =
+		WarpGroupRole == 1 || (WarpGroupRole == 0 && warp_id == 0);
+	const bool is_consumer =
+		WarpGroupRole == 2 ||
+		(WarpGroupRole == 0 &&
+			warp_id >= ((Compute == 100) ? 3 : 4));
 	auto s = mlp_bwd_resume_state<Mlp4MainloopPipelineFor<Traits4, Compute>>(
-		p4_count, warp_id == 0);
+		p4_count, is_producer);
 
-	int  experts_per_pe = dims.experts_per_pe;
+	int experts_per_pe = dims.experts_per_pe;
 
 	// Batch's K-window in mlp4's TileK_4 grain. Producer/consumer
 	// intersect this with the global per-expert ranges in `k_starts`/
@@ -754,7 +893,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 		cell_stride = total_phase2_ctas;
 	}
 
-	if (warp_id == 0)
+	if (is_producer)
 		mlp4_producer<Traits4, Compute>(
 			p4_pipe, s,
 			smem_mlp4, tma_load_xt4, tma_load_dut4, tma_load_dvt4,
@@ -766,8 +905,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 	if constexpr (Compute == 100)
 		if (warp_id == 3 && threadIdx.x % Traits4::WarpSize == 0)
 			smem_mlp4.tmem_base = tmem_base;
-	constexpr int kFirstMlp4ConsumerWarp = (Compute == 100) ? 3 : 4;
-	if (warp_id >= kFirstMlp4ConsumerWarp)
+	if (is_consumer)
 		mlp4_consumer<Traits4, Compute, Compute == 90>(
 			p4_pipe, s,
 			smem_mlp4, tma_reduce_db, tma_reduce_dc,
@@ -779,7 +917,15 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 			pair_init_barrier, pair_init_phase);
 
 	cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+	if constexpr (WarpGroupRole == 0)
+		p4_count = s.count();
+	else if constexpr (WarpGroupRole == 1)
+		if (threadIdx.x == 0)
+			p4_count = s.count();
+#else
 	p4_count = s.count();
+#endif
 }
 
 // ── mlp3 Phase-2 runner ──
@@ -794,8 +940,9 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 // (mlp3.cuh), which do their own internal Compute == 100 dispatch to the
 // paired-CTA multicast TMA path.
 template <typename Traits1, typename Traits3, int NSplit2, int Compute = 90,
+          int WarpGroupRole = 0,
           typename TmaLoadDYT3, typename TmaLoadZT3, typename TmaReduceDA>
-__device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
+LIGER_MOE_BWD_PHASE2_DEVICE void mlp_bwd_run_phase_2_mlp3(
 		Mlp3MainloopPipelineFor<Traits3, Compute>& p3_pipe,
 		uint32_t& p3_count,
 		cute::conditional_t<Compute == 100,
@@ -817,10 +964,16 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 		"100 (Blackwell ClusterM=2 paired-CTA) — only Compute == 100 "
 		"executes the paired-CTA (ClusterM/NumPairs) code below.");
 	constexpr int kMlpBwdBarrierThreads = kMlpBwdBarrierThreadsFor<Compute>;
+	const bool is_producer =
+		WarpGroupRole == 1 || (WarpGroupRole == 0 && warp_id == 0);
+	const bool is_consumer =
+		WarpGroupRole == 2 ||
+		(WarpGroupRole == 0 &&
+			warp_id >= ((Compute == 100) ? 3 : 4));
 	auto s = mlp_bwd_resume_state<Mlp3MainloopPipelineFor<Traits3, Compute>>(
-		p3_count, warp_id == 0);
+		p3_count, is_producer);
 
-	int  experts_per_pe = dims.experts_per_pe;
+	int experts_per_pe = dims.experts_per_pe;
 
 	// Batch's K-window in mlp3's TileK_3 grain (see mlp4 helper above).
 	int batch_kb_start = (bk_start * Traits1::TileM) / Traits3::TileK;
@@ -915,7 +1068,19 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 		cell_stride = total_phase2_ctas;
 	}
 
-	if (warp_id == 0)
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	// Publish the loop bound before either side starts: a rendezvous after
+	// the producer would prevent consumers from draining the finite pipeline.
+	if (threadIdx.x == 0) {
+		smem_mlp3.total_cells =
+			experts_per_pe *
+			(Traits3::kMSplit ? dims.num_n_tiles_3 : dims.num_m_tiles_3) *
+			outer_split_3 * k_split_3;
+	}
+	cutlass::arch::NamedBarrier::sync(
+		kMlpBwdBarrierThreads, kMlpBarrierId);
+#endif
+	if (is_producer)
 		mlp3_producer<Traits3, Compute>(
 			p3_pipe, s,
 			smem_mlp3, tma_load_dyt3, tma_load_zt3,
@@ -927,20 +1092,58 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 	if constexpr (Compute == 100)
 		if (warp_id == 3 && threadIdx.x % Traits3::WarpSize == 0)
 			smem_mlp3.tmem_base = tmem_base;
-	constexpr int kFirstMlp3ConsumerWarp = (Compute == 100) ? 3 : 4;
-	if (warp_id >= kFirstMlp3ConsumerWarp)
-		mlp3_consumer<Traits3, Compute, Compute == 90>(
-			p3_pipe, s,
-			smem_mlp3, tma_reduce_da,
-			k_starts, k_ends, experts_per_pe,
-			dims.hidden_dim, dims.intermediate_dim, dims.total_n_rows_3,
-			dims.num_m_tiles_3, dims.num_n_tiles_3, outer_split_3,
-			cell_start, cell_stride,
-			batch_kb_start, batch_kb_end, k_split_3,
-			pair_init_barrier, pair_init_phase);
+	if (is_consumer) {
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+		if constexpr (Compute == 90 && WarpGroupRole == 2) {
+			if (threadIdx.x < 256) {
+				mlp3_consumer<Traits3, Compute, true, 0>(
+					p3_pipe, s,
+					smem_mlp3, tma_reduce_da,
+					k_starts, k_ends, experts_per_pe,
+					dims.hidden_dim, dims.intermediate_dim,
+					dims.total_n_rows_3,
+					dims.num_m_tiles_3, dims.num_n_tiles_3, outer_split_3,
+					cell_start, cell_stride,
+					batch_kb_start, batch_kb_end, k_split_3,
+					pair_init_barrier, pair_init_phase);
+			} else {
+				mlp3_consumer<Traits3, Compute, true, 1>(
+					p3_pipe, s,
+					smem_mlp3, tma_reduce_da,
+					k_starts, k_ends, experts_per_pe,
+					dims.hidden_dim, dims.intermediate_dim,
+					dims.total_n_rows_3,
+					dims.num_m_tiles_3, dims.num_n_tiles_3, outer_split_3,
+					cell_start, cell_stride,
+					batch_kb_start, batch_kb_end, k_split_3,
+					pair_init_barrier, pair_init_phase);
+			}
+		} else
+#endif
+		{
+			mlp3_consumer<Traits3, Compute, Compute == 90>(
+				p3_pipe, s,
+				smem_mlp3, tma_reduce_da,
+				k_starts, k_ends, experts_per_pe,
+				dims.hidden_dim, dims.intermediate_dim,
+				dims.total_n_rows_3,
+				dims.num_m_tiles_3, dims.num_n_tiles_3, outer_split_3,
+				cell_start, cell_stride,
+				batch_kb_start, batch_kb_end, k_split_3,
+				pair_init_barrier, pair_init_phase);
+		}
+	}
 
 	cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+	if constexpr (WarpGroupRole == 0)
+		p3_count = s.count();
+	else if constexpr (WarpGroupRole == 1)
+		if (threadIdx.x == 0)
+			p3_count = s.count();
+#else
 	p3_count = s.count();
+#endif
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1436,48 +1639,22 @@ template <typename Traits1, typename Traits2T, typename Traits3,
           // 1 → unchanged single-tile path.
           int SubTiles = 1,
           int Compute = 90,
+          int WarpGroupRole = 0,
           typename FusedIter,
-          // Shared TMA (Phase 1 weights, Phase 1d B/C, Phase 2 reduce + Z/U/V)
-          typename TmaLoadW1, typename TmaStoreZ, typename TmaStoreDU,
-          typename TmaStoreDV, typename TmaLoadW2T, typename TmaStoreDZ,
-          typename TmaLoadDU, typename TmaLoadDV,
-          typename TmaLoadB, typename TmaLoadC,
-          typename TmaLoadZT3, typename TmaReduceDA,
-          typename TmaLoaddUT4, typename TmaLoaddVT4,
-          typename TmaReduceDB, typename TmaReduceDC,
-          // Per-role TMA types — local and remote instances share the
-          // same C++ type (same cute Layout: dynamic shape, _1 col stride,
-          // identical smem layout). Only the runtime gmem pointer differs.
-          typename TmaLoadX, typename TmaLoadDY, typename TmaStoreDX,
-          typename TmaLoadDYT3, typename TmaLoadXT4>
+          typename TmaBundle,
+          typename GlobalBarrier,
+          typename XBarrier>
 __device__ __forceinline__ void mlp_fused_bwd_dual(
 		MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Compute>& smem,
-		FusedIter& iter,
+		FusedIter iter,
 		bool remote_active,
 		int efkb_stride_4_remote,
-		// Phase 1 TMA — weights are shared across tiles; X/dY/dX (the *_remote
-		// instances below) come from the comm staging ring, where EVERY tile,
-		// local or remote, is staged.
-		TmaLoadW1 const& tma_load_b_fwd, TmaLoadW1 const& tma_load_c_fwd,
-		TmaStoreZ const& tma_store_z,
-		TmaStoreDU const& tma_store_du, TmaStoreDV const& tma_store_dv,
-		TmaLoadW2T const& tma_load_a_col, TmaStoreDZ const& tma_store_dz,
-		TmaLoadDU const& tma_load_du, TmaLoadDV const& tma_load_dv,
-		TmaLoadB const& tma_load_b_col, TmaLoadC const& tma_load_c_col,
-		// Phase 2 TMA (shared)
-		TmaLoadZT3 const& tma_load_zt3, TmaReduceDA const& tma_reduce_da,
-		TmaLoaddUT4 const& tma_load_dut4, TmaLoaddVT4 const& tma_load_dvt4,
-		TmaReduceDB const& tma_reduce_db, TmaReduceDC const& tma_reduce_dc,
-		// Staging-ring data TMAs: X/dY/dX (Phase 1) + dYᵀ/Xᵀ (Phase 2).
-		TmaLoadX const& tma_load_x_remote,
-		TmaLoadDY const& tma_load_dy_remote,
-		TmaStoreDX const& tma_store_dx_remote,
-		TmaLoadDYT3 const& tma_load_dyt3_remote,
-		TmaLoadXT4 const& tma_load_xt4_remote,
+		const TmaBundle& tma,
 		const MlpBwdDims& remote_dims,
+		const MlpBwdDims& gemm_dims,
 		const MlpBwdBufs<typename Traits1::Element>& remote_bufs,
-		MlpBwdCtaBarrierT<Compute>& global_barrier,
-		MlpBwdCtaBarrierT<Compute>& x_barrier,
+		GlobalBarrier& global_barrier,
+		XBarrier& x_barrier,
 		// Flat 1-D launch coordinates (computed once in moe_fused_bwd):
 		//   flat_id     = blockIdx.x
 		//   col         = flat_id / NSplit       (Phase 1 logical column)
@@ -1487,7 +1664,8 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		//   gemm_active = flat_id < n_gemm  → this CTA runs Phase 1 + comm;
 		//                 gap CTAs skip Phase 1 but still run Phase 2 + barriers.
 		int flat_id, int col, int grid_x, int split, int num_splits,
-		bool gemm_active) {
+		bool gemm_active,
+		const RemoteMlpTileIteratorBwdSharedState* compact_iter_state = nullptr) {
 
 	static_assert(SubBatch >= 1 && SubBatch <= kBwdSubBatchMax,
 		"SubBatch (MoeBwdConfig::kSubBatch) must be in [1, kBwdSubBatchMax]");
@@ -1500,34 +1678,76 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 
 	int warp_id = threadIdx.x / Traits1::WarpSize;
 	constexpr int kMlpBwdBarrierThreads = kMlpBwdBarrierThreadsFor<Compute>;
+	static_assert(
+		WarpGroupRole >= 0 && WarpGroupRole <= 2,
+		"invalid SM90 backward MLP warp-group role");
+
+	if constexpr (Compute == 90) {
+		if constexpr (WarpGroupRole == 0) {
+			if (warp_id == 1 || warp_id == 2 || warp_id == 3)
+				return;
+		} else if constexpr (WarpGroupRole == 1) {
+			if (warp_id != 0)
+				return;
+		} else {
+			if (warp_id < 4)
+				return;
+		}
+	}
 
 	// Prefetch the TMA descriptors this pass uses: shared weights/intermediates
 	// + the staging-ring data descriptors.
-	cute::prefetch_tma_descriptor(tma_load_b_fwd.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_c_fwd.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_store_z.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_store_du.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_store_dv.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_a_col.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_store_dz.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_du.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_dv.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_b_col.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_c_col.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_zt3.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_reduce_da.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_dut4.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_dvt4.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_reduce_db.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_reduce_dc.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_x_remote.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_dy_remote.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_store_dx_remote.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_dyt3_remote.get_tma_descriptor());
-	cute::prefetch_tma_descriptor(tma_load_xt4_remote.get_tma_descriptor());
+	if constexpr (WarpGroupRole != 2) {
+		cute::prefetch_tma_descriptor(tma.load_b_fwd.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_c_fwd.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_a_col.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_du.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_dv.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_b_col.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_c_col.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_zt3.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_dut4.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_dvt4.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_x_remote.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_dy_remote.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_dyt3_remote.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.load_xt4_remote.get_tma_descriptor());
+	}
+	if constexpr (WarpGroupRole != 1) {
+		cute::prefetch_tma_descriptor(tma.store_z.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.store_du.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.store_dv.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.store_dz.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.reduce_da.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.reduce_db.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.reduce_dc.get_tma_descriptor());
+		cute::prefetch_tma_descriptor(tma.store_dx_remote.get_tma_descriptor());
+	}
 
 	// Build pipelines ONCE (smem barriers initialized in one place — the
 	// remote pass picks up smem-barrier phase from where local left off).
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+	using PaPipeline = Mlp1MainloopPipelineFor<Traits1, Compute>;
+	using PbPipeline = Mlp2TMainloopPipelineFor<Traits2T, Compute>;
+	using PdPipeline = Mlp5MainloopPipelineFor<Traits5, Compute>;
+	using P3Pipeline = Mlp3MainloopPipelineFor<Traits3, Compute>;
+	using P4Pipeline = Mlp4MainloopPipelineFor<Traits4, Compute>;
+	mlp_bwd_init_shared_pipe<WarpGroupRole, PaPipeline>(
+		smem.pa_pipe, smem.pa_objects, Traits1::TmaTransBytes,
+		Compute == 100 ? 1 : Traits1::ConsumerThreads);
+	mlp_bwd_init_shared_pipe<WarpGroupRole, PbPipeline>(
+		smem.pb_pipe, smem.pb_objects, Traits2T::TmaTransBytes,
+		Compute == 100 ? 1 : Traits2T::ConsumerThreads);
+	mlp_bwd_init_shared_pipe<WarpGroupRole, PdPipeline>(
+		smem.pd_pipe, smem.pd_objects, Traits5::TmaTransBytes,
+		Compute == 100 ? 1 : Traits5::ConsumerThreads);
+	mlp_bwd_init_shared_pipe<WarpGroupRole, P3Pipeline>(
+		smem.p3_pipe, smem.p3_objects, Traits3::TmaTransBytes,
+		Compute == 100 ? 1 : Traits3::ConsumerThreads);
+	mlp_bwd_init_shared_pipe<WarpGroupRole, P4Pipeline>(
+		smem.p4_pipe, smem.p4_objects, Traits4::TmaTransBytes,
+		Compute == 100 ? 1 : Traits4::ConsumerThreads);
+#else
 	auto pa_pipe = [&]() {
 		if constexpr (Compute == 100)
 			return mlp1_make_pipe_umma<Traits1>(smem.pa_pipe);
@@ -1546,32 +1766,24 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		else
 			return mlp5_make_pipe<Traits5>(smem.pd_pipe);
 	}();
-
-	// Single fused pipe for mlp3 carrying dYT + Z per acquire. Compute ==
-	// 100 always drives the SM100 ClusterM=2 paired-CTA pipe
-	// (mlp3_make_pipe_umma_2sm); Compute == 90 drives the existing Hopper
-	// pipe (mlp3_make_pipe).
 	auto p3_pipe = [&]() {
 		if constexpr (Compute == 100)
 			return mlp3_make_pipe_umma_2sm<Traits3>(smem.p3_pipe);
 		else
 			return mlp3_make_pipe<Traits3>(smem.p3_pipe);
 	}();
-	// Single fused pipe for mlp4 carrying X + dU^T + dV^T per acquire.
-	// Compute == 100 always drives the SM100 ClusterM=2 paired-CTA pipe
-	// (mlp4_make_pipe_umma_2sm); Compute == 90 drives the existing Hopper
-	// pipe (mlp4_make_pipe).
 	auto p4_pipe = [&]() {
 		if constexpr (Compute == 100)
 			return mlp4_make_pipe_umma_2sm<Traits4>(smem.p4_pipe);
 		else
 			return mlp4_make_pipe<Traits4>(smem.p4_pipe);
 	}();
+#endif
 
-	if constexpr (Compute == 90) {
-		if (warp_id == 3) return;
+	if constexpr (Compute == 100) {
+		if (warp_id == 1 || warp_id == 2)
+			return;
 	}
-	if (warp_id == 1 || warp_id == 2) return;
 
 	cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 	cute::conditional_t<
@@ -1601,18 +1813,16 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 	// Counts persist across both passes — smem barriers continue advancing
 	// from local into remote, and PipelineState::advance(count) re-derives
 	// the right (index, phase) for the resume.
+#if !defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
 	uint32_t pa_count = 0;
 	uint32_t pb_count = 0;
 	uint32_t pd_count = 0;
 	uint32_t p3_count = 0;
 	uint32_t p4_count = 0;
 	uint32_t acc_pair_phase = 0;
+#endif
 
 	using Element = typename Traits1::Element;
-
-	// Phase 2 flat-cell coords are CTA-invariant — hoist out of the loops.
-	int phase2_div = flat_id / NSplit2;
-	int phase2_mod = flat_id % NSplit2;
 
 	// Shared k_starts/k_ends require equal TileK (one scan feeds mlp3+mlp4).
 	static_assert(Traits3::TileK == Traits4::TileK,
@@ -1655,8 +1865,6 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 	// group window never straddles the ring wrap (per-expert k-ranges stay
 	// contiguous) and comm has prefetch headroom. kBwdSubBatch == 1 reduces this
 	// to the original per-batch loop.
-	const int remote_batches = remote_dims.num_batches;
-
 	// Adaptive group size: a group of `g` sub-batches holds g·grid_x live staging
 	// slots that must map to DISTINCT ring slots, so g·grid_x ≤ ring. Cap the
 	// group by how many grid_x-windows the ring holds — deep rings get the full
@@ -1671,41 +1879,84 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 	// (eff_subbatch, group_start, bk_tiles clamp, slot releases) stays in
 	// communication-slot units via remote_dims. At SubTiles=1 the two are identical.
 	// (Other dims fields — N/K extents, expert counts — are M-axis-independent.)
-	MlpBwdDims gemm_dims = remote_dims;
-	gemm_dims.num_m_tiles *= SubTiles;
-	gemm_dims.num_tokens  *= SubTiles;
 	int first_sub = 0;
 	int last_sub = SubTiles;
-	int gemm_split = split;
-	int gemm_splits = num_splits;
 	constexpr int kM64PerGemmTile = Traits1::TileM / 64;
 
-	for (int g0 = 0; g0 < remote_batches; g0 += eff_subbatch) {
-		const int gcount = min(eff_subbatch, remote_batches - g0);
+	for (int g0 = 0; g0 < remote_dims.num_batches; g0 += eff_subbatch) {
+		const int gcount =
+			min(eff_subbatch, remote_dims.num_batches - g0);
 
-		// Per-sub-batch staging slots, freed together after Phase 2. cur_slot in
-		// the iterator only tracks the LAST acquire, so releasing the earlier
-		// sub-batches needs their saved slot (release indexes *_consumed[slot]).
-		int  saved_slot[SubBatch];
+#if !defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+		// cur_slot tracks only the latest iterator acquire, so the ordinary
+		// grouped path saves every live slot until Phase 2 releases the group.
+		int saved_slot[SubBatch];
 		bool saved_live[SubBatch];
+#endif
 
 		// ── Phase 1: gcount sub-batches (mlp1a / mlp2t / silu_bwd / mlp5) ──
+		CUTE_UNROLL
 		for (int s = 0; s < gcount; ++s) {
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+			if (threadIdx.x == 0)
+				smem.phase1_has_tile = 0;
+#else
 			int  saved_m = -1, saved_expert = -1;
 			int  saved_valid_m64_subtiles = 0;
 			bool has_tile = false;
 			bool compute_tile = false;
+#endif
 
 			// Gated by gemm_active — gap CTAs (flat_id ≥ n_gemm) skip Phase 1 and
 			// the per-column x_barrier, but still hit every global barrier below.
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+			int iteration = g0 + s;
+			if (gemm_active && iteration < compact_iter_state->total_tiles) {
+				int linear =
+					compact_iter_state->m_base +
+					iteration * compact_iter_state->col_stride;
+				int slot = linear % compact_iter_state->ring_len;
+				int ticket = linear / compact_iter_state->ring_len;
+				if (threadIdx.x == 0) {
+					int target =
+						(ticket + 1) *
+						compact_iter_state->num_producers_src;
+					while (atomicAdd(
+						&compact_iter_state->x_src_ready[slot], 0) <
+						target) {}
+				}
+				__syncwarp();
+				__threadfence();
+				cutlass::arch::NamedBarrier::sync(
+					kMlpBwdBarrierThreads, kMlpBarrierId);
+				MlpTileInfo tile;
+				tile.x_ptr = nullptr;
+				tile.expert =
+					compact_iter_state->tile_expert_ids[slot];
+				tile.y_m = slot;
+				tile.valid_m64_subtiles =
+					(compact_iter_state->tile_valid_rows[slot] + 63) / 64;
+				tile.m_subtile = 0;
+#else
 			if (gemm_active && iter.has_next()) {
 				iter.acquire_src();
 				cutlass::arch::NamedBarrier::sync(
 					kMlpBwdBarrierThreads, kMlpBarrierId);
 				auto tile = iter.next();
+#endif
 				int expert = tile.expert - remote_dims.local_expert_start;
 				int m = tile.y_m;
 
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+				bool compute_tile =
+					tile.valid_m64_subtiles > 0;
+				if (threadIdx.x == 0) {
+					smem.phase1_m = m;
+					smem.phase1_expert = expert;
+					smem.phase1_has_tile = 1;
+					smem.phase1_compute_tile = compute_tile;
+				}
+#else
 				saved_m = m;
 				saved_expert = expert;
 				saved_valid_m64_subtiles = tile.valid_m64_subtiles;
@@ -1713,6 +1964,7 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 				compute_tile =
 					first_sub * kM64PerGemmTile <
 					saved_valid_m64_subtiles;
+#endif
 
 				// One CommTileM-row slot feeds SubTiles GemmTileM-row sub-tiles.
 				// gemm coordinate of sub-tile `sub` = m·SubTiles + sub (the
@@ -1720,70 +1972,150 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 				// m·CommTileM + sub·GemmTileM). gemm_dims carries the SubTiles-scaled
 				// num_m_tiles / num_tokens so the buffer tensor shapes match.
 				// Acquire/release stays once per communication tile.
+#if !defined(LIGER_CUTE_SM90_BWD_DISABLE_PHASE1)
 				if (compute_tile) {
-					for (int sub = first_sub; sub < last_sub; ++sub) {
-						mlp_bwd_run_phase_1a<Traits1, Compute>(
-							pa_pipe, pa_count, smem.mlp1,
-							tma_load_x_remote, tma_load_b_fwd, tma_load_c_fwd,
-							tma_store_du, tma_store_dv, tma_store_z,
+					for (int sub = 0; sub < SubTiles; ++sub) {
+						mlp_bwd_run_phase_1a<
+							Traits1, Compute, WarpGroupRole>(
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+							mlp_bwd_shared_pipe<
+								WarpGroupRole, PaPipeline>(smem.pa_objects),
+							smem.pipe_counts[0],
+#else
+							pa_pipe,
+							pa_count,
+#endif
+							smem.mlp1,
+							tma.load_x_remote, tma.load_b_fwd, tma.load_c_fwd,
+							tma.store_du, tma.store_dv, tma.store_z,
 							warp_id, m * SubTiles + sub, expert, gemm_dims,
-							smem.tmem_base, gemm_split, gemm_splits);
+							smem.tmem_base, split, num_splits);
 					}
 				}
+#endif
 				cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 				x_barrier.wait();
 
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+				if (threadIdx.x == 0) {
+					int target =
+						(ticket + 1) *
+						compact_iter_state->num_producers_src;
+					while (atomicAdd(
+						&compact_iter_state->dy_src_ready[slot], 0) <
+						target) {}
+				}
+				__syncwarp();
+				__threadfence();
+#else
 				iter.acquire_dy();
+#endif
+#if !defined(LIGER_CUTE_SM90_BWD_DISABLE_PHASE1)
 				if (compute_tile) {
-					for (int sub = first_sub; sub < last_sub; ++sub) {
-						mlp_bwd_run_phase_1b<Traits2T, Compute>(
-							pb_pipe, pb_count, smem.mlp2t,
-							tma_load_dy_remote, tma_load_a_col, tma_store_dz,
+					for (int sub = 0; sub < SubTiles; ++sub) {
+						mlp_bwd_run_phase_1b<
+							Traits2T, Compute, WarpGroupRole>(
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+							mlp_bwd_shared_pipe<
+								WarpGroupRole, PbPipeline>(smem.pb_objects),
+							smem.pipe_counts[1],
+#else
+							pb_pipe,
+							pb_count,
+#endif
+							smem.mlp2t,
+							tma.load_dy_remote, tma.load_a_col, tma.store_dz,
 							warp_id, m * SubTiles + sub, expert, gemm_dims,
-							smem.tmem_base, gemm_split, gemm_splits);
+							smem.tmem_base, split, num_splits);
 					}
 				}
+#endif
 
 				x_barrier.wait();
 
+#if !defined(LIGER_CUTE_SM90_BWD_DISABLE_PHASE1)
 				if (compute_tile) {
-					for (int sub = first_sub; sub < last_sub; ++sub) {
+					for (int sub = 0; sub < SubTiles; ++sub) {
 						silu_bwd_pair_tile<Element>(
 							remote_bufs.dz_buf, remote_bufs.du_buf, remote_bufs.dv_buf,
 							remote_bufs.du_buf, remote_bufs.dv_buf,
 							m * SubTiles + sub, Traits1::TileM, Traits2T::TileN,
-							remote_dims.intermediate_dim, gemm_split, gemm_splits);
+							remote_dims.intermediate_dim, split, num_splits);
 					}
 				}
+#endif
 				cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 			}
 
-			// Save this sub-batch's staging slot (== tile.y_m == iter cur_slot)
-			// for the deferred grouped release. -1 / false when this CTA had no
-			// tile (gap CTA or column exhausted).
+#if !defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
 			saved_slot[s] = saved_m;
 			saved_live[s] = has_tile;
+#endif
 
 			// Global barrier: this sub-batch's Z, dU, dV visible to all CTAs.
 			global_barrier.wait();
 
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+			const bool has_tile = smem.phase1_has_tile != 0;
+			const bool compute_tile = smem.phase1_compute_tile != 0;
+			const int saved_m = smem.phase1_m;
+			const int saved_expert = smem.phase1_expert;
+#endif
 			// Phase 1d: dX = dU@B + dV@C (per sub-batch — Phase 2 never reads dX,
 			// so it is emitted and its dst slot released immediately).
 			if (has_tile) {
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+				int linear =
+					compact_iter_state->m_base +
+					(g0 + s) * compact_iter_state->col_stride;
+				int slot = linear % compact_iter_state->ring_len;
+				int ticket = linear / compact_iter_state->ring_len;
+				if (ticket >= 1) {
+					if (threadIdx.x == 0) {
+						int target =
+							ticket *
+							compact_iter_state->num_consumers_dst;
+						while (atomicAdd(
+							&compact_iter_state->dst_consumed[slot], 0) <
+							target) {}
+					}
+					__syncwarp();
+					__threadfence();
+				}
+#else
 				iter.acquire_dst();
+#endif
+#if !defined(LIGER_CUTE_SM90_BWD_DISABLE_PHASE1)
 				if (compute_tile) {
-					for (int sub = first_sub; sub < last_sub; ++sub) {
-						mlp_bwd_run_phase_1d<Traits5, Compute>(
-							pd_pipe, pd_count, smem.mlp5,
-							tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col,
-							tma_store_dx_remote,
+					for (int sub = 0; sub < SubTiles; ++sub) {
+						mlp_bwd_run_phase_1d<
+							Traits5, Compute, WarpGroupRole>(
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+							mlp_bwd_shared_pipe<
+								WarpGroupRole, PdPipeline>(smem.pd_objects),
+							smem.pipe_counts[2],
+#else
+							pd_pipe,
+							pd_count,
+#endif
+							smem.mlp5,
+							tma.load_du, tma.load_dv,
+							tma.load_b_col, tma.load_c_col,
+							tma.store_dx_remote,
 							warp_id, saved_m * SubTiles + sub, saved_expert, gemm_dims,
-							smem.tmem_base, gemm_split, gemm_splits);
+							smem.tmem_base, split, num_splits);
 					}
 				}
+#endif
 				__threadfence();  // dX flush for the NIC put (release_dst signals)
 				cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+				__threadfence_system();
+				if (threadIdx.x == 0)
+					atomicAdd(&compact_iter_state->dst_ready[slot], 1);
+#else
 				iter.release_dst(threadIdx.x);
+#endif
 			}
 		}
 
@@ -1812,10 +2144,11 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		// Per-group per-expert K-range scan over the group's window. Reads the
 		// LIVE X-pipe expert ids — none of the group's slots have been released
 		// yet, so all gcount·grid_x are valid. Feeds mlp3+mlp4 (unwrapped ranges).
+#if !defined(LIGER_CUTE_SM90_BWD_DISABLE_PHASE2)
 		if (bk_tiles > 0) {
 			int batch_kb_off = (bk_start * Traits1::TileM) / Traits4::TileK;
 			int batch_kb_cnt = (bk_tiles * Traits1::TileM) / Traits4::TileK;
-			mlp_bwd_phase_2_build_ranges<Compute>(
+			mlp_bwd_phase_2_build_ranges<Compute, WarpGroupRole>(
 				remote_bufs.expert_k_starts, remote_bufs.expert_k_ends,
 				remote_bufs.expert_for_k_block_mlp4,
 				remote_bufs.valid_rows_mlp4,
@@ -1829,43 +2162,108 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 
 		if (bk_tiles > 0) {
 			mlp_bwd_run_phase_2_mlp4<
-				Traits1, Traits4, NSplit2, Compute>(
-				p4_pipe, p4_count, smem.mlp4,
+				Traits1, Traits4, NSplit2, Compute, WarpGroupRole>(
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+				mlp_bwd_shared_pipe<
+					WarpGroupRole, P4Pipeline>(smem.p4_objects),
+				smem.pipe_counts[4],
+#else
+				p4_pipe,
+				p4_count,
+#endif
+				smem.mlp4,
 				remote_bufs.expert_k_starts, remote_bufs.expert_k_ends,
-				tma_load_xt4_remote, tma_load_dut4, tma_load_dvt4,
-				tma_reduce_db, tma_reduce_dc,
+				tma.load_xt4_remote, tma.load_dut4, tma.load_dvt4,
+				tma.reduce_db, tma.reduce_dc,
 				warp_id, bk_start, bk_tiles,
-				phase2_div, phase2_mod,
+				flat_id / NSplit2, flat_id % NSplit2,
 				gemm_dims, smem.tmem_base, ring_kb,
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+				acc_pair_barrier, &smem.acc_pair_phase_state);
+#else
 				acc_pair_barrier, &acc_pair_phase);
+#endif
 		}
+#endif
 
 		global_barrier.wait();
 		// mlp4 done reading X^T — free every X slot the group held.
-		{
+		if constexpr (WarpGroupRole != 2) {
 			__threadfence();
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+			if (threadIdx.x == 0) {
+				for (int s = 0; s < gcount; ++s) {
+					int iteration = g0 + s;
+					if (gemm_active &&
+							iteration < compact_iter_state->total_tiles) {
+						int linear =
+							compact_iter_state->m_base +
+							iteration * compact_iter_state->col_stride;
+						atomicAdd(
+							&compact_iter_state->x_src_consumed[
+								linear % compact_iter_state->ring_len],
+							1);
+					}
+				}
+			}
+#else
 			for (int s = 0; s < gcount; ++s)
-				if (saved_live[s]) iter.release_src_slot(saved_slot[s], threadIdx.x);
+				if (saved_live[s])
+					iter.release_src_slot(saved_slot[s], threadIdx.x);
+#endif
 		}
 
+#if !defined(LIGER_CUTE_SM90_BWD_DISABLE_PHASE2)
 		if (bk_tiles > 0) {
 			mlp_bwd_run_phase_2_mlp3<
-				Traits1, Traits3, NSplit2, Compute>(
-				p3_pipe, p3_count, smem.mlp3,
+				Traits1, Traits3, NSplit2, Compute, WarpGroupRole>(
+#if defined(LIGER_CUTE_SM90_NONRDC_SHARED_BWD_PIPES)
+				mlp_bwd_shared_pipe<
+					WarpGroupRole, P3Pipeline>(smem.p3_objects),
+				smem.pipe_counts[3],
+#else
+				p3_pipe,
+				p3_count,
+#endif
+				smem.mlp3,
 				remote_bufs.expert_k_starts, remote_bufs.expert_k_ends,
-				tma_load_dyt3_remote, tma_load_zt3, tma_reduce_da,
+				tma.load_dyt3_remote, tma.load_zt3, tma.reduce_da,
 				warp_id, bk_start, bk_tiles,
-				phase2_div, phase2_mod,
+				flat_id / NSplit2, flat_id % NSplit2,
 				gemm_dims, smem.tmem_base, ring_kb,
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+				acc_pair_barrier, &smem.acc_pair_phase_state);
+#else
 				acc_pair_barrier, &acc_pair_phase);
+#endif
 		}
+#endif
 
 		global_barrier.wait();
 		// mlp3 done reading dY^T — free every dY slot the group held.
-		{
+		if constexpr (WarpGroupRole != 2) {
 			__threadfence();
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+			if (threadIdx.x == 0) {
+				for (int s = 0; s < gcount; ++s) {
+					int iteration = g0 + s;
+					if (gemm_active &&
+							iteration < compact_iter_state->total_tiles) {
+						int linear =
+							compact_iter_state->m_base +
+							iteration * compact_iter_state->col_stride;
+						atomicAdd(
+							&compact_iter_state->dy_src_consumed[
+								linear % compact_iter_state->ring_len],
+							1);
+					}
+				}
+			}
+#else
 			for (int s = 0; s < gcount; ++s)
-				if (saved_live[s]) iter.release_dy_slot(saved_slot[s], threadIdx.x);
+				if (saved_live[s])
+					iter.release_dy_slot(saved_slot[s], threadIdx.x);
+#endif
 		}
 	}
 
@@ -1880,6 +2278,9 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		}
 	}
 }
+
+#undef LIGER_MOE_BWD_PHASE1_DEVICE
+#undef LIGER_MOE_BWD_PHASE2_DEVICE
 
 
 } // namespace liger
