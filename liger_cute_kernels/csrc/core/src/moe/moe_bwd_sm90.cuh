@@ -18,6 +18,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 #include "mlp_bwd_sm90.cuh"
+#include "tile_iterator_bwd_sm90.cuh"
 
 namespace liger {
 
@@ -32,6 +33,10 @@ template <typename Traits1, typename Traits2T, typename Traits3,
 struct MoeBwdSmem {
 	MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Compute> mlp;
 	CommSmem comm;
+	MlpBwdDims runtime_dims;
+	MlpBwdDims gemm_dims;
+	MlpBwdBufs<typename Traits1::Element> runtime_bufs;
+	RemoteMlpTileIteratorBwdSharedState iterator_state;
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -46,55 +51,12 @@ template <typename Traits1, typename Traits2T, typename Traits3,
           // comm staging slot; the mlp3/4 ratios use Traits1::TileM (= GemmTileM).
           int SubTiles,
           int Compute = 90,
+          int WarpGroupRole = 0,
           typename FusedIter,
-          // Phase 1 TMA
-          typename TmaLoadX, typename TmaLoadW1,
-          typename TmaStoreZ, typename TmaStoreU, typename TmaStoreV,
-          typename TmaLoadDY, typename TmaLoadW2T, typename TmaStoreDZ,
-          typename TmaLoadDU, typename TmaLoadDV,
-          typename TmaLoadB, typename TmaLoadC, typename TmaStoreDX,
-          // Phase 2 TMA
-          typename TmaLoadDYT3, typename TmaLoadZT3, typename TmaStoredA,
-          typename TmaLoadXT4, typename TmaLoaddUT4, typename TmaLoaddVT4,
-          typename TmaStoredB, typename TmaStoredC,
-          // Remote TMA: SAME C++ types as their local counterparts
-          // (the cute Layouts for both x_sorted and the staging ring use
-          // dynamic shape + _1 col stride + identical smem layout), so we
-          // can reuse the TmaLoadX/DY/StoreDX/etc. template params. Only
-          // the runtime gmem pointer differs between local and remote.
-          typename TmaLoadXR = TmaLoadX,
-          typename TmaLoadDYR = TmaLoadDY,
-          typename TmaStoreDXR = TmaStoreDX,
-          typename TmaLoadDYT3R = TmaLoadDYT3,
-          typename TmaLoadXT4R = TmaLoadXT4>
+          typename TmaBundle>
 __device__ __forceinline__ void moe_fused_bwd(
 		MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Compute>& smem,
-		FusedIter& iter,
-		// Phase 1 TMA (local)
-		TmaLoadX const& tma_load_x, TmaLoadW1 const& tma_load_b_fwd,
-		TmaLoadW1 const& tma_load_c_fwd, TmaStoreZ const& tma_store_z,
-		TmaStoreU const& tma_store_u, TmaStoreV const& tma_store_v,
-		TmaLoadDY const& tma_load_dy, TmaLoadW2T const& tma_load_a_col,
-		TmaStoreDZ const& tma_store_dz,
-		TmaLoadDU const& tma_load_du, TmaLoadDV const& tma_load_dv,
-		TmaLoadB const& tma_load_b_col, TmaLoadC const& tma_load_c_col,
-		TmaStoreDX const& tma_store_dx,
-		// Phase 2 TMA
-		TmaLoadDYT3 const& tma_load_dyt3, TmaLoadZT3 const& tma_load_zt3,
-		TmaStoredA const& tma_store_da,
-		TmaLoadXT4 const& tma_load_xt4,
-		TmaLoaddUT4 const& tma_load_dut4, TmaLoaddVT4 const& tma_load_dvt4,
-		TmaStoredB const& tma_store_db, TmaStoredC const& tma_store_dc,
-		// Remote TMA
-		TmaLoadXR const& tma_load_x_remote,
-		TmaLoadDYR const& tma_load_dy_remote,
-		TmaStoreDXR const& tma_store_dx_remote,
-		// Remote Phase 2 TMA: transposed staging sources for dA (Phase 3)
-		// and dB/dC (Phase 4). Without these, the remote phase reuses the
-		// local-only x_sorted/dy_sorted descriptors and produces wrong
-		// gradients for tokens routed across PEs.
-		TmaLoadDYT3R const& tma_load_dyt3_remote,
-		TmaLoadXT4R  const& tma_load_xt4_remote,
+		const TmaBundle& tma,
 		// Comm pipe pointers (for building remote iter)
 		int* x_src_ready, int* x_src_consumed,
 		int* dy_src_ready, int* dy_src_consumed,
@@ -108,9 +70,10 @@ __device__ __forceinline__ void moe_fused_bwd(
 		const int* remote_tile_expert_ids_x,
 		const int* remote_tile_expert_ids_dy,
 		const int* remote_tile_valid_rows_x,
-		// Dims + buffers
-		const MlpBwdDims& dims,
-		const MlpBwdBufs<typename Traits1::Element>& bufs,
+		// Runtime-adjusted dimensions and buffers.
+		const MlpBwdDims& remote_dims,
+		const MlpBwdDims& gemm_dims,
+		const MlpBwdBufs<typename Traits1::Element>& remote_bufs,
 		int col,
 		int grid_x,
 		int split,
@@ -126,55 +89,42 @@ __device__ __forceinline__ void moe_fused_bwd(
 	//   x_barrier is per logical Phase-1 column (col), stride runtime_nsplit.
 	int flat_id     = (int)blockIdx.x;
 
-	MlpBwdCtaBarrierT<Compute> global_barrier(bufs.barrier_counter,
+	MlpBwdCtaBarrierT<Compute> global_barrier(
+		remote_bufs.barrier_counter,
 		(int)gridDim.x * (int)gridDim.y);
-	MlpBwdCtaBarrierT<Compute> x_barrier(&dims.phase_counter[col],
+	MlpBwdCtaBarrierT<Compute> x_barrier(
+		&remote_dims.phase_counter[col],
 		runtime_nsplit);
 
+	FusedIter iter;
 	// Initialize the fused iter's remote sub-iter from comm pipe pointers.
 	// (Local sub-iter was init'd by the caller in moe_bwd_kernel.) Comm warps
 	// filled staging during this CTA's local pass. Ticket-based iterator
 	// keys on absolute slot index, so pointer offsets are NOT pre-applied
 	// (mirrors RemoteMlpTileIterator's init in moe.cuh).
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	iter.init_remote(
+		&smem.iterator_state,
+		/*is_leader=*/(threadIdx.x == 0));
+#else
 	iter.init_remote(
 		remote_tile_expert_ids_x,
 		remote_tile_valid_rows_x,
 		smem.comm.per_cta_tiles,
 		col,
-		dims.n_gemm,
+		remote_dims.n_gemm,
 		x_src_ready,  x_src_consumed,
 		dy_src_ready, dy_src_consumed,
 		dst_ready,    dst_consumed,
 		/*is_leader=*/(threadIdx.x == 0),
 		runtime_nsplit,
-			/*tma_enabled=*/(dims.tma_get_enabled != 0));
-
-	// Remote dims override: num_tokens / num_m_tiles use the staging-
-	// ring shape; total_m_tiles_in_pass uses the actual remote tile
-	// count (allows batches ≥ NumStages to run with bk_start wrapped
-	// into the live ring window). local_expert_start = 0 because
-	// RemoteIter reads tile_expert_ids written by nvshmem_comm_main_bwd
-	// (= TileIterator's LOCAL expert index).
-	MlpBwdDims remote_dims = dims;
-	remote_dims.num_tokens             = dims.remote_num_tokens;
-	remote_dims.num_m_tiles            = dims.remote_num_m_tiles;
-	remote_dims.total_m_tiles_in_pass  = smem.comm.global_total;
-	remote_dims.num_batches            =
-		(smem.comm.global_total + grid_x - 1) / grid_x;
-	remote_dims.local_expert_start     = 0;
-
-	// Alias per-pipe expert-id arrays into MlpBwdBufs. Phase 2 mlp4
-	// reads X-pipe gated array (stable across mlp4 because release_src
-	// is deferred past mlp4). Phase 2 mlp3 reads dY-pipe gated array.
-	MlpBwdBufs<typename Traits1::Element> remote_bufs = bufs;
-	remote_bufs.expert_for_k_block_mlp4 = remote_tile_expert_ids_x;
-	remote_bufs.expert_for_k_block_mlp3 = remote_tile_expert_ids_dy;
-	remote_bufs.valid_rows_mlp4 = remote_tile_valid_rows_x;
+		/*tma_enabled=*/(remote_dims.tma_get_enabled != 0));
+#endif
 
 	// Grid-uniform activity predicate. The unified path stages local tiles even
 	// at world size one, so every valid non-empty launch is active.
 	bool remote_active =
-		(dims.num_pes > 0) && (dims.num_tokens > 0);
+		(remote_dims.num_pes > 0) && (remote_dims.num_tokens > 0);
 
 	// The remote staging ring (L = MC·CommNumStages tiles, MC = n_gemm/NC) is a
 	// STREAMING buffer: when global_total > L it wraps and physical slots are
@@ -197,23 +147,15 @@ __device__ __forceinline__ void moe_fused_bwd(
 	// interpolation). SubTiles=1 → Traits1::TileM/TileK, unchanged.
 	constexpr int kEfkbStride4Remote = Traits1::TileM * SubTiles / Traits4::TileK;
 	mlp_fused_bwd_dual<
-		Traits1, Traits2T, Traits3, Traits4, Traits5, NSplit2, SubBatch, SubTiles, Compute>(
+		Traits1, Traits2T, Traits3, Traits4, Traits5,
+		NSplit2, SubBatch, SubTiles, Compute, WarpGroupRole>(
 		smem.mlp, iter, remote_active,
 		kEfkbStride4Remote,
-		// Phase 1 shared weights/intermediates
-		tma_load_b_fwd, tma_load_c_fwd,
-		tma_store_z, tma_store_u, tma_store_v,
-		tma_load_a_col, tma_store_dz,
-		tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col,
-		// Phase 2 shared
-		tma_load_zt3, tma_store_da,
-		tma_load_dut4, tma_load_dvt4, tma_store_db, tma_store_dc,
-		// Staging-ring data TMAs (X/dY/dX, dYᵀ/Xᵀ)
-		tma_load_x_remote, tma_load_dy_remote, tma_store_dx_remote,
-		tma_load_dyt3_remote, tma_load_xt4_remote,
-		remote_dims, remote_bufs,
+		tma,
+		remote_dims, gemm_dims, remote_bufs,
 		global_barrier, x_barrier,
-		flat_id, col, grid_x, split, /*num_splits=*/runtime_nsplit, gemm_active);
+		flat_id, col, grid_x, split, /*num_splits=*/runtime_nsplit,
+		gemm_active, nullptr);
 }
 
 } // namespace liger

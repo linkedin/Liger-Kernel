@@ -10,7 +10,7 @@
 #include <cstdint>
 
 #include "dx_reduce.cuh"
-#include "forward_gemm_sm90.cuh"
+#include "forward_reduction.cuh"
 #include "liger_cute/detail/tp_reduce.cuh"
 
 namespace liger {
@@ -27,6 +27,14 @@ struct ForwardBufferNames {
 		"fused_scaled_linear_cross_entropy_tp_forward_split_partials";
 	static constexpr const char* kSplitReady =
 		"fused_scaled_linear_cross_entropy_tp_forward_split_ready";
+	static constexpr const char* kWavePartialReady =
+		"fused_scaled_linear_cross_entropy_tp_forward_wave_partial_ready";
+	static constexpr const char* kWaveTileReady =
+		"fused_scaled_linear_cross_entropy_tp_forward_wave_tile_ready";
+	static constexpr const char* kWaveSlotReleased =
+		"fused_scaled_linear_cross_entropy_tp_forward_wave_slot_released";
+	static constexpr const char* kDiagnostics =
+		"fused_scaled_linear_cross_entropy_tp_forward_diagnostics";
 	static constexpr const char* kLocalSum =
 		"fused_scaled_linear_cross_entropy_tp_forward_local_sum";
 	static constexpr const char* kLocalTarget =
@@ -38,8 +46,8 @@ struct ForwardBufferNames {
 __host__ __device__ constexpr int forward_reduced_fields(
 		bool return_entropy) {
 	return return_entropy
-		? kForwardReducedFields
-		: kForwardReducedFields - 1;
+		? forward_reduced_fields<true>()
+		: forward_reduced_fields<false>();
 }
 
 struct ForwardTpWorkspace {
@@ -47,9 +55,14 @@ struct ForwardTpWorkspace {
 	float* global_max;
 	float* reduced;
 	int* split_ready;
+	std::uint64_t* wave_partial_ready;
+	std::uint64_t* wave_tile_ready;
+	std::uint64_t* wave_slot_released;
+	std::uint64_t* diagnostics;
 	void* gemm_split_partials;
 	std::size_t gemm_split_partials_bytes;
 	int fields;
+	int vocab_capacity;
 };
 
 // Fixes reusable workspace capacities. Capacities are immutable after the
@@ -70,6 +83,12 @@ extern template ForwardTpWorkspace
 	reserve_forward_tp_workspace<false>(int);
 extern template ForwardTpWorkspace
 	reserve_forward_tp_workspace<true>(int);
+
+int forward_tp_diagnostic_entries();
+void copy_forward_tp_diagnostics(
+	std::uint64_t* output,
+	int entries,
+	cudaStream_t stream);
 
 void launch_forward_remote_finalize(
 	bool return_entropy,

@@ -7,6 +7,7 @@ torch-free native core through TVM FFI and passes tensors through DLPack views.
 from __future__ import annotations
 
 import ctypes
+import importlib.util
 
 from pathlib import Path
 
@@ -14,6 +15,10 @@ import torch
 
 _MOD = None
 _NVSHMEM_LIBS_LOADED = False
+_ARCH_CORE_NAMES = {
+    9: "libliger_cute_kernels_sm90a.so",
+    10: "libliger_cute_kernels_sm100f.so",
+}
 
 
 def is_available() -> bool:
@@ -31,23 +36,66 @@ def _load_module():
 
         pkg_dir = Path(__file__).resolve().parent
         _load_nvshmem_libraries(pkg_dir)
-        module = pkg_dir / "libliger_cute_kernels.so"
-        if not module.exists():
-            raise FileNotFoundError(f"Missing packaged TVM FFI module: {module}")
+        module = _select_core_module(pkg_dir)
         _MOD = tvm_ffi.load_module(str(module))
     return _MOD
+
+
+def _select_core_module(pkg_dir: Path) -> Path:
+    legacy = pkg_dir / "libliger_cute_kernels.so"
+    architecture_cores = {
+        major: pkg_dir / name for major, name in _ARCH_CORE_NAMES.items() if (pkg_dir / name).is_file()
+    }
+    if not architecture_cores:
+        if legacy.is_file():
+            return legacy
+        raise FileNotFoundError(f"Missing packaged TVM FFI modules under {pkg_dir}")
+    if not torch.cuda.is_available():
+        raise RuntimeError("selecting an architecture-specific Liger core requires a CUDA device")
+    major = torch.cuda.get_device_capability()[0]
+    module = architecture_cores.get(major)
+    if module is None:
+        supported = ", ".join(
+            _ARCH_CORE_NAMES[value].removeprefix("libliger_cute_kernels_").removesuffix(".so")
+            for value in sorted(architecture_cores)
+        )
+        raise RuntimeError(f"no Liger core for CUDA capability SM{major}; packaged capabilities: {supported}")
+    return module
+
+
+def _nvshmem_library_dirs(pkg_dir: Path) -> list[Path]:
+    directories = [pkg_dir]
+    try:
+        spec = importlib.util.find_spec("nvidia.nvshmem")
+    except ModuleNotFoundError:
+        spec = None
+    if spec is not None:
+        locations = list(spec.submodule_search_locations or [])
+        if spec.origin:
+            locations.append(str(Path(spec.origin).resolve().parent))
+        directories.extend(Path(location).resolve() / "lib" for location in locations)
+    return directories
 
 
 def _load_nvshmem_libraries(pkg_dir: Path) -> None:
     global _NVSHMEM_LIBS_LOADED
     if _NVSHMEM_LIBS_LOADED:
         return
-    for host in (pkg_dir / "libnvshmem_host.so.3", pkg_dir / "libnvshmem_host.so"):
-        if host.exists():
-            ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
-            break
-    uid_bootstrap = pkg_dir / "nvshmem_bootstrap_uid.so.3"
-    if uid_bootstrap.exists():
+    directories = _nvshmem_library_dirs(pkg_dir)
+    host = next(
+        (
+            directory / name
+            for directory in directories
+            for name in ("libnvshmem_host.so.3", "libnvshmem_host.so")
+            if (directory / name).is_file()
+        ),
+        None,
+    )
+    if host is None:
+        raise ImportError("NVSHMEM runtime not found; install nvidia-nvshmem-cu12==3.6.5")
+    ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
+    uid_bootstrap = host.parent / "nvshmem_bootstrap_uid.so.3"
+    if uid_bootstrap.is_file():
         ctypes.CDLL(str(uid_bootstrap), mode=ctypes.RTLD_GLOBAL)
     _NVSHMEM_LIBS_LOADED = True
 
@@ -255,6 +303,12 @@ def fused_linear_scaled_cross_entropy_configure_forward(
     max_tokens: int,
     max_local_vocab: int,
 ) -> None:
+    """Reserve reusable forward workspace for the maximum local problem.
+
+    This is a collective configuration call across the NVSHMEM team used by
+    subsequent forward launches. Capacities are immutable until the shared
+    buffer pool is cleared, so every rank must pass identical values.
+    """
     _load_module().fused_linear_scaled_cross_entropy_configure_forward(
         int(max_tokens),
         int(max_local_vocab),
@@ -268,6 +322,13 @@ def fused_linear_scaled_cross_entropy_configure_backward(
     max_tiles_per_reduce: int,
     team_handle: int,
 ) -> None:
+    """Reserve backward/NVLS/remote-ring workspace for an NVSHMEM TP team.
+
+    All PEs in ``team_handle`` must call this with identical maxima before the
+    first forward or backward launch. ``max_tiles_per_reduce`` must cover every
+    later ``tiles_per_reduce`` request. Multi-host teams must have uniform
+    per-host membership and host-major team-rank ordering.
+    """
     _load_module().fused_linear_scaled_cross_entropy_configure_backward(
         int(max_tokens),
         int(max_hidden),
@@ -275,6 +336,64 @@ def fused_linear_scaled_cross_entropy_configure_backward(
         int(max_tiles_per_reduce),
         int(team_handle),
     )
+
+
+def fused_linear_scaled_cross_entropy_forward_workspace_bytes(
+    max_tokens: int,
+    max_local_vocab: int,
+) -> int:
+    """Return the reusable native forward workspace at the given capacity."""
+    return int(
+        _load_module().fused_linear_scaled_cross_entropy_forward_workspace_bytes(
+            int(max_tokens),
+            int(max_local_vocab),
+        )
+    )
+
+
+def fused_linear_scaled_cross_entropy_backward_workspace_bytes(
+    max_tokens: int,
+    max_hidden: int,
+    max_local_vocab: int,
+    max_tiles_per_reduce: int,
+) -> int:
+    """Return total symmetric plus device-private backward pool bytes.
+
+    Before configuration, this is a conservative topology-independent
+    estimate. After configuration, all arguments must exactly match the
+    immutable configured capacity and the exact allocated footprint is
+    returned.
+    """
+    return int(
+        _load_module().fused_linear_scaled_cross_entropy_backward_workspace_bytes(
+            int(max_tokens),
+            int(max_hidden),
+            int(max_local_vocab),
+            int(max_tiles_per_reduce),
+        )
+    )
+
+
+def fused_linear_scaled_cross_entropy_forward_diagnostics(
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Return the device timestamp/counter block from the latest forward."""
+    module = _load_module()
+    entries = int(module.fused_linear_scaled_cross_entropy_forward_diagnostic_entries())
+    output = torch.empty(entries, dtype=torch.int64, device=device)
+    module.fused_linear_scaled_cross_entropy_forward_diagnostics(output)
+    return output
+
+
+def fused_linear_scaled_cross_entropy_backward_diagnostics(
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Return the device timestamp/counter block from the latest backward."""
+    module = _load_module()
+    entries = int(module.fused_linear_scaled_cross_entropy_backward_diagnostic_entries())
+    output = torch.empty(entries, dtype=torch.int64, device=device)
+    module.fused_linear_scaled_cross_entropy_backward_diagnostics(output)
+    return output
 
 
 def fused_linear_scaled_cross_entropy_forward(
@@ -287,7 +406,23 @@ def fused_linear_scaled_cross_entropy_forward(
     team_handle: int,
     return_entropy: bool,
 ):
-    """Run the complete tensor-parallel forward on a prepared NVSHMEM team."""
+    """Run tensor-parallel fused projection and scaled cross entropy.
+
+    Args:
+        x: Contiguous BF16 tensor with shape ``[tokens, hidden]``.
+        weight: This rank's contiguous BF16 vocabulary shard with shape
+            ``[local_vocab, hidden]``.
+        target: Global int64 vocabulary indices with shape ``[tokens]``.
+        vocab_start: Global vocabulary index represented by ``weight[0]``.
+        ignore_index: Target value whose NLL and entropy outputs are zeroed.
+        inverse_temperature: Positive multiplier applied to classifier logits.
+        team_handle: Configured NVSHMEM tensor-parallel team.
+        return_entropy: Whether to compute per-token entropy.
+
+    Returns:
+        ``(nll, lse, entropy)`` as FP32 tensors with shape ``[tokens]``.
+        ``entropy`` is zero-filled when ``return_entropy`` is false.
+    """
     tokens = x.shape[0]
     nll = torch.empty(tokens, dtype=torch.float32, device=x.device)
     lse = torch.empty(tokens, dtype=torch.float32, device=x.device)
@@ -312,6 +447,47 @@ def fused_linear_scaled_cross_entropy_forward(
     return nll, lse, entropy
 
 
+def fused_linear_scaled_cross_entropy_backward_phase_bench(
+    grad_output: torch.Tensor,
+    entropy_grad: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    target: torch.Tensor,
+    lse: torch.Tensor,
+    entropy: torch.Tensor,
+    vocab_start: int,
+    ignore_index: int,
+    inverse_temperature: float,
+    team_handle: int,
+    phase: int,
+    return_entropy: bool,
+    grad_input: torch.Tensor,
+    grad_weight: torch.Tensor,
+):
+    """Benchmark-only: run one backward GEMM phase (1=dZ, 2=dX, 4=dW).
+
+    Uses the production kernel with a single phase bit set: identical tiles,
+    pipelines, TMEM plan and epilogue, no reduction or communication.
+    """
+    _load_module().fused_linear_scaled_cross_entropy_backward_phase_bench(
+        grad_output,
+        entropy_grad,
+        x,
+        weight,
+        target,
+        lse,
+        entropy,
+        int(vocab_start),
+        int(ignore_index),
+        float(inverse_temperature),
+        int(team_handle),
+        int(phase),
+        bool(return_entropy),
+        grad_input,
+        grad_weight,
+    )
+
+
 def fused_linear_scaled_cross_entropy_backward(
     grad_output: torch.Tensor,
     entropy_grad: torch.Tensor,
@@ -327,6 +503,13 @@ def fused_linear_scaled_cross_entropy_backward(
     tiles_per_reduce: int,
     return_entropy: bool,
 ):
+    """Run the persistent tensor-parallel fused backward.
+
+    ``lse`` and ``entropy`` must be the outputs saved from the matching
+    forward. The result is the globally reduced BF16 ``grad_input`` and this
+    rank's local BF16 ``grad_weight``. On SM100, TP16 uses node-local NVLS,
+    the matching-rank inter-host ring, and an all-CTA warp-1 FP32 merge.
+    """
     grad_input = torch.empty_like(x)
     grad_weight = torch.empty_like(weight)
     _load_module().fused_linear_scaled_cross_entropy_backward(

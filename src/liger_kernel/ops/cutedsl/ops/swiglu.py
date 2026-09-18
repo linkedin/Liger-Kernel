@@ -47,6 +47,8 @@ The public API mirrors ``liger_kernel.ops.swiglu``:
 ``swiglu_forward`` / ``swiglu_backward`` / ``LigerSiLUMulCuteDSLFunction``.
 """
 
+import functools
+
 import torch
 
 try:
@@ -63,6 +65,9 @@ import cutlass.cute.math as cute_math
 from cutlass.cute.runtime import from_dlpack
 from cutlass.cute.runtime import make_fake_stream
 
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import EPILOGUE_TILE_SIZE
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import K_ALIGNMENT
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import run_grouped_epilogue_gemm_stacked
 from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
 from liger_kernel.ops.utils import ensure_contiguous
@@ -684,6 +689,177 @@ def _get_compiled_vec(kind: str, dtype: torch.dtype, vec: int, device_index: int
         )
     _VEC_COMPILE_CACHE[key] = fn
     return fn
+
+
+# ---------------------------------------------------------------------------
+# Fused linear SwiGLU
+# ---------------------------------------------------------------------------
+@cute.jit
+def _fused_swiglu_epilogue(gate, up, out):
+    _silu_mul_fwd_packed(gate, up, out, cutlass.Float32(1.0))
+
+
+def _validate_and_stack_gate_up(gate_weight, up_weight):
+    """Validate two ``[N, K]`` projections and concatenate into ``[2N, K]``.
+
+    This is the *separate weights* entry point. Because ``gate_weight`` and
+    ``up_weight`` are independent allocations, forming the single contiguous
+    buffer the SM100 kernel reads requires one copy (a strided view cannot span
+    two allocations). Callers on a hot path should pre-stack once and pass the
+    stacked tensor to :func:`fused_swiglu` to avoid this per-call copy.
+    """
+    if gate_weight.ndim != 2 or up_weight.ndim != 2:
+        raise ValueError("gate_weight and up_weight must both be 2D tensors.")
+    if gate_weight.shape != up_weight.shape:
+        raise ValueError(
+            f"gate_weight and up_weight must have identical shapes, got {gate_weight.shape} and {up_weight.shape}."
+        )
+    if gate_weight.dtype != up_weight.dtype:
+        raise TypeError(
+            f"gate_weight and up_weight must have the same dtype, got {gate_weight.dtype} and {up_weight.dtype}."
+        )
+    if gate_weight.device != up_weight.device:
+        raise ValueError(
+            f"gate_weight and up_weight must be on the same device, got {gate_weight.device} and {up_weight.device}."
+        )
+    return torch.cat((gate_weight, up_weight), dim=0)
+
+
+def pack_swiglu_weights(gate_weight, up_weight):
+    """Stack ``[N, K]`` gate/up weights into a plain ``[2N, K]`` tensor.
+
+    The fused SM100 kernel now consumes a *simply stacked* weight (gate rows
+    followed by up rows) directly, reinterpreting the strides on the fly, so no
+    bespoke interleave is materialized. This helper is kept for convenience and
+    API compatibility: it is a single ``torch.cat`` (one contiguous copy) for
+    callers that hold two separate tensors. Callers that already have a fused
+    ``gate_up_proj`` weight can skip this and pass it straight to
+    :func:`fused_swiglu`; callers with two separate tensors can also pass them
+    directly as ``fused_swiglu(a, gate, up)``.
+
+    Returns ``(stacked_weight, output_features)`` where ``output_features`` is
+    the per-projection output dimension ``N``.
+    """
+    return _validate_and_stack_gate_up(gate_weight, up_weight), gate_weight.shape[0]
+
+
+@functools.lru_cache(maxsize=32)
+def _validate_fused_swiglu_signature(a_shape, weight_shape, output_features):
+    if len(a_shape) != 2 or len(weight_shape) != 2:
+        raise ValueError("a and gate_up_weight must both be 2D tensors.")
+    if a_shape[1] != weight_shape[1]:
+        raise ValueError(f"Input and weight K dimensions must match, got {a_shape[1]} and {weight_shape[1]}.")
+    if weight_shape[0] % 2 != 0:
+        raise ValueError(f"gate_up_weight must have an even number of rows (2N), got {weight_shape[0]}.")
+
+    features = weight_shape[0] // 2
+    if output_features is None:
+        output_features = features
+    if not 0 < output_features <= features:
+        raise ValueError(f"output_features must be in [1, {features}], got {output_features}.")
+    return output_features
+
+
+def _native_fused_swiglu_supported(a):
+    if a.device.type != "cuda" or a.dtype not in (torch.float16, torch.bfloat16) or a.shape[1] % K_ALIGNMENT != 0:
+        return False
+    device_id = a.device.index if a.device.index is not None else torch.cuda.current_device()
+    return infer_device_arch(device_id) == "blackwell" and torch.cuda.get_device_capability(a.device) == (10, 0)
+
+
+def _pad_stacked_weight(gate_up_weight, features):
+    """Pad each projection up to a multiple of ``EPILOGUE_TILE_SIZE``.
+
+    Returns ``(stacked, padded_features)``. When ``features`` is already a
+    multiple of the tile size (the common case, e.g. LLaMA/Qwen MLPs) the input
+    is returned unchanged -- no copy, no memory spike.
+    """
+    padded = ((features + EPILOGUE_TILE_SIZE - 1) // EPILOGUE_TILE_SIZE) * EPILOGUE_TILE_SIZE
+    if padded == features:
+        return gate_up_weight, padded
+    stacked = gate_up_weight.new_zeros(2 * padded, gate_up_weight.shape[1])
+    stacked[:features].copy_(gate_up_weight[:features])
+    stacked[padded : padded + features].copy_(gate_up_weight[features:])
+    return stacked, padded
+
+
+def _fused_swiglu_sm100(a, stacked_gate_up_weight, output_features):
+    padded_features = stacked_gate_up_weight.shape[0] // 2
+    out = torch.empty(
+        a.shape[0],
+        padded_features,
+        device=a.device,
+        dtype=a.dtype,
+    )
+    run_grouped_epilogue_gemm_stacked(
+        a.contiguous(),
+        stacked_gate_up_weight.contiguous(),
+        out,
+        _fused_swiglu_epilogue,
+    )
+    return out[:, :output_features]
+
+
+def fused_swiglu(a, gate_weight, up_weight=None, *, output_features=None):
+    """Fused gate/up projections + SwiGLU with an SM100 fast path.
+
+    Two calling conventions are supported:
+
+    * **Stacked (zero-copy)** -- ``fused_swiglu(a, gate_up_weight)`` where
+      ``gate_up_weight`` is a plainly stacked ``[2N, K]`` tensor: the gate rows
+      ``[0:N]`` followed by the up rows ``[N:2N]`` (e.g. ``torch.cat([gate,
+      up])`` or a model's fused ``gate_up_proj.weight``). The SM100 kernel
+      reinterprets the stacked strides on the fly and reads it directly with
+      **no extra weight copy**.
+    * **Separate** -- ``fused_swiglu(a, gate_weight, up_weight)`` where each is
+      ``[N, K]``. They are concatenated into one ``[2N, K]`` buffer before the
+      native kernel runs (**one copy** -- a strided view cannot span two
+      separate allocations; the fallback path uses them directly with no copy).
+      Prefer the stacked form on hot paths to avoid this per-call concat.
+
+    ``output_features`` (keyword-only) optionally trims trailing padded columns
+    of the per-projection output; it is inferred as ``N`` when omitted. Returns
+    ``silu(x @ gate.T) * (x @ up.T)`` of shape ``[M, N]``.
+    """
+    if a.device.type != "cuda" or gate_weight.device.type != "cuda":
+        raise ValueError("a and weights must be CUDA tensors.")
+    if up_weight is not None:
+        if not isinstance(up_weight, torch.Tensor):
+            raise TypeError(
+                "up_weight must be a tensor of shape [N, K]; 'output_features' is keyword-only "
+                "(call fused_swiglu(a, gate_up_weight, output_features=...))."
+            )
+        if up_weight.device.type != "cuda":
+            raise ValueError("a and weights must be CUDA tensors.")
+        # Separate projections: stack into one buffer (option (a) -- one copy).
+        gate_up_weight = _validate_and_stack_gate_up(gate_weight, up_weight)
+    else:
+        # Already stacked [2N, K] -- consumed as a zero-copy strided view.
+        gate_up_weight = gate_weight
+    if a.device != gate_up_weight.device:
+        raise ValueError(
+            f"a and gate_up_weight must be on the same device, got {a.device} and {gate_up_weight.device}."
+        )
+    if a.dtype != gate_up_weight.dtype:
+        raise TypeError(f"a and gate_up_weight must have the same dtype, got {a.dtype} and {gate_up_weight.dtype}.")
+    _validate_supported_dtype(a.dtype)
+    output_features = _validate_fused_swiglu_signature(
+        tuple(a.shape),
+        tuple(gate_up_weight.shape),
+        output_features,
+    )
+
+    features = gate_up_weight.shape[0] // 2
+    stacked, padded_features = _pad_stacked_weight(gate_up_weight, features)
+
+    if _native_fused_swiglu_supported(a):
+        return _fused_swiglu_sm100(a, stacked, output_features)
+
+    gate_weight = stacked[:padded_features]
+    up_weight = stacked[padded_features:]
+    gate = torch.nn.functional.linear(a, gate_weight)
+    up = torch.nn.functional.linear(a, up_weight)
+    return swiglu_forward(gate, up)[2][:, :output_features]
 
 
 # ---------------------------------------------------------------------------
