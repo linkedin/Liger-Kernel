@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540" role="img" aria-labelledby="title desc">
+<title id="title">How unchunked and token-chunked DPO differ</title>
+<desc id="desc">Unchunked execution projects all tokens together. Token chunking projects a smaller group at a time, reducing temporary vocabulary-sized work. This implementation also uses a shared weight-gradient accumulator.</desc>
+<rect width="1200" height="540" fill="white" />
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#203044}.title{font-size:29px;font-weight:700}.head{font-size:22px;font-weight:700}.body{font-size:18px}.small{font-size:16px}.muted{fill:#59687a}.bold{font-weight:700}</style>
+<text x="36" y="48" class="title" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="29" fill="#203044" font-weight="700">Unchunked vs. token-chunked DPO</text>
+<rect x="36" y="106" width="546" height="406" rx="8" fill="#f6f8fb" stroke="#dde4ed" />
+<text x="58" y="146" class="head" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="22" fill="#203044" font-weight="700">Unchunked PyTorch baseline</text>
+<text x="58" y="180" class="body bold" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#203044" font-weight="700">16,384 tokens per projection</text>
+<text x="58" y="208" class="small muted" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#59687a">Chosen + rejected full sequences</text>
+<rect x="58" y="231" width="502" height="114" rx="8" fill="#c1cede" stroke="none" />
+<text x="309" y="276" class="body" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#203044">Vocabulary-sized temporary work</text>
+<text x="309" y="310" class="head" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="22" fill="#203044" font-weight="700">B × T × V</text>
+<text x="58" y="373" class="body bold" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#203044" font-weight="700">Temporary work spans all tokens</text>
+<text x="58" y="404" class="body" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#203044">Full-batch forward / backward operations</text>
+<text x="58" y="449" class="small muted" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#59687a">Weight-gradient handling</text>
+<text x="58" y="480" class="body" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#203044">Standard autograd</text>
+<rect x="618" y="106" width="546" height="406" rx="8" fill="#f6f8fb" stroke="#dde4ed" />
+<text x="640" y="146" class="head" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="22" fill="#203044" font-weight="700">Token-chunked implementation</text>
+<text x="640" y="180" class="body bold" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#203044" font-weight="700">512 tokens per projection</text>
+<text x="640" y="208" class="small muted" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#59687a">Chosen + rejected chunk</text>
+<rect x="640" y="231" width="57" height="114" rx="8" fill="#c4e8df" stroke="#9bc9bd" />
+<text x="668" y="278" class="small" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#203044">1</text>
+<rect x="703" y="231" width="57" height="114" rx="8" fill="white" stroke="#d9e1e9" />
+<text x="731" y="278" class="small" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#203044">2</text>
+<rect x="766" y="231" width="57" height="114" rx="8" fill="white" stroke="#d9e1e9" />
+<text x="794" y="278" class="small" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#203044">3</text>
+<rect x="829" y="231" width="57" height="114" rx="8" fill="white" stroke="#d9e1e9" />
+<text x="857" y="278" class="small" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#203044">4</text>
+<rect x="892" y="231" width="57" height="114" rx="8" fill="white" stroke="#d9e1e9" />
+<text x="920" y="278" class="small" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#203044">5</text>
+<rect x="955" y="231" width="57" height="114" rx="8" fill="white" stroke="#d9e1e9" />
+<text x="983" y="278" class="small" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#203044">6</text>
+<rect x="1018" y="231" width="57" height="114" rx="8" fill="white" stroke="#d9e1e9" />
+<text x="1046" y="278" class="small" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#203044">…</text>
+<rect x="1081" y="231" width="57" height="114" rx="8" fill="white" stroke="#d9e1e9" />
+<text x="1109" y="278" class="small" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#203044">32</text>
+<text x="640" y="373" class="body bold" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#203044" font-weight="700">Temporary work: C × V per chunk</text>
+<text x="640" y="404" class="body" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#203044">Process chunks sequentially</text>
+<text x="640" y="449" class="small muted" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#59687a">Weight-gradient handling</text>
+<text x="640" y="480" class="body" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#203044">Custom shared accumulator</text>
+</svg>
