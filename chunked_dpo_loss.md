@@ -2,10 +2,21 @@
 
 This document explains the design and rationale behind
 [`LigerChunkedLinearPreferenceBase`](https://github.com/cyr0930/Liger-Kernel/blob/feat/chunked_dpo/src/liger_kernel/chunked_loss/chunked_linear_preference.py#L36) /
-[`LigerChunkedLinearDPOLoss`](https://github.com/cyr0930/Liger-Kernel/blob/feat/chunked_dpo/src/liger_kernel/chunked_loss/dpo_loss.py#L55)
+[`LigerChunkedLinearDPOLoss`](https://github.com/cyr0930/Liger-Kernel/blob/feat/chunked_dpo/src/liger_kernel/chunked_loss/dpo_loss.py#L193)
 and the [`ChunkMatmul`](https://github.com/cyr0930/Liger-Kernel/blob/feat/chunked_dpo/src/liger_kernel/chunked_loss/chunked_linear_preference.py#L8)
 autograd function (commits [`b442602`](https://github.com/cyr0930/Liger-Kernel/commit/b44260260d4197924b0915a5f3180b4208526d4f)
 and [`cf8d269`](https://github.com/cyr0930/Liger-Kernel/commit/cf8d269c88539586d0d9829c87757cb0d82736a4)).
+
+**Tested setting:** use `LigerChunkedLinearDPOLoss(compiled=True, use_ref_model=True)`
+with a trainable policy weight and a frozen reference weight (`requires_grad=False`);
+provide `ref_input` and `ref_weight`. This implementation requires the reference
+path (`use_ref_model=False` is not supported). Compilation here means the loss's
+internal chunk compilation, not wrapping the whole loss in `torch.compile`.
+The BF16 memory behavior below was tested at commit `85a1c9c` on A30 / PyTorch 2.10.0+cu128.
+
+With `compiled=False`, chunking still reduces temporary workspace, but autograd
+retains all chunks' FP32 vocabulary log-probabilities for backward; the compiled
+retained-state savings described below do not apply.
 
 ## Problem
 
@@ -15,21 +26,42 @@ sequence length, and its logits are of shape `(chunk_B, T, V)`.
 
 In the typical DPO regime — long sequences, small effective batch — a "chunk" is
 essentially the whole batch, so batch-level chunking degenerates into gradient
-accumulation and does **not** reduce the peak memory footprint at the end of the
-forward path (the logit / log-softmax part).
+accumulation and does **not** split the sequence-dependent logit / log-softmax
+working set within a pair.
 
-The FLCE trick (chunk over `B·T` and backprop each chunk immediately; see the
-[Liger-Kernel technical report](https://openreview.net/forum?id=36SjAIT42G)) does not transfer
-naively to [DPO](https://arxiv.org/abs/2305.18290): cross-entropy is a linear sum over tokens, but the DPO loss is
-**nonlinear in the sequence-level log-probabilities**, so the loss — and therefore
-backward — cannot start until every chunk's contribution to the sequence logps exists.
+The SFT approach in the [Liger-Kernel report (§3.2, FLCE)](https://openreview.net/pdf?id=36SjAIT42G)
+([arXiv version](https://arxiv.org/html/2410.10989v2#S3.SS2)) chunks over `B·T` and
+computes each chunk's cross-entropy gradients **during forward**. SFT loss is a
+sum of token losses (up to a known normalization), so each chunk's contribution
+to the hidden-state and weight gradients can be computed immediately, accumulated,
+and its vocabulary-sized intermediates released.
+
+[DPO](https://arxiv.org/abs/2305.18290) instead applies a nonlinear loss to complete
+sequence scores. For one pair, let `s_w` and `s_l` be the summed policy token
+log-probabilities and `r_w`, `r_l` the reference scores:
+
+```text
+z = beta * ((s_w - s_l) - (r_w - r_l))
+L = -log(sigmoid(z))
+dL/ds_w = -beta * sigmoid(-z)     # rejected score has the opposite sign
+```
+
+Every chosen token's gradient is scaled by this same pair-dependent factor,
+which is unknown until all chunks contributing to `z` have been processed.
+Thus FLCE's immediate accumulation of final loss gradients cannot be reused
+unchanged; computing a separate DPO loss per chunk would change the objective.
+This implementation first gathers complete sequence scores, then backpropagates
+through the chunks with the correct factor. A two-pass/recomputation design or
+retaining per-pair gradient contributions for deferred scaling could also adapt
+the FLCE idea; this implementation is one solution, not a requirement of DPO.
 
 ## Design
 
 ### Forward: chunk at (batch × sequence) granularity
 
 `LigerChunkedLinearPreferenceBase.forward` flattens chosen and rejected inputs to
-`(B/2 · T, H)`, splits them into fixed-size token chunks, and for each chunk computes:
+`(B/2 · T, H)`, splits each half into `max(1, T // chunk_size)` token chunks,
+and for each chunk computes:
 
 - `logits_chunk = ChunkMatmul.apply(input_chunk, weight)` (lm-head projection)
 - `log_probs_chunk = F.log_softmax(logits_chunk, dim=-1, dtype=torch.float32)`
@@ -39,16 +71,20 @@ Per-token logps are collected across chunks, reassembled with `cat → view → 
 into per-sequence logps, and the preference loss is computed once on that tiny
 sequence-level graph.
 
-Memory consequence:
+Here `chunk` (or `C` in the diagram below) means the actual token count per projection,
+including both chosen and rejected tokens; it grows with the number of pairs.
 
-- **Retained until backward:** each chunk's logits (this floor is unavoidable — DPO
-  needs all sequence logps before backward can begin).
-- **Transient at any moment:** only *one chunk's* fp32 log-softmax working set
-  (`O(chunk · V)`), instead of the full-batch fp32 pipeline (`O(B · T · V)`).
+![How unchunked and token-chunked DPO differ](docs/images/chunked_dpo_exp.svg)
 
-The `dtype=torch.float32` argument (instead of `logits_chunk.float()`) additionally
-avoids materializing a separate full fp32 copy of the chunk logits as a standalone
-graph tensor.
+Memory consequence under `compiled=True` (as observed in the tested configuration):
+
+- **Retained until backward:** each chunk's logits; removing this retained state
+  would require additional recomputation.
+- **Transient work:** fp32 log-softmax and its backward operate per chunk
+  (`O(chunk · V)`), instead of on the full batch (`O(B · T · V)`).
+
+The `dtype=torch.float32` argument requests fp32 log-softmax without an explicit
+`.float()` in the source; avoiding separate cast allocations depends on compiler fusion.
 
 ### Backward: `ChunkMatmul` — streamed, in-place weight-gradient accumulation
 
@@ -99,8 +135,8 @@ Key points:
 - At the end of a normally completed step, `count == 0` and the buffer is deleted:
   the state at the start of step N+1 is identical to step 1, so a one-step gradient
   equivalence check extends to the whole steady-state training loop by induction.
-- `save_for_backward(x, weight)` costs no extra memory: `x` is a live activation and
-  `weight` is a parameter.
+- `save_for_backward(x, weight)` saves references rather than copies, keeping
+  the input and weight available until backward.
 
 ### Assumptions / limitations
 
@@ -121,23 +157,34 @@ Key points:
 
 ## Result
 
-The fp32 log-softmax pipeline is executed strictly chunk-by-chunk in both forward
-and backward: no full-batch `(B·T, V)` fp32 tensor is ever allocated, and lm-head
-gradients are streamed into one in-place accumulator. Per-chunk fp32 outputs are
-not retained for backward: under `torch.compile` (the default, `compiled=True`),
-the partitioner saves only the bf16 logits per chunk and rematerializes the fp32
-log-softmax on demand during backward, so total fp32 residency is bounded to a
-single chunk at all times. The memory that scales with
-`B · T · V` drops from ~10 bytes per logit element in the baseline (bf16 logits +
-fp32 upcast + retained fp32 log-probs, plus their fp32 gradient as a backward
-transient) to ~2 bytes (retained bf16 logits only); all remaining fp32 terms are
-`O(chunk · V)` and independent of batch and sequence length. The reduction comes
-from two sources:
+With `compiled=True`, chunking bounds temporary vocabulary-sized work to
+`O(chunk · V)`, while compilation avoids retaining the full fp32 vocabulary
+log-probabilities for every chunk. In the tested configuration, the dominant
+saved vocabulary-sized state is bf16 logits (~`2 · B · T · V` bytes); fp32
+log-softmax is recomputed per chunk during backward. The much smaller gathered
+target-token and sequence scores still construct the DPO loss. Compiler
+partitioning can vary; these saved-state costs are not a peak-memory formula.
+Together with `ChunkMatmul`, this reduces memory through:
 
 1. the full-batch fp32 log-softmax pipeline is replaced by a per-chunk transient, and
 2. per-chunk `(V × H)` weight-gradient allocations in backward are replaced by a
    single in-place accumulator.
 
-The remaining floor is the retained per-chunk logits in forward (visible as a
+In this implementation, the remaining floor is the retained per-chunk logits (visible as a
 "staircase" in a [memory snapshot](https://pytorch.org/docs/stable/torch_cuda_memory.html)); removing it would require a two-pass /
 recomputation design, since DPO forces all sequence logps to exist before backward.
+
+Measured with one pair, BF16, `T=8192`, `H=1024`, `V=32768`, and chunk size 256:
+compiled unchunked PyTorch peaked at **3,281 MiB**, versus **1,393 MiB (58% lower)**
+for this compiled implementation, including its custom gradient accumulator.
+These are lm-head + DPO forward/backward peaks, including the reference, measured
+after two warmups across three iterations. They are not whole-model training peaks.
+Compiled gradient relative L2 errors versus unchunked PyTorch were below
+**0.0032% FP32** and **0.7% BF16** in the tested cases.
+
+The timeline below records one additional warmed-up forward/backward step for each
+implementation. It plots live requested tensor memory from allocator events;
+peak labels use allocated bytes (the difference is under 1 MiB). Time is measured
+from allocator timestamps with tracing enabled, not a throughput benchmark.
+
+![Memory throughout an unchunked and token-chunked DPO step](docs/images/chunked_dpo_mem.svg)
