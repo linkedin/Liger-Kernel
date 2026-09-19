@@ -1488,6 +1488,52 @@ def test_apply_liger_kernel_to_instance_for_pixtral_vision_model():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
+@pytest.mark.skipif(not is_mllama_available(), reason="mllama module not available")
+def test_apply_liger_kernel_to_instance_for_mllama_respects_layer_norm_false():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.mllama.modeling_mllama"):
+        from transformers.models.mllama.modeling_mllama import MllamaForConditionalGeneration
+
+        # Instantiate a dummy model
+        config = transformers.models.mllama.configuration_mllama.MllamaConfig(
+            dtype=torch.bfloat16,
+            text_config=transformers.models.mllama.configuration_mllama.MllamaTextConfig(
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="silu",
+                num_hidden_layers=2,
+                **get_mllama_rope_config(),  # Version-aware rope configuration
+            ),
+            vision_config=transformers.models.mllama.configuration_mllama.MllamaVisionConfig(
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="gelu",
+                num_hidden_layers=2,
+                vision_output_dim=64,
+            ),
+        )
+        dummy_model_instance = MllamaForConditionalGeneration._from_config(config)
+        vision_model = dummy_model_instance.model.vision_model
+
+        _apply_liger_kernel_to_instance(model=dummy_model_instance, layer_norm=False)
+
+        # layer_norm=False has to cover the whole vision tower, not just the encoder layers
+        assert inspect.getsource(vision_model.layernorm_pre.forward) != inspect.getsource(LigerLayerNorm.forward)
+        assert inspect.getsource(vision_model.layernorm_post.forward) != inspect.getsource(LigerLayerNorm.forward)
+        for layer in vision_model.transformer.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerLayerNorm.forward
+            )
+        for layer in vision_model.global_transformer.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerLayerNorm.forward
+            )
+
+
 @pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
 def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -1631,6 +1677,49 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
+def test_apply_liger_kernel_to_instance_for_llama4_respects_layer_norm_false():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.llama4.modeling_llama4"):
+        from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
+
+        # Instantiate a dummy model
+        config = transformers.models.llama4.configuration_llama4.Llama4Config(
+            dtype=torch.bfloat16,
+            text_config=transformers.models.llama4.configuration_llama4.Llama4TextConfig(
+                dtype=torch.bfloat16,
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="silu",
+                num_hidden_layers=2,
+                moe_layers=[1],
+            ),
+            vision_config=transformers.models.llama4.configuration_llama4.Llama4VisionConfig(
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="gelu",
+                num_hidden_layers=2,
+                vision_output_dim=64,
+            ),
+            pad_token_id=None,
+        )
+        dummy_model_instance = Llama4ForConditionalGeneration._from_config(config)
+        vision_model = dummy_model_instance.vision_model
+
+        _apply_liger_kernel_to_instance(model=dummy_model_instance, layer_norm=False)
+
+        # layer_norm=False has to cover the whole vision tower, not just the encoder layers
+        assert inspect.getsource(vision_model.layernorm_pre.forward) != inspect.getsource(LigerLayerNorm.forward)
+        assert inspect.getsource(vision_model.layernorm_post.forward) != inspect.getsource(LigerLayerNorm.forward)
+        for layer in vision_model.model.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerLayerNorm.forward
+            )
 
 
 def test_apply_liger_kernel_to_instance_for_mistral():
@@ -1965,6 +2054,45 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
+@pytest.mark.skipif(not is_paligemma_available(), reason="paligemma module not available")
+def test_apply_liger_kernel_to_instance_for_paligemma_respects_layer_norm_false():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.paligemma.modeling_paligemma"):
+        from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
+
+        # Instantiate a dummy model
+        config = transformers.models.paligemma.configuration_paligemma.PaliGemmaConfig(
+            dtype=torch.bfloat16,
+            text_config={
+                "num_hidden_layers": 2,
+                "rms_norm_eps": 1e-5,
+                "hidden_size": 32,
+                "intermediate_size": 64,
+                "hidden_act": "silu",
+            },
+            vision_config={
+                "num_hidden_layers": 2,
+                "layer_norm_eps": 1e-5,
+                "hidden_size": 48,
+                "intermediate_size": 64,
+            },
+        )
+        dummy_model_instance = PaliGemmaForConditionalGeneration(config)
+        siglip_vision_model = getattr(
+            dummy_model_instance.model.vision_tower, "vision_model", dummy_model_instance.model.vision_tower
+        )
+
+        _apply_liger_kernel_to_instance(model=dummy_model_instance, layer_norm=False)
+
+        # layer_norm=False has to cover the whole vision tower, not just the encoder layers
+        assert inspect.getsource(siglip_vision_model.post_layernorm.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for layer in siglip_vision_model.encoder.layers:
+            assert inspect.getsource(layer.layer_norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(layer.layer_norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
+
+
 @pytest.mark.skipif(not is_gemma3_available(), reason="gemma3 module not available")
 def test_apply_liger_kernel_to_instance_for_gemma3_text():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -2116,6 +2244,45 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_gemma3_available(), reason="gemma3 module not available")
+def test_apply_liger_kernel_to_instance_for_gemma3_respects_layer_norm_false():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.gemma3.modeling_gemma3"):
+        from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
+
+        # Instantiate a dummy model
+        text_config = transformers.models.gemma3.configuration_gemma3.Gemma3TextConfig(
+            dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+        )
+        vision_config = transformers.models.siglip.configuration_siglip.SiglipVisionConfig(
+            layer_norm_eps=1e-5,
+            hidden_size=48,
+            intermediate_size=64,
+        )
+        config = transformers.models.gemma3.configuration_gemma3.Gemma3Config(
+            text_config=text_config, vision_config=vision_config
+        )
+
+        dummy_model_instance = Gemma3ForConditionalGeneration._from_config(config)
+        siglip_vision_model = getattr(
+            dummy_model_instance.model.vision_tower, "vision_model", dummy_model_instance.model.vision_tower
+        )
+
+        _apply_liger_kernel_to_instance(model=dummy_model_instance, layer_norm=False)
+
+        # layer_norm=False has to cover the whole vision tower, not just the encoder layers
+        assert inspect.getsource(siglip_vision_model.post_layernorm.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for layer in siglip_vision_model.encoder.layers:
+            assert inspect.getsource(layer.layer_norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(layer.layer_norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
 
 @pytest.mark.skipif(not is_gemma4_available(), reason="gemma4 module not available")
@@ -3280,6 +3447,49 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_glm4v_moe_available(), reason="glm4v_moe module not available")
+def test_apply_liger_kernel_to_instance_for_glm4v_moe_respects_rms_norm_false():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.glm4v_moe.modeling_glm4v_moe"):
+        from transformers.models.glm4v_moe.modeling_glm4v_moe import Glm4vMoeForConditionalGeneration
+
+        from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
+
+        # Instantiate a dummy model
+        config = transformers.models.glm4v_moe.configuration_glm4v_moe.Glm4vMoeConfig(
+            dtype=torch.bfloat16,
+            hidden_size=32,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            text_config={
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_attention_heads": 4,
+                "num_hidden_layers": 2,
+                "rms_norm_eps": 1e-5,
+                "hidden_act": "silu",
+                "n_routed_experts": 1,
+            },
+            vision_config={
+                "num_hidden_layers": 2,
+                "rms_norm_eps": 1e-5,
+                "hidden_size": 48,
+                "intermediate_size": 64,
+            },
+        )
+        dummy_model_instance = Glm4vMoeForConditionalGeneration(config)
+        visual = dummy_model_instance.model.visual
+
+        _apply_liger_kernel_to_instance(model=dummy_model_instance, rms_norm=False)
+
+        # rms_norm=False has to cover the whole vision tower, not just the blocks
+        assert inspect.getsource(visual.post_conv_layernorm.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
+        assert inspect.getsource(visual.post_layernorm.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
+        for vision_block in visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
+            assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
 
 
 @pytest.mark.skipif(not is_smollm3_available(), reason="smollm3 module not available")
