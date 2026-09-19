@@ -24,6 +24,7 @@ from liger_kernel.backends.dispatch import available_backends
 from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import get_registered
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 FARN_TEST_SHAPES = [
@@ -74,7 +75,6 @@ def test_fused_add_rms_norm_correctness(backend, shape, dtype):
         pytest.skip("No fused_add_rms_norm backends registered in this environment")
 
     M, N = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(0)
     x_cpu = torch.randn(M, N, dtype=torch.float32, generator=g)
     r_cpu = torch.randn(M, N, dtype=torch.float32, generator=g)

@@ -33,6 +33,7 @@ from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import get_registered
 from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 # (BT, V, H) — V must be a multiple of 8 for CuTe DSL 128-bit vectorized loads.
@@ -92,7 +93,6 @@ def test_fused_linear_cross_entropy_correctness(backend, shape, dtype):
         pytest.skip("No fused_linear_cross_entropy backends registered in this environment")
 
     BT, V, H = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(42)
 
     inp_cpu = torch.randn(BT, H, dtype=torch.float32, generator=g)
@@ -168,7 +168,6 @@ def test_fused_linear_cross_entropy_with_bias(backend, shape, dtype):
         pytest.skip("No fused_linear_cross_entropy backends registered in this environment")
 
     BT, V, H = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(42)
 
     inp_cpu = torch.randn(BT, H, dtype=torch.float32, generator=g)
@@ -239,9 +238,9 @@ def test_fused_linear_cross_entropy_propagates_backend_to_inner_ce(monkeypatch, 
 
     monkeypatch.setattr(flce_ops, "dispatch", tracking_dispatch)
 
-    inp = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    target = torch.randint(0, 256, (8,), device="cuda")
+    inp = torch.randn(8, 64, device=device, dtype=torch.bfloat16, requires_grad=True)
+    weight = torch.randn(256, 64, device=device, dtype=torch.bfloat16, requires_grad=True)
+    target = torch.randint(0, 256, (8,), device=device)
 
     loss, _, _, _ = dispatch(
         "fused_linear_cross_entropy",

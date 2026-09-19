@@ -99,10 +99,16 @@ def _test_memory(
     total_mem = []
 
     for _ in range(_iter):
-        getattr(torch, device).memory.reset_peak_memory_stats()
-        func()
-        # Convert to MB
-        mem = getattr(torch, device).max_memory_allocated() / 2**20
+        if device == "mps":
+            # MPS has no peak tracker; snapshot live tensors while func() output is still alive.
+            result = func()
+            torch.mps.synchronize()
+            mem = torch.mps.current_allocated_memory() / 2**20
+            del result
+        else:
+            getattr(torch, device).memory.reset_peak_memory_stats()
+            func()
+            mem = getattr(torch, device).max_memory_allocated() / 2**20
         total_mem.append(mem)
 
     total_mem = torch.tensor(total_mem, dtype=torch.float)
@@ -195,6 +201,7 @@ def run_memory_benchmark(
         def full():
             y = fwd_fn()
             y.backward(torch.randn_like(y), retain_graph=True)
+            return y
 
         mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
     else:
@@ -267,8 +274,9 @@ def get_gpu_name():
     """
     torch_device = getattr(torch, device)
     if torch_device.is_available():
-        gpu_name = torch_device.get_device_name(torch_device.current_device())
-        return gpu_name
+        if hasattr(torch_device, "get_device_name"):
+            return torch_device.get_device_name(torch_device.current_device())
+        return device
     else:
         raise Exception("Benchmarks can only be run on GPU.")
 

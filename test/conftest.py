@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from liger_kernel.utils import is_npu_available
+from liger_kernel.utils import infer_device
 from test.utils import set_seed
 
 
@@ -11,13 +11,26 @@ def set_random_seed():
 
 
 @pytest.fixture(autouse=True)
+def require_triton_apple_backend_on_mps():
+    if infer_device() == "mps":
+        try:
+            import triton_apple_backend  # noqa: F401
+        except ImportError:
+            pytest.skip("triton_apple_backend is not installed")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def clear_gpu_cache():
     yield
-    if torch.cuda.is_available():
+    dev = infer_device()
+    if dev == "cuda":
         torch.cuda.empty_cache()
-    elif is_npu_available():
+    elif dev == "mps":
+        torch.mps.empty_cache()
+    elif dev == "npu":
         torch.npu.empty_cache()
-    elif torch.xpu.is_available():
+    elif dev == "xpu":
         torch.xpu.empty_cache()
 
 
@@ -41,3 +54,26 @@ def reset_liger_backend_selection():
         clear_available_cache()
     except Exception:
         pass
+
+
+# Modules that call torch.use_deterministic_algorithms(True) at import. Pytest
+# collection imports every test module first, so that process-global flag would
+# otherwise stay on for later files. MPS scatter_reduce / index_put have no
+# deterministic implementation and would raise.
+_DETERMINISTIC_ALGORITHM_MODULES = frozenset(
+    {
+        "test.transformers.test_attn_res",
+        "test.transformers.test_fused_add_rms_norm",
+        "test.transformers.test_modulated_rms_norm",
+        "test.transformers.test_poly_norm",
+        "test.transformers.test_rms_norm",
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_deterministic_algorithms(request):
+    """Re-apply each module's own deterministic setting, then clear the leak."""
+    torch.use_deterministic_algorithms(request.module.__name__ in _DETERMINISTIC_ALGORITHM_MODULES)
+    yield
+    torch.use_deterministic_algorithms(False)

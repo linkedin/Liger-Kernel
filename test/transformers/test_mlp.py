@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from test.utils import as_float64
 from test.utils import supports_bfloat16
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
@@ -47,7 +48,7 @@ falcon_h1_unavailable = pytest.mark.skipif(not FALCON_H1_AVAILABLE, reason="falc
 
 
 def calc_diff(x: torch.Tensor, y: torch.Tensor):
-    x, y = x.double(), y.double()
+    x, y = as_float64(x), as_float64(y)
     denominator = (x * x + y * y).sum()
     if denominator == 0:  # Which means that all elements in x and y are 0
         return 0.0
