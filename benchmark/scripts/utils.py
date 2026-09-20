@@ -119,6 +119,7 @@ def run_speed_benchmark(
     mode: str,
     input_tensors: List[torch.Tensor],
     rep: int = 10,
+    warmup: int = 25,
 ) -> "SingleBenchmarkRunOutput":
     """Measure execution speed for forward, backward, or full (fwd+bwd).
 
@@ -133,6 +134,7 @@ def run_speed_benchmark(
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             fwd_fn,
             grad_to_none=input_tensors,
+            warmup=warmup,
             rep=rep,
             quantiles=QUANTILES,
         )
@@ -142,6 +144,7 @@ def run_speed_benchmark(
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(do, retain_graph=True),
             grad_to_none=input_tensors,
+            warmup=warmup,
             rep=rep,
             quantiles=QUANTILES,
         )
@@ -154,6 +157,7 @@ def run_speed_benchmark(
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             full,
             grad_to_none=input_tensors,
+            warmup=warmup,
             rep=rep,
             quantiles=QUANTILES,
         )
@@ -165,6 +169,7 @@ def run_speed_benchmark(
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             no_grad_forward,
+            warmup=warmup,
             rep=rep,
             quantiles=QUANTILES,
         )
@@ -210,10 +215,18 @@ def default_forward_fn(*setup_out):
 def build_speed_bench_fn(
     setup_fn: Callable[["SingleBenchmarkRunInput"], Any],
     forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
+    warmup: int = 25,
+    rep: int = 10,
 ) -> Callable:
     def bench_speed(input: "SingleBenchmarkRunInput") -> SingleBenchmarkRunOutput:
         setup_out = setup_fn(input)
-        return run_speed_benchmark(lambda: forward_fn(*setup_out), input.kernel_operation_mode, [setup_out[0]])
+        return run_speed_benchmark(
+            lambda: forward_fn(*setup_out),
+            input.kernel_operation_mode,
+            [setup_out[0]],
+            warmup=warmup,
+            rep=rep,
+        )
 
     return bench_speed
 
