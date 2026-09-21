@@ -26,7 +26,7 @@ _str_to_loss_type = {
 
 
 def calculate_tile_count_2d(batch_size, seq_len, num_cores):
-    """Compute optimal grid configuration for parallel processing."""
+    """Core-capped ``(B, grid_seq)`` grid; 1-trip vocab uses ``ensure_two_real_vocab_trips``."""
     grid_batch = batch_size
     cores_per_sample = min(seq_len, num_cores // batch_size)
     cores_per_sample = max(1, cores_per_sample)
@@ -35,6 +35,39 @@ def calculate_tile_count_2d(batch_size, seq_len, num_cores):
     if total > num_cores:
         grid_seq = max(1, num_cores // grid_batch)
     return (grid_batch, grid_seq)
+
+
+def ensure_two_real_vocab_trips(n, block_n):
+    """If vocab fits one tile, shrink BLOCK_N so two real tiles run (A5 1-trip UB / CISPO store)."""
+    if n <= 1 or block_n <= 0:
+        return block_n
+    if (n + block_n - 1) // block_n >= 2:
+        return block_n
+    candidate = 1
+    while candidate * 2 < n:
+        candidate *= 2
+    return max(1, candidate)
+
+
+def token_launch_windows(seq_len, grid_seq, vocab_n, block_n, use_bias_correction_kl):
+    """When ``T > grid_seq``, host windows tokens so each kernel launch sees one token."""
+    if seq_len <= 0:
+        return [(0, 0)]
+    if grid_seq <= 0:
+        grid_seq = 1
+    trips = (vocab_n + block_n - 1) // block_n if block_n > 0 else 1
+    need = seq_len > grid_seq and (use_bias_correction_kl or trips == 1)
+    if not need:
+        return [(0, seq_len)]
+    return [(base, min(seq_len, base + grid_seq)) for base in range(0, seq_len, grid_seq)]
+
+
+def _vocab_block_n(vocab_n, loss_type, beta, *, backward=False):
+    compute = compute_block_size_backward if backward else compute_block_size_forward
+    block_n = compute(vocab_n)
+    if loss_type == "cispo" or beta != 0.0:
+        block_n = ensure_two_real_vocab_trips(vocab_n, block_n)
+    return block_n
 
 
 def compute_block_size_softmax(seq_vocab_size):
@@ -122,8 +155,8 @@ def _selective_log_softmax_kernel(
 
             m_i = float("-inf")
             l_i = 0.0
-            # Use tl.static_range for inner softmax loop (BLOCK_N is constexpr)
-            for start in tl.static_range(0, N, BLOCK_N):
+            # tl.range: A5 static_range unrolls to UB overflow at large V.
+            for start in tl.range(0, N, BLOCK_N):
                 cols = start + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=float("-inf")).to(tl.float32) * inv_temp
@@ -163,6 +196,8 @@ def _grpo_loss_fwd_kernel(
     SAPO_TEMP_NEG,
     DELTA,
     USE_BIAS_CORRECTION_KL: tl.constexpr,
+    TOKEN_BASE,
+    TOKEN_LIMIT,
     L: tl.constexpr,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr = 4096,
@@ -172,14 +207,14 @@ def _grpo_loss_fwd_kernel(
     num_progs_l = tl.num_programs(1)
 
     batch_start = pid_b * L
-    batch_end = batch_start + L
-    start_token = batch_start + pid_l
+    start_token = batch_start + TOKEN_BASE + pid_l
+    end_token = batch_start + TOKEN_LIMIT
     stride = num_progs_l
 
     # Precompute 1/TEMPERATURE to replace repeated division with multiplication
     inv_temp = 1.0 / TEMPERATURE
 
-    for token_idx in tl.range(start_token, batch_end, stride):
+    for token_idx in tl.range(start_token, end_token, stride):
         off_b = token_idx // L
         off_l = token_idx % L
 
@@ -199,9 +234,8 @@ def _grpo_loss_fwd_kernel(
 
             m_i = float("-inf")
             l_i = 0.0
-            # Use tl.static_range for inner softmax loop (BLOCK_N is constexpr)
-            # to give the compiler unrolling hints for better instruction scheduling
-            for start in tl.static_range(0, N, BLOCK_N):
+            # tl.range: A5 static_range unrolls to UB overflow at large V.
+            for start in tl.range(0, N, BLOCK_N):
                 cols = start + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=float("-inf")).to(tl.float32) * inv_temp
@@ -251,9 +285,7 @@ def _grpo_loss_fwd_kernel(
                 is_clipped = 0.0
 
             if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
-                vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
-                    tl.float32
-                )
+                vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l).to(tl.float32)
                 per_token_loss = per_token_loss * vllm_is_ratio
 
             if BETA != 0.0:
@@ -332,8 +364,8 @@ def _grpo_loss_fwd_kernel_seq(
 
             m_i = float("-inf")
             l_i = 0.0
-            # Use tl.static_range for inner softmax loop (BLOCK_N is constexpr)
-            for start in tl.static_range(0, N, BLOCK_N):
+            # tl.range: A5 static_range unrolls to UB overflow at large V.
+            for start in tl.range(0, N, BLOCK_N):
                 cols = start + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=float("-inf")).to(tl.float32) * inv_temp
@@ -358,9 +390,7 @@ def _grpo_loss_fwd_kernel_seq(
             per_token_loss = -tl.minimum(per_token_loss1, per_token_loss2)
 
             if VLLM_IS_RATIO is not None:
-                vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
-                    tl.float32
-                )
+                vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l).to(tl.float32)
                 per_token_loss = per_token_loss * vllm_is_ratio
 
             if BETA != 0.0:
@@ -429,7 +459,7 @@ def _grpo_loss_bwd_kernel_seq(
             should_process = not_skip
 
         if should_process == 0:
-            for start in tl.static_range(0, N, BLOCK_N):
+            for start in tl.range(0, N, BLOCK_N):
                 cols = tl.arange(0, BLOCK_N) + start
                 tl.store(DLOGITS_local + cols, 0.0, mask=cols < N)
         else:
@@ -475,8 +505,7 @@ def _grpo_loss_bwd_kernel_seq(
                     dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
             dlogp = dlogp * inv_temp
-            # Use tl.static_range for inner loop (BLOCK_N is constexpr)
-            for start_n in tl.static_range(0, N, BLOCK_N):
+            for start_n in tl.range(0, N, BLOCK_N):
                 cols = start_n + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) * inv_temp
@@ -509,6 +538,8 @@ def _grpo_loss_bwd_kernel(
     SAPO_TEMP_NEG,
     DELTA,
     USE_BIAS_CORRECTION_KL: tl.constexpr,
+    TOKEN_BASE,
+    TOKEN_LIMIT,
     loss_stride0,
     loss_stride1,
     L: tl.constexpr,
@@ -520,14 +551,14 @@ def _grpo_loss_bwd_kernel(
     num_progs_l = tl.num_programs(1)
 
     batch_start = pid_b * L
-    batch_end = batch_start + L
-    start_token = batch_start + pid_l
+    start_token = batch_start + TOKEN_BASE + pid_l
+    end_token = batch_start + TOKEN_LIMIT
     stride = num_progs_l
 
     # Precompute 1/TEMPERATURE to replace repeated division with multiplication
     inv_temp = 1.0 / TEMPERATURE
 
-    for token_idx in tl.range(start_token, batch_end, stride):
+    for token_idx in tl.range(start_token, end_token, stride):
         off_b = token_idx // L
         off_l = token_idx % L
 
@@ -540,7 +571,7 @@ def _grpo_loss_bwd_kernel(
             should_process = not_skip
 
         if should_process == 0:
-            for start in tl.static_range(0, N, BLOCK_N):
+            for start in tl.range(0, N, BLOCK_N):
                 cols = tl.arange(0, BLOCK_N) + start
                 tl.store(DLOGITS_local + cols, 0.0, mask=cols < N)
         else:
@@ -593,9 +624,7 @@ def _grpo_loss_bwd_kernel(
                 dlogp = -phi_seq * advantage
 
             if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
-                vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
-                    tl.float32
-                )
+                vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l).to(tl.float32)
                 dlogp = dlogp * vllm_is_ratio
 
             if BETA != 0.0:
@@ -607,8 +636,7 @@ def _grpo_loss_bwd_kernel(
                     dlogp += BETA * (1 - tl.exp(ref_logp - logp))
 
             dlogp = dlogp * dloss * inv_temp
-            # Use tl.static_range for inner loop (BLOCK_N is constexpr)
-            for start_n in tl.static_range(0, N, BLOCK_N):
+            for start_n in tl.range(0, N, BLOCK_N):
                 cols = start_n + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
                 logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) * inv_temp
@@ -757,28 +785,31 @@ def grpo_loss_forward_triton(
 
     mask = completion_mask.float() if completion_mask is not None else torch.ones(B, L, device=logits.device)
 
-    vllm_is_ratio_ptr = None
     vllm_is_ratio_stride = L
-    if vllm_is_ratio is not None:
-        assert vllm_is_ratio.dim() in (1, 2), (
-            f"vllm_is_ratio must be 1D (B,) or 2D (B, L) / (B, 1), got {vllm_is_ratio.dim()}D"
+    # Materialize (B, L) with stride=L (None/(B,1) differ on later tokens; kernel uses linear off_l).
+    if vllm_is_ratio is None:
+        vllm_is_ratio = torch.ones(B, L, device=logits.device, dtype=torch.float32)
+    assert vllm_is_ratio.dim() in (1, 2), (
+        f"vllm_is_ratio must be 1D (B,) or 2D (B, L) / (B, 1), got {vllm_is_ratio.dim()}D"
+    )
+    if vllm_is_ratio.dim() == 2:
+        assert vllm_is_ratio.shape[0] == B and vllm_is_ratio.shape[1] in (1, L), (
+            f"vllm_is_ratio shape must be ({B}, 1) or ({B}, {L}), got {tuple(vllm_is_ratio.shape)}"
         )
-        if vllm_is_ratio.dim() == 2:
-            assert vllm_is_ratio.shape[0] == B and vllm_is_ratio.shape[1] in (1, L), (
-                f"vllm_is_ratio shape must be ({B}, 1) or ({B}, {L}), got {tuple(vllm_is_ratio.shape)}"
-            )
-        else:
-            assert vllm_is_ratio.shape[0] == B, f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
-        vllm_is_ratio = vllm_is_ratio.contiguous()
-        vllm_is_ratio_ptr = vllm_is_ratio
-        vllm_is_ratio_stride = vllm_is_ratio.shape[1] if vllm_is_ratio.dim() > 1 else 1
+    else:
+        assert vllm_is_ratio.shape[0] == B, f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
+        vllm_is_ratio = vllm_is_ratio.unsqueeze(-1)
+    if vllm_is_ratio.shape[1] == 1:
+        vllm_is_ratio = vllm_is_ratio.expand(B, L)
+    vllm_is_ratio = vllm_is_ratio.contiguous()
+    vllm_is_ratio_ptr = vllm_is_ratio
 
     loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
     lse = torch.zeros_like(loss)
     is_clipped = torch.zeros_like(loss)
     kl = torch.zeros_like(loss) if beta != 0.0 else None
 
-    block_n = compute_block_size_forward(N)
+    block_n = _vocab_block_n(N, loss_type, beta)
     num_cores = get_npu_core_count()
     grid = calculate_tile_count_2d(B, L, num_cores)
 
@@ -842,33 +873,36 @@ def grpo_loss_forward_triton(
             vllm_is_ratio_ptr,
         )
     else:
-        _grpo_loss_fwd_kernel[grid](
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            completion_mask,
-            advantages,
-            vllm_is_ratio_ptr,
-            vllm_is_ratio_stride,
-            phi_seq,
-            loss,
-            lse,
-            kl,
-            is_clipped,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-            loss_type_int,
-            sapo_temperature_pos,
-            sapo_temperature_neg,
-            delta_val,
-            use_bias_correction_kl,
-            L,
-            N,
-            BLOCK_N=block_n,
-        )
+        for token_base, token_limit in token_launch_windows(L, grid[1], N, block_n, use_bias_correction_kl):
+            _grpo_loss_fwd_kernel[grid](
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                completion_mask,
+                advantages,
+                vllm_is_ratio_ptr,
+                vllm_is_ratio_stride,
+                phi_seq,
+                loss,
+                lse,
+                kl,
+                is_clipped,
+                temperature,
+                beta,
+                eps_low,
+                eps_high,
+                loss_type_int,
+                sapo_temperature_pos,
+                sapo_temperature_neg,
+                delta_val,
+                use_bias_correction_kl,
+                token_base,
+                token_limit,
+                L,
+                N,
+                BLOCK_N=block_n,
+            )
         ctx.save_for_backward(
             logits,
             old_logp,
@@ -995,19 +1029,13 @@ def grpo_loss_backward_triton(ctx, *args):
 
     dlogits = logits.data if inplace else torch.empty_like(logits)
 
-    block_n = compute_block_size_backward(N)
+    block_n = _vocab_block_n(N, loss_type, beta, backward=True)
     num_cores = get_npu_core_count()
     grid = calculate_tile_count_2d(B, L, num_cores)
 
     if importance_sampling_level == "sequence":
-        if vllm_is_ratio is None:
-            dloss_sum = dloss.sum(-1).contiguous()
-        else:
-            if vllm_is_ratio.dim() == 1:
-                ratio = vllm_is_ratio.unsqueeze(-1)
-            else:
-                ratio = vllm_is_ratio
-            dloss_sum = (dloss * ratio).sum(-1).contiguous()
+        # Forward always saves vllm_is_ratio materialized to (B, L).
+        dloss_sum = (dloss * vllm_is_ratio).sum(-1).contiguous()
         _grpo_loss_bwd_kernel_seq[grid](
             dloss,
             dloss_sum,
@@ -1033,33 +1061,36 @@ def grpo_loss_backward_triton(ctx, *args):
             BLOCK_N=block_n,
         )
     else:
-        _grpo_loss_bwd_kernel[grid](
-            dloss,
-            dlogits,
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            advantages,
-            completion_mask,
-            lse,
-            vllm_is_ratio,
-            vllm_is_ratio_stride,
-            phi_seq,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-            loss_type_int,
-            sapo_temperature_pos,
-            sapo_temperature_neg,
-            delta_val,
-            use_bias_correction_kl,
-            *dloss.stride(),
-            L,
-            N,
-            BLOCK_N=block_n,
-        )
+        for token_base, token_limit in token_launch_windows(L, grid[1], N, block_n, use_bias_correction_kl):
+            _grpo_loss_bwd_kernel[grid](
+                dloss,
+                dlogits,
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                vllm_is_ratio,
+                vllm_is_ratio_stride,
+                phi_seq,
+                temperature,
+                beta,
+                eps_low,
+                eps_high,
+                loss_type_int,
+                sapo_temperature_pos,
+                sapo_temperature_neg,
+                delta_val,
+                use_bias_correction_kl,
+                token_base,
+                token_limit,
+                *dloss.stride(),
+                L,
+                N,
+                BLOCK_N=block_n,
+            )
 
     dlogits[:, -1, :] = 0
     return (
