@@ -66,6 +66,40 @@ __host__ __device__ inline OnlineSoftmaxState merge_online_softmax(
 	return result;
 }
 
+// Packed reduction state shared by the SM90 and SM100 local reducers and the
+// architecture-neutral inter-host finalizer. target_logit is additive because
+// at most one vocabulary shard owns the target.
+struct ReducedSoftmaxState {
+	float max_value;
+	float exp_sum;
+	float target_logit;
+	float exp_weighted_sum;
+};
+
+template <bool ReturnEntropy>
+__host__ __device__ inline ReducedSoftmaxState merge_reduced_softmax(
+		const ReducedSoftmaxState& lhs,
+		const ReducedSoftmaxState& rhs) {
+	ReducedSoftmaxState result;
+	result.max_value = fmaxf(lhs.max_value, rhs.max_value);
+	float lhs_scale = lhs.exp_sum == 0.0f
+		? 0.0f
+		: expf(lhs.max_value - result.max_value);
+	float rhs_scale = rhs.exp_sum == 0.0f
+		? 0.0f
+		: expf(rhs.max_value - result.max_value);
+	result.exp_sum =
+		lhs.exp_sum * lhs_scale + rhs.exp_sum * rhs_scale;
+	result.target_logit = lhs.target_logit + rhs.target_logit;
+	result.exp_weighted_sum = 0.0f;
+	if constexpr (ReturnEntropy) {
+		result.exp_weighted_sum =
+			lhs.exp_weighted_sum * lhs_scale +
+			rhs.exp_weighted_sum * rhs_scale;
+	}
+	return result;
+}
+
 struct CorrectedSoftmaxStats {
 	float exp_sum;
 	float exp_weighted_sum;
