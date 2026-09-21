@@ -92,8 +92,10 @@ def lce_forward(
 
     # Compute loss
     if skip_logits:
+        # Falcon-H1's lm_head has no bias, so fold its output multiplier into the
+        # hidden states to preserve the scaled-logit loss without materializing logits.
         result = LigerForCausalLMLoss(
-            hidden_states=kept_hidden_states,
+            hidden_states=kept_hidden_states * self.model.lm_head_multiplier,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
             shift_labels=shift_labels,
@@ -102,7 +104,7 @@ def lce_forward(
         )
         loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
     else:
-        logits = self.lm_head(kept_hidden_states)
+        logits = self.lm_head(kept_hidden_states) * self.model.lm_head_multiplier
         if labels is not None or shift_labels is not None:
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
 
