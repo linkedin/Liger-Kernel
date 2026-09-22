@@ -40,6 +40,16 @@ if device == "cuda":
 
 SLEEP_SECONDS = 0.1
 
+_BLOCK_RMS_NORM_OVERFLOW_ROWS = 2**23 + 16
+_BLOCK_RMS_NORM_OVERFLOW_COLS = 256
+_BLOCK_RMS_NORM_MIN_FREE_BYTES = (
+    2
+    * _BLOCK_RMS_NORM_OVERFLOW_ROWS
+    * _BLOCK_RMS_NORM_OVERFLOW_COLS
+    * torch.tensor([], dtype=torch.bfloat16).element_size()
+    + _BLOCK_RMS_NORM_OVERFLOW_ROWS * torch.tensor([], dtype=torch.float32).element_size()
+)
+
 
 class BaseRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6, elementwise_affine=True):
@@ -105,6 +115,35 @@ class GemmaRMSNorm(nn.Module):
         if self.elementwise_affine:
             output = output * (1.0 + self.weight.float())
         return output.type_as(x)
+
+
+def test_block_rms_norm_int32_row_offset_wraps():
+    """The blocked kernel's first overflowing row offset wraps in int32."""
+    row_idx = torch.tensor(2**23, dtype=torch.int32)
+    row_stride = torch.tensor(_BLOCK_RMS_NORM_OVERFLOW_COLS, dtype=torch.int32)
+
+    assert (row_idx * row_stride).item() == -(2**31)
+    assert row_idx.to(torch.int64).mul(row_stride).item() == 2**31
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.mem_get_info()[0] < _BLOCK_RMS_NORM_MIN_FREE_BYTES,
+    reason="requires 8.6 GB of free CUDA memory for the first overflowing blocked RMSNorm row",
+)
+def test_block_rms_norm_large_row_offset():
+    """The blocked forward path must address the first row beyond the int32 range."""
+    x = torch.zeros(
+        _BLOCK_RMS_NORM_OVERFLOW_ROWS,
+        _BLOCK_RMS_NORM_OVERFLOW_COLS,
+        dtype=torch.bfloat16,
+        device="cuda",
+    )
+    x[-1].fill_(1)
+    w = torch.ones(_BLOCK_RMS_NORM_OVERFLOW_COLS, dtype=torch.bfloat16, device="cuda")
+
+    y = LigerRMSNormFunction.apply(x, w, 1e-6, 0.0, "llama", True, False)
+
+    assert torch.allclose(y[-1], torch.ones_like(y[-1]), atol=1e-2, rtol=1e-2)
 
 
 @pytest.mark.flaky(reruns=3, reruns_delay=2)
