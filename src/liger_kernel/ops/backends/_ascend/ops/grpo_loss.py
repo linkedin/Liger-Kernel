@@ -324,6 +324,7 @@ def _grpo_loss_fwd_kernel_seq(
     TEMPERATURE,
     BETA: tl.constexpr,
     USE_BIAS_CORRECTION_KL: tl.constexpr,
+    LUSPO: tl.constexpr,
     L: tl.constexpr,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr = 4096,
@@ -345,7 +346,7 @@ def _grpo_loss_fwd_kernel_seq(
         off_l = token_idx % L
 
         should_process = 1
-        if COMPLETION_MASK is not None:
+        if COMPLETION_MASK is not None and not LUSPO:
             COMPLETION_MASK_local = COMPLETION_MASK + off_b * L + off_l
             not_skip = tl.load(COMPLETION_MASK_local)
             should_process = not_skip
@@ -425,6 +426,7 @@ def _grpo_loss_bwd_kernel_seq(
     TEMPERATURE,
     BETA: tl.constexpr,
     USE_BIAS_CORRECTION_KL: tl.constexpr,
+    LUSPO: tl.constexpr,
     EPS_LOW,
     EPS_HIGH,
     DELTA,
@@ -453,10 +455,14 @@ def _grpo_loss_bwd_kernel_seq(
         DLOGITS_local = DLOGITS + off_b * (L + 1) * N + off_l * N
 
         should_process = 1
-        if COMPLETION_MASK is not None:
+        valid_token = 1.0
+        if COMPLETION_MASK is not None and not LUSPO:
             COMPLETION_MASK_local = COMPLETION_MASK + off_b * L + off_l
             not_skip = tl.load(COMPLETION_MASK_local)
             should_process = not_skip
+        elif COMPLETION_MASK is not None:
+            COMPLETION_MASK_local = COMPLETION_MASK + off_b * L + off_l
+            valid_token = tl.load(COMPLETION_MASK_local).to(tl.float32)
 
         if should_process == 0:
             for start in tl.range(0, N, BLOCK_N):
@@ -493,6 +499,7 @@ def _grpo_loss_bwd_kernel_seq(
             is_unclipped = per_token_loss2 >= per_token_loss1
 
             dlogp = -coef_1 * advantage / seq_len * is_unclipped * dloss_sum
+            dlogp = dlogp * valid_token
             if DELTA != 0.0:
                 dlogp = dlogp * (coef_1 <= DELTA)
 
@@ -854,6 +861,7 @@ def grpo_loss_forward_triton(
             temperature,
             beta,
             use_bias_correction_kl,
+            loss_type == "luspo",
             L,
             N,
             BLOCK_N=block_n,
@@ -942,7 +950,11 @@ def grpo_loss_forward_triton(
     clip_ratio = (is_clipped.float() * mask).sum() / mask_sum
 
     if not reduce:
-        loss_out = loss * mask
+        # LUSPO deliberately averages the sequence-weighted per-token loss
+        # over all B*T positions, including padding positions.  Keep its
+        # unmasked values available to the fused-linear adapter; every other
+        # loss follows the usual completion-mask contract.
+        loss_out = loss if loss_type == "luspo" else loss * mask
         kl_out = kl * mask if kl is not None else None
         is_clipped_out = is_clipped * mask
         return loss_out, kl_out, is_clipped_out
@@ -1052,6 +1064,7 @@ def grpo_loss_backward_triton(ctx, *args):
             temperature,
             beta,
             use_bias_correction_kl,
+            loss_type == "luspo",
             eps_low,
             eps_high,
             delta_val,
