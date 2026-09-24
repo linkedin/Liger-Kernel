@@ -22,7 +22,7 @@ def _triton_qwen2vl_mrope(
     BLOCK_SIZE: tl.constexpr,
     BACKWARD_PASS: tl.constexpr = False,
 ):
-    pid = tl.program_id(0)
+    pid = tl.program_id(0).to(tl.int64)
 
     # locate start address
     q_ptr = q_ptr + pid * (n_qh * hd)
