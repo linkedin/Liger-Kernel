@@ -149,7 +149,7 @@ def _group_norm_forward_single_task_kernel(
         ptrs = task_base + ch_offsets[:, None] * hidden_size_per_channel + h_offsets[None, :]
 
         X_vals = tl.load(X_ptr + ptrs, mask=mask, other=0.0).to(tl.float32)
-        # tl.sum(X_vals): full-tile reduction; axis=1 fails A5 compile when BLOCK_CH=1.
+        # tl.sum(X_vals): full-tile reduction; axis=1 fails 950 compile when BLOCK_CH=1.
         sum_acc = tl.sum(X_vals)
         sum_sq_acc = tl.sum(X_vals * X_vals)
 
