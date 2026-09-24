@@ -3145,9 +3145,7 @@ def apply_liger_kernel_to_qwen3_next(
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
     if rope:
-        # It might enocunter nan issue
-        # modeling_qwen3_next.apply_rotary_pos_emb = liger_rotary_pos_emb
-        raise NotImplementedError("liger_rotary_pos_emb is not available for Qwen3Next models.")
+        modeling_qwen3_next.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_qwen3_next.Qwen3NextRMSNorm = LigerRMSNormForQwen3Next
     if cross_entropy:
