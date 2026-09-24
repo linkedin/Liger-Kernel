@@ -43,7 +43,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         student_logits_chunk = student_input_chunk @ student_weight.t()
         if student_bias is not None:
             student_logits_chunk += student_bias
-        student_log_probs_chunk = F.log_softmax(student_logits_chunk.float(), dim=-1)
 
         # Teacher
         with torch.no_grad():
@@ -54,6 +53,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         # The hard/task loss
         ce_loss = 0.0
         if compute_ce_loss:
+            student_log_probs_chunk = F.log_softmax(student_logits_chunk.float(), dim=-1)
             ce_loss = F.nll_loss(
                 student_log_probs_chunk.view(-1, student_log_probs_chunk.shape[-1]),
                 target_chunk.view(-1),
@@ -194,6 +194,10 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             loss_kwargs (dict): Other possible arguments that a loss function might need
         """
         CHUNK_SIZE = chunk_size
+        # The hard (CE) loss, and the float32 log-softmax over the vocabulary it needs, only matter when it is
+        # weighted into the loss or returned; with weight_hard_loss == 0 and no return it would be multiplied
+        # by zero and discarded, so it is not computed.
+        compute_ce_loss = compute_ce_loss and (weight_hard_loss != 0 or return_soft_hard_loss)
         grad_weight = torch.zeros_like(student_weight)
         grad_inputs = []
         grad_bias = torch.zeros_like(student_bias) if student_bias is not None else None
