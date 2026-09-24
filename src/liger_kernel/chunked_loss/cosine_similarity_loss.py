@@ -19,17 +19,21 @@ class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase)
         """
         Compute Cosine loss (Cosine Similarity Loss).
         Args:
-            student_logits (torch.Tensor): Logits of student tokens. Shape: (batch_size * seq_len,).
-            teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (batch_size * seq_len,).
+            student_logits (torch.Tensor): Logits of student tokens. Shape: (chunk_size, vocab_size).
+            teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (chunk_size, vocab_size).
+            target (torch.Tensor, optional): Target labels for masking. Shape: (chunk_size,).
+            ignore_index (int, optional): Target value excluded from the loss when both masking arguments are provided.
             beta: Coefficient beta of generalized Cosine Similarity in the interval [0, 1]. Default: `1.0` (float): .
         Returns:
-            torch.Tensor: cosine similarity loss
+            torch.Tensor: Sum of cosine similarity losses over non-ignored tokens.
         """
         student_norm = F.normalize(student_logits, p=2, dim=-1)
         teacher_norm = F.normalize(teacher_logits, p=2, dim=-1)
 
         cosine_sim = F.cosine_similarity(student_norm, teacher_norm, dim=-1)
         loss = beta * (1 - cosine_sim)
+        if target is not None and ignore_index is not None:
+            loss = loss.masked_fill(target == ignore_index, 0.0)
         return loss.sum()
 
     @classmethod
