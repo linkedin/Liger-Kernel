@@ -15,6 +15,15 @@ def _get_model_config(model_dir, **model_init_kwargs):
     return config
 
 
+def _get_causal_lm_patch_model_type(config):
+    # The released Qwen4Exp checkpoint has a composite config. HF's causal-LM
+    # loader selects its text config; use the same type for patch dispatch only,
+    # leaving checkpoint/config loading to HF.
+    if config.model_type == "qwen4_exp":
+        return config.get_text_config().model_type
+    return config.model_type
+
+
 class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
     """
     This class is a drop-in replacement for AutoModelForCausalLM that applies the Liger Kernel to the model
@@ -27,7 +36,7 @@ class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
 
         # Determine the model type and apply the Liger Kernel if applicable
         # Note: _apply_liger_kernel will only pass relevant kwargs to the apply_liger_kernel_to_* function
-        model_type = model_config.model_type
+        model_type = _get_causal_lm_patch_model_type(model_config)
 
         _apply_liger_kernel(model_type, **kwargs)
 
@@ -46,7 +55,7 @@ class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
         if not model_type:
             logger.info("Model type could not be determined from model config. No Liger kernels will be applied.")
             return
-        model_type = config.model_type
+        model_type = _get_causal_lm_patch_model_type(config)
 
         _apply_liger_kernel(model_type, **kwargs)
 

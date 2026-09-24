@@ -216,6 +216,41 @@ UNTOKENIZED_DATASET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__
 FAKE_CONFIGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/fake_configs")
 
 
+def get_qwen4_exp_mini_config(**overrides):
+    """Build the shared Qwen4Exp convergence model config with local test overrides."""
+    from transformers.models.qwen4_exp.configuration_qwen4_exp import Qwen4ExpTextConfig
+
+    config = {
+        "vocab_size": 32000,
+        "hidden_size": 256,
+        "num_hidden_layers": 4,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "head_dim": 64,
+        "linear_conv_kernel_dim": 4,
+        "linear_key_head_dim": 32,
+        "linear_value_head_dim": 32,
+        "linear_num_key_heads": 2,
+        "linear_num_value_heads": 4,
+        "moe_intermediate_size": 64,
+        "shared_expert_intermediate_size": 64,
+        "num_experts_per_tok": 2,
+        "num_experts": 8,
+        "hc_count": 4,
+        "hc_lowrank": 32,
+        "indexer_n_heads": 1,
+        "indexer_kv_heads": 1,
+        "indexer_head_dim": 64,
+        "indexer_budget": 32,
+        "indexer_compress_ratio": 2,
+        "eos_token_id": 2,
+        "tie_word_embeddings": False,
+        "use_cache": True,
+    }
+    config.update(overrides)
+    return Qwen4ExpTextConfig(**config)
+
+
 @dataclass
 class MiniModelConfig:
     liger_kernel_patch_func: callable
@@ -802,6 +837,14 @@ def revert_liger_kernel_to_falcon_h1(model_config: MiniModelConfig):
     importlib.reload(modeling_falcon_h1)
     model_config.model_class = modeling_falcon_h1.FalconH1ForCausalLM
     print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_qwen4_exp(model_config: MiniModelConfig):
+    from transformers.models.qwen4_exp import modeling_qwen4_exp
+
+    # Reload to unpatch liger kernel code
+    importlib.reload(modeling_qwen4_exp)
+    model_config.model_class = modeling_qwen4_exp.Qwen4ExpForCausalLM
 
 
 def revert_liger_kernel_to_qwen3_next(model_config: MiniModelConfig):

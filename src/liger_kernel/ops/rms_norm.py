@@ -31,6 +31,7 @@ from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import get_device_multiprocessor_count
 from liger_kernel.ops.utils import get_npu_core_count
 from liger_kernel.ops.utils import set_large_grf_mode
 from liger_kernel.ops.utils import torch_to_triton_dtype
@@ -436,6 +437,234 @@ def _block_rms_norm_backward_kernel(
         tl.store(dW_ptr + pid * dW_row_stride + col_offsets, dW_row, mask=col_mask)
 
 
+@triton.jit
+def _rms_group_norm_forward_kernel(
+    Y_ptr,
+    Y_row_stride,
+    X_ptr,
+    X_row_stride,
+    W_ptr,
+    RSTD_ptr,
+    RSTD_row_stride,
+    n_groups,
+    n_cols,
+    eps,
+    offset,
+    casting_mode: tl.constexpr,  # constexpr so the `if` blocks can be optimized out
+    BLOCK_SIZE: tl.constexpr,
+):
+    """
+    Grouped RMSNorm forward: X of shape (..., H) is viewed as (..., G, group_size) and each group is
+    normalized independently: y = (x / rms(x_group)) * (offset + w_group).
+
+    The launch grid covers every (token, group) pair, i.e. rows of the (n_rows * n_groups, n_cols) view.
+    Row `r` corresponds to token `r // n_groups` and group `r % n_groups`; the weight slice for that
+    group starts at `(r % n_groups) * n_cols` in W.
+    """
+    row_idx = tl.program_id(0).to(tl.int64)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+
+    group_id = row_idx % n_groups
+
+    y_base = Y_ptr + row_idx * Y_row_stride
+    x_base = X_ptr + row_idx * X_row_stride
+    rstd_base = RSTD_ptr + row_idx * RSTD_row_stride
+    # W is a flat (n_groups * n_cols,) tensor; group k owns the slice [k * n_cols, (k + 1) * n_cols)
+    w_base = W_ptr + group_id * n_cols
+
+    X_row = tl.load(x_base + col_offsets, mask=mask, other=0)
+    X_row_dtype = X_row.dtype
+    W_row = tl.load(w_base + col_offsets, mask=mask, other=0)
+
+    if casting_mode == _CASTING_MODE_LLAMA:
+        X_row = X_row.to(tl.float32)
+    elif casting_mode == _CASTING_MODE_GEMMA:
+        W_row = W_row.to(tl.float32)
+        X_row = X_row.to(tl.float32)
+    else:
+        # _CASTING_MODE_NONE: keep everything in the input dtype
+        eps = eps.to(X_row_dtype)
+        offset = offset.to(X_row_dtype)
+
+    if casting_mode != _CASTING_MODE_NONE:
+        # Match the scalar discipline in the generic RMSNorm forward kernel.
+        # Inductor otherwise specializes Python scalar parameters as fp64 and
+        # silently promotes the grouped normalization math under torch.compile.
+        eps = tl.cast(eps, tl.float32)
+        offset = tl.cast(offset, tl.float32)
+
+    mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
+    rstd = rsqrt(mean_square + eps)
+
+    tl.store(rstd_base, rstd)
+
+    X_row = X_row * rstd
+
+    if casting_mode == _CASTING_MODE_LLAMA:
+        X_row = X_row.to(X_row_dtype)
+
+    Y_row = X_row * (offset + W_row)
+
+    if casting_mode == _CASTING_MODE_GEMMA:
+        Y_row = Y_row.to(X_row_dtype)
+
+    tl.store(y_base + col_offsets, Y_row, mask=mask)
+
+
+@triton.jit
+def _rms_group_norm_backward_row(dY_row, X_row, W_row, rstd_row, n_cols, casting_mode: tl.constexpr, X_dtype):
+    """Compute one generic grouped-RMSNorm backward row."""
+    X_row = X_row.to(tl.float32)
+
+    if casting_mode == _CASTING_MODE_LLAMA:
+        m = (dY_row * W_row).to(tl.float32)
+    elif casting_mode == _CASTING_MODE_GEMMA:
+        dY_row = dY_row.to(tl.float32)
+        m = dY_row * W_row
+    else:
+        m = dY_row * W_row
+
+    dX_row = rstd_row * m
+    dX_row += rstd_row * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row)
+
+    if casting_mode == _CASTING_MODE_LLAMA:
+        dW_update = dY_row * (X_row * rstd_row).to(X_dtype)
+    else:
+        dW_update = dY_row * (X_row * rstd_row)
+    return dX_row.to(X_dtype), dW_update
+
+
+@triton.jit
+def _rms_group_norm_backward_kernel(
+    dY_ptr,
+    dY_row_stride,
+    dX_ptr,
+    dX_row_stride,
+    X_ptr,
+    X_row_stride,
+    X_dtype: tl.constexpr,
+    W_ptr,
+    RSTD_ptr,
+    RSTD_row_stride,
+    dW_ptr,
+    dW_row_stride,
+    n_rows,
+    n_groups,
+    n_cols,
+    offset,
+    rows_per_program,
+    casting_mode: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """
+    Grouped RMSNorm backward. The grid is (num_row_blocks * n_groups,); program `pid` handles the
+    column slice of group `k = pid % n_groups` for tokens assigned to row block `pid // n_groups`.
+    Keeping a single group per program lets each program write one complete compact dW row.
+    """
+    pid = tl.program_id(0).to(tl.int64)
+    row_block_id = pid // n_groups
+    group_id = pid % n_groups
+
+    row_start = row_block_id * rows_per_program
+    row_end = min(row_start + rows_per_program, n_rows)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+
+    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+
+    # W is a flat (n_groups * n_cols,) tensor; group k owns the slice [k * n_cols, (k + 1) * n_cols)
+    W_row = tl.load(W_ptr + group_id * n_cols + col_offsets, mask=mask, other=0.0)
+    # ``offset`` is a Triton scalar in eager but a Python scalar while Inductor
+    # analyzes kernel mutations. ``tl.cast`` handles both representations.
+    W_row = W_row + tl.cast(offset, tl.float32)
+
+    for row_idx in range(row_start, row_end):
+        # Flatten (token, group) to the row index of the (n_rows * n_groups, n_cols) views
+        flat_row = row_idx * n_groups + group_id
+
+        dy_base = dY_ptr + flat_row * dY_row_stride
+        dx_base = dX_ptr + flat_row * dX_row_stride
+        x_base = X_ptr + flat_row * X_row_stride
+        rstd_base = RSTD_ptr + flat_row * RSTD_row_stride
+
+        dY_row = tl.load(dy_base + col_offsets, mask=mask, other=0.0)
+        X_row = tl.load(x_base + col_offsets, mask=mask, other=0.0)
+
+        rstd_row = tl.load(rstd_base)
+        dX_row, dW_update = _rms_group_norm_backward_row(dY_row, X_row, W_row, rstd_row, n_cols, casting_mode, X_dtype)
+        dW_row += dW_update
+        tl.store(dx_base + col_offsets, dX_row, mask=mask)
+
+    tl.store(dW_ptr + pid * dW_row_stride + col_offsets, dW_row, mask=mask)
+
+
+@triton.jit
+def _rms_group_norm_backward_add_kernel(
+    dY0_ptr,
+    dY1_ptr,
+    dY2_ptr,
+    dY_row_stride,
+    dX_ptr,
+    dX_row_stride,
+    X_ptr,
+    X_row_stride,
+    X_dtype: tl.constexpr,
+    W_ptr,
+    RSTD_ptr,
+    RSTD_row_stride,
+    dW_ptr,
+    dW_row_stride,
+    n_rows,
+    n_groups: tl.constexpr,
+    n_cols,
+    offset,
+    rows_per_program,
+    casting_mode: tl.constexpr,
+    N_GRADIENTS: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """Grouped RMSNorm backward with an in-register sum of two or three upstream gradients."""
+    pid = tl.program_id(0).to(tl.int64)
+    row_block_id = pid // n_groups
+    group_id = pid % n_groups
+
+    row_start = row_block_id * rows_per_program
+    row_end = min(row_start + rows_per_program, n_rows)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+
+    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    W_row = tl.load(W_ptr + group_id * n_cols + col_offsets, mask=mask, other=0.0)
+    W_row = W_row + tl.cast(offset, tl.float32)
+
+    for row_idx in range(row_start, row_end):
+        flat_row = row_idx * n_groups + group_id
+        dy_offsets = flat_row * dY_row_stride + col_offsets
+        dx_base = dX_ptr + flat_row * dX_row_stride
+        x_base = X_ptr + flat_row * X_row_stride
+        rstd_base = RSTD_ptr + flat_row * RSTD_row_stride
+
+        dY0_row = tl.load(dY0_ptr + dy_offsets, mask=mask, other=0.0)
+        dY_dtype = dY0_row.dtype
+        dY1_row = tl.load(dY1_ptr + dy_offsets, mask=mask, other=0.0)
+        # Sum in gradient dtype before Gemma-mode fp32 math. The two-gradient specialization avoids
+        # loading an autograd-materialized zero while preserving the order of the real additions.
+        dY_row = (dY0_row + dY1_row).to(dY_dtype)
+        if N_GRADIENTS == 3:
+            dY2_row = tl.load(dY2_ptr + dy_offsets, mask=mask, other=0.0)
+            dY_row = (dY_row + dY2_row).to(dY_dtype)
+        X_row = tl.load(x_base + col_offsets, mask=mask, other=0.0)
+        rstd_row = tl.load(rstd_base)
+        dX_row, dW_update = _rms_group_norm_backward_row(dY_row, X_row, W_row, rstd_row, n_cols, casting_mode, X_dtype)
+        dW_row += dW_update
+        tl.store(dx_base + col_offsets, dX_row, mask=mask)
+
+    # Every program owns one complete group slice, so a compact [program, group_size] buffer is
+    # sufficient for both this multi-gradient path and the generic grouped backward.
+    tl.store(dW_ptr + pid * dW_row_stride + col_offsets, dW_row, mask=mask)
+
+
 _str_to_casting_mode = {
     "llama": _CASTING_MODE_LLAMA.value,
     "gemma": _CASTING_MODE_GEMMA.value,
@@ -443,7 +672,7 @@ _str_to_casting_mode = {
 }
 
 
-def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
+def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode, n_groups=None):
     if not isinstance(casting_mode, int):
         assert casting_mode in _str_to_casting_mode, f"Invalid casting mode: {casting_mode}"
         casting_mode = _str_to_casting_mode[casting_mode]
@@ -452,6 +681,48 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
 
     shape = X.shape
     dim = shape[-1]
+
+    if n_groups is not None:
+        # Grouped RMSNorm: normalize each of the `n_groups` slices of the last dim independently.
+        # The (..., dim) tensor is viewed as (n_rows * n_groups, group_size) so every program in the
+        # grouped kernels sees a plain row of length `group_size`.
+        if not isinstance(n_groups, int) or n_groups <= 0:
+            raise ValueError(f"n_groups must be a positive integer, got {n_groups}.")
+        if W is None:
+            raise ValueError("Grouped RMSNorm requires an elementwise-affine weight.")
+        if W.dim() != 1 or W.numel() != dim or dim % n_groups != 0:
+            raise ValueError(f"Weight shape {tuple(W.shape)} incompatible with n_groups={n_groups} and last dim {dim}.")
+        group_size = dim // n_groups
+        X = X.view(-1, group_size)
+        n_rows, n_cols = X.shape
+        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+
+        Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
+        # RSTD is to cache rstd for each (row, group) pair
+        rstd_dtype = (
+            torch.float32 if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value) else X.dtype
+        )
+        RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
+
+        with device_context(X.device):
+            _rms_group_norm_forward_kernel[(n_rows,)](
+                Y,
+                Y.stride(0),
+                X,
+                X.stride(0),
+                W,
+                RSTD,
+                RSTD.stride(0),
+                n_groups,
+                n_cols,
+                eps,
+                offset,
+                casting_mode,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
+            )
+        return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
+
     X = X.view(-1, dim)
     n_rows, n_cols = X.shape
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
@@ -520,9 +791,159 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode):
+def rms_group_norm_backward_add3(
+    grad0,
+    grad1,
+    grad2,
+    X,
+    W,
+    RSTD,
+    offset,
+    casting_mode,
+    BLOCK_SIZE,
+    num_warps,
+    n_groups,
+    n_gradients=3,
+):
+    """Run grouped RMSNorm backward while summing BF16/FP16 gradients in registers."""
+    if n_gradients not in (2, 3):
+        raise ValueError(f"n_gradients must be 2 or 3, got {n_gradients}.")
+    if n_gradients == 3 and grad2 is None:
+        raise ValueError("grad2 must be provided when n_gradients=3.")
+    shape = grad0.shape
+    dim = shape[-1]
+    group_size = dim // n_groups
+    grad0 = grad0.view(-1, group_size)
+    grad1 = grad1.view(-1, group_size)
+    # Triton still requires a valid pointer for its compile-time-elided third input.
+    grad2 = grad1 if n_gradients == 2 else grad2
+    grad2 = grad2.view(-1, group_size)
+    n_rows, n_cols = grad0.shape
+    n_token_rows = n_rows // n_groups
+
+    sm_count = get_device_multiprocessor_count(X.device)
+
+    if n_cols > BLOCK_SIZE:
+        raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
+
+    # The kernel writes every dX element and every compact partial-dW element, so neither output
+    # needs a zero-fill. Program order is [row_block, group], matching this reduction view.
+    dX = torch.empty_like(grad0)
+    partial_dW = torch.empty((sm_count * n_groups, group_size), dtype=torch.float32, device=W.device)
+    rows_per_program = math.ceil(n_token_rows / sm_count)
+
+    with device_context(X.device):
+        _rms_group_norm_backward_add_kernel[(sm_count * n_groups,)](
+            grad0,
+            grad1,
+            grad2,
+            grad0.stride(0),
+            dX,
+            dX.stride(0),
+            X,
+            X.stride(0),
+            torch_to_triton_dtype[X.dtype],
+            W,
+            RSTD,
+            RSTD.stride(0),
+            partial_dW,
+            partial_dW.stride(0),
+            n_token_rows,
+            n_groups,
+            n_cols,
+            offset,
+            rows_per_program,
+            casting_mode,
+            N_GRADIENTS=n_gradients,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
+
+    dW = partial_dW.view(sm_count, n_groups, group_size).sum(dim=0).reshape(dim).to(W.dtype)
+    return dX.view(*shape), dW
+
+
+def rms_group_norm_backward_add2(
+    grad0,
+    grad1,
+    X,
+    W,
+    RSTD,
+    offset,
+    casting_mode,
+    BLOCK_SIZE,
+    num_warps,
+    n_groups,
+):
+    """Run grouped RMSNorm backward for exactly two real upstream gradients."""
+    return rms_group_norm_backward_add3(
+        grad0,
+        grad1,
+        None,
+        X,
+        W,
+        RSTD,
+        offset,
+        casting_mode,
+        BLOCK_SIZE,
+        num_warps,
+        n_groups,
+        n_gradients=2,
+    )
+
+
+def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode, n_groups=None):
     shape = dY.shape
     dim = shape[-1]
+
+    if n_groups is not None:
+        group_size = dim // n_groups
+        dY = dY.view(-1, group_size)
+        n_rows, n_cols = dY.shape  # (n_tokens * n_groups, group_size)
+        n_token_rows = n_rows // n_groups
+
+        sm_count = get_device_multiprocessor_count(X.device)
+
+        # Programs are (row_block, group) pairs and each writes one complete compact group slice.
+        # No columns are left unwritten, so this workspace does not need a zero-fill.
+        _dW = torch.empty((sm_count * n_groups, group_size), dtype=torch.float32, device=W.device)
+
+        if n_cols > BLOCK_SIZE:
+            raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
+        rows_per_program = math.ceil(n_token_rows / sm_count)
+
+        if in_place is True:
+            dX = dY
+        else:
+            dX = torch.empty_like(dY)
+
+        with device_context(X.device):
+            _rms_group_norm_backward_kernel[(sm_count * n_groups,)](
+                dY,
+                dY.stride(0),
+                dX,
+                dX.stride(0),
+                X,
+                X.stride(0),
+                torch_to_triton_dtype[X.dtype],
+                W,
+                RSTD,
+                RSTD.stride(0),
+                _dW,
+                _dW.stride(0),
+                n_token_rows,
+                n_groups,
+                n_cols,
+                offset,
+                rows_per_program,
+                casting_mode,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
+            )
+
+        dW = _dW.view(sm_count, n_groups, group_size).sum(dim=0).reshape(dim).to(W.dtype)
+        return dX.view(*shape), dW
+
     dY = dY.view(-1, dim)
     n_rows, n_cols = dY.shape
 
@@ -643,10 +1064,13 @@ class LigerRMSNormFunction(torch.autograd.Function):
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama", in_place=True, row_mode=None):
+    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama", in_place=True, row_mode=None, n_groups=None):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
+        n_groups: optional number of groups the last dim of X is split into for grouped RMSNorm.
+        Each of the `n_groups` slices of size H // n_groups is normalized independently against its
+        own weight slice `W[g * (H // n_groups) : (g + 1) * (H // n_groups)]`.
         """
         if isinstance(X, _DTensor):
             # Input tensor is output of a tensor parallel module and
@@ -655,11 +1079,14 @@ class LigerRMSNormFunction(torch.autograd.Function):
             # TODO: support CP.
             X = X.full_tensor()
 
-        Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode, row_mode)
+        Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(
+            X, W, eps, offset, casting_mode, row_mode, n_groups=n_groups
+        )
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
         ctx.row_mode = row_mode
+        ctx.n_groups = n_groups
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.elementwise_affine = W is not None
@@ -688,6 +1115,16 @@ class LigerRMSNormFunction(torch.autograd.Function):
             dY = dY.full_tensor()
 
         dX, dW = rms_norm_backward(
-            dY, X, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
+            dY,
+            X,
+            W,
+            RSTD,
+            ctx.offset,
+            ctx.casting_mode,
+            ctx.BLOCK_SIZE,
+            ctx.num_warps,
+            ctx.in_place,
+            ctx.row_mode,
+            n_groups=ctx.n_groups,
         )
-        return dX, dW, None, None, None, None, None
+        return dX, dW, None, None, None, None, None, None

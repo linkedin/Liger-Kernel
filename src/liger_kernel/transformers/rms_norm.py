@@ -1,7 +1,17 @@
+import inspect
+
 import torch
 import torch.nn as nn
 
 from liger_kernel.ops import LigerRMSNormFunction
+
+
+def _liger_rms_norm_supports_grouped() -> bool:
+    """Whether the selected backend Function exposes the grouped RMSNorm ABI."""
+    try:
+        return "n_groups" in inspect.signature(LigerRMSNormFunction.forward).parameters
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 class LigerRMSNorm(nn.Module):
@@ -15,8 +25,11 @@ class LigerRMSNorm(nn.Module):
         in_place=True,
         row_mode=None,
         elementwise_affine=True,
+        group_size=None,
     ):
         super().__init__()
+        self._liger_rms_norm_patched = True
+        self._liger_rms_norm_supports_grouped = _liger_rms_norm_supports_grouped()
         assert init_fn in [
             "ones",
             "zeros",
@@ -26,6 +39,14 @@ class LigerRMSNorm(nn.Module):
             self.weight = nn.Parameter(torch.ones(hidden_size) if init_fn == "ones" else torch.zeros(hidden_size))
         else:
             self.register_parameter("weight", None)
+        if group_size is not None:
+            if not isinstance(group_size, int) or group_size <= 0:
+                raise ValueError(f"group_size must be a positive integer, got {group_size}.")
+            if self.weight is None:
+                raise ValueError("group_size requires elementwise_affine=True.")
+            if hidden_size % group_size != 0:
+                raise ValueError(f"hidden_size ({hidden_size}) must be divisible by group_size ({group_size}).")
+        self.group_size = group_size
         self.variance_epsilon, self.offset, self.casting_mode, self.in_place, self.row_mode = (
             eps,
             offset,
@@ -35,18 +56,54 @@ class LigerRMSNorm(nn.Module):
         )
 
     def forward(self, hidden_states):
+        # This method is also bound onto foreign RMSNorm instances during monkey patching, so
+        # grouped metadata must be resolved from plain attributes with safe fallbacks.
+        group_size = getattr(self, "group_size", None)
+        weight = getattr(self, "weight", None)
+        n_groups = None
+        if group_size is not None:
+            if weight is None:
+                raise ValueError("group_size requires an elementwise-affine weight.")
+            if not isinstance(group_size, int) or group_size <= 0:
+                raise ValueError(f"group_size must be a positive integer, got {group_size}.")
+            if weight.numel() % group_size != 0:
+                raise ValueError(f"weight size ({weight.numel()}) must be divisible by group_size ({group_size}).")
+            n_groups = weight.numel() // group_size
+        eps = getattr(self, "eps", None)
+        if eps is None:
+            eps = self.variance_epsilon
+        if n_groups is None:
+            return LigerRMSNormFunction.apply(
+                hidden_states,
+                self.weight,
+                eps,
+                self.offset,
+                self.casting_mode,
+                self.in_place,
+                self.row_mode,
+            )
+        if not self._liger_rms_norm_supports_grouped:
+            raise RuntimeError("The selected RMSNorm backend does not support grouped RMSNorm.")
         return LigerRMSNormFunction.apply(
             hidden_states,
             self.weight,
-            self.variance_epsilon,
+            eps,
             self.offset,
             self.casting_mode,
             self.in_place,
             self.row_mode,
+            n_groups,
         )
 
     def extra_repr(self):
-        return f"weight_shape={tuple(self.weight.shape) if self.weight is not None else None}, eps={self.variance_epsilon}, offset={self.offset}, in_place={self.in_place}, row_mode={self.row_mode}"
+        eps = getattr(self, "eps", None)
+        if eps is None:
+            eps = self.variance_epsilon
+        return (
+            f"weight_shape={tuple(self.weight.shape) if self.weight is not None else None}, "
+            f"eps={eps}, offset={self.offset}, in_place={self.in_place}, "
+            f"row_mode={self.row_mode}, group_size={getattr(self, 'group_size', None)}"
+        )
 
 
 class LigerRMSNormForGemma(LigerRMSNorm):
@@ -178,3 +235,45 @@ class LigerRMSNormForQwen3Next(LigerRMSNorm):
         self, hidden_size, eps=1e-6, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False, row_mode=None
     ):
         super().__init__(hidden_size, eps, offset, casting_mode, init_fn, in_place, row_mode)
+
+
+class LigerRMSNormForQwen4Exp(LigerRMSNorm):
+    """Drop-in replacement for ``transformers.models.qwen4_exp.Qwen4ExpTextRMSNorm``.
+
+    Matches the HF signature ``__init__(dim, group_size=None, eps=1e-6)`` so it can be used as a
+    class-level swap. Semantics of the HF module:
+      - weight is initialized to zeros and applied as ``(1 + w)`` (offset=1.0)
+      - everything (norm + weight multiply) is computed in fp32, then cast back to the input dtype
+        (casting_mode="gemma")
+    ``group_size`` selects grouped RMSNorm: the last dim (``hc_count * hidden_size`` for hyper
+    connections / PLE norms) is split into ``dim // group_size`` groups that are each normalized
+    independently against their own weight slice.
+    """
+
+    def __init__(self, dim, group_size=None, eps=1e-6):
+        super().__init__(
+            dim,
+            eps,
+            offset=1.0,
+            casting_mode="gemma",
+            init_fn="zeros",
+            in_place=False,
+            row_mode=None,
+            elementwise_affine=True,
+            group_size=group_size,
+        )
+
+    @property
+    def eps(self):
+        return self.variance_epsilon
+
+    @eps.setter
+    def eps(self, value):
+        self.variance_epsilon = value
+
+
+def liger_qwen4_exp_rms_norm_forward(self, hidden_states):
+    """Use native HF grouped RMSNorm when the selected backend only supports the historical ABI."""
+    if self.group_size is not None and not self._liger_rms_norm_supports_grouped:
+        return self._liger_qwen4_exp_native_rms_norm_forward(hidden_states)
+    return LigerRMSNorm.forward(self, hidden_states)

@@ -34,6 +34,7 @@ from liger_kernel.transformers.relu_squared import LigerReLUSquared
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmer
 from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmerTextCentered
+from liger_kernel.transformers.rms_norm import _liger_rms_norm_supports_grouped
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
@@ -62,13 +63,22 @@ if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
 
 IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
 
+_QWEN4_EXP_NATIVE_RMS_NORM_CLASSES = ()
+_QWEN4_EXP_NATIVE_RMS_NORM_FORWARD = None
+
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
     # Binds a new method to a module instance so that self is passed as the first argument
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
 
 
+def _bind_forward_to_module(module, new_method: Callable):
+    forward_attribute = "_old_forward" if hasattr(module, "_hf_hook") and hasattr(module, "_old_forward") else "forward"
+    _bind_method_to_module(module, forward_attribute, new_method)
+
+
 def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True, row_mode=None):
+    supports_grouped = _liger_rms_norm_supports_grouped()
     # Check if the module is a PEFT ModulesToSaveWrapper
     # If it is, we need to patch the modules_to_save.default and original_modules
     if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
@@ -81,6 +91,8 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         module.modules_to_save.default.row_mode = row_mode
         module.modules_to_save.default.impl = None
         module.modules_to_save.default.mode = None
+        module.modules_to_save.default._liger_rms_norm_patched = True
+        module.modules_to_save.default._liger_rms_norm_supports_grouped = supports_grouped
         module.original_module.offset = offset
         module.original_module.casting_mode = casting_mode
         module.original_module.variance_epsilon = (
@@ -90,9 +102,11 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         module.original_module.row_mode = row_mode
         module.original_module.impl = None
         module.original_module.mode = None
-        _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
+        module.original_module._liger_rms_norm_patched = True
+        module.original_module._liger_rms_norm_supports_grouped = supports_grouped
+        _bind_forward_to_module(module.modules_to_save.default, LigerRMSNorm.forward)
         _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
-        _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
+        _bind_forward_to_module(module.original_module, LigerRMSNorm.forward)
         _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
         _bind_method_to_module(module.modules_to_save.default, "_get_name", lambda self: LigerRMSNorm.__name__)
         _bind_method_to_module(module.original_module, "_get_name", lambda self: LigerRMSNorm.__name__)
@@ -104,7 +118,9 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         module.row_mode = row_mode
         module.impl = None
         module.mode = None
-        _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
+        module._liger_rms_norm_patched = True
+        module._liger_rms_norm_supports_grouped = supports_grouped
+        _bind_forward_to_module(module, LigerRMSNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
         _bind_method_to_module(module, "_get_name", lambda self: LigerRMSNorm.__name__)
 
@@ -3208,6 +3224,200 @@ def apply_liger_kernel_to_qwen3_next(
                                 _patch_swiglu_module(expert, LigerQwen3MoeSwiGLUMLP)
 
 
+def apply_liger_kernel_to_qwen4_exp(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    engram: bool = True,
+    hyper_connection: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to the text stack of HuggingFace Qwen4Exp models. Only
+    ``Qwen4ExpForCausalLM`` / ``Qwen4ExpTextModel`` are supported; the multimodal composite
+    (``Qwen4ExpForConditionalGeneration``) is out of scope.
+
+    Patched components:
+      - RMSNorm: ordinary norms use the selected Liger backend. Grouped norms used by Gated
+        Residual hyper-connections and the PLE layer use Liger only when that backend exposes
+        grouped support; otherwise they retain native Hugging Face execution. The gated DeltaNet
+        norm (``RMSNormGated``) is left untouched.
+      - SwiGLU: dense ``Qwen4ExpTextMLP`` (incl. MoE shared experts) uses the Liger SiLU-mul
+        kernel for SiLU/Swish configs. ``Qwen4ExpTextExperts`` additionally uses Liger only for
+        HF's eager/default-standalone expert mode. Unsupported activations and explicit non-eager
+        ExpertsInterface backends retain native Hugging Face dispatch.
+      - PLE/Engram: EOS-aware n-gram hashing uses a Qwen4Exp-specific Liger kernel for NVIDIA CUDA
+        tensors. Unsupported backends and non-CUDA runtime placements retain the native Hugging Face
+        n-gram path. The rest of the PLE layer remains native, including reduction-sensitive query/key
+        normalization and signed-sqrt scoring, embedding lookup, projections, masking, convolution,
+        and residual add.
+      - Hyper-connections: on NVIDIA CUDA, feature-wise pre-mixing and residual block injection use
+        Qwen4Exp-specific Liger kernels rather than the semantically different Sinkhorn-based generic
+        mHC kernels. Unsupported backends and non-CUDA runtime placements retain the native Hugging Face
+        hyper-connection and decoder forwards.
+      - Loss: fused linear cross entropy avoids materializing logits over the 248k vocab.
+      - Attention internals (Gated DeltaNet, Qwen Sparse Attention + indexer) and RoPE are intentionally
+        untouched. Those paths already dispatch to their native attention/linear-attention kernels.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Not supported for Qwen4Exp
+            due to the hybrid attention (Gated DeltaNet + QSA) with interleaved mrope.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+            This option applies only to ``Qwen4ExpForCausalLM`` and is ignored for ``Qwen4ExpTextModel``,
+            which has no LM head.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to enable guarded Liger SwiGLU MLP / fused MoE experts. SiLU/Swish
+            uses Liger, while unsupported activations remain native. Explicit non-eager Hugging Face
+            expert implementations also remain native. Default is True.
+        engram (bool): Whether to apply the Qwen4Exp PLE/Engram n-gram hash kernel to NVIDIA CUDA
+            tensors. Unsupported backends and non-CUDA placements use the native Hugging Face implementation.
+            Default is True.
+        hyper_connection (bool): Whether to apply Qwen4Exp feature-wise hyper-connection kernels on NVIDIA CUDA.
+            Unsupported backends and non-CUDA runtime placements retain native Hugging Face behavior. Default is
+            True. Eager execution is supported, and specific isolated fixed-shape boundaries are compile-compatible.
+            Full training compilation remains limited because the grouped-RMS training path intentionally returns
+            aliased outputs that AOTAutograd cannot currently functionalize. Independently, QSA's data-dependent
+            index selection limits fullgraph generation compilation.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    if cross_entropy and fused_linear_cross_entropy:
+        raise ValueError("cross_entropy and fused_linear_cross_entropy cannot both be True.")
+
+    global _QWEN4_EXP_NATIVE_RMS_NORM_CLASSES
+    global _QWEN4_EXP_NATIVE_RMS_NORM_FORWARD
+
+    from transformers.models.qwen4_exp import modeling_qwen4_exp
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpForCausalLM
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextDecoderLayer
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextExperts
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextGatedResidual
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextMLP
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextModel
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextNGramEmbedding
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextRMSNorm
+
+    from liger_kernel.ops.utils import is_hip
+    from liger_kernel.transformers.model.qwen4_exp import lce_forward as qwen4_exp_lce_forward
+    from liger_kernel.transformers.qwen4_exp import patch_qwen4_exp_text_hyper_connection_classes
+    from liger_kernel.transformers.qwen4_exp import patch_qwen4_exp_text_module_for_hyper_connection
+    from liger_kernel.transformers.qwen4_exp import patch_qwen4_exp_text_module_for_ngram
+    from liger_kernel.transformers.qwen4_exp import patch_qwen4_exp_text_module_for_swiglu
+    from liger_kernel.transformers.qwen4_exp import patch_qwen4_exp_text_ngram_class
+    from liger_kernel.transformers.qwen4_exp import patch_qwen4_exp_text_swiglu_classes
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForQwen4Exp
+    from liger_kernel.transformers.rms_norm import liger_qwen4_exp_rms_norm_forward
+    from liger_kernel.utils import infer_device
+
+    if (
+        Qwen4ExpTextRMSNorm.__module__ == "transformers.models.qwen4_exp.modeling_qwen4_exp"
+        and Qwen4ExpTextRMSNorm.__name__ == "Qwen4ExpTextRMSNorm"
+    ):
+        if Qwen4ExpTextRMSNorm not in _QWEN4_EXP_NATIVE_RMS_NORM_CLASSES:
+            _QWEN4_EXP_NATIVE_RMS_NORM_CLASSES += (Qwen4ExpTextRMSNorm,)
+        if _QWEN4_EXP_NATIVE_RMS_NORM_FORWARD is None:
+            _QWEN4_EXP_NATIVE_RMS_NORM_FORWARD = getattr(
+                Qwen4ExpTextRMSNorm,
+                "_liger_qwen4_exp_native_rms_norm_forward",
+                Qwen4ExpTextRMSNorm.forward,
+            )
+    recognized_qwen4_exp_rms_norm_classes = _QWEN4_EXP_NATIVE_RMS_NORM_CLASSES + (LigerRMSNormForQwen4Exp,)
+
+    supports_qwen4_exp_cuda_kernels = infer_device() == "cuda" and not is_hip()
+    use_liger_ngram = engram and supports_qwen4_exp_cuda_kernels
+    use_liger_hyper_connection = hyper_connection and supports_qwen4_exp_cuda_kernels
+
+    if model is not None and not isinstance(model, (Qwen4ExpForCausalLM, Qwen4ExpTextModel)):
+        raise TypeError(
+            "Unsupported qwen4_exp model type. `model` must be `Qwen4ExpForCausalLM` or `Qwen4ExpTextModel`. "
+            f"Got: {type(model)}. The multimodal `Qwen4ExpForConditionalGeneration` composite is not "
+            "supported yet; load the text model via `AutoModelForCausalLM` instead."
+        )
+
+    config = None if model is None else model.config.get_text_config()
+    use_liger_swiglu = swiglu and (config is None or getattr(config, "hidden_act", None) in ("silu", "swish"))
+    supports_grouped_rms_norm = _liger_rms_norm_supports_grouped()
+    native_qwen4_exp_rms_norm_forward = _QWEN4_EXP_NATIVE_RMS_NORM_FORWARD
+
+    if rope:
+        raise NotImplementedError("liger_rotary_pos_emb is not available for Qwen4Exp models.")
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if rms_norm:
+        if supports_grouped_rms_norm:
+            modeling_qwen4_exp.Qwen4ExpTextRMSNorm = LigerRMSNormForQwen4Exp
+        else:
+            rms_norm_class = modeling_qwen4_exp.Qwen4ExpTextRMSNorm
+            if not hasattr(rms_norm_class, "_liger_qwen4_exp_native_rms_norm_forward"):
+                rms_norm_class._liger_qwen4_exp_native_rms_norm_forward = native_qwen4_exp_rms_norm_forward
+            rms_norm_class.offset = 1.0
+            rms_norm_class.casting_mode = "gemma"
+            rms_norm_class.in_place = False
+            rms_norm_class.row_mode = None
+            rms_norm_class._liger_rms_norm_supports_grouped = False
+            rms_norm_class.forward = liger_qwen4_exp_rms_norm_forward
+
+    if use_liger_swiglu:
+        patch_qwen4_exp_text_swiglu_classes(
+            modeling_qwen4_exp.Qwen4ExpTextMLP,
+            modeling_qwen4_exp.Qwen4ExpTextExperts,
+        )
+
+    if use_liger_ngram:
+        patch_qwen4_exp_text_ngram_class(modeling_qwen4_exp.Qwen4ExpTextNGramEmbedding)
+
+    if use_liger_hyper_connection:
+        patch_qwen4_exp_text_hyper_connection_classes(
+            modeling_qwen4_exp.Qwen4ExpTextGatedResidual,
+            modeling_qwen4_exp.Qwen4ExpTextDecoderLayer,
+        )
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            if isinstance(model, Qwen4ExpForCausalLM):
+                _bind_forward_to_module(model, qwen4_exp_lce_forward)
+        else:
+            modeling_qwen4_exp.Qwen4ExpForCausalLM.forward = qwen4_exp_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        base_model: Qwen4ExpTextModel = getattr(model, model.base_model_prefix, model)
+
+        _patch_rms_norm_module_for_qwen4_exp = partial(
+            _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+        )
+
+        # Walk every submodule once so norms living inside non-standard containers (GatedResidual
+        # hyper-connections, PLELayer, QSA indexer) are all covered.
+        for module in base_model.modules():
+            if rms_norm and isinstance(module, recognized_qwen4_exp_rms_norm_classes):
+                if getattr(module, "group_size", None) is None or supports_grouped_rms_norm:
+                    _patch_rms_norm_module_for_qwen4_exp(module)
+                else:
+                    _bind_forward_to_module(module, native_qwen4_exp_rms_norm_forward)
+            elif use_liger_swiglu:
+                patch_qwen4_exp_text_module_for_swiglu(module, Qwen4ExpTextMLP, Qwen4ExpTextExperts)
+            if use_liger_ngram:
+                patch_qwen4_exp_text_module_for_ngram(module, Qwen4ExpTextNGramEmbedding)
+            if use_liger_hyper_connection:
+                patch_qwen4_exp_text_module_for_hyper_connection(
+                    module,
+                    Qwen4ExpTextGatedResidual,
+                    Qwen4ExpTextDecoderLayer,
+                )
+
+
 def apply_liger_kernel_to_qwen3_5(
     rope: bool = False,
     cross_entropy: bool = False,
@@ -3729,6 +3939,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen3_vl_text": apply_liger_kernel_to_qwen3_vl,
     "qwen3_vl_moe": apply_liger_kernel_to_qwen3_vl_moe,
     "qwen3_vl_moe_text": apply_liger_kernel_to_qwen3_vl_moe,
+    "qwen4_exp_text": apply_liger_kernel_to_qwen4_exp,
     "smollm3": apply_liger_kernel_to_smollm3,
     "phi3": apply_liger_kernel_to_phi3,
     "paligemma": apply_liger_kernel_to_paligemma,
