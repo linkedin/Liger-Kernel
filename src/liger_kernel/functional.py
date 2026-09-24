@@ -153,6 +153,13 @@ declare_op_locations(
     ),
 )
 
+# ``kl_loss_and_grad`` primitive is exposed so composed ops (fused_linear_kl_div)
+# route through the dispatcher and pick up new KL backends as they land.
+declare_op_locations(
+    "kl_loss_and_grad",
+    ("liger_kernel.ops.backends._triton.kl_div",),
+)
+
 # fused_linear_jsd: Triton (universal) + cuTile (Blackwell). The CuTe DSL
 # registration remains explicit-only because the composed op upcasts its inner
 # JSD inputs to fp32, which safely falls back to Triton.
