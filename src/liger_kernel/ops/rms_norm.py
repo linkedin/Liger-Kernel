@@ -272,7 +272,7 @@ def _block_rms_norm_forward_kernel(
     3. https://arxiv.org/pdf/1910.07467
     """
 
-    row_idx = tl.program_id(0) * BLOCK_ROW + tl.arange(0, BLOCK_ROW)
+    row_idx = tl.program_id(0).to(tl.int64) * BLOCK_ROW + tl.arange(0, BLOCK_ROW)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     row_mask = row_idx < n_rows
     col_mask = col_offsets < n_cols
