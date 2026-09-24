@@ -54,6 +54,8 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3_text  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma4_text  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma4_unified  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma4_unified_text  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v_moe  # noqa: F401
@@ -132,6 +134,8 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_gemma3_text",
         "apply_liger_kernel_to_gemma4",
         "apply_liger_kernel_to_gemma4_text",
+        "apply_liger_kernel_to_gemma4_unified",
+        "apply_liger_kernel_to_gemma4_unified_text",
         "apply_liger_kernel_to_glm4",
         "apply_liger_kernel_to_glm4v",
         "apply_liger_kernel_to_glm4v_moe",
@@ -230,6 +234,8 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_gemma3_text",
             "apply_liger_kernel_to_gemma4",
             "apply_liger_kernel_to_gemma4_text",
+            "apply_liger_kernel_to_gemma4_unified",
+            "apply_liger_kernel_to_gemma4_unified_text",
             "apply_liger_kernel_to_glm4",
             "apply_liger_kernel_to_glm4v",
             "apply_liger_kernel_to_glm4v_moe",
