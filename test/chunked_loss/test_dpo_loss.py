@@ -1424,3 +1424,85 @@ def test_label_smoothing_validation():
 
     with pytest.raises(ValueError, match=r"label_smoothing must lie in \[0\.0, 0\.5\) for loss_type='robust'"):
         LigerFusedLinearDPOLoss(loss_type="robust", label_smoothing=-0.1)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("has_bias", [False, True])
+def test_dpo_frozen_weight(compiled, has_bias):
+    B = 4
+    T = 16
+    H = 32
+    V = 64
+    chunk_size = 2
+
+    torch.manual_seed(42)
+    _input = torch.randn(2 * B, T, H, device=device, dtype=torch.float32)
+    _target = torch.randint(0, V, (2 * B, T), device=device, dtype=torch.long)
+    _weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    _bias = torch.randn(V, device=device, dtype=torch.float32) if has_bias else None
+
+    # Full fine-tuning (weight requires grad)
+    input_full = _input.clone().detach().requires_grad_(True)
+    weight_full = _weight.clone().detach().requires_grad_(True)
+    bias_full = _bias.clone().detach().requires_grad_(True) if has_bias else None
+
+    loss_fn_full = LigerFusedLinearDPOLoss(beta=0.1, use_ref_model=False, chunk_size=chunk_size, compiled=compiled)
+    loss_full, *aux_full = loss_fn_full(weight_full, input_full, _target, bias=bias_full)
+    loss_full.backward()
+    assert weight_full.grad is not None
+    if has_bias:
+        assert bias_full.grad is not None
+
+    # LoRA / frozen weight (weight does not require grad)
+    input_lora = _input.clone().detach().requires_grad_(True)
+    weight_lora = _weight.clone().detach().requires_grad_(False)
+    bias_lora = _bias.clone().detach().requires_grad_(False) if has_bias else None
+
+    loss_fn_lora = LigerFusedLinearDPOLoss(beta=0.1, use_ref_model=False, chunk_size=chunk_size, compiled=compiled)
+    loss_lora, *aux_lora = loss_fn_lora(weight_lora, input_lora, _target, bias=bias_lora)
+    loss_lora.backward()
+
+    assert weight_lora.grad is None
+    if has_bias:
+        assert bias_lora.grad is None
+
+    assert_verbose_allclose(loss_full, loss_lora, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(input_full.grad, input_lora.grad, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_dpo_mixed_requires_grad(compiled):
+    B = 2
+    T = 8
+    H = 16
+    V = 32
+
+    torch.manual_seed(42)
+    _input = torch.randn(2 * B, T, H, device=device, dtype=torch.float32)
+    _target = torch.randint(0, V, (2 * B, T), device=device, dtype=torch.long)
+    _weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    _bias = torch.randn(V, device=device, dtype=torch.float32)
+
+    # Reference run: both require grad
+    input_ref = _input.clone().detach().requires_grad_(True)
+    weight_ref = _weight.clone().detach().requires_grad_(True)
+    bias_ref = _bias.clone().detach().requires_grad_(True)
+
+    loss_fn_ref = LigerFusedLinearDPOLoss(beta=0.1, use_ref_model=False, chunk_size=1, compiled=compiled)
+    loss_ref, *aux_ref = loss_fn_ref(weight_ref, input_ref, _target, bias=bias_ref)
+    loss_ref.backward()
+
+    # Mixed run: weight is frozen, bias requires grad
+    input_mixed = _input.clone().detach().requires_grad_(True)
+    weight_mixed = _weight.clone().detach().requires_grad_(False)
+    bias_mixed = _bias.clone().detach().requires_grad_(True)
+
+    loss_fn_mixed = LigerFusedLinearDPOLoss(beta=0.1, use_ref_model=False, chunk_size=1, compiled=compiled)
+    loss_mixed, *aux_mixed = loss_fn_mixed(weight_mixed, input_mixed, _target, bias=bias_mixed)
+    loss_mixed.backward()
+
+    assert weight_mixed.grad is None
+    assert bias_mixed.grad is not None
+    assert_verbose_allclose(loss_ref, loss_mixed, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(input_ref.grad, input_mixed.grad, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(bias_ref.grad, bias_mixed.grad, atol=1e-5, rtol=1e-5)

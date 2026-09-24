@@ -22,6 +22,7 @@ namespace detail {
 // MoE typical sizes top out at 256 experts → 256 PEs; 512 leaves room.
 constexpr int kMaxPEs = 512;
 
+#ifdef __CUDACC__
 // __constant__ storage for the schedule tables, defined in nvshmem.cu. Declared
 // extern here so any kernel that includes this header can read them through the
 // inline accessor below without each TU re-defining the symbol. Resolved across
@@ -30,7 +31,6 @@ constexpr int kMaxPEs = 512;
 extern __constant__ int g_dest_table[kMaxPEs];
 extern __constant__ int g_rank_table[kMaxPEs];
 
-#ifdef __CUDACC__
 // Position of `rank` in the dest_table (inverse permutation). Lets a PE compute
 // "at what step does peer p target me" via
 //   step = (g_rank_table[my_rank] - p + num_pes) % num_pes

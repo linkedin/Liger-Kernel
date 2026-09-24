@@ -152,6 +152,7 @@ pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/
 - `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
 - `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
 - `nvidia-cutlass-dsl >= 4.6.0`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
+- `liger-cute-kernels`: Native CUTLASS + NVSHMEM kernels for Hopper and Blackwell, installed at the exact matching Liger version by the `lck` extra.
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -160,6 +161,12 @@ To install the stable version:
 
 ```bash
 $ pip install liger-kernel
+```
+
+To also install the matching native Liger communication kernels:
+
+```bash
+$ pip install "liger-kernel[lck]"
 ```
 
 To install the nightly version:
@@ -196,6 +203,9 @@ pip install -e ".[cutile-tileiras]"
 
 # Setup CuTe DSL (NVIDIA CUTLASS Python DSL) Dependencies
 pip install -e ".[cutedsl]"
+
+# Setup native Liger communication kernels
+pip install -e ".[lck]"
 
 ```
 
@@ -471,6 +481,7 @@ loss.backward()
 | KLDivergence                    | `liger_kernel.transformers.LigerKLDIVLoss`                  |
 | JSD                             | `liger_kernel.transformers.LigerJSD`                        |
 | Fused Linear JSD                  | `liger_kernel.transformers.LigerFusedLinearJSD`             |
+| Fused Linear KL Divergence        | `liger_kernel.transformers.LigerFusedLinearKLDivLoss`       |
 | TVD                             | `liger_kernel.transformers.LigerTVDLoss`                    |
 
 ### Experimental Kernels

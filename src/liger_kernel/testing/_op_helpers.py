@@ -344,6 +344,7 @@ def assert_op_correctness(
     seed: int = 0,
     device: Optional[torch.device] = None,
     extra: Optional[dict] = None,
+    strict_grad: bool = False,
 ) -> None:
     """Run ``dispatch(op_name, ..., backend=backend)`` and verify forward AND
     backward against the registered PyTorch reference impl.
@@ -466,6 +467,8 @@ def assert_op_correctness(
 
     dw_msg = _close_message("dw", weight.grad, weight_ref.grad, atol=atol_bwd, rtol=rtol_bwd)
     if dw_msg is not None:
+        if strict_grad:
+            raise AssertionError(f"[{ctx}] {dw_msg}")
         ok, sum_msg = sum_based_dw_close(weight.grad, weight_ref.grad, rtol=rtol_bwd, atol=atol_bwd)
         if not ok:
             raise AssertionError(f"[{ctx}] {dw_msg}\nElement-wise dw failed; sum-based fallback also failed: {sum_msg}")
@@ -477,6 +480,8 @@ def assert_op_correctness(
     if op_name == "layer_norm" and bias is not None and bias.requires_grad:
         db_msg = _close_message("db", bias.grad, bias_ref.grad, atol=atol_bwd, rtol=rtol_bwd)
         if db_msg is not None:
+            if strict_grad:
+                raise AssertionError(f"[{ctx}] {db_msg}")
             ok, sum_msg = sum_based_dw_close(bias.grad, bias_ref.grad, rtol=rtol_bwd, atol=atol_bwd)
             if not ok:
                 raise AssertionError(

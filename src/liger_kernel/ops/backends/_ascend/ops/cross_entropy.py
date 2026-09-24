@@ -96,7 +96,8 @@ def liger_cross_entropy_forward_kernel(
     target_row_ptr = Y_ptr + row_start_int64
     logits_row_ptr = X_ptr + row_start_int64 * X_stride
     loss_row_ptr = loss_ptr + row_start_int64
-    lse_row_ptr = lse_ptr + row_start_int64
+    if RETURN_LSE:
+        lse_row_ptr = lse_ptr + row_start_int64
     if RETURN_Z_LOSS:
         z_loss_row_ptr = z_loss_ptr + row_start_int64
     if RETURN_TOKEN_ACCURACY:
@@ -208,55 +209,68 @@ def liger_cross_entropy_forward_kernel_plain(
     X_stride,
     Y_ptr,
     loss_ptr,
+    lse_ptr,
     n_cols,
     n_rows,
     ce_stats_ptr,
     ignore_index,
     reduction: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    HAS_TAIL: tl.constexpr,
+    RETURN_LSE: tl.constexpr,
 ):
     """
-    Plain CE forward fast path (no weight/softcap/smoothing/z-loss/metrics).
-    1 program processes 1 row to maximize parallelism (unlike the generic kernel
-    which chunks rows per program for flexibility).
-    Writes per-row loss to ``loss_ptr`` (float32 recommended).
+    Plain CE fast path (no weight/softcap/smoothing/z-loss/metrics).
+
+    Contiguous row chunks per vector core keep MTE2 sequential. Full tiles are
+    unmasked; ``HAS_TAIL`` is constexpr so the masked remainder is DCE'd when
+    ``n_cols`` divides ``BLOCK_SIZE``. ``tl.range`` pipelines MTE2/VEC/MTE3.
     """
-    row = tl.program_id(0)
-    if row >= n_rows:
-        return
-
-    row_i64 = row.to(tl.int64)
-    y = tl.load(Y_ptr + row_i64)
-
-    # Pre-load mean scaling. For sum/none we treat scale as 1.0.
+    pid = tl.program_id(0)
+    nprog = tl.num_programs(0)
     inv_n = tl.load(ce_stats_ptr + 0).cast(tl.float32)
+    cols = tl.arange(0, BLOCK_SIZE)
+    n_full = (n_cols // BLOCK_SIZE) * BLOCK_SIZE
+    row_chunk = (n_rows + nprog - 1) // nprog
+    row_start = pid * row_chunk
+    row_end = tl.minimum(row_start + row_chunk, n_rows)
 
-    if y == ignore_index:
-        tl.store(loss_ptr + row_i64, 0.0)
-        return
-    logits_row_ptr = X_ptr + row_i64 * X_stride
-    m = float("-inf")
-    d = 0.0
-    # Keep x[y] as a direct load outside the scan. Folding it into the block
-    # loop adds extra selection state and tends to increase UB/register pressure
-    # on Ascend.
-    x_y = tl.load(logits_row_ptr + y).cast(tl.float32)
-    for i in range(0, n_cols, BLOCK_SIZE):
-        offs = i + tl.arange(0, BLOCK_SIZE)
-        x = tl.load(
-            logits_row_ptr + offs,
-            mask=offs < n_cols,
-            other=float("-inf"),
-        ).cast(tl.float32)
-        block_max = tl.max(x)
-        m_new = tl.maximum(m, block_max)
-        d = d * tl.exp(m - m_new) + tl.sum(tl.exp(x - m_new))
-        m = m_new
-    lse = m + tl.log(d)
-    loss = lse - x_y
-    if reduction == "mean":
-        loss = loss * inv_n
-    tl.store(loss_ptr + row_i64, loss)
+    for row in tl.range(row_start, row_end):
+        row_i64 = tl.cast(row, tl.int64)
+        y = tl.load(Y_ptr + row_i64)
+        logits_row_ptr = X_ptr + row_i64 * X_stride
+
+        if y == ignore_index:
+            tl.store(loss_ptr + row_i64, 0.0)
+            if RETURN_LSE:
+                tl.store(lse_ptr + row_i64, 0.0)
+        else:
+            # Clamp so an out-of-range target cannot DMA-fault before the host
+            # OOB assert (queued after this kernel) raises AssertionError.
+            y_idx = tl.minimum(tl.maximum(y, 0), n_cols - 1)
+            x_y = tl.load(logits_row_ptr + y_idx).cast(tl.float32)
+            m = float("-inf")
+            d = 0.0
+            for i in tl.range(0, n_full, BLOCK_SIZE):
+                x = tl.load(logits_row_ptr + i + cols).cast(tl.float32)
+                block_max = tl.max(x)
+                m_new = tl.maximum(m, block_max)
+                d = d * tl.exp(m - m_new) + tl.sum(tl.exp(x - m_new))
+                m = m_new
+            if HAS_TAIL:
+                offs = n_full + cols
+                x = tl.load(logits_row_ptr + offs, mask=offs < n_cols, other=float("-inf")).cast(tl.float32)
+                block_max = tl.max(x)
+                m_new = tl.maximum(m, block_max)
+                d = d * tl.exp(m - m_new) + tl.sum(tl.exp(x - m_new))
+                m = m_new
+            lse = m + tl.log(d)
+            if RETURN_LSE:
+                tl.store(lse_ptr + row_i64, lse)
+            loss = lse - x_y
+            if reduction == "mean":
+                loss = loss * inv_n
+            tl.store(loss_ptr + row_i64, loss)
 
 
 @triton.jit
@@ -276,6 +290,7 @@ def liger_cross_entropy_backward_kernel_no_weight(
     reduction: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     HAS_LSE: tl.constexpr,
+    HAS_TAIL: tl.constexpr,
 ):
     """
     Specialized backward kernel for the common path without class weights, softcap, z-loss, or label smoothing.
@@ -286,7 +301,7 @@ def liger_cross_entropy_backward_kernel_no_weight(
         X_stride (int64): Stride between consecutive logits rows.
         Y_ptr: Target class index per row; ignored rows receive zero ``dX``.
         lse_ptr: Per-row LSE (fp32) when ``HAS_LSE``; otherwise aliases per-row loss buffer for LSE reconstruction.
-        grad_output_ptr: Scalar loss gradient or per-row vector (see ``HAS_GRAD_OUTPUT_VECTOR``).
+        grad_output_ptr: Scalar loss gradient, or per-row vector when ``reduction == "none"``.
         grad_output_stride (int64): Stride for vector ``grad_output`` (``0`` when scalar).
         dX_ptr: Output logits gradient; same logical layout as ``X_ptr`` with stride ``dX_stride``.
         dX_stride (int64): Stride between ``dX`` rows.
@@ -309,62 +324,54 @@ def liger_cross_entropy_backward_kernel_no_weight(
 
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
-
+    scale_factor = tl.load(ce_stats_ptr + 0).cast(tl.float32)
+    cols = tl.arange(0, BLOCK_SIZE)
+    n_full = (n_cols // BLOCK_SIZE) * BLOCK_SIZE
     row_chunk = (n_rows + num_progs - 1) // num_progs
     row_start = pid * row_chunk
     row_end = tl.minimum(row_start + row_chunk, n_rows)
+    if reduction != "none":
+        grad_scale_scalar = tl.load(grad_output_ptr).cast(tl.float32)
+        final_scale_scalar = grad_scale_scalar * scale_factor
 
-    scale_factor = tl.load(ce_stats_ptr + 0)
+    for row_idx in tl.range(row_start, row_end):
+        row_i64 = tl.cast(row_idx, tl.int64)
+        y = tl.load(Y_ptr + row_i64)
+        logits_row_ptr = X_ptr + row_i64 * X_stride
+        dX_row_ptr = dX_ptr + row_i64 * dX_stride
 
-    for row_idx in range(row_start, row_end):
-        program_id = row_idx.to(tl.int64)
-        y = tl.load(Y_ptr + program_id)
-        X_ptr_offset = program_id * X_stride
-        dX_ptr_offset = program_id * dX_stride
-
-        # grad_output is a vector if reduction == "none"; otherwise, it is a scalar.
-        grad_scale = (
-            tl.load(grad_output_ptr + program_id * grad_output_stride)
-            if reduction == "none"
-            else tl.load(grad_output_ptr)
-        ).cast(tl.float32)
-
-        final_scale = grad_scale * scale_factor
+        if reduction == "none":
+            final_scale = tl.load(grad_output_ptr + row_i64 * grad_output_stride).cast(tl.float32) * scale_factor
+        else:
+            final_scale = final_scale_scalar
 
         if y == ignore_index:
-            for i in range(0, n_cols, BLOCK_SIZE):
-                X_offsets = i + tl.arange(0, BLOCK_SIZE)
-                tl.store(dX_ptr + dX_ptr_offset + X_offsets, 0.0, mask=X_offsets < n_cols)
+            for i in tl.range(0, n_full, BLOCK_SIZE):
+                tl.store(dX_row_ptr + i + cols, 0.0)
+            if HAS_TAIL:
+                offs = n_full + cols
+                tl.store(dX_row_ptr + offs, 0.0, mask=offs < n_cols)
         else:
+            y_idx = tl.minimum(tl.maximum(y, 0), n_cols - 1)
+            x_y = tl.load(logits_row_ptr + y_idx).cast(tl.float32)
             if HAS_LSE:
-                lse = tl.load(lse_ptr + program_id).cast(tl.float32)
+                lse = tl.load(lse_ptr + row_i64).cast(tl.float32)
             else:
-                loss_row = tl.load(lse_ptr + program_id).cast(tl.float32)
-                x_y = tl.load(X_ptr + X_ptr_offset + y).cast(tl.float32)
+                loss_row = tl.load(lse_ptr + row_i64).cast(tl.float32)
                 if reduction == "mean":
-                    inv_n = tl.load(ce_stats_ptr + 0).cast(tl.float32)
-                    lse = loss_row / inv_n + x_y
+                    lse = loss_row / scale_factor + x_y
                 else:
-                    # Per-row loss was stored without mean scaling (``reduction`` ``sum`` or ``none``).
                     lse = loss_row + x_y
 
-            ori_X_y = tl.load(X_ptr + X_ptr_offset + y).cast(tl.float32)
-            for i in range(0, n_cols, BLOCK_SIZE):
-                X_offsets = i + tl.arange(0, BLOCK_SIZE)
-                X_block = tl.load(
-                    X_ptr + X_ptr_offset + X_offsets,
-                    mask=X_offsets < n_cols,
-                    other=float("-inf"),
-                ).cast(tl.float32)
-                grad = tl.exp(X_block - lse) * final_scale
-                tl.store(dX_ptr + dX_ptr_offset + X_offsets, grad, mask=X_offsets < n_cols)
-
-            # Recompute dx_y in fp32 and overwrite dX[y]. A read-modify-write of the
-            # low-precision value stored in the loop loses bits when softmax(x_y) -> 1.
-            tl.debug_barrier()
-            softmax_X_y = tl.exp(ori_X_y - lse)
-            dx_y = (softmax_X_y - 1.0) * final_scale
-            tl.store(dX_ptr + dX_ptr_offset + y, dx_y)
+            for i in tl.range(0, n_full, BLOCK_SIZE):
+                x = tl.load(logits_row_ptr + i + cols).cast(tl.float32)
+                tl.store(dX_row_ptr + i + cols, tl.exp(x - lse) * final_scale)
+            if HAS_TAIL:
+                offs = n_full + cols
+                x = tl.load(logits_row_ptr + offs, mask=offs < n_cols, other=float("-inf")).cast(tl.float32)
+                tl.store(dX_row_ptr + offs, tl.exp(x - lse) * final_scale, mask=offs < n_cols)
+            dx_y = (tl.exp(x_y - lse) - 1.0) * final_scale
+            tl.store(dX_row_ptr + y_idx, dx_y)
 
 
 @triton.jit
@@ -431,15 +438,13 @@ def liger_cross_entropy_backward_kernel(
     weight_sum = tl.load(ce_stats_ptr + 2)
 
     for row_idx in range(row_start, row_end):
-        program_id = row_idx.to(tl.int64)
-        y = tl.load(Y_ptr + program_id)
-        X_ptr_offset = program_id * X_stride
-        dX_ptr_offset = program_id * dX_stride
+        row_i64 = row_idx.to(tl.int64)
+        y = tl.load(Y_ptr + row_i64)
+        X_ptr_offset = row_i64 * X_stride
+        dX_ptr_offset = row_i64 * dX_stride
         # grad_output is a vector if reduction == "none"; otherwise, it is a scalar.
         grad_scale = (
-            tl.load(grad_output_ptr + program_id * grad_output_stride)
-            if reduction == "none"
-            else tl.load(grad_output_ptr)
+            tl.load(grad_output_ptr + row_i64 * grad_output_stride) if reduction == "none" else tl.load(grad_output_ptr)
         ).cast(tl.float32)
 
         if y == ignore_index:
@@ -449,7 +454,7 @@ def liger_cross_entropy_backward_kernel(
         else:
             if HAS_WEIGHT:
                 weight_y = tl.load(weight_ptr + y).cast(tl.float32)
-            lse = tl.load(lse_ptr + program_id).cast(tl.float32)
+            lse = tl.load(lse_ptr + row_i64).cast(tl.float32)
             eps = label_smoothing / n_cols
             eps_weight_sum = eps * weight_sum
             z_scale = 1.0 + 2.0 * lse_square_scale * lse
@@ -499,51 +504,55 @@ def liger_cross_entropy_backward_kernel(
 
 def get_optimal_block_size(n_cols, has_gradients=True):
     """
-    Pick Triton block size along the vocabulary dimension for Ascend.
+    Pick Triton block size along the vocabulary dimension for the generic CE kernels.
 
-    Uses fixed thresholds when ``has_gradients`` is True; otherwise falls back to
-    ``compute_default_tiling_strategy`` with an NPU-oriented memory multiplier.
-
-    Args:
-        n_cols (int): Vocabulary size (number of columns).
-        has_gradients (bool): If True, use the fast heuristic table for backward-style kernels;
-            if False, query tiling strategy for forward-only sizing.
-
-    Returns:
-        int: Block size (positive). Defaults to 4096 when tiling yields nothing.
+    The generic kernel keeps extra live tiles (smoothing / softcap / weights /
+    argmax), so the multiplier is more conservative than the plain path.
     """
-    if has_gradients:
-        if n_cols <= 32768:
-            return 1024
-        if n_cols <= 131072:
-            return 2048
-        return 4096
-
-    multiplier = 12.0 if has_gradients else 8.0
-
+    multiplier = 8.0 if has_gradients else 6.0
     tile_shapes = compute_default_tiling_strategy(
-        safety_margin=0.9, dtype_size=4, memory_multiplier=multiplier, shapes=((n_cols,),), tiling_dims=(0,)
+        safety_margin=0.85, dtype_size=4, memory_multiplier=multiplier, shapes=((n_cols,),), tiling_dims=(0,)
     )
-    if tile_shapes and len(tile_shapes) > 0:
-        block_size = tile_shapes[0][0]
-        return block_size
-    else:
-        return 4096
+    if tile_shapes:
+        return max(256, tile_shapes[0][0])
+    return 4096
 
 
-def get_no_weight_fast_path_block_size(n_cols):
-    """
-    Block size for the no-weight backward fast path kernel.
+def get_plain_ce_block_size(n_cols, has_gradients=False):
+    """Block size for the plain / no-weight kernels (smaller live set)."""
+    multiplier = 4.0 if has_gradients else 2.5
+    tile_shapes = compute_default_tiling_strategy(
+        safety_margin=0.85, dtype_size=4, memory_multiplier=multiplier, shapes=((n_cols,),), tiling_dims=(0,)
+    )
+    if tile_shapes:
+        return max(256, tile_shapes[0][0])
+    return 4096
 
-    Args:
-        n_cols (int): Vocabulary size.
 
-    Returns:
-        int: ``2048`` when ``n_cols <= 4096``, otherwise ``get_optimal_block_size(n_cols, True)``.
-    """
-    if n_cols <= 4096:
-        return 2048
-    return get_optimal_block_size(n_cols, has_gradients=True)
+def _plain_ce_need_mask(n_cols, block_size):
+    return (n_cols % block_size) != 0
+
+
+def _is_plain_ce(
+    weight,
+    label_smoothing,
+    softcap,
+    lse_square_scale,
+    return_z_loss=False,
+    return_lse=False,
+    return_token_accuracy=False,
+    return_predicted_tokens=False,
+):
+    return (
+        weight is None
+        and label_smoothing == 0.0
+        and softcap is None
+        and float(lse_square_scale) == 0.0
+        and not return_z_loss
+        and not return_lse
+        and not return_token_accuracy
+        and not return_predicted_tokens
+    )
 
 
 def _make_ce_stats_buffer(
@@ -650,13 +659,25 @@ def cross_entropy_forward(
         f"return_predicted_tokens must be True or False. Got: {return_predicted_tokens}"
     )
 
-    BT, V = _input.shape
-    n_rows = BT
+    n_rows, V = _input.shape
 
-    BLOCK_SIZE = get_optimal_block_size(V, has_gradients=False)
-
-    # unreduced loss
-    loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
+    # Plain fused kernel writes every row (including ignore → 0). The generic
+    # kernel skips the loss store on ignored rows, so those must start at 0.
+    plain_lm = _is_plain_ce(
+        weight,
+        label_smoothing,
+        softcap,
+        lse_square_scale,
+        return_z_loss,
+        return_lse,
+        return_token_accuracy,
+        return_predicted_tokens,
+    )
+    loss_1d = (
+        torch.empty(n_rows, dtype=_input.dtype, device=_input.device)
+        if plain_lm
+        else torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
+    )
     z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device) if return_z_loss else None
     # Triton requires a tensor pointer; when ``return_lse`` is False the kernel never reads/writes LSE
     # (``RETURN_LSE`` false), so we pass ``loss_1d`` as the unused binding (``None`` is not supported).
@@ -670,16 +691,11 @@ def cross_entropy_forward(
     )
 
     target_mask = target != ignore_index
-    invalid_target_mask = target_mask & ((target < 0) | (target >= V))
-    assert not torch.any(invalid_target_mask), (
-        f"Target tensor contains out of bounds values. Expected targets in [0, {V}) or ignore_index={ignore_index}"
-    )
+    invalid_any = (target_mask & ((target < 0) | (target >= V))).any()
 
     ce_stats = _make_ce_stats_buffer(target, ignore_index, weight, reduction, target_mask=target_mask)
-    if weight is not None:
-        # ensure weight is contiguous
-        if weight.stride(-1) != 1:
-            weight = weight.contiguous()
+    if weight is not None and weight.stride(-1) != 1:
+        weight = weight.contiguous()
 
     # ensure _input and target are contiguous in the last dimension
     if _input.stride(-1) != 1:
@@ -687,67 +703,59 @@ def cross_entropy_forward(
     if target.stride(-1) != 1:
         target = target.contiguous()
 
-    # NPU-optimized grid configuration
-    # grid_size = min(get_npu_core_count(), n_rows)
-
     cores = min(get_npu_core_count(), n_rows)
-    plain_lm = (
-        weight is None
-        and label_smoothing == 0.0
-        and softcap is None
-        and float(lse_square_scale) == 0.0
-        and not return_z_loss
-        and not return_lse
-        and not return_token_accuracy
-        and not return_predicted_tokens
-    )
     if plain_lm:
-        ts = compute_default_tiling_strategy(
-            safety_margin=0.9,
-            dtype_size=4,
-            memory_multiplier=2.5,
-            shapes=((V,),),
-            tiling_dims=(0,),
+        BLOCK_SIZE = get_plain_ce_block_size(V)
+        liger_cross_entropy_forward_kernel_plain[(cores,)](
+            X_ptr=_input,
+            X_stride=_input.stride(-2),
+            Y_ptr=target,
+            loss_ptr=loss_1d,
+            lse_ptr=lse_ptr_for_kernel,
+            n_cols=V,
+            n_rows=n_rows,
+            ce_stats_ptr=ce_stats,
+            ignore_index=ignore_index,
+            reduction=reduction,
+            BLOCK_SIZE=BLOCK_SIZE,
+            HAS_TAIL=_plain_ce_need_mask(V, BLOCK_SIZE),
+            RETURN_LSE=return_lse,
         )
-        BLOCK_SIZE = max(256, ts[0][0]) if ts else 8192
-        grid_size = n_rows if n_rows <= 1024 else cores
     else:
         BLOCK_SIZE = get_optimal_block_size(V, has_gradients=False)
-        grid_size = cores
+        ls_eps = float(label_smoothing) / float(V) if label_smoothing else 0.0
+        liger_cross_entropy_forward_kernel[(cores,)](
+            X_ptr=_input,
+            X_stride=_input.stride(-2),
+            Y_ptr=target,
+            weight_ptr=weight,
+            loss_ptr=loss_1d,
+            z_loss_ptr=z_loss_1d,
+            lse_ptr=lse_ptr_for_kernel,
+            token_accuracy_ptr=token_accuracy_1d,
+            token_accuracy_stride=token_accuracy_1d.stride(-1) if return_token_accuracy else 0,
+            predicted_tokens_ptr=predicted_tokens_1d,
+            predicted_tokens_stride=predicted_tokens_1d.stride(-1) if return_predicted_tokens else 0,
+            n_cols=V,
+            n_rows=n_rows,
+            ce_stats_ptr=ce_stats,
+            ignore_index=ignore_index,
+            ls_eps=ls_eps,
+            lse_square_scale=lse_square_scale,
+            label_smoothing=label_smoothing,
+            reduction=reduction,
+            softcap=softcap,
+            RETURN_Z_LOSS=return_z_loss,
+            RETURN_LSE=return_lse,
+            RETURN_TOKEN_ACCURACY=return_token_accuracy,
+            RETURN_PREDICTED_TOKENS=return_predicted_tokens,
+            BLOCK_SIZE=BLOCK_SIZE,
+            HAS_WEIGHT=weight is not None,
+            HAS_SOFTCAPPING=softcap is not None,
+        )
 
-    ls_eps = float(label_smoothing) / float(V) if label_smoothing else 0.0
-    liger_cross_entropy_forward_kernel[(grid_size,)](
-        X_ptr=_input,
-        X_stride=_input.stride(-2),
-        Y_ptr=target,
-        weight_ptr=weight,
-        loss_ptr=loss_1d,
-        z_loss_ptr=z_loss_1d,
-        lse_ptr=lse_ptr_for_kernel,
-        token_accuracy_ptr=token_accuracy_1d,
-        token_accuracy_stride=token_accuracy_1d.stride(-1)
-        if return_token_accuracy
-        else 0,  # always 1 if accuracy is enabled
-        predicted_tokens_ptr=predicted_tokens_1d,
-        predicted_tokens_stride=predicted_tokens_1d.stride(-1)
-        if return_predicted_tokens
-        else 0,  # always 1 if predicted tokens is enabled
-        n_cols=V,
-        n_rows=n_rows,
-        ce_stats_ptr=ce_stats,
-        ignore_index=ignore_index,
-        ls_eps=ls_eps,
-        lse_square_scale=lse_square_scale,
-        label_smoothing=label_smoothing,
-        reduction=reduction,
-        softcap=softcap,
-        RETURN_Z_LOSS=return_z_loss,
-        RETURN_LSE=return_lse,
-        RETURN_TOKEN_ACCURACY=return_token_accuracy,
-        RETURN_PREDICTED_TOKENS=return_predicted_tokens,
-        BLOCK_SIZE=BLOCK_SIZE,
-        HAS_WEIGHT=True if weight is not None else False,
-        HAS_SOFTCAPPING=True if softcap is not None else False,
+    assert not invalid_any.item(), (
+        f"Target tensor contains out of bounds values. Expected targets in [0, {V}) or ignore_index={ignore_index}"
     )
 
     if reduction == "none":
@@ -791,10 +799,9 @@ def cross_entropy_backward(
     softcap,
     ce_stats=None,
     derive_lse_from_loss: bool = False,
+    out=None,
 ):
-    BT, V = _input.shape
-    n_rows = BT
-    BLOCK_SIZE = get_optimal_block_size(V, has_gradients=True)
+    n_rows, V = _input.shape
     # If reduction == "none", then grad_output is a vector (corresponding to row-wise gradients); otherwise, it is a scalar.
     has_grad_output_vector = reduction == "none"
 
@@ -805,12 +812,17 @@ def cross_entropy_backward(
 
     if _input.stride(-1) != 1:
         _input = _input.contiguous()
+        if out is not None:
+            out = _input
     if target.stride(-1) != 1:
         target = target.contiguous()
     if has_grad_output_vector and grad_output.stride(-1) != 1:
         grad_output = grad_output.contiguous()
 
-    grad_input = torch.empty_like(_input)
+    # Last-layer (``grad_output == 1``): ``out`` is the logits buffer, so the
+    # kernel overwrites it in-place (one BT×V peak). Non-unit scale allocates
+    # a fresh tensor to avoid AccumulateGrad TensorMove on a leaf.
+    grad_input = out if out is not None else torch.empty_like(_input)
     grid_size = min(get_npu_core_count(), n_rows)
     grad_output_stride = grad_output.stride(-1) if has_grad_output_vector else 0
     use_no_weight_fast_path = weight is None and softcap is None and label_smoothing == 0.0 and lse_square_scale == 0.0
@@ -818,7 +830,7 @@ def cross_entropy_backward(
     # Only the no-weight kernel matches plain CE; mean/sum reductions with weights/smoothing/softcap/z-loss
     # must use the general backward kernel regardless of grad_output layout.
     if use_no_weight_fast_path:
-        fast_path_block_size = get_no_weight_fast_path_block_size(V)
+        fast_path_block_size = get_plain_ce_block_size(V, has_gradients=True)
         liger_cross_entropy_backward_kernel_no_weight[(grid_size,)](
             X_ptr=_input,
             X_stride=_input.stride(-2),
@@ -835,8 +847,10 @@ def cross_entropy_backward(
             reduction=reduction,
             BLOCK_SIZE=fast_path_block_size,
             HAS_LSE=not derive_lse_from_loss,
+            HAS_TAIL=_plain_ce_need_mask(V, fast_path_block_size),
         )
     else:
+        BLOCK_SIZE = get_optimal_block_size(V, has_gradients=True)
         liger_cross_entropy_backward_kernel[(grid_size,)](
             X_ptr=_input,
             X_stride=_input.stride(-2),
@@ -856,8 +870,8 @@ def cross_entropy_backward(
             reduction=reduction,
             softcap=softcap,
             BLOCK_SIZE=BLOCK_SIZE,
-            HAS_WEIGHT=True if weight is not None else False,
-            HAS_SOFTCAPPING=True if softcap is not None else False,
+            HAS_WEIGHT=weight is not None,
+            HAS_SOFTCAPPING=softcap is not None,
         )
 
     return grad_input
@@ -985,6 +999,10 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         else:
             _input, target, lse_or_loss = ctx.saved_tensors
             weight = None
+        go_ptr = grad_output.data_ptr() if grad_output is not None else None
+        if getattr(ctx, "_last_layer_ptr", None) != go_ptr:
+            ctx._last_layer_ptr = go_ptr
+            ctx._last_layer = ctx.reduction != "none" and grad_output.ndim == 0 and grad_output.item() == 1.0
         _input = cross_entropy_backward(
             _input,
             target,
@@ -998,6 +1016,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             ctx.softcap,
             ctx.ce_stats,
             derive_lse_from_loss=ctx.derive_lse_from_loss,
+            out=_input if ctx._last_layer else None,
         )
         return (
             _input,

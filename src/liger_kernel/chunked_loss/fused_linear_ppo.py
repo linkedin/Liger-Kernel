@@ -68,10 +68,22 @@ def _selective_logprob_forward(
     return logprobs, log_z
 
 
-def _selective_logprob_backward(hidden, weight, targets, bias, log_z, grad_logprobs, temperature, vocab_chunk_size):
+def _selective_logprob_backward(
+    hidden,
+    weight,
+    targets,
+    bias,
+    log_z,
+    grad_logprobs,
+    temperature,
+    vocab_chunk_size,
+    compute_grad_weight=True,
+    compute_grad_bias=True,
+):
     """Dual-chunked (sequence × vocab) backward for selective logprob.
 
-    Recomputes logits per chunk for memory efficiency.
+    Recomputes logits per chunk for memory efficiency. The weight and bias gradients (a buffer the size of
+    the weight and one GEMM per chunk) are only computed when requested, e.g. not for a frozen lm_head.
     """
     inv_t = 1.0 / temperature
     n_rows, _ = hidden.shape
@@ -80,8 +92,9 @@ def _selective_logprob_backward(hidden, weight, targets, bias, log_z, grad_logpr
     seq_chunk_size = _SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE
 
     grad_hidden = torch.zeros(hidden.shape, device=hidden.device, dtype=torch.float32)
-    grad_weight = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
-    grad_bias = torch.zeros((vocab_size,), device=weight.device, dtype=torch.float32) if has_bias else None
+    compute_grad_bias = compute_grad_bias and has_bias
+    grad_weight = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32) if compute_grad_weight else None
+    grad_bias = torch.zeros((vocab_size,), device=weight.device, dtype=torch.float32) if compute_grad_bias else None
 
     grad_logprobs = grad_logprobs.to(torch.float32)
 
@@ -110,8 +123,9 @@ def _selective_logprob_backward(hidden, weight, targets, bias, log_z, grad_logpr
             grad_logits.mul_(inv_t)
 
             grad_hidden[seq_start:seq_end].add_(grad_logits @ weight_chunk.float())
-            grad_weight[vocab_start:vocab_end].add_(grad_logits.t() @ hidden_chunk.float())
-            if has_bias:
+            if compute_grad_weight:
+                grad_weight[vocab_start:vocab_end].add_(grad_logits.t() @ hidden_chunk.float())
+            if compute_grad_bias:
                 grad_bias[vocab_start:vocab_end].add_(grad_logits.sum(dim=0))
 
     return grad_hidden, grad_weight, grad_bias
@@ -147,12 +161,14 @@ class _ChunkedSelectiveLogProbFunction(torch.autograd.Function):
             grad_logprobs=grad_logprobs,
             temperature=ctx.temperature,
             vocab_chunk_size=ctx.vocab_chunk_size,
+            compute_grad_weight=ctx.needs_input_grad[1],
+            compute_grad_bias=ctx.has_bias and ctx.needs_input_grad[3],
         )
         return (
             grad_hidden.to(hidden.dtype),
-            grad_weight.to(weight.dtype),
+            grad_weight.to(weight.dtype) if grad_weight is not None else None,
             None,
-            grad_bias.to(bias.dtype) if ctx.has_bias else None,
+            grad_bias.to(bias.dtype) if grad_bias is not None else None,
             None,
             None,
         )
@@ -231,9 +247,12 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 vllm_is_ratio = vllm_is_ratio.unsqueeze(-1)  # (B,) -> (B, 1) for broadcasting
         # Initialize accumulators
         loss_acc = torch.zeros((), device=_input.device, dtype=torch.float32)
-        grad_weight = torch.zeros_like(weight)  # [V, H]
+        # Determine which parameters require gradients (a frozen lm_head under LoRA/PEFT does not)
+        weight_requires_grad = weight.requires_grad
+        bias_requires_grad = bias is not None and bias.requires_grad
+        grad_weight = torch.zeros_like(weight) if weight_requires_grad else None  # [V, H]
         grad_inputs = []
-        grad_bias = torch.zeros_like(bias) if bias is not None else None  # [V]
+        grad_bias = torch.zeros_like(bias) if bias_requires_grad else None  # [V]
         aggregated_metrics = []
 
         # Only compile the loss math, NOT chunk_forward (which uses custom autograd.Function)
@@ -272,8 +291,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             """Fused forward and backward for a chunk."""
             with torch.enable_grad():
                 input_chunk = input_chunk.detach().requires_grad_(True)
-                weight_local = weight.detach().requires_grad_(True)
-                bias_local = bias.detach().requires_grad_(True) if bias is not None else None
+                weight_local = weight.detach().requires_grad_(weight_requires_grad)
+                bias_local = bias.detach().requires_grad_(bias_requires_grad) if bias is not None else None
 
                 # Step 1: compute logprobs OUTSIDE compile (custom autograd, memory-efficient)
                 per_token_logps = LigerFusedLinearPPOBase.chunk_forward(
@@ -305,8 +324,10 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                     vllm_is_ratio_chunk=vllm_is_ratio_chunk,
                 )
 
-                grad_targets = [input_chunk, weight_local]
-                if bias_local is not None:
+                grad_targets = [input_chunk]
+                if weight_requires_grad:
+                    grad_targets.append(weight_local)
+                if bias_requires_grad:
                     grad_targets.append(bias_local)
                 grads = torch.autograd.grad(chunk_loss, grad_targets)
             return grads, (chunk_loss.detach(), tuple(metric.detach() for metric in chunk_metrics))
@@ -321,7 +342,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             ref_input_chunk=None,
             vllm_is_ratio_chunk=None,
         ):
-            (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
+            (chunk_grad_input, *chunk_grad_params), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
                 input_chunk,
                 selected_token_ids_chunk,
                 attention_mask_chunk,
@@ -331,11 +352,12 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 ref_input_chunk,
                 vllm_is_ratio_chunk,
             )
-            if bias is not None:
-                grad_bias.add_(chunk_grad_bias[0])
-
-            # Accumulate gradients and loss
-            grad_weight.add_(chunk_grad_weight)
+            # Accumulate gradients and loss (weight and bias gradients follow the input's, in that order,
+            # for whichever of them require grad)
+            if weight_requires_grad:
+                grad_weight.add_(chunk_grad_params.pop(0))
+            if bias_requires_grad:
+                grad_bias.add_(chunk_grad_params.pop(0))
             grad_inputs.append(chunk_grad_input)
             loss_acc.add_(chunk_loss)
             # Initialize storage for metrics on first chunk
@@ -551,7 +573,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
 
         if grad_output != 1.0:
             grad_input = grad_input * grad_output
-            grad_weight = grad_weight * grad_output
+            if grad_weight is not None:
+                grad_weight = grad_weight * grad_output
             if grad_bias is not None:
                 grad_bias = grad_bias * grad_output
 
