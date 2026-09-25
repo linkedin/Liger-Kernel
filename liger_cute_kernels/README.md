@@ -304,14 +304,18 @@ src/liger_kernel/ops/cute/
 
 ## Prerequisites
 
-- **CUDA toolkit** with `nvcc` and either SM 9.0a (Hopper / `sm_90a`) or
+- **CUDA toolkit 12.9** with `nvcc` (release builds pin 12.9.1) and either SM 9.0a (Hopper / `sm_90a`) or
   Blackwell family (`sm_100f`) support. The family target covers both B200
   (`sm_100`) and B300 (`sm_103`) while enabling TCGEN05 UMMA and TMEM.
+  CUDA 13.0 also builds the Hopper path, but currently rejects mixed
+  `.cta_group::1`/`.cta_group::2` instructions in the Blackwell MoE backward
+  kernel; the combined release wheel therefore remains on CUDA 12.9.
 - **NVSHMEM** install (host `.so`, device `.a`, headers). Two layouts are
   supported:
   - Native/system install: point `NVSHMEM_HOME` at it, or use the default
     `/usr/local/nvshmem`.
-  - PyPI install: install `nvidia-nvshmem-cu12==3.6.5`. The Python wheel
+  - PyPI install: install `nvidia-nvshmem-cu12==3.6.5` for CUDA 12.9 or
+    `nvidia-nvshmem-cu13==3.6.5` for CUDA 13. The Python wheel
     builder and `build_core()` auto-detect that package layout and create
     unversioned compatibility symlinks for CMake when needed. For direct CMake
     invocation, pass the package root as `-DNVSHMEM_HOME=...`; the find module
@@ -481,8 +485,33 @@ This module's `setup.py` packages the native libraries into the independent
 **`liger-cute-kernels`** distribution. The release wheel contains both
 `libliger_cute_kernels_sm90a.so` and
 `libliger_cute_kernels_sm100f.so`; NVSHMEM is installed independently through
-the pinned `nvidia-nvshmem-cu12` dependency. Build against the local
-CUDA/NVSHMEM environment (no build isolation), from this module directory:
+the optional `cu12` or `cu13` extra, pinned to version `3.6.5`.
+The base package does not install either NVSHMEM distribution. The release workflow builds
+both cores with CUDA Toolkit **12.9.1** in a digest-pinned
+`nvidia/cuda:12.9.1-devel-ubuntu22.04` container.
+The Linux x86-64/glibc 2.35 wheel baseline and GPU targets are unchanged.
+
+Release-wheel consumers need a CUDA 12-compatible runtime and NVIDIA driver. Do not mix
+CUDA 12 cores with the CUDA 13 NVSHMEM package or vice versa; both distributions install
+into `nvidia/nvshmem`, so use a clean environment rather than installing
+`nvidia-nvshmem-cu12` and `nvidia-nvshmem-cu13` together. Previously published
+CUDA 12.9 wheels are not changed by this build update.
+
+Choose the NVSHMEM dependency explicitly when installing a built wheel:
+
+```bash
+python -m pip install "liger-cute-kernels[cu12]"
+# For a local Hopper wheel built with CUDA 13:
+python -m pip install "/path/to/liger_cute_kernels-<version>-py3-none-linux_x86_64.whl[cu13]"
+```
+
+Extras select dependencies only; they neither choose the CUDA compiler nor
+convert the packaged binaries to another CUDA version. Do not request
+`[cu12,cu13]`: both packages write to the same namespace. Existing system-managed
+NVSHMEM users can install the base wheel without either extra.
+
+Build against the local CUDA 12.9/NVSHMEM environment (no build isolation),
+from this module directory:
 
 ```bash
 cd liger_cute_kernels
@@ -492,6 +521,14 @@ LIGER_CUTE_CUDA_ARCHS=90a,100f \
 # Release build:
 # -> dist/liger_cute_kernels-<liger-version>-py3-none-manylinux_2_35_x86_64.whl
 ```
+
+For a Hopper-only CUDA 13 build, select that toolkit's `nvcc`, install
+`nvidia-nvshmem-cu13==3.6.5` in a separate environment, and use
+`LIGER_CUTE_CUDA_ARCHS=90a` instead.
+NVSHMEM must be installed **before** compiling from source; pip's extras are
+runtime dependencies and do not provision native build prerequisites before
+the wheel-build step. After provisioning the prerequisites, a source install
+can use `pip install --no-build-isolation ".[cu12]"` or `".[cu13]"`.
 
 For a native NVSHMEM install:
 
@@ -617,4 +654,5 @@ The core should export only `liger_cute_*` symbols and have no direct
   `tvm_ffi.load_module`.
 - NVSHMEM is not copied into the LCK wheel. The loader preloads
   `libnvshmem_host.so.3` from the separately installed
-  `nvidia-nvshmem-cu12==3.6.5` package.
+  `nvidia-nvshmem-cu12==3.6.5` or `nvidia-nvshmem-cu13==3.6.5` package,
+  matching the native core's build toolkit.
