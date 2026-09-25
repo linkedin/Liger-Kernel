@@ -13,6 +13,8 @@ the Triton kernel — so a Triton bug doesn't mask a cuTile bug (or vice versa).
 
 from __future__ import annotations
 
+import math
+
 from typing import List
 from typing import Optional
 
@@ -84,6 +86,22 @@ def _pytorch_jsd_reference(
 
     total = loss.sum() / n_non_ignore
     return total.to(log_q.dtype)
+
+
+def _logspace_jsd_reference(log_q: torch.Tensor, log_p: torch.Tensor, beta: float) -> torch.Tensor:
+    """Generalized JSD with the mixture formed in log space.
+
+    ``_pytorch_jsd_reference`` mirrors the kernel's probability-space mixture,
+    so it NaNs on the very inputs the underflow regression uses. Forming the
+    mixture as ``log_M = logaddexp(log(beta) + Y, log(1 - beta) + X)`` keeps
+    ``log_M`` finite whenever either side is finite.
+    """
+    log_q_f = log_q.float()
+    log_p_f = log_p.float()
+    log_m = torch.logaddexp(log_p_f + math.log(beta), log_q_f + math.log1p(-beta))
+    m = torch.exp(log_m)
+    loss = beta * torch.exp(log_p_f) * log_p_f + (1.0 - beta) * torch.exp(log_q_f) * log_q_f - m * log_m
+    return loss.sum() / log_q.shape[0]
 
 
 def _make_inputs(BT: int, V: int, dtype: torch.dtype):
@@ -209,6 +227,39 @@ def test_jsd_backward_matches_reference(impl, dtype, shape):
         f"[impl={impl} dtype={dtype} shape={shape}] grad max_diff="
         f"{(grad_impl.float() - grad_ref.float()).abs().max().item():.2e}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression for #1453: a vocabulary entry whose probability underflows under
+# BOTH distributions must contribute an exact zero, not NaN (interior beta).
+# The cuTile and CuTe-DSL backends share the defect; their coverage lands with
+# their fix, so this test pins the Triton impl.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device (pinned to the NVIDIA Triton impl)")
+@pytest.mark.parametrize("dtype", _DTYPES)
+@pytest.mark.parametrize("beta", [0.3, 0.5, 0.7])
+def test_jsd_underflow_entry_is_finite(dtype, beta):
+    raw_q = torch.tensor([[0.0, -120.0, -1.0, -2.0]], device="cuda", dtype=dtype)
+    raw_p = torch.tensor([[0.5, -130.0, -2.0, -1.0]], device="cuda", dtype=dtype)
+    log_q = raw_q.log_softmax(-1).detach().requires_grad_()
+    log_p = raw_p.log_softmax(-1).detach()
+    # Entry 1 has log-prob < ~-104 under both sides -> fp32 exp underflows to 0.
+
+    out = functional_jsd(log_q, log_p, None, beta=beta, ignore_index=-100, impl="nvidia-triton")
+    assert torch.isfinite(out).item(), f"loss is non-finite: {out}"
+
+    ref = _logspace_jsd_reference(log_q.detach(), log_p, beta)
+    tol = _tolerances(dtype)
+    assert torch.allclose(out.float(), ref.float(), **tol), (
+        f"[dtype={dtype} beta={beta}] got {out.item():.6f}, ref {ref.item():.6f}"
+    )
+
+    out.backward()
+    assert torch.isfinite(log_q.grad).all().item(), f"dX is non-finite: {log_q.grad}"
+    # The underflowing entry carries no gradient at all.
+    assert log_q.grad[0, 1].item() == 0.0
 
 
 # ---------------------------------------------------------------------------
