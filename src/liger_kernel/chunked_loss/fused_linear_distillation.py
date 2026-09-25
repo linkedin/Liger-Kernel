@@ -195,9 +195,16 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             loss_kwargs (dict): Other possible arguments that a loss function might need
         """
         CHUNK_SIZE = chunk_size
-        grad_weight = torch.zeros_like(student_weight)
-        grad_inputs = []
-        grad_bias = torch.zeros_like(student_bias) if student_bias is not None else None
+
+        # Determine which tensors require gradients
+        input_requires_grad = student_input.requires_grad
+        weight_requires_grad = student_weight.requires_grad
+        bias_requires_grad = student_bias is not None and student_bias.requires_grad
+
+        # Gradients to be accumulated
+        grad_weight = torch.zeros_like(student_weight) if weight_requires_grad else None
+        grad_inputs = [] if input_requires_grad else None
+        grad_bias = torch.zeros_like(student_bias) if bias_requires_grad else None
         loss_acc = torch.zeros((), device=student_input.device)
         soft_loss_acc = torch.zeros((), device=student_input.device) if return_soft_hard_loss else None
         hard_loss_acc = torch.zeros((), device=student_input.device) if return_soft_hard_loss else None
@@ -215,51 +222,57 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             **loss_kwargs,
         )
 
+        # Build argnums tuple for torch.func.grad_and_value
+        # loss_func_to_call arguments:
+        # arg 0: student_input_chunk
+        # arg 1: student_weight
+        # arg 2: teacher_input_chunk
+        # arg 3: teacher_weight
+        # arg 4: target_chunk
+        # arg 5: student_bias
+        # arg 6: teacher_bias
+        argnums = []
+        if input_requires_grad:
+            argnums.append(0)
+        if weight_requires_grad:
+            argnums.append(1)
+        if bias_requires_grad:
+            argnums.append(5)
+        argnums = tuple(argnums)
+
         def accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk):
-            if student_bias is not None:
-                (
-                    (chunk_grad_input, chunk_grad_weight, chunk_grad_bias),
-                    (
-                        chunk_loss,
-                        (
-                            chunk_soft_loss,
-                            chunk_hard_loss,
-                            chunk_student_logits,
-                            chunk_teacher_logits,
-                        ),
-                    ),
-                ) = torch.func.grad_and_value(loss_func_to_call, argnums=(0, 1, 5), has_aux=True)(
-                    student_input_chunk,
-                    student_weight,
-                    teacher_input_chunk,
-                    teacher_weight,
-                    target_chunk,
-                    student_bias,
-                    teacher_bias,
-                )
-                grad_bias.add_(chunk_grad_bias)
+            args = (
+                student_input_chunk,
+                student_weight,
+                teacher_input_chunk,
+                teacher_weight,
+                target_chunk,
+                student_bias,
+                teacher_bias,
+            )
+            if len(argnums) == 0:
+                # Forward only when no gradients are required
+                grads = ()
+                chunk_loss, (chunk_soft_loss, chunk_hard_loss, _, _) = loss_func_to_call(*args)
             else:
                 (
-                    (chunk_grad_input, chunk_grad_weight),
+                    grads,
                     (
                         chunk_loss,
-                        (
-                            chunk_soft_loss,
-                            chunk_hard_loss,
-                            chunk_student_logits,
-                            chunk_teacher_logits,
-                        ),
+                        (chunk_soft_loss, chunk_hard_loss, _, _),
                     ),
-                ) = torch.func.grad_and_value(loss_func_to_call, argnums=(0, 1), has_aux=True)(
-                    student_input_chunk,
-                    student_weight,
-                    teacher_input_chunk,
-                    teacher_weight,
-                    target_chunk,
-                    student_bias,
-                    teacher_bias,
-                )
-            grad_weight.add_(chunk_grad_weight)
+                ) = torch.func.grad_and_value(loss_func_to_call, argnums=argnums, has_aux=True)(*args)
+
+            grad_map = dict(zip(argnums, grads))
+            chunk_grad_input = grad_map.get(0, None)
+            chunk_grad_weight = grad_map.get(1, None)
+            chunk_grad_bias = grad_map.get(5, None)
+
+            # Accumulate gradients
+            if grad_weight is not None and chunk_grad_weight is not None:
+                grad_weight.add_(chunk_grad_weight)
+            if grad_bias is not None and chunk_grad_bias is not None:
+                grad_bias.add_(chunk_grad_bias)
             loss_acc.add_(chunk_loss)
             if return_soft_hard_loss:
                 soft_loss_acc.add_(chunk_soft_loss)
@@ -278,10 +291,11 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             _student_input_chunks, _teacher_input_chunks, _target_chunks
         ):
             grad_input = accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk)
-            grad_inputs.append(grad_input)
+            if grad_inputs is not None:
+                grad_inputs.append(grad_input)
 
         ctx.save_for_backward(
-            torch.cat(grad_inputs, dim=0),
+            torch.cat(grad_inputs, dim=0) if grad_inputs is not None else None,
             grad_weight,
             grad_bias,
         )
@@ -293,8 +307,8 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
     def backward(ctx, grad_output, *args):
         grad_input, grad_weight, grad_bias = ctx.saved_tensors
         if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
-            grad_input = grad_input * grad_output
-            grad_weight = grad_weight * grad_output
+            grad_input = grad_input * grad_output if grad_input is not None else None
+            grad_weight = grad_weight * grad_output if grad_weight is not None else None
             grad_bias = grad_bias * grad_output if grad_bias is not None else None
 
         return grad_input, grad_weight, None, None, None, grad_bias
