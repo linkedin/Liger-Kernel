@@ -69,17 +69,16 @@ def jsd_kernel_ct(
             loss_tile = x_prob * (x_f32 - y_f32)
             dx_tile = loss_tile + x_prob
         else:
-            x_max = ct.max(x_f32, 0, keepdims=True)
-            y_max = ct.max(y_f32, 0, keepdims=True)
-            max_val = ct.maximum(x_max, y_max)
-            exp_max = ct.exp(max_val)
-            q_prob = ct.exp(x_f32 - max_val) * exp_max
-            p_prob = ct.exp(y_f32 - max_val) * exp_max
+            max_val = ct.maximum(x_f32, y_f32)
+            x_shifted = x_f32 - max_val
+            y_shifted = y_f32 - max_val
+            m_shifted = beta * ct.exp(y_shifted) + (1.0 - beta) * ct.exp(x_shifted)
+            log_m = max_val + ct.log(m_shifted)
+            q_prob = ct.exp(x_f32)
+            p_prob = ct.exp(y_f32)
             beta_p = beta * p_prob
             one_minus_beta_q = (1.0 - beta) * q_prob
-            m_prob = beta_p + one_minus_beta_q
-            log_m = ct.log(m_prob)
-            loss_tile = beta_p * y_f32 + one_minus_beta_q * x_f32 - m_prob * log_m
+            loss_tile = beta_p * (y_f32 - log_m) + one_minus_beta_q * (x_f32 - log_m)
             dx_tile = one_minus_beta_q * (x_f32 - log_m)
 
         loss_tile = loss_tile * inv_n_non_ignore

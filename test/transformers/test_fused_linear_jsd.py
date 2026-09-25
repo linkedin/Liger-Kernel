@@ -75,6 +75,36 @@ class LigerLMHeadJSD(torch.nn.Module):
         )
 
 
+def test_low_probability_vocab_block_is_finite():
+    H = 4
+    V = 32769
+    torch_model = TorchLMHeadJSD(H=H, V=V, dtype=torch.float32, device=device)
+    liger_model = LigerLMHeadJSD(H=H, V=V, dtype=torch.float32, device=device)
+
+    torch_model.student_lin.weight.data.fill_(-120.0)
+    torch_model.student_lin.weight.data[0].zero_()
+    torch_model.teacher_lin.weight.data.fill_(-121.0)
+    torch_model.teacher_lin.weight.data[0].zero_()
+    liger_model.load_state_dict(torch_model.state_dict())
+
+    student_input = torch.zeros(1, H // 2, device=device)
+    student_input[:, 0] = 1.0
+    torch_input = student_input.detach().clone().requires_grad_(True)
+    liger_input = student_input.detach().clone().requires_grad_(True)
+    teacher_input = torch.zeros(1, H, device=device)
+    teacher_input[:, 0] = 1.0
+
+    torch_output = torch_model(torch_input, teacher_input)
+    liger_output = liger_model(liger_input, teacher_input)
+    torch_output.backward()
+    liger_output.backward()
+
+    assert torch.isfinite(liger_output)
+    assert torch.isfinite(liger_input.grad).all()
+    assert_verbose_allclose(torch_output, liger_output, atol=1e-7, rtol=1e-6)
+    assert_verbose_allclose(torch_input.grad, liger_input.grad, atol=1e-7, rtol=1e-6)
+
+
 #############################################################################
 # Test the correctness of the fused linear JSD
 #############################################################################
