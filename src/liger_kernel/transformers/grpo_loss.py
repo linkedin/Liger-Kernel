@@ -99,13 +99,10 @@ def triton_grpo_loss(
             if completion_mask is not None
             else torch.ones_like(per_token_logps, dtype=per_token_logps.dtype)
         )
-        # Normalize vllm_is_ratio shape to (B, T) for get_gamma_weights' sum-over-time.
+        # Keep sequence-level corrections at (B, 1) so get_gamma_weights counts them only once.
         vllm_for_phi = vllm_is_ratio
-        if vllm_for_phi is not None:
-            if vllm_for_phi.dim() == 1:
-                vllm_for_phi = vllm_for_phi.unsqueeze(-1).expand_as(per_token_logps)
-            elif vllm_for_phi.dim() == 2 and vllm_for_phi.shape[1] == 1:
-                vllm_for_phi = vllm_for_phi.expand_as(per_token_logps)
+        if vllm_for_phi is not None and vllm_for_phi.dim() == 1:
+            vllm_for_phi = vllm_for_phi.unsqueeze(-1)
         phi_seq = get_gamma_weights(
             advantages=advantages,
             log_ratio_per_token=log_ratio,
