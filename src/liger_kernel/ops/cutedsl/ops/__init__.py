@@ -15,9 +15,6 @@ from liger_kernel.ops.cutedsl.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_forward
 from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy_sm90 import LigerFusedLinearCrossEntropySM90Function
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy_sm90 import fused_linear_cross_entropy_forward_sm90
-from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy_sm90 import liger_fused_linear_cross_entropy_sm90
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import LigerFusedScaledCrossEntropySM90Function
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_forward
@@ -31,19 +28,18 @@ from liger_kernel.ops.cutedsl.ops.swiglu import LigerSiLUMulCuteDSLFunction as L
 from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_backward
 from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_forward
 
-# The SM90 fused scaled cross entropy implementation is selected by the
-# root-level ``LigerFusedLinearScaledCrossEntropyFunction`` frontend. It
-# deliberately does not replace or alias
-# ``LigerFusedLinearCrossEntropyFunction``, which keeps its reduction and
-# legacy-option surface.
+# ``LigerFusedScaledCrossEntropySM90Function`` is an *additional* CuTe DSL
+# operator (per-token NLL only, Hopper BF16); it deliberately does not replace
+# or alias the Triton ``LigerFusedLinearCrossEntropyFunction``, which keeps its
+# reduction and legacy-option surface.
+# NOTE: rope and swiglu are fork-only CuTe DSL kernels (not present upstream).
+# The OSS sync must keep exporting them so ``LIGER_KERNEL_IMPL=cutedsl`` routes
+# RoPE/SwiGLU to these kernels instead of silently falling back to Triton.
 __all__ = [
     "LigerCrossEntropyFunction",
     "cross_entropy_backward",
     "cross_entropy_forward",
     "LigerFusedLinearCrossEntropyFunction",
-    "LigerFusedLinearCrossEntropySM90Function",
-    "fused_linear_cross_entropy_forward_sm90",
-    "liger_fused_linear_cross_entropy_sm90",
     "LigerFusedScaledCrossEntropySM90Function",
     "fused_scaled_cross_entropy_backward",
     "fused_scaled_cross_entropy_forward",

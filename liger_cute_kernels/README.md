@@ -1,62 +1,242 @@
-# LigerCute — native MoE kernels (CUTLASS + NVSHMEM)
+# LigerCute — native CUTLASS + NVSHMEM kernels
 
 ## Overview
 
-Liger MoE is a fused expert-parallel MoE implementation for NVIDIA Hopper and
-Blackwell GPUs. A persistent kernel uses warp specialization to overlap
-NVSHMEM communication with CUTLASS matrix multiplication: communication warps
-move remote token tiles while the remaining warps execute the expert MLP. Both
-the forward and backward passes are fused, use statically sized symmetric
-buffers, and support CUDA Graph execution without a token-capacity limit.
+`liger_cute_kernels` is the native CUTLASS + NVSHMEM kernel package for Liger.
+It currently provides expert-parallel MoE and tensor-parallel fused scaled
+linear cross entropy, with a Torch-ABI-independent core exposed through TVM FFI.
 
-### Hopper results
+LigerMoE provides persistent expert-parallel forward and backward kernels for
+NVIDIA Hopper and Blackwell GPUs. Each participating CTA uses warp
+specialization so communication and tensor-core computation make progress on
+the same SM: dedicated warps move routed token tiles while the MMA warps execute
+the expert MLP. One-sided NVSHMEM RDMA removes sender/receiver coordination, and
+preallocated symmetric buffers are sized from the total routed-token capacity
+rather than a fixed per-expert capacity. This keeps the execution compatible
+with CUDA Graphs despite dynamic routing.
 
-The evaluation reports the following BF16 results. These are benchmark
-snapshots from the CUDA 12.9 environment, not performance guarantees for every
-model or system.
+The tensor-parallel fused scaled linear cross-entropy implementation fuses the
+classifier projection with per-token NLL and optional entropy. Local MAX/SUM
+reductions run in the tensor-core epilogue through NVLS or DirectPeer, with a
+sharded inter-host ring follow-up for multi-host execution.
 
-| Evaluation | Headline result |
+## LigerMoE design
+
+### Forward pass
+
+![LigerMoE forward-pass pipeline](assets/moe_forward_flow.png)
+
+The forward path sorts routed tokens and copies them to symmetric memory before
+entering the persistent main loop. Within that loop, get, TMA, MMA, and put
+warps pipeline remote reads, tensor-core work, and result delivery. Intra-host
+traffic uses direct TMA access over NVLink or PCIe; inter-host traffic uses
+NVSHMEM get/put operations. A final local combine applies the router weights
+after every expert result has arrived.
+
+### Backward pass
+
+![LigerMoE backward-pass pipeline](assets/moe_backward_flow.png)
+
+The backward path first produces routed expert-output gradients, then overlaps
+remote `X`/`dY` movement with activation recomputation, input-gradient
+calculation, and expert-weight gradients. TMA reduce stores accumulate weight
+gradients across token-tile batches. The final local dispatch reduces the
+routed `dX` contributions back to the original tokens.
+
+## MoE performance
+
+The current evaluation uses BF16 and the CUDA 12.9 environment. These are
+benchmark snapshots rather than performance guarantees for every model or
+system.
+
+| Evaluation | Current result |
 |---|---|
-| Standalone MoE kernels | Up to **32% lower forward latency** and **7% lower backward latency** than the strongest compared implementation |
-| Communication-intensive H200 cases | **10–35% higher forward throughput** than Comet; selected backward cases reach up to **~108% higher throughput** than DeepEP |
-| Qwen3-30B-A3B training on 8 H100 GPUs | **2.35× speedup / 57% lower step time** than Megatron and **~17% lower step time** than Transformer Engine |
-| End-to-end convergence | **5.06% final-loss improvement** over the Megatron baseline |
+| Qwen3-30B-A3B, 8 H200 GPUs, 8,192 tokens/rank | **233 TFLOP/s forward** and **209 TFLOP/s backward**, respectively 49% and 31% above the strongest plotted baselines |
+| Qwen3-30B-A3B, 8 B300 GPUs, 8,192 tokens/rank | **468 TFLOP/s forward** and **402 TFLOP/s backward** |
+| Qwen3-30B-A3B training, 8 H200 GPUs | **44.936 s mean step time**, a **1.472x speedup** over the Megatron baseline |
+| Qwen3.5-122B-A10B training, 16 B200 GPUs | **126.489 s mean step time**, a **1.070x speedup** over the Megatron baseline |
 
-#### Throughput across expert-parallel GPU counts
+### Throughput across expert-parallel GPU counts
 
-![H200 MoE throughput across GPU counts](assets/hopper_gpu_scaling.png)
+![H200 MoE throughput across GPU counts](assets/h200_gpu_scaling.png)
 
-BF16 throughput at 8,192 tokens per rank on H200 GPUs. Top: Qwen3-30B-A3B
-(`D=2048`, `I=768`). Bottom: Mixtral-8x7B (`D=4096`, `I=14336`). Forward and
-backward results are shown from 1 to 8 expert-parallel GPUs; Comet and DeepEP
-require multiple GPUs, and FlashMoE is forward-only.
+H200 throughput at 8,192 tokens per rank from 1 to 16 expert-parallel GPUs.
+Top: Qwen3-30B-A3B (`D=2048`, `I=768`). Bottom: Llama-4-Scout (`D=5120`,
+`I=8192`). Left: forward. Right: backward. DeepEP and Comet require multiple
+GPUs, and FlashMoE is forward-only.
 
-#### Throughput across token counts
+![B300 MoE throughput across GPU counts](assets/b300_gpu_scaling.png)
 
-![H200 MoE throughput across token counts](assets/hopper_token_scaling.png)
+B300 throughput for the same model shapes and token count. Comet and FlashMoE
+are omitted because they do not support Blackwell. The 16-GPU points span two
+hosts.
 
-BF16 throughput from 1,024 to 16,384 tokens per rank on 8 H200 GPUs. Longer
-sequences deepen Liger's token-transport pipeline and increase communication
-and compute overlap.
+### Throughput across token counts
 
-#### End-to-end training
+![H200 MoE throughput across token counts](assets/h200_token_scaling.png)
 
-![H100 end-to-end training loss and step time](assets/hopper_training.png)
+H200 throughput from 1,024 to 16,384 tokens per rank on 8 GPUs. Longer token
+sequences deepen the transport/compute pipeline and improve SM utilization.
 
-Qwen3-30B-A3B pre-training on 8 H100 GPUs for 500 steps using OpenWebText,
-global batch size 512, and sequence length 4,096. Left: cross-entropy loss.
-Right: per-step wall time. The paper excludes the initial CUDA Graph build from
-its aggregate step-time statistics.
+![B300 MoE throughput across token counts](assets/b300_token_scaling.png)
+
+B300 throughput over the same token range on 8 GPUs. The panels use
+Qwen3-30B-A3B (`E=128`, `K=8`) and Llama-4-Scout (`E=16`, `K=1`).
+
+### End-to-end training
+
+![Qwen3 and Qwen3.5 end-to-end training](assets/end_to_end_training.png)
+
+OpenWebText pre-training with sequence length 8,192 for 300 steps. Panels (a)
+and (b) show Qwen3-30B-A3B on 8 H200 GPUs (`EP=8`, global batch size 256);
+panels (c) and (d) show Qwen3.5-122B-A10B on 16 B200 GPUs across two hosts
+(`EP=16`, global batch size 512). Mean step-time statistics exclude the first
+ten CUDA-Graph warm-up steps. The three backends retain effectively equivalent
+loss convergence in both experiments.
+
+## Fused linear scaled cross entropy
+
+The native cores also provide
+`fused_linear_scaled_cross_entropy_forward` and
+`fused_linear_scaled_cross_entropy_backward`. The backward path uses a
+three-stage cluster-2 dZ handoff followed by a four-stage combined dX+dW
+cluster kernel. dX uses split-K=2 only for hidden size 2,048; hidden size 4,096
+uses split-K=1. Direct-peer and hierarchical multi-host transports remain
+available when the single-host NVLS path is not selected.
+
+The `liger_cute_kernels.tvm_ffi` facade exposes configuration plus forward and
+backward entry points. Both accept the NVSHMEM team configured for the same
+tensor-parallel ranks and take inverse temperature.
+Capacities for tokens, hidden size, local vocabulary, and reduction grouping
+must be configured before capture or execution.
+
+Hierarchical NVLS+remote execution supports uniformly partitioned multi-host
+subgroups. Team ranks must be host-major: each host contributes the same
+number of consecutive team-local ranks. Setup applies
+`nvshmem_team_split_2d` to derive an NVLS-capable local row and a matching-rank
+remote column. For example, world ranks `{0,4,8,12}` on two eight-GPU hosts
+become local teams `{0,4}` / `{8,12}` and remote pairs `{0,8}` / `{4,12}`.
+
+Tensor-parallel reduction transport is implemented in `liger_cute::detail`.
+Host setup selects either the NVLS or DirectPeer local backend and passes only
+that backend's compact device view to the kernel. Multi-host setup retains the
+parent-relative local and remote teams until configuration reset. The ring
+topology, epochs, packed online-softmax state merge, and node-local all-gather
+are shared by SM90 and SM100. The inter-host ring is a warp-scoped
+device function: one worker warp avoids block synchronization for fusion,
+while standalone wrappers use eight worker warps. SM100 forward partitions
+the local vocabulary into configurable N256 waves (64 tiles by default),
+keeps four source slots, and runs
+the matching-rank host ring plus final state accumulation in warp 1 of one
+stable CTA while later waves continue through TMA, UMMA, and the epilogue.
+After the last wave, warp 1 performs the node-local NVLS all-gather and writes
+NLL/LSE/entropy. SM90 forward retains the separately launched finalizer.
+Backward uses the same ring between its local reduce-scatter and local
+all-gather/scatter stages.
+
+SM100 remote kernels synchronize on the configured parent TP team, then use a
+cooperative clustered CUDA launch. They do not require the TP team to equal
+`NVSHMEM_TEAM_WORLD`, so disjoint TP groups can execute independently.
+
+On SM100 the backward is a single persistent 384-thread, cluster-2 kernel with
+a device-side token-wave loop: dZ, dX, dW and the wave schedule are fused into
+one launch. Warp 2 owns every TMA producer, warp 3 every UMMA issue, and warps
+4-11 the epilogues and TMEM loads. Warp 4 takes a single `Allocator2Sm` TMEM
+allocation, sized by the max over phases, that dZ, dX and dW reuse; the three
+operand arenas form a phase-serial union while pipelines, mbarriers and the
+TMEM handle live outside it. dW wave 0 stores and later waves TMA-reduce-add,
+exactly like SM90. Every compute-side named barrier excludes warps 0 and 1, and
+a full-grid software barrier is taken only where dZ workspace publication and
+reuse require it, under a strict full-residency launch invariant.
+
+The dX communication runs a three-stage chunk pipeline. A *chunk* is one token
+wave's complete dX: every CTA of the grid contributes a disjoint set of
+M128xN256 tiles into one packed shard region, so a chunk is exactly one
+contiguous inter-host message.
+
+* **Stage R — tile granular.** Warp 0 NVLS reduce-scatters each tile the dX
+  epilogue publishes and releases its staging slot immediately; it never waits
+  for the rest of the chunk.
+* **Stage P — chunk granular.** After its last tile of chunk `k`, every CTA's
+  warp 0 bumps a monotone completion counter. CTA 0's warp 1 launches the
+  inter-host transfer only once the whole chunk is locally reduced. When the
+  peer shard arrives, warp 1 from every resident CTA merges a global-strided
+  section into the packed shard and contributes one HBM atomic arrival. CTA 0
+  acknowledges the ring and publishes completion after all `grid_ctas`
+  arrivals.
+* **Stage F — chunk granular, deferred by one chunk.** Warp 0 finalizes chunk
+  `k` (node-local NVLS all-gather plus the BF16 scatter into `grad_input`) at
+  the top of chunk `k+1`, so it overlaps chunk `k+1`'s dZ GEMM instead of
+  gating it. The last chunk is drained after the wave loop.
+
+The communication pipeline therefore spans both the same chunk's dW GEMM and
+the next chunk's dZ GEMM:
+
+```
+compute   | dX(k) | dW(k)              | dZ(k+1)            | dX(k+1) | dW(k+1)
+warp 0    | R(k) tile by tile          | F(k)               | R(k+1) ...
+warp 1s   |       | IB transfer + all-CTA warp-1 merge      | IB dX(k+1) ...>
+```
+
+dX(`k`) is finalized before its slots could be reused, not before compute
+advances: the end-of-wave grid barrier protects the dZ workspace only, the
+tile-granular staging ring is released in stage R, and the packed shard plus
+the all-gather destination are addressed by absolute chunk index, so the two
+live chunks always own disjoint storage. SM90 backward retains its two
+separately launched wave kernels and its standalone finalizer.
+
+The wave width can be selected at build time with
+`-DLIGER_CUTE_FSLCE_SM100_WAVE_N_TILES=16|32|64|128`.
+The ring publishes each whole shard and its ready epoch with one blocking
+`nvshmemx_qp_float_put_signal_warp` on `NVSHMEMX_QP_DEFAULT`; it contains no
+`nvshmem_quiet`, `nvshmem_fence`, or `put_block` calls. Two-host execution
+alternates ready/inbox slots by wave sequence and needs no consumed signals.
+Larger host rings retain consumed acknowledgements and pipeline their final
+waits across waves by default.
+
+On B300 two-host runs, pin one PE to each GPU-local HCA:
+
+```bash
+export NVSHMEM_REMOTE_TRANSPORT=ibrc
+export NVSHMEM_IB_ENABLE_IBGDA=1
+export NVSHMEM_ENABLE_NIC_PE_MAPPING=1
+unset NVSHMEM_HCA_LIST
+export NVSHMEM_HCA_PE_MAPPING='mlx5_0:1:1,mlx5_2:1:1,mlx5_3:1:1,mlx5_4:1:1,mlx5_5:1:1,mlx5_6:1:1,mlx5_8:1:1,mlx5_9:1:1'
+```
+
+With `NVSHMEM_DEBUG=INFO`, initialization should report
+`Successfully initialized the transport: IBGDA. It will be used for
+device-side APIs over IB.`
+
+For transport attribution, the SM100 remote stage can instead use matching-rank
+warp MAX/SUM collectives with
+`-DLIGER_CUTE_FSLCE_SM100_USE_WARP_TEAM_COLLECTIVES=ON`. This two-pass mode is
+an ablation; the QP combined put-signal ring remains the default.
+
+The distributed forward benchmark keeps the production Verl-derived fallback
+selectable and reports full-forward latency, effective global TFLOP/s, and
+maximum per-rank CUDA memory:
+
+```bash
+torchrun --standalone --nproc_per_node=8 \
+  benchmark/scripts/benchmark_fused_scaled_linear_cross_entropy_tp.py \
+  --provider native
+
+torchrun --standalone --nproc_per_node=8 \
+  benchmark/scripts/benchmark_fused_scaled_linear_cross_entropy_tp.py \
+  --provider verl-fallback
+```
 
 ## Package architecture
 
-Native CUDA build for the MoE port (from `LigerCommKernels`). The lck wheel
-packages one native core shared library that also exports the Python-facing TVM
-FFI functions:
+The release wheel packages one core for Hopper and one for the common
+Blackwell-family ISA. The Python facade selects the matching core for the
+active GPU:
 
 | Artifact | Sources | Links | Boundary | Built |
 |---|---|---|---|---|
-| `libliger_cute_kernels.so` (the "core", aka *lck*) | `csrc/core` + `liger_cute_kernels/tvm_ffi_bindings.cpp` | CUTLASS + NVSHMEM + CUDA + TVM FFI — **no torch** | flat `extern "C"` (`liger_cute.h`) and TVM FFI exports (`__tvm_ffi_*`) | **once** |
+| `libliger_cute_kernels_sm90a.so` | `csrc/core` + `liger_cute_kernels/tvm_ffi_bindings.cpp` | CUTLASS + NVSHMEM + CUDA + TVM FFI — **no torch** | flat `extern "C"` (`liger_cute.h`) and TVM FFI exports (`__tvm_ffi_*`) | once per release |
+| `libliger_cute_kernels_sm100f.so` | same | same | same | once per release |
 
 The core's public ABI is `extern "C"` only (no `std::`/torch types cross it),
 symbols are hidden except `liger_cute_*` and `__tvm_ffi_*`, and libstdc++/libgcc
@@ -68,18 +248,18 @@ compile.
 
 The top-level **`liger_kernel` wheel is pure Python/Triton** and does **not**
 build or contain any of this native code. The native libraries ship as a
-**separate, CUDA/torch-version-prefixed `lck` wheel** that installs its own
-standalone top-level package **`liger_cute_kernels`** (kept separate from
-`liger_kernel` so the native libs don't mix in). `liger_kernel.ops.cute` imports
+separate **`liger-cute-kernels` distribution with the same public version**.
+It installs its own standalone top-level package **`liger_cute_kernels`**.
+`liger_kernel.ops.cute` imports
 `liger_cute_kernels.tvm_ffi` at runtime. Intended order:
 
 1. Install the top-level `liger_kernel` wheel (pure Python).
-2. *Optionally* install the matching `lck` wheel (package `liger_cute_kernels`)
+2. *Optionally* install the matching native wheel (package `liger_cute_kernels`)
    for the local CUDA + torch environment.
 
-The lck wheel is built by this module's `setup.py` (see **Building the lck
-wheel** below). Selecting/installing the right lck wheel automatically for the
-local CUDA + torch environment is a separate follow-up.
+The native wheel is built by this module's `setup.py` (see **Building the
+native wheel** below). Selecting/installing the right wheel automatically for
+the local CUDA + torch environment is a separate follow-up.
 
 ## Layout
 
@@ -91,14 +271,14 @@ in-liger entry point) lives separately, under `src/liger_kernel/ops/cute/`.
 liger_cute_kernels/             # ← standalone native build module (repo root)
 ├── README.md
 ├── assets/                     # README benchmark figures
-├── setup.py                    # builds the lck wheel (package liger_cute_kernels)
+├── setup.py                    # builds the native wheel (package liger_cute_kernels)
 ├── pyproject.toml
-├── cute_build.py               # build_core() helper + LckBuildExt
-├── liger_cute_kernels/         # the lck wheel's package source
+├── cute_build.py               # build_core() helper + native wheel build extension
+├── liger_cute_kernels/         # native package source
 │   ├── __init__.py             # (.so are added here at build time)
 │   ├── tvm_ffi.py              # Python facade over the TVM FFI exports
 │   └── tvm_ffi_bindings.cpp    # TVM FFI C++ exports compiled into the core
-├── test/                       # the lck package's own unit tests
+├── test/                       # native package unit tests
 │   └── test_moe_bindings.py
 ├── CMakeLists.txt              # core with TVM FFI exports
 ├── cmake/
@@ -111,10 +291,10 @@ liger_cute_kernels/             # ← standalone native build module (repo root)
     │   │   ├── {check.h, moe.h}             # core control/config surface
     │   │   └── detail/symmetric_memory.h    # core-internal (nvshmem+STL); not ABI
     │   ├── src/                 # *.{cu,cpp} compiled INTO the core …
-    │   │   └── moe/             #   … fused MoE kernels (moe.cu, moe_bwd.cu, mlp*.cu)
-    │   │       └── tune/        # standalone offline autotuner — NOT a core source
-    │   │           ├── CMakeLists.txt        #   its own project; links torch
-    │   │           └── tune_moe_fwd_bwd.cu   #   (excluded from the core glob)
+    │   │   ├── moe/             # expert-parallel MoE kernels
+    │   │   │   └── tune/        # standalone offline autotuner — NOT a core source
+    │   │   └── fused_scaled_linear_cross_entropy/
+    │   │                        # tensor-parallel fused loss kernels
     │   └── liger_cute.version   # exports only liger_cute_* and __tvm_ffi_*
 
 src/liger_kernel/ops/cute/
@@ -124,18 +304,22 @@ src/liger_kernel/ops/cute/
 
 ## Prerequisites
 
-- **CUDA toolkit** with `nvcc` and either SM 9.0a (Hopper / `sm_90a`) or
-  SM 10.0a (Blackwell / `sm_100a`) support.
+- **CUDA toolkit 12.9** with `nvcc` (release builds pin 12.9.1) and either SM 9.0a (Hopper / `sm_90a`) or
+  Blackwell family (`sm_100f`) support. The family target covers both B200
+  (`sm_100`) and B300 (`sm_103`) while enabling TCGEN05 UMMA and TMEM.
+  CUDA 13.0 also builds the Hopper path, but currently rejects mixed
+  `.cta_group::1`/`.cta_group::2` instructions in the Blackwell MoE backward
+  kernel; the combined release wheel therefore remains on CUDA 12.9.
 - **NVSHMEM** install (host `.so`, device `.a`, headers). Two layouts are
   supported:
   - Native/system install: point `NVSHMEM_HOME` at it, or use the default
     `/usr/local/nvshmem`.
-  - PyPI install: install `nvidia-nvshmem-cu13` (or the optional
-    `liger_cute_kernels[nvshmem-pypi]` extra). The Python wheel builder and
-    `build_core()` auto-detect that package layout and create unversioned
-    compatibility symlinks for CMake when needed. For direct CMake invocation,
-    pass the package root as `-DNVSHMEM_HOME=...`; the find module accepts its
-    versioned `libnvshmem_host.so.3`.
+  - PyPI install: install `nvidia-nvshmem-cu12==3.6.5` for CUDA 12.9 or
+    `nvidia-nvshmem-cu13==3.6.5` for CUDA 13. The Python wheel
+    builder and `build_core()` auto-detect that package layout and create
+    unversioned compatibility symlinks for CMake when needed. For direct CMake
+    invocation, pass the package root as `-DNVSHMEM_HOME=...`; the find module
+    accepts its versioned `libnvshmem_host.so.3`.
 - **CUTLASS** headers (4.x) — point `CUTLASS_HOME` at the repo root (so that
   `$CUTLASS_HOME/include/cutlass/cutlass.h` and
   `$CUTLASS_HOME/tools/util/include` exist). *Not needed when linking a prebuilt
@@ -166,21 +350,51 @@ cmake --build build/core --target liger_cute_kernels -j
 # -> build/core/csrc/core/libliger_cute_kernels.so
 ```
 
+To also build the opt-in whole-program SM90 MoE module:
+
+```bash
+cmake -S liger_cute_kernels -B build/core \
+      -DLIGER_CUTE_BUILD_BINDINGS=OFF \
+      -DLIGER_CUTE_ENABLE_SM90_NONRDC_MOE=ON \
+      -DCMAKE_BUILD_TYPE=Release -GNinja
+cmake --build build/core --target liger_cute_kernels -j
+```
+
+One cubin is placed beside `libliger_cute_kernels.so`. It contains separate
+compile-time local and IB-capable kernel instantiations. At runtime, set
+`LIGER_MOE_SM90_NONRDC=1` before `moe_configure_symmetric`. The core loads the
+module into the current CUDA context, registers it with
+`nvshmemx_cumodule_init`, and uses it for SM90 forward and backward launches.
+Each launch translates the configured EP team's members into
+`NVSHMEMX_TEAM_NODE` on the host. If every member belongs to the node team, the
+local specialization is selected; otherwise the IB-capable specialization is
+selected. The local specialization compiles out IB transport and device-side
+`nvshmem_ptr` probing.
+The initial module contains the tuned Mixtral-8x7B `T=8192` forward and
+backward specializations; other shapes continue through the ordinary RDC
+kernels. Add `-DLIGER_CUTE_SM90_NONRDC_ALL_CONFIGS=ON` for the complete tuned
+menu and 1/2/4/8/16-PE benchmark coverage, including the cross-host IB path.
+For development artifacts in a different directory, set
+`LIGER_MOE_SM90_NONRDC_CUBIN`.
+
 Build for Blackwell by overriding the CUDA architecture:
 
 ```bash
-cmake -S liger_cute_kernels -B build/core-sm100 \
+cmake -S liger_cute_kernels -B build/core-sm100f \
       -DLIGER_CUTE_BUILD_BINDINGS=OFF \
-      -DLIGER_CUTE_CUDA_ARCH=100a \
+      -DLIGER_CUTE_CUDA_ARCH=100f \
       -DCMAKE_BUILD_TYPE=Release -GNinja
-cmake --build build/core-sm100 --target liger_cute_kernels -j
+cmake --build build/core-sm100f --target liger_cute_kernels -j
 ```
+
+Use architecture-specific `100a` or `103a` targets only when a kernel requires
+features outside the common Blackwell-family ISA.
 
 Or from Python (with `liger_cute_kernels/` on `sys.path`):
 
 ```python
 from cute_build import build_core
-build_core("build/core")   # stages libliger_cute_kernels.so + libnvshmem_host.so
+build_core("build/core")   # stages one core and an optional SM90 cubin
 ```
 
 `build_core()` auto-detects both native and PyPI NVSHMEM installations. Direct
@@ -265,55 +479,98 @@ router distribution. `MOE_FWDBWD_TUNE_EXACT=1` runs exactly one arbitrary
 shape and requires the `T`, `D`, `I`, and local-`E` overrides (plus optional
 `K`).
 
-## Building the lck wheel
+## Building the native wheel
 
 This module's `setup.py` packages the native libraries into the independent
-**lck wheel**, whose package is the standalone top-level **`liger_cute_kernels`**.
-It builds the core and ships
-`liger_cute_kernels/{libliger_cute_kernels.so, libnvshmem_host.so,
-tvm_ffi.py, tvm_ffi_bindings.cpp}`. Build against the **local** CUDA/NVSHMEM
-environment (no build isolation), from this module directory:
+**`liger-cute-kernels`** distribution. The release wheel contains both
+`libliger_cute_kernels_sm90a.so` and
+`libliger_cute_kernels_sm100f.so`; NVSHMEM is installed independently through
+the optional `cu12` or `cu13` extra, pinned to version `3.6.5`.
+The base package does not install either NVSHMEM distribution. The release workflow builds
+both cores with CUDA Toolkit **12.9.1** in a digest-pinned
+`nvidia/cuda:12.9.1-devel-ubuntu22.04` container.
+The Linux x86-64/glibc 2.35 wheel baseline and GPU targets are unchanged.
+
+Release-wheel consumers need a CUDA 12-compatible runtime and NVIDIA driver. Do not mix
+CUDA 12 cores with the CUDA 13 NVSHMEM package or vice versa; both distributions install
+into `nvidia/nvshmem`, so use a clean environment rather than installing
+`nvidia-nvshmem-cu12` and `nvidia-nvshmem-cu13` together. Previously published
+CUDA 12.9 wheels are not changed by this build update.
+
+Choose the NVSHMEM dependency explicitly when installing a built wheel:
+
+```bash
+python -m pip install "liger-cute-kernels[cu12]"
+# For a local Hopper wheel built with CUDA 13:
+python -m pip install "/path/to/liger_cute_kernels-<version>-py3-none-linux_x86_64.whl[cu13]"
+```
+
+Extras select dependencies only; they neither choose the CUDA compiler nor
+convert the packaged binaries to another CUDA version. Do not request
+`[cu12,cu13]`: both packages write to the same namespace. Existing system-managed
+NVSHMEM users can install the base wheel without either extra.
+
+Build against the local CUDA 12.9/NVSHMEM environment (no build isolation),
+from this module directory:
 
 ```bash
 cd liger_cute_kernels
-python -m pip install apache-tvm-ffi
-pip wheel . --no-deps --no-build-isolation -w dist
-# -> dist/liger_cute_kernels-0.1.0+cu130.torch2.9.1-cp312-cp312-linux_x86_64.whl
+python -m pip install apache-tvm-ffi nvidia-nvshmem-cu12==3.6.5
+LIGER_CUTE_CUDA_ARCHS=90a,100f \
+    pip wheel . --no-deps --no-build-isolation -w dist
+# Release build:
+# -> dist/liger_cute_kernels-<liger-version>-py3-none-manylinux_2_35_x86_64.whl
 ```
+
+For a Hopper-only CUDA 13 build, select that toolkit's `nvcc`, install
+`nvidia-nvshmem-cu13==3.6.5` in a separate environment, and use
+`LIGER_CUTE_CUDA_ARCHS=90a` instead.
+NVSHMEM must be installed **before** compiling from source; pip's extras are
+runtime dependencies and do not provision native build prerequisites before
+the wheel-build step. After provisioning the prerequisites, a source install
+can use `pip install --no-build-isolation ".[cu12]"` or `".[cu13]"`.
 
 For a native NVSHMEM install:
 
 ```bash
 NVSHMEM_HOME=/usr/local/nvshmem \
+    LIGER_CUTE_ENABLE_SM90_NONRDC_MOE=1 \
     pip wheel . --no-deps --no-build-isolation -w dist
 ```
 
 For the PyPI NVSHMEM layout:
 
 ```bash
-pip install nvidia-nvshmem-cu13
+pip install nvidia-nvshmem-cu12==3.6.5
 pip wheel . --no-deps --no-build-isolation -w dist
 ```
 
-The wheel is tagged with the CUDA + torch version as a PEP 440 local version
-(`+cu<ver>.torch<ver>`), so wheels for different environments coexist. To reuse
-a core built once across the torch matrix (no core recompile), point at its dir:
+The wheel reads its version from the repository's root `pyproject.toml`, so
+`liger-kernel` and `liger-cute-kernels` are released with the same version. To
+reuse architecture cores built in separate jobs, place them under
+`<core-dir>/90a/libliger_cute_kernels.so` and
+`<core-dir>/100f/libliger_cute_kernels.so`, then point packaging at the root:
 
 ```bash
+LIGER_CUTE_CUDA_ARCHS=90a,100f \
 LIGER_CUTE_CORE_DIR=/abs/dir-with-core \
     pip wheel . --no-deps --no-build-isolation -w dist
 ```
 
 Install order at the consumer side: the `liger_kernel` wheel first, then
-optionally the matching lck wheel.
+optionally the matching native wheel.
+
+The wheel workflow also runs directly on every push to `main` as a nightly
+integration build. These runs build, package, validate, and retain the wheel as
+a workflow artifact, but the PyPI upload job runs only for a published GitHub
+release.
 
 ## Source-tree Python verification
 
-The Python facade is intentionally thin: it imports the external `tvm_ffi`
-package and loads `liger_cute_kernels/libliger_cute_kernels.so` from beside
-`liger_cute_kernels/tvm_ffi.py`. In a source checkout, `pytest` skips the Python
-tests until both pieces exist. To run those tests without installing a wheel,
-build the core and stage the shared libraries into the package directory:
+The Python facade imports the external `tvm_ffi` package, preloads NVSHMEM from
+`nvidia/nvshmem/lib`, and selects the packaged SM90a or SM100f core from the
+active GPU capability. In a source checkout, `pytest` skips the Python tests
+until the required pieces exist.
 
 ```bash
 cd liger_cute_kernels
@@ -324,9 +581,8 @@ cmake -S . -B build/core \
       -DCMAKE_BUILD_TYPE=Release -GNinja
 cmake --build build/core --target liger_cute_kernels -j
 
-cp build/core/csrc/core/libliger_cute_kernels.so liger_cute_kernels/
-cp "${NVSHMEM_HOME:-/usr/local/nvshmem}"/lib/libnvshmem_host.so* liger_cute_kernels/
-cp "${NVSHMEM_HOME:-/usr/local/nvshmem}"/lib/nvshmem_bootstrap_uid.so* liger_cute_kernels/ 2>/dev/null || true
+cp build/core/csrc/core/libliger_cute_kernels.so \
+    liger_cute_kernels/libliger_cute_kernels_sm90a.so
 
 python - <<'PY'
 import liger_cute_kernels.tvm_ffi as tvm_ffi
@@ -337,8 +593,7 @@ PY
 python -m pytest -q test
 ```
 
-Alternatively, install the built wheel; it stages the core and NVSHMEM host
-libraries into the package automatically.
+Alternatively, install the built wheel and its dependencies.
 
 ## CMake options
 
@@ -346,7 +601,14 @@ libraries into the package automatically.
 |---|---|---|
 | `LIGER_CUTE_BUILD_BINDINGS` | `OFF` | Deprecated compatibility option. Leave OFF; tensor APIs are exposed through TVM FFI only. |
 | `LIGER_CUTE_CORE_IMPORTED_DIR` | *(empty)* | Dir holding a prebuilt `libliger_cute_kernels.so`. When set, the core is linked as an imported library (not compiled) and CUTLASS is not required. |
-| `LIGER_CUTE_CUDA_ARCH` | `90a` | CUDA target architecture. Use `100a` for Blackwell / B200. |
+| `LIGER_CUTE_CUDA_ARCH` | `90a` | CUDA target architecture. Use `100f` for one B200/B300 Blackwell-family build. |
+| `LIGER_CUTE_CUDA_ARCHS` | *(empty)* | Comma-separated architecture cores to package in one wheel, for example `90a,100f`. Mutually exclusive with `LIGER_CUTE_CUDA_ARCH`. |
+| `LIGER_CUTE_VERSION` | root package version | Explicit wheel-version override; release builds validate it against the root `liger-kernel` version. |
+| `LIGER_CUTE_STRIP_NATIVE` | `0` | Set to `1` to strip packaged core libraries. |
+| `LIGER_CUTE_FSLCE_SM100_STAGES` | `5` | SM100 forward TMA mainloop stages. |
+| `LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES` | `64` | SM100 forward communication wave width in N256 tiles. |
+| `LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES` | `5` | SM100 fused backward dZ TMA mainloop stages. |
+| `LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_CHUNK_PIPELINE` | `OFF` | Diagnostic only: force the chunk-granular deferred dX schedule on a single host so the state machine can be validated without an inter-host ring. |
 | `LIGER_CUTE_BUILD_TESTS` | `OFF` | Build the C++ gtest tests. |
 | `LIGER_CUTE_TESTS_ONLY` | `OFF` | Build only tests; skips NVSHMEM/TVM FFI/core packaging. |
 | `LIGER_CUTE_STATIC_LIBSTDCXX` | `ON` | Statically link libstdc++/libgcc into the core so its internal C++ ABI is invisible to consumers. |
@@ -357,7 +619,7 @@ Standard CMake flags also apply: `-DCMAKE_BUILD_TYPE=Release`, `-GNinja`,
 `-DPython_EXECUTABLE=...`.
 
 CUDA architecture defaults to `sm_90a` (Hopper, with WGMMA/TMA/multicast) and
-is configurable with `-DLIGER_CUTE_CUDA_ARCH=100a` for Blackwell.
+is configurable with `-DLIGER_CUTE_CUDA_ARCH=100f` for B200 and B300.
 
 ## Environment variables
 
@@ -365,8 +627,13 @@ is configurable with `-DLIGER_CUTE_CUDA_ARCH=100a` for Blackwell.
 |---|---|---|
 | `NVSHMEM_HOME` | CMake / `cute_build` | NVSHMEM install root (default `/usr/local/nvshmem`). |
 | `CUTLASS_HOME` | CMake | CUTLASS repo root (core compile only). |
+| `LIGER_CUTE_CUDA_ARCH` | CMake / `cute_build` | CUDA target architecture; use `100f` for a shared Blackwell-family build. |
+| `LIGER_CUTE_CUDA_ARCHS` | `cute_build` | Comma-separated architecture cores to package in one wheel, for example `90a,100f`. |
 | `LIGER_CUTE_CORE_DIR` | `setup.py` | Dir with a prebuilt core. Set → link it (no core recompile); unset → build the core from source. |
-| `LIGER_CUTE_LOCAL_VERSION` | `setup.py` | Override the auto-detected `cu<ver>.torch<ver>` local version tag. |
+| `LIGER_CUTE_BUILD_JOBS` | `cute_build` | Maximum parallel native build jobs. The release workflow uses `4`. |
+| `LIGER_CUTE_VERSION` | `setup.py` | Override the root `liger-kernel` version used by the native wheel. |
+| `LIGER_CUTE_STRIP_NATIVE` | `cute_build` | Set to `1` to strip packaged native libraries. |
+| `LIGER_CUTE_WHEEL_PLATFORM_TAG` | `setup.py` | Override the native wheel platform tag. The pinned release container uses `manylinux_2_35_x86_64`. |
 
 ## Verifying a core build
 
@@ -382,7 +649,10 @@ The core should export only `liger_cute_*` symbols and have no direct
 
 ## Runtime notes
 
-- `tvm_ffi.py` loads `libliger_cute_kernels.so` directly with
-  `tvm_ffi.load_module`. The TVM FFI exports live in that same library, so no
-  separate shim `.so`, `LD_LIBRARY_PATH`, or runtime JIT compile is needed once
-  the wheel is installed.
+- `tvm_ffi.py` selects `libliger_cute_kernels_sm90a.so` for H100/H200 and
+  `libliger_cute_kernels_sm100f.so` for the Blackwell family, then loads it with
+  `tvm_ffi.load_module`.
+- NVSHMEM is not copied into the LCK wheel. The loader preloads
+  `libnvshmem_host.so.3` from the separately installed
+  `nvidia-nvshmem-cu12==3.6.5` or `nvidia-nvshmem-cu13==3.6.5` package,
+  matching the native core's build toolkit.

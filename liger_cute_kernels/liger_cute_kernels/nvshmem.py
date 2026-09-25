@@ -15,8 +15,8 @@ Typical use::
     ...                                 # MoE forward only reads the cached team
     nvshmem.finalize()
 
-Ported from LigerCommKernels' ``liger_comm_kernels/__init__.py`` (bootstrap /
-team section) and ``moe_ops._resolve_team`` (the per-ProcessGroup cache).
+Adapted from the LigerCuteKernels bootstrap/team implementation and its
+per-ProcessGroup team cache.
 """
 
 from __future__ import annotations

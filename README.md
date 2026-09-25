@@ -152,6 +152,7 @@ pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/
 - `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
 - `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
 - `nvidia-cutlass-dsl >= 4.6.0`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
+- `liger-cute-kernels`: Native CUTLASS + NVSHMEM kernels for Hopper and Blackwell, installed at the exact matching Liger version by the `lck` extra.
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -161,6 +162,24 @@ To install the stable version:
 ```bash
 $ pip install liger-kernel
 ```
+
+To also install the matching native Liger communication kernels:
+
+```bash
+$ pip install "liger-kernel[lck]" "liger-cute-kernels[cu12]"
+```
+
+The native LCK release wheel build remains on **CUDA 12.9** (CUDA Toolkit 12.9.1).
+The optional `cu12` extra installs `nvidia-nvshmem-cu12==3.6.5`; `cu13`
+installs `nvidia-nvshmem-cu13==3.6.5` for CUDA 13 source builds. Plain
+`liger-cute-kernels` does not install NVSHMEM. Select only one extra, matching
+the native wheel's build toolkit: extras select dependencies, not a different
+compiled wheel. CUDA 13 source builds currently work for Hopper, but the
+combined release build is blocked by mixed CTA-group instructions in the
+Blackwell MoE backward kernel. Previously published artifacts are unchanged. The default
+`liger-kernel` installation is unchanged. See the
+[native wheel build instructions](liger_cute_kernels/README.md#building-the-native-wheel)
+for source builds and compatibility details.
 
 To install the nightly version:
 
@@ -196,6 +215,9 @@ pip install -e ".[cutile-tileiras]"
 
 # Setup CuTe DSL (NVIDIA CUTLASS Python DSL) Dependencies
 pip install -e ".[cutedsl]"
+
+# Setup native Liger communication kernels
+pip install -e ".[lck]"
 
 ```
 
@@ -249,6 +271,30 @@ The implementations share this public contract but use different schedules:
 - **cuTile** (`LIGER_KERNEL_IMPL=cutile`) supports matching floating-point `input` and `weight` tensors on CUDA and a finite positive scalar `temperature`. The portable temporary-logits budget is 256 MiB. Large FP16/BF16 Blackwell workloads (`M >= 4096`, `V >= 131072`) automatically use 512 MiB to improve GEMM utilization. Set `LIGER_CUTILE_SCALED_CE_WORKSPACE_MB` to another positive MiB value for workload-specific tuning; for example, 1024 can help large combined NLL-plus-entropy workloads but is not universally faster. Backward reuses one workspace and writes `dX` and accumulates `dW` directly into their final tensors. `m_tiles_per_cluster` is accepted for API compatibility but does not change the cuTile schedule.
 - **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Its sole forward uses the fixed cluster-M2 N160 fragment kernel, with a measured split-N lookup for profiled long-sequence shapes, and never writes logits to HBM; `m_tiles_per_cluster` remains accepted for API compatibility but does not change that schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
 - **Fallback** uses a 512-token chunked PyTorch implementation adapted from Verl's fused PPO formulas when the default frontend cannot use the SM90 kernel.
+
+For a classifier weight sharded into equally sized contiguous ranges across a tensor-parallel process group, use the
+TP frontend. Targets remain global vocabulary indices:
+
+```python
+from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyTPFunction
+
+nll, entropy = LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+    x, local_weight, target, tp_group, 1.0, -100, 1, True
+)
+```
+
+The TP frontend derives `vocab_start` from the process-group rank. BF16 inputs on Hopper use the optional
+`liger_cute_kernels` implementation when its native core is available; other configurations use Liger's chunked
+tensor-parallel fallback adapted from Verl's fused PPO formulas. Both paths return globally correct per-token outputs
+and sum the input gradient across the TP group. The native CUTLASS + NVSHMEM paths communicate exclusively through
+NVSHMEM; no Torch communicator or Torch C++ ABI crosses the TVM-FFI boundary. Calls remain collectives on `tp_group`, so
+they must have the same ordering on every member.
+
+The native operators share the process-wide NVSHMEM bootstrap used by `LigerExpertParallelFusedMoe`, while TP and EP
+use separate cached teams and separately named workspaces. Application setup must initialize NVSHMEM from a common
+parent group (normally `WORLD`) and resolve both process groups before invoking either kernel. The first FSLCE call
+fixes its workspace capacity, so warm it up with the largest expected token, hidden, local-vocabulary, and
+`tiles_per_reduce` settings before CUDA Graph capture.
 
 H100 BF16 forward medians from 60 interleaved samples per provider at
 `H=4096`, `V=131072`. Effective TFLOPS count the common projection work,
@@ -378,6 +424,7 @@ loss.backward()
 | Ministral   | `liger_kernel.transformers.apply_liger_kernel_to_ministral` | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mistral     | `liger_kernel.transformers.apply_liger_kernel_to_mistral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mixtral     | `liger_kernel.transformers.apply_liger_kernel_to_mixtral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
+| Muse Glimmer | `liger_kernel.transformers.apply_liger_kernel_to_muse_glimmer` | LayerNorm, RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | Nemotron    | `liger_kernel.transformers.apply_liger_kernel_to_nemotron` | ReLUSquared, CrossEntropyLoss, FusedLinearCrossEntropy                  |
 | Pixtral     | `liger_kernel.transformers.apply_liger_kernel_to_pixtral`  | RoPE, RMSNorm, SwiGLU|
 | Gemma1      | `liger_kernel.transformers.apply_liger_kernel_to_gemma`    | RoPE, RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
@@ -399,6 +446,7 @@ loss.backward()
 | OLMo2   | `liger_kernel.transformers.apply_liger_kernel_to_olmo2`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | Olmo3   | `liger_kernel.transformers.apply_liger_kernel_to_olmo3`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GLM-4   | `liger_kernel.transformers.apply_liger_kernel_to_glm4`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
+| DeepSeek-V3   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v3`     | RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | DeepSeek-V4   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v4`     | RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GPT-OSS   | `liger_kernel.transformers.apply_liger_kernel_to_gpt_oss`     | RoPE, RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
 | InternVL3   | `liger_kernel.transformers.apply_liger_kernel_to_internvl`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
@@ -446,6 +494,7 @@ loss.backward()
 | KLDivergence                    | `liger_kernel.transformers.LigerKLDIVLoss`                  |
 | JSD                             | `liger_kernel.transformers.LigerJSD`                        |
 | Fused Linear JSD                  | `liger_kernel.transformers.LigerFusedLinearJSD`             |
+| Fused Linear KL Divergence        | `liger_kernel.transformers.LigerFusedLinearKLDivLoss`       |
 | TVD                             | `liger_kernel.transformers.LigerTVDLoss`                    |
 
 ### Experimental Kernels
@@ -477,32 +526,41 @@ loss.backward()
 
 ## CI status
 
-<table style="width: 100%; text-align: center; border-collapse: collapse;">
+<table>
     <tr>
-        <th style="padding: 10px;">Build</th>
+        <th>Platform</th>
+        <th>Build</th>
     </tr>
     <tr>
-        <td style="padding: 10px;">
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?branch=main&event=push" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/xuedinge233/Liger-Kernel/actions/workflows/ascend_npu_ci.yml">
-                    <img src="https://github.com/xuedinge233/Liger-Kernel/actions/workflows/ascend_npu_ci.yml/badge.svg?branch=main" alt="Build">
-                </a>
-            </div>
+        <td>NVIDIA GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/nvi-ci.yml?branch=main&event=push&label=" alt="NVIDIA GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>AMD GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/amd-ci.yml?branch=main&event=push&label=" alt="AMD GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>Intel GPU</td>
+        <td>
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/linkedin/Liger-Kernel/intel-ci.yml?branch=main&event=push&label=" alt="Intel GPU Build">
+            </a>
+        </td>
+    </tr>
+    <tr>
+        <td>Ascend NPU</td>
+        <td>
+            <a href="https://github.com/Ascend/Ascend-CI/actions/workflows/liger_kernel.yml">
+                <img src="https://img.shields.io/github/actions/workflow/status/Ascend/Ascend-CI/liger_kernel.yml?branch=main&label=" alt="Ascend NPU Build">
+            </a>
         </td>
     </tr>
 </table>
@@ -530,7 +588,7 @@ url={https://openreview.net/forum?id=36SjAIT42G}
 ```
 
 ## Star History
-[![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://www.star-history.com/#linkedin/Liger-Kernel&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.dera.page/#linkedin/Liger-Kernel&Date)
 
 <p align="right" style="font-size: 14px; color: #555; margin-top: 20px;">
     <a href="#readme-top" style="text-decoration: none; color: #007bff; font-weight: bold;">

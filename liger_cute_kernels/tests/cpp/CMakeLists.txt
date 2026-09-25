@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # C++ unit tests (gtest). Torch-free: tests include the device-function headers
 # from csrc/core/src/moe directly and define their own launcher kernels, so they
-# only need CUTLASS (header-only), CUDA, and gtest. The lck.so API dispatch
+# only need CUTLASS (header-only), CUDA, and gtest. The native core API dispatch
 # coverage test links the core library when it is built in this CMake run.
 #
 # Enabled via -DLIGER_CUTE_BUILD_TESTS=ON. Global CMAKE_CUDA_FLAGS already sets
@@ -27,7 +27,174 @@ target_include_directories(test_mlp1_fused PRIVATE
     "${CMAKE_SOURCE_DIR}/csrc/core/src/moe")
 gtest_discover_tests(test_mlp1_fused DISCOVERY_MODE PRE_TEST)
 
-# ── Blackwell (SM100a) port targets — pre-staged by the orchestrator so the
+add_executable(
+    test_fslce_shared_reduction
+    test_fslce_shared_reduction.cu)
+target_link_libraries(test_fslce_shared_reduction PRIVATE
+    GTest::gtest
+    CUDA::cudart)
+target_include_directories(test_fslce_shared_reduction PRIVATE
+    "${CMAKE_SOURCE_DIR}/csrc/core/include"
+    "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+gtest_discover_tests(
+    test_fslce_shared_reduction
+    DISCOVERY_MODE PRE_TEST)
+
+add_executable(
+    test_fused_scaled_linear_cross_entropy
+    test_fused_scaled_linear_cross_entropy.cu)
+target_link_libraries(test_fused_scaled_linear_cross_entropy PRIVATE
+    GTest::gtest
+    CUTLASS::CUTLASS
+    CUDA::cudart)
+target_include_directories(test_fused_scaled_linear_cross_entropy PRIVATE
+    "${CMAKE_SOURCE_DIR}/csrc/core/include"
+    "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+gtest_discover_tests(
+    test_fused_scaled_linear_cross_entropy
+    DISCOVERY_MODE PRE_TEST)
+
+add_executable(
+    test_fused_scaled_linear_cross_entropy_sm100
+    test_fused_scaled_linear_cross_entropy_sm100.cu)
+target_link_libraries(
+    test_fused_scaled_linear_cross_entropy_sm100 PRIVATE
+    GTest::gtest
+    CUTLASS::CUTLASS
+    CUDA::cudart)
+target_compile_definitions(
+    test_fused_scaled_linear_cross_entropy_sm100 PRIVATE
+    LIGER_CUTE_FSLCE_SM100_STAGES=${LIGER_CUTE_FSLCE_SM100_STAGES}
+    LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES=${LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES})
+target_include_directories(
+    test_fused_scaled_linear_cross_entropy_sm100 PRIVATE
+    "${CMAKE_SOURCE_DIR}/csrc/core/include"
+    "${CMAKE_SOURCE_DIR}/csrc/core/src/moe"
+    "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+gtest_discover_tests(
+    test_fused_scaled_linear_cross_entropy_sm100
+    DISCOVERY_MODE PRE_TEST)
+
+# SM100 fused backward contract test. The executable mainloop (2SM UMMA / TMEM /
+# paired TMA) only compiles for the Blackwell family, so the mainloop-dependent
+# cases are macro guarded and enabled only on a 100/103 build.
+add_executable(
+    test_fused_scaled_linear_cross_entropy_backward_sm100
+    test_fused_scaled_linear_cross_entropy_backward_sm100.cu)
+target_link_libraries(
+    test_fused_scaled_linear_cross_entropy_backward_sm100 PRIVATE
+    GTest::gtest
+    CUTLASS::CUTLASS
+    CUDA::cudart)
+target_compile_definitions(
+    test_fused_scaled_linear_cross_entropy_backward_sm100 PRIVATE
+    LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES=${LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES}
+    LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS=${LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS}
+    LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT=${LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT})
+if(LIGER_CUTE_CUDA_ARCH MATCHES "^(100|103)")
+    target_compile_definitions(
+        test_fused_scaled_linear_cross_entropy_backward_sm100 PRIVATE
+        LIGER_CUTE_FSLCE_SM100_BACKWARD_TEST_MAINLOOP=1)
+endif()
+target_include_directories(
+    test_fused_scaled_linear_cross_entropy_backward_sm100 PRIVATE
+    "${CMAKE_SOURCE_DIR}/csrc/core/include"
+    "${CMAKE_SOURCE_DIR}/csrc/core/src/moe"
+    "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+gtest_discover_tests(
+    test_fused_scaled_linear_cross_entropy_backward_sm100
+    DISCOVERY_MODE PRE_TEST)
+
+if(LIGER_CUTE_CUDA_ARCH MATCHES "^(100|103)")
+    add_executable(
+        backward_dz_sm100_bench
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy/backward_dz_sm100_bench.cu")
+    target_link_libraries(
+        backward_dz_sm100_bench PRIVATE
+        CUTLASS::CUTLASS
+        CUDA::cudart
+        CUDA::cublas
+        CUDA::cublasLt)
+    target_compile_options(
+        backward_dz_sm100_bench PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-v>)
+    target_include_directories(
+        backward_dz_sm100_bench PRIVATE
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/moe"
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+
+    add_executable(
+        test_fslce_dx_gemm_sm100
+        test_fslce_dx_gemm_sm100.cu)
+    target_link_libraries(
+        test_fslce_dx_gemm_sm100 PRIVATE
+        GTest::gtest
+        CUTLASS::CUTLASS
+        CUDA::cudart)
+    target_compile_options(
+        test_fslce_dx_gemm_sm100 PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-v>)
+    target_include_directories(
+        test_fslce_dx_gemm_sm100 PRIVATE
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/moe"
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+    gtest_discover_tests(
+        test_fslce_dx_gemm_sm100
+        DISCOVERY_MODE PRE_TEST)
+
+    add_executable(
+        benchmark_fslce_dx_cublas_sm100
+        benchmark_fslce_dx_cublas_sm100.cu)
+    target_link_libraries(
+        benchmark_fslce_dx_cublas_sm100 PRIVATE
+        CUTLASS::CUTLASS
+        CUDA::cudart
+        CUDA::cublasLt)
+
+    add_executable(
+        benchmark_fused_scaled_linear_cross_entropy_backward_gemm_sm100
+        benchmark_fused_scaled_linear_cross_entropy_backward_gemm_sm100.cu)
+    target_link_libraries(
+        benchmark_fused_scaled_linear_cross_entropy_backward_gemm_sm100 PRIVATE
+        CUTLASS::CUTLASS
+        CUDA::cudart)
+    target_include_directories(
+        benchmark_fused_scaled_linear_cross_entropy_backward_gemm_sm100 PRIVATE
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/moe"
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+    target_compile_options(
+        benchmark_fused_scaled_linear_cross_entropy_backward_gemm_sm100 PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+
+    add_executable(
+        test_fslce_dw_sm100
+        test_fslce_dw_sm100.cu)
+    target_link_libraries(
+        test_fslce_dw_sm100 PRIVATE
+        CUTLASS::CUTLASS
+        CUDA::cudart
+        CUDA::cublas)
+    target_include_directories(
+        test_fslce_dw_sm100 PRIVATE
+        "${CMAKE_SOURCE_DIR}/csrc/core/include"
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/moe"
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+
+    add_executable(
+        test_fslce_dw_cutlass_sm100
+        test_fslce_dw_cutlass_sm100.cu)
+    target_link_libraries(
+        test_fslce_dw_cutlass_sm100 PRIVATE
+        CUTLASS::CUTLASS
+        CUDA::cudart
+        CUDA::cublas)
+    target_include_directories(
+        test_fslce_dw_cutlass_sm100 PRIVATE
+        "${CMAKE_SOURCE_DIR}/csrc/core/include"
+        "${CMAKE_SOURCE_DIR}/csrc/core/src/fused_scaled_linear_cross_entropy")
+endif()
+
+# ── Blackwell (SM100 family) port targets — pre-staged by the orchestrator so the
 # three parallel port subagents each build ONLY their own already-registered
 # target and never edit this shared file. Each test .cu starts as a minimal stub
 # (int main) and is overwritten with the real cloned test by its owning subagent.

@@ -37,22 +37,17 @@ from collections import OrderedDict
 import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
-import cutlass.cute.arch as carch
 import cutlass.utils
 import torch
 
 from cutlass import Float32
 from cutlass import Int32
 from cutlass import const_expr
-from cutlass.cute.runtime import make_fake_stream
 
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import backward_warp_count
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fast_path_vector_width
 from liger_kernel.ops.cutedsl.ops.rms_norm_fastpath import fwd_warp_count
-from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
-from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
-from liger_kernel.utils import infer_device_arch
 
 # ---------------------------------------------------------------------------
 # Tuning / debug env vars are read ONCE at import. These are launch-time knobs
@@ -70,172 +65,10 @@ _FORCE_NO_FAST = bool(int(os.environ.get("LIGER_RMS_FORCE_NO_FAST") or 0))
 _FORCE_SPLIT_BWD = bool(int(os.environ.get("LIGER_RMS_FORCE_SPLIT_BWD") or 0))
 _AUTOTUNE_FILE = os.environ.get("LIGER_RMS_AUTOTUNE_FILE") or None
 _FUSED_STRIP_MULT = int(os.environ.get("LIGER_RMS_FUSED_STRIP_MULT") or 0)
-_DW_REDUCTION_POLICY = os.environ.get("LIGER_RMS_DW_REDUCTION", "auto")
-# A/B switches for the two halves of the Blackwell fast path (see below).
-_FORCE_NO_FFI = bool(int(os.environ.get("LIGER_RMS_FORCE_NO_FFI") or 0))
-_FORCE_NO_PACKED = bool(int(os.environ.get("LIGER_RMS_FORCE_NO_PACKED") or 0))
 try:
     _BACKWARD_WARPS = int(os.environ.get("LIGER_RMS_BACKWARD_WARPS") or 0) or None
 except Exception:
     _BACKWARD_WARPS = None
-
-
-# ---------------------------------------------------------------------------
-# Blackwell fast path
-# ---------------------------------------------------------------------------
-# The vector kernels are short: at bf16 4096x2048 the forward runs in ~5.8us and
-# the fused backward in ~26us on a B200 -- both already faster than Triton's
-# device time (7.8us / 32.4us). Wall-clock told the opposite story, because the
-# default launch path pays ~48us per call marshalling torch tensors into
-# cute.Tensor handles (``from_dlpack`` + memref construction) before it can even
-# enqueue. The op was therefore *host*-bound at every shape up to 16384x4096:
-# measured wall time tracked host time (~54us), not kernel time.
-#
-# This path removes that tax the same way the CuTe DSL swiglu kernel does:
-#
-#   * ``--enable-tvm-ffi`` -- the kernel is compiled once per (dtype, geometry)
-#     against *abstract* tensors, so PyTorch tensors are passed straight to the
-#     compiled function with no per-call ``from_dlpack``. This is a calling
-#     convention, independent of the GPU arch, so it is used wherever the
-#     optional ``apache-tvm-ffi`` package is importable.
-#   * packed-f32x2 SFU math in the fused backward -- Blackwell processes two
-#     fp32 lanes per instruction (``fma_packed_f32x2`` / ``mul_packed_f32x2`` /
-#     ``add_packed_f32x2``), halving the issued math for the dX/dW inner
-#     products. Gated on sm_10x, checked per launch from the *input tensor's*
-#     device, and narrowed further by ``_use_packed_math`` (below) to the row
-#     widths where it measured faster.
-#
-# Both halves fall back cleanly: without ``tvm_ffi`` the original marshalling
-# launch runs, and off Blackwell the scalar math runs.
-#
-# The forward deliberately does NOT use packed math: it is DRAM-bound (measured
-# 6.6 TB/s at 16384x8192, ~85% of B200 peak) and the packed variant measured
-# within +-0.5% -- noise -- at every width and dtype tried, so it would be
-# complexity that buys nothing.
-
-# Static probe: is the optional ``apache-tvm-ffi`` package importable?
-try:
-    import tvm_ffi  # noqa: F401
-
-    _TVM_FFI_PRESENT = True
-# NOTE: must be a single exception name, not a tuple. The CuteDSL AST
-# preprocessor parses this module's source and only handles ``ast.Name`` / bare
-# except handlers (``handler.type.id``); a tuple ``except (A, B):`` raises
-# AttributeError at compile.
-except Exception:  # pragma: no cover - depends on optional deps
-    _TVM_FFI_PRESENT = False
-
-# Static probe: are the packed-f32x2 SFU symbols importable? They exist in the
-# CUTLASS wheel on every arch, so presence does NOT imply usability -- the
-# compute capability is checked per launch by ``_is_blackwell``.
-try:
-    _ = (carch.mul_packed_f32x2, carch.add_packed_f32x2, carch.fma_packed_f32x2)
-    _PACKED_OPS_PRESENT = True
-except Exception:  # pragma: no cover - depends on optional deps
-    _PACKED_OPS_PRESENT = False
-
-
-def _is_blackwell(device=None) -> bool:
-    """Whether ``device`` is a **data-center Blackwell** (sm_100 / sm_103).
-
-    Gated to the sm_10x data-center parts only -- B200 (sm_100) and B300
-    (sm_103). Hopper (sm_90) and *consumer* Blackwell (RTX 50xx, sm_120) do not
-    get the packed math: the packed-f32x2 SFU ops are a data-center-Blackwell
-    feature (their Python symbols exist on every arch, so presence != usability)
-    and those parts run the scalar path instead. Checked per launch from the
-    *input tensor's* device: a process may hold tensors on GPUs of different
-    archs, and ``torch.cuda.set_device`` can move the current device after
-    import. Mirrors ``_is_blackwell`` in the CuTe DSL swiglu op.
-    """
-    try:
-        if not torch.cuda.is_available():
-            return False
-        if isinstance(device, torch.device):
-            device_id = device.index if device.index is not None else torch.cuda.current_device()
-        elif device is None:
-            device_id = torch.cuda.current_device()
-        else:
-            device_id = device
-        return infer_device_arch(device_id) in ("blackwell", "blackwell_ultra")
-    except Exception:  # pragma: no cover - no CUDA / bad device
-        return False
-
-
-def _is_hopper(device=None) -> bool:
-    """Whether ``device`` is an SM90 Hopper GPU."""
-    try:
-        if not torch.cuda.is_available():
-            return False
-        if isinstance(device, torch.device):
-            device_id = device.index if device.index is not None else torch.cuda.current_device()
-        elif device is None:
-            device_id = torch.cuda.current_device()
-        else:
-            device_id = device
-        return infer_device_arch(device_id) == "hopper"
-    except Exception:  # pragma: no cover - no CUDA / bad device
-        return False
-
-
-def _use_packed_math(device, n_cols: int, vec: int) -> bool:
-    """Whether to compile the packed-f32x2 fused backward for this launch.
-
-    Blackwell-only, and only in the wide-row regime. The backward's warp count
-    is width-driven (``backward_warp_count``: 16 warps above 4096, else 8 or 4),
-    and the win tracks that split -- above 4096 each thread holds several
-    register-resident vector tiles and the kernel becomes issue-bound, which is
-    exactly what halving the math instructions relieves. At or below 4096 the
-    same kernel is already memory-bound and the packed form is neutral or a
-    slight loss.
-
-    Measured on a B200, fused backward device time, 16384 rows (scalar ->
-    packed)::
-
-        bf16  H=1024   71.4 -> 73.2 us   (+2.5%)
-        bf16  H=2048   84.7 -> 86.1 us   (+1.7%)
-        bf16  H=4096  110.7 -> 107.7 us  (-2.7%)
-        bf16  H=6144  218.7 -> 201.6 us  (-7.8%)
-        bf16  H=8192  245.8 -> 222.0 us  (-9.7%)
-        fp32  H=6144  251.3 -> 194.6 us  (-22.6%)
-        fp32  H=8192  297.9 -> 296.4 us  (-0.5%)
-
-    ``vec`` must be even for the pairwise loop; every supported dtype gives an
-    even vector width, so this only ever rejects a hypothetical odd one.
-    """
-    if not _PACKED_OPS_PRESENT or _FORCE_NO_PACKED or vec % 2:
-        return False
-    return n_cols > 4096 and _is_blackwell(device)
-
-
-def _use_ffi() -> bool:
-    """Whether to use the TVM-FFI direct-call path (no per-call marshalling)."""
-    return _TVM_FFI_PRESENT and not _FORCE_NO_FFI
-
-
-# Compiled TVM-FFI callables, keyed on everything the specialization bakes.
-_ffi_compile_cache: dict = {}
-
-
-def _ffi_fake(dtype: torch.dtype, shape, divisibility: int):
-    """Abstract tensor for ``cute.compile``; ``dtype`` is a torch dtype."""
-    return make_fake_tensor(torch2cute_dtype_map[dtype], shape, divisibility)
-
-
-def _ffi_fake_stream():
-    """Placeholder stream that resolves to TVM-FFI's env stream at call time.
-
-    Compiling against it drops the stream parameter from the FFI signature
-    entirely: the compiled function reads the caller's environment stream
-    instead, so the launch path never queries or marshals a stream from Python.
-
-    That environment stream tracks ``torch.cuda.current_stream()``, so no
-    host-side stream plumbing is needed here -- and adding any would be pure
-    overhead. Verified from profiler stream ids: launching under the default
-    stream, and under two different ``torch.cuda.stream(...)`` contexts, places
-    the kernel on three correspondingly different streams, and the op captures
-    into a CUDA graph and replays correctly.
-    """
-    return make_fake_stream(use_tvm_ffi_env_stream=True)
 
 
 # Lightweight debug logger controlled by env var LIGER_RMS_DEBUG
@@ -406,26 +239,6 @@ def _warp_reduce_sum(val: Float32) -> Float32:
 
 
 @cute.jit
-def _cta_reduce_sum_one_barrier(
-    val: Float32,
-    sm_warp: cute.Tensor,
-    lane: Int32,
-    warp: Int32,
-    slot: Int32,
-    NUM_WARPS: cutlass.Constexpr,
-) -> Float32:
-    """Reduce warp partials with one CTA barrier and ping-pong scratch."""
-    val = _warp_reduce_sum(val)
-    if lane == 0:
-        sm_warp[slot, warp] = val
-    cute.arch.barrier()
-    result = Float32(0.0)
-    for warp_idx in cutlass.range_constexpr(NUM_WARPS):
-        result = result + sm_warp[slot, warp_idx]
-    return result
-
-
-@cute.jit
 def _cta_reduce_sum_warp0(
     val: Float32,
     sm_warp: cute.Tensor,
@@ -434,15 +247,20 @@ def _cta_reduce_sum_warp0(
     warp: Int32,
     NUM_WARPS: cutlass.Constexpr,
 ) -> Float32:
-    """Reduce with warp 0 and broadcast through a second CTA barrier."""
+    """Reduce warp partials with warp 0 and broadcast one shared scalar.
+
+    Only warp 0 reads the partials. This avoids the scalar fallback's shared-load
+    loop in every thread while retaining a simple, reusable CTA
+    reduction for the vector forward and backward paths.
+    """
     val = _warp_reduce_sum(val)
     if lane == 0:
-        sm_warp[0, warp] = val
+        sm_warp[warp] = val
     cute.arch.barrier()
     warp0_val = Float32(0.0)
     if warp == 0:
         if lane < NUM_WARPS:
-            warp0_val = sm_warp[0, lane]
+            warp0_val = sm_warp[lane]
         warp0_val = _warp_reduce_sum(warp0_val)
         if lane == 0:
             sm_result[0] = warp0_val
@@ -542,11 +360,8 @@ def _rms_norm_fwd_vector_kernel(
     row, _, _ = cute.arch.block_idx()
 
     smem = cutlass.utils.SmemAllocator()
-    sm_warp = smem.allocate_tensor(
-        Float32,
-        cute.make_layout((2, NUM_WARPS), stride=(NUM_WARPS, 1)),
-        byte_alignment=4,
-    )
+    sm_warp = smem.allocate_tensor(Float32, cute.make_layout(NUM_WARPS), byte_alignment=4)
+    sm_result = smem.allocate_tensor(Float32, cute.make_layout(1), byte_alignment=4)
 
     # Slicing a dynamic tensor loses its static alignment.  The host validates the
     # 16-byte base/row alignment before selecting this kernel, so reconstruct the
@@ -577,7 +392,7 @@ def _rms_norm_fwd_vector_kernel(
             x_ssa = x_frags[None, ct].load().to(Float32)
             partial = partial + (x_ssa * x_ssa).reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
 
-    total = _cta_reduce_sum_one_barrier(partial, sm_warp, lane, warp, Int32(0), NUM_WARPS)
+    total = _cta_reduce_sum_warp0(partial, sm_warp, sm_result, lane, warp, NUM_WARPS)
     rstd = cute.math.rsqrt(total / Float32(N_COLS) + eps)
     if tid == 0:
         mRSTD[row] = rstd.to(mRSTD.element_type)
@@ -708,10 +523,7 @@ def _rms_norm_bwd_dw_kernel(
         # llama rounds x*rstd to the input dtype before accumulating (Triton parity).
         if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
             xhat = xhat.to(mX.element_type).to(Float32)
-        dw_update = dyf * xhat
-        if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
-            dw_update = dw_update.to(mX.element_type).to(Float32)
-        acc = acc + dw_update
+        acc = acc + dyf * xhat
     if c < n_cols:
         mdW[strip, None][c] = acc.to(mdW.element_type)
 
@@ -731,7 +543,6 @@ def _rms_norm_bwd_fused_vector_kernel(
     NUM_VEC_TILES: cutlass.Constexpr,
     NUM_THREADS: cutlass.Constexpr,
     NUM_WARPS: cutlass.Constexpr,
-    PACKED_MATH: cutlass.Constexpr = False,
 ):
     """Aligned affine backward matching Triton's persistent execution shape.
 
@@ -749,11 +560,7 @@ def _rms_norm_bwd_fused_vector_kernel(
     n_vec = N_COLS // VEC
 
     smem = cutlass.utils.SmemAllocator()
-    sm_warp = smem.allocate_tensor(
-        Float32,
-        cute.make_layout((2, NUM_WARPS), stride=(NUM_WARPS, 1)),
-        byte_alignment=4,
-    )
+    sm_warp = smem.allocate_tensor(Float32, cute.make_layout(NUM_WARPS), byte_alignment=4)
     sm_result = smem.allocate_tensor(Float32, cute.make_layout(1), byte_alignment=4)
 
     # W and dW are persistent row vectors, matching Triton's per-program state.
@@ -777,30 +584,32 @@ def _rms_norm_bwd_fused_vector_kernel(
     # Triton assigns one contiguous ceil-divided row range to each SM program.
     rows_per_strip = (n_rows + num_strips - 1) // num_strips
     row_start = strip * rows_per_strip
-    row_linear_offset = row_start * N_COLS
     for i in cutlass.range(0, rows_per_strip):
         r = row_start + i
         r_valid = r < n_rows
-        row_linear_safe = Int32(0)
+        # Constructing a row view is pointer arithmetic even when no copy follows.
+        # Clamp the inactive final iteration to row 0 to keep that pointer in bounds.
+        r_safe = Int32(0)
         if r_valid:
-            row_linear_safe = row_linear_offset
+            r_safe = r
         rstd = Float32(0.0)
         if r_valid:
             rstd = mRSTD[r].to(Float32)
 
-        x_row_ptr = mX.iterator + row_linear_safe
-        dy_row_ptr = mdY.iterator + row_linear_safe
-        dx_row_ptr = mdX.iterator + row_linear_safe
+        # Rebuild row views with the host-validated alignment for vector copies.
+        x_row = mX[r_safe, None]
+        dy_row = mdY[r_safe, None]
+        dx_row = mdX[r_safe, None]
         gX = cute.make_tensor(
-            cute.make_ptr(mX.element_type, x_row_ptr.toint(), cute.AddressSpace.gmem, assumed_align=16),
+            cute.make_ptr(mX.element_type, x_row.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
             cute.make_layout((N_COLS,)),
         )
         gdY = cute.make_tensor(
-            cute.make_ptr(mdY.element_type, dy_row_ptr.toint(), cute.AddressSpace.gmem, assumed_align=16),
+            cute.make_ptr(mdY.element_type, dy_row.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
             cute.make_layout((N_COLS,)),
         )
         gdX = cute.make_tensor(
-            cute.make_ptr(mdX.element_type, dx_row_ptr.toint(), cute.AddressSpace.gmem, assumed_align=16),
+            cute.make_ptr(mdX.element_type, dx_row.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
             cute.make_layout((N_COLS,)),
         )
         gXv = cute.tiled_divide(gX, (VEC,))
@@ -816,88 +625,30 @@ def _rms_norm_bwd_fused_vector_kernel(
                 cute.autovec_copy(gdYv[None, vec_idx], dy_frags[None, ct])
 
         dot = Float32(0.0)
-        # Two independent fp32 accumulators feed the packed-f32x2 FFMA chain.
-        dot0 = Float32(0.0)
-        dot1 = Float32(0.0)
         for ct in cutlass.range_constexpr(NUM_VEC_TILES):
             vec_idx = ct * NUM_THREADS + tid
             if r_valid and vec_idx < n_vec:
-                if const_expr(PACKED_MATH):
-                    xf = x_frags[None, ct]
-                    dyf = dy_frags[None, ct]
-                    wf = w_frags[None, ct]
-                    for i in cutlass.range_constexpr(0, VEC, 2):
-                        m0 = wf[i].to(Float32)
-                        m1 = wf[i + 1].to(Float32)
-                        m0, m1 = carch.add_packed_f32x2((m0, m1), (offset, offset))
-                        m0, m1 = carch.mul_packed_f32x2((dyf[i].to(Float32), dyf[i + 1].to(Float32)), (m0, m1))
-                        dot0, dot1 = carch.fma_packed_f32x2(
-                            (xf[i].to(Float32), xf[i + 1].to(Float32)), (m0, m1), (dot0, dot1)
-                        )
-                else:
-                    dot = dot + (
-                        x_frags[None, ct].load().to(Float32)
-                        * dy_frags[None, ct].load().to(Float32)
-                        * (w_frags[None, ct].load().to(Float32) + offset)
-                    ).reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
-        if const_expr(PACKED_MATH):
-            dot = dot0 + dot1
-        if const_expr(mX.element_type.width == 32 and N_COLS > 2048):
-            dot_total = _cta_reduce_sum_warp0(dot, sm_warp, sm_result, lane, warp, NUM_WARPS)
-        else:
-            dot_total = _cta_reduce_sum_one_barrier(dot, sm_warp, lane, warp, Int32(i % 2), NUM_WARPS)
+                dot = dot + (
+                    x_frags[None, ct].load().to(Float32)
+                    * dy_frags[None, ct].load().to(Float32)
+                    * (w_frags[None, ct].load().to(Float32) + offset)
+                ).reduce(cute.ReductionOp.ADD, Float32(0.0), 0)
+        dot_total = _cta_reduce_sum_warp0(dot, sm_warp, sm_result, lane, warp, NUM_WARPS)
         coef = (Float32(0.0) - rstd * rstd * dot_total) / Float32(N_COLS)
 
         # Reuse the original register fragments for dX and dW.
         for ct in cutlass.range_constexpr(NUM_VEC_TILES):
             vec_idx = ct * NUM_THREADS + tid
             if r_valid and vec_idx < n_vec:
-                if const_expr(PACKED_MATH):
-                    xr = x_frags[None, ct]
-                    dyr = dy_frags[None, ct]
-                    wr = w_frags[None, ct]
-                    ar = dw_acc[None, ct]
-                    for i in cutlass.range_constexpr(0, VEC, 2):
-                        x0 = xr[i].to(Float32)
-                        x1 = xr[i + 1].to(Float32)
-                        dy0 = dyr[i].to(Float32)
-                        dy1 = dyr[i + 1].to(Float32)
-                        # m = dy * (w + offset)
-                        m0, m1 = carch.add_packed_f32x2((wr[i].to(Float32), wr[i + 1].to(Float32)), (offset, offset))
-                        m0, m1 = carch.mul_packed_f32x2((dy0, dy1), (m0, m1))
-                        # dx = rstd * (m + coef * x)
-                        t0, t1 = carch.fma_packed_f32x2((coef, coef), (x0, x1), (m0, m1))
-                        t0, t1 = carch.mul_packed_f32x2((t0, t1), (rstd, rstd))
-                        dx_frag[i] = t0.to(mdX.element_type)
-                        dx_frag[i + 1] = t1.to(mdX.element_type)
-                        # dw += dy * xhat,  xhat = x * rstd
-                        h0, h1 = carch.mul_packed_f32x2((x0, x1), (rstd, rstd))
-                        if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
-                            h0 = h0.to(mX.element_type).to(Float32)
-                            h1 = h1.to(mX.element_type).to(Float32)
-                            p0, p1 = carch.mul_packed_f32x2((dy0, dy1), (h0, h1))
-                            p0 = p0.to(mX.element_type).to(Float32)
-                            p1 = p1.to(mX.element_type).to(Float32)
-                            a0, a1 = carch.add_packed_f32x2((ar[i], ar[i + 1]), (p0, p1))
-                        else:
-                            a0, a1 = carch.fma_packed_f32x2((dy0, dy1), (h0, h1), (ar[i], ar[i + 1]))
-                        ar[i] = a0
-                        ar[i + 1] = a1
-                    cute.autovec_copy(dx_frag, gdXv[None, vec_idx])
-                else:
-                    xf = x_frags[None, ct].load().to(Float32)
-                    dyf = dy_frags[None, ct].load().to(Float32)
-                    mk = dyf * (w_frags[None, ct].load().to(Float32) + offset)
-                    dx_frag.store((rstd * (mk + coef * xf)).to(mdX.element_type))
-                    cute.autovec_copy(dx_frag, gdXv[None, vec_idx])
-                    xhat = xf * rstd
-                    if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
-                        xhat = xhat.to(mX.element_type).to(Float32)
-                    dw_update = dyf * xhat
-                    if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
-                        dw_update = dw_update.to(mX.element_type).to(Float32)
-                    dw_acc[None, ct].store(dw_acc[None, ct].load() + dw_update)
-        row_linear_offset = row_linear_offset + N_COLS
+                xf = x_frags[None, ct].load().to(Float32)
+                dyf = dy_frags[None, ct].load().to(Float32)
+                mk = dyf * (w_frags[None, ct].load().to(Float32) + offset)
+                dx_frag.store((rstd * (mk + coef * xf)).to(mdX.element_type))
+                cute.autovec_copy(dx_frag, gdXv[None, vec_idx])
+                xhat = xf * rstd
+                if const_expr(CASTING_MODE == _CASTING_MODE_LLAMA):
+                    xhat = xhat.to(mX.element_type).to(Float32)
+                dw_acc[None, ct].store(dw_acc[None, ct].load() + dyf * xhat)
 
     # Emit this strip's dW partials; the host sums the num_strips partial rows.
     dw_row = mdW[strip, None]
@@ -935,7 +686,7 @@ def _rms_norm_fwd_vector_host(
     stream: cuda.CUstream = None,
 ):
     n_rows = mX.shape[0]
-    smem_bytes = (((2 * NUM_WARPS + 1) * 4 + 15) // 16) * 16
+    smem_bytes = (((NUM_WARPS + 1) * 4 + 15) // 16) * 16
     _rms_norm_fwd_vector_kernel(
         mX,
         mW,
@@ -1039,7 +790,6 @@ def _rms_norm_bwd_fused_host(
     NUM_THREADS: cutlass.Constexpr,
     NUM_WARPS: cutlass.Constexpr,
     SMEM_BYTES: cutlass.Constexpr,
-    PACKED_MATH: cutlass.Constexpr = False,
     stream: cuda.CUstream = None,
 ):
     num_strips = mdW.shape[0]
@@ -1057,206 +807,12 @@ def _rms_norm_bwd_fused_host(
         NUM_VEC_TILES,
         NUM_THREADS,
         NUM_WARPS,
-        PACKED_MATH,
     ).launch(
         grid=[num_strips, 1, 1],
         block=[NUM_THREADS, 1, 1],
         smem=SMEM_BYTES,
         stream=stream,
     )
-
-
-# =============================================================================
-# TVM-FFI specializations (direct call, no per-call tensor marshalling)
-# =============================================================================
-# Every constexpr is captured by the closure rather than passed as an argument,
-# so the compiled function's runtime signature is just tensors + fp32 scalars --
-# which is what lets PyTorch tensors be handed straight to it. ``eps`` / ``offset``
-# stay runtime scalars so a change of either does not force a recompile.
-def _make_fwd_vector_ffi(casting_mode, elementwise_affine, n_cols, vec, num_vec_tiles, num_warps, num_threads):
-    smem_bytes = (((2 * num_warps + 1) * 4 + 15) // 16) * 16
-
-    @cute.jit
-    def fwd(
-        mX: cute.Tensor,
-        mW: cute.Tensor,
-        mY: cute.Tensor,
-        mRSTD: cute.Tensor,
-        eps: Float32,
-        offset: Float32,
-        stream: cuda.CUstream = None,
-    ):
-        _rms_norm_fwd_vector_kernel(
-            mX,
-            mW,
-            mY,
-            mRSTD,
-            eps,
-            offset,
-            casting_mode,
-            elementwise_affine,
-            n_cols,
-            vec,
-            num_vec_tiles,
-            num_warps,
-            num_threads,
-        ).launch(
-            grid=[mX.shape[0], 1, 1],
-            block=[num_threads, 1, 1],
-            smem=smem_bytes,
-            stream=stream,
-        )
-
-    return fwd
-
-
-def _make_bwd_fused_ffi(casting_mode, n_cols, vec, num_vec_tiles, num_threads, num_warps, packed):
-    smem_bytes = (((2 * num_warps + 1) * 4 + 15) // 16) * 16
-
-    @cute.jit
-    def bwd(
-        mdY: cute.Tensor,
-        mX: cute.Tensor,
-        mW: cute.Tensor,
-        mRSTD: cute.Tensor,
-        mdX: cute.Tensor,
-        mdW: cute.Tensor,
-        offset: Float32,
-        stream: cuda.CUstream = None,
-    ):
-        _rms_norm_bwd_fused_vector_kernel(
-            mdY,
-            mX,
-            mW,
-            mRSTD,
-            mdX,
-            mdW,
-            offset,
-            casting_mode,
-            n_cols,
-            vec,
-            num_vec_tiles,
-            num_threads,
-            num_warps,
-            packed,
-        ).launch(
-            grid=[mdW.shape[0], 1, 1],
-            block=[num_threads, 1, 1],
-            smem=smem_bytes,
-            stream=stream,
-        )
-
-    return bwd
-
-
-def _get_fwd_vector_ffi(
-    x_dtype,
-    w_dtype,
-    device_index,
-    casting_mode,
-    elementwise_affine,
-    n_cols,
-    vec,
-    num_vec_tiles,
-    num_warps,
-    num_threads,
-):
-    """Compile (once per specialization) the TVM-FFI vector forward."""
-    key = (
-        "fwd_vec_ffi",
-        x_dtype,
-        w_dtype,
-        device_index,
-        casting_mode,
-        elementwise_affine,
-        n_cols,
-        vec,
-        num_vec_tiles,
-        num_warps,
-        num_threads,
-    )
-    fn = _ffi_compile_cache.get(key)
-    if fn is not None:
-        return fn
-    # X / Y: dynamic row count, static width, ``vec``-divisible row stride (the
-    # host has already validated the 16-byte base and row alignment this bakes in).
-    fake_x = _ffi_fake(x_dtype, (cute.sym_int(), n_cols), vec)
-    fake_y = _ffi_fake(x_dtype, (cute.sym_int(), n_cols), vec)
-    fake_rstd = _ffi_fake(torch.float32, (cute.sym_int(),), 1)
-    # Non-affine bakes a dummy fp32 vector for W and is handed RSTD at call time;
-    # ELEMENTWISE_AFFINE is constexpr-False so the kernel never reads it.
-    fake_w = _ffi_fake(w_dtype, (n_cols,), vec) if elementwise_affine else fake_rstd
-    fn = cute.compile(
-        _make_fwd_vector_ffi(casting_mode, elementwise_affine, n_cols, vec, num_vec_tiles, num_warps, num_threads),
-        fake_x,
-        fake_w,
-        fake_y,
-        fake_rstd,
-        Float32(0.0),
-        Float32(0.0),
-        _ffi_fake_stream(),
-        options="--enable-tvm-ffi",
-    )
-    _ffi_compile_cache[key] = fn
-    if _DEBUG:
-        _rms_debug(f"Compiled TVM-FFI fwd kernel for key: {key}")
-    return fn
-
-
-def _get_bwd_fused_ffi(
-    x_dtype,
-    dy_dtype,
-    w_dtype,
-    device_index,
-    casting_mode,
-    n_cols,
-    vec,
-    num_vec_tiles,
-    num_threads,
-    num_warps,
-    packed,
-):
-    """Compile (once per specialization) the TVM-FFI fused affine backward."""
-    key = (
-        "bwd_fused_ffi",
-        x_dtype,
-        dy_dtype,
-        w_dtype,
-        device_index,
-        casting_mode,
-        n_cols,
-        vec,
-        num_vec_tiles,
-        num_threads,
-        num_warps,
-        packed,
-    )
-    fn = _ffi_compile_cache.get(key)
-    if fn is not None:
-        return fn
-    fake_dy = _ffi_fake(dy_dtype, (cute.sym_int(), n_cols), vec)
-    fake_x = _ffi_fake(x_dtype, (cute.sym_int(), n_cols), vec)
-    fake_w = _ffi_fake(w_dtype, (n_cols,), vec)
-    fake_rstd = _ffi_fake(torch.float32, (cute.sym_int(),), 1)
-    fake_dx = _ffi_fake(dy_dtype, (cute.sym_int(), n_cols), vec)
-    # dW partials are fp32 (num_strips, n_cols); num_strips varies with the launch.
-    fake_dw = _ffi_fake(torch.float32, (cute.sym_int(), n_cols), 4)
-    fn = cute.compile(
-        _make_bwd_fused_ffi(casting_mode, n_cols, vec, num_vec_tiles, num_threads, num_warps, packed),
-        fake_dy,
-        fake_x,
-        fake_w,
-        fake_rstd,
-        fake_dx,
-        fake_dw,
-        Float32(0.0),
-        _ffi_fake_stream(),
-        options="--enable-tvm-ffi",
-    )
-    _ffi_compile_cache[key] = fn
-    if _DEBUG:
-        _rms_debug(f"Compiled TVM-FFI fused bwd kernel for key: {key}")
-    return fn
 
 
 def _is_16b_row_aligned(t):
@@ -1294,27 +850,6 @@ def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_aff
     The warp count (hence thread count and register-resident tiles per thread) is
     chosen from the hidden width by ``fwd_warp_count``; ``num_vec_tiles`` follows.
     """
-    n_cols_ = X.shape[1]
-    if _use_ffi():
-        num_warps = fwd_warp_count(n_cols_, vec, X.shape[0], _is_hopper(X.device))
-        num_threads = 32 * num_warps
-        fn = _get_fwd_vector_ffi(
-            X.dtype,
-            W.dtype if elementwise_affine else None,
-            X.device.index,
-            casting_mode,
-            elementwise_affine,
-            n_cols_,
-            vec,
-            (n_cols_ // vec + num_threads - 1) // num_threads,
-            num_warps,
-            num_threads,
-        )
-        # Non-affine passes RSTD as the dummy W (fp32, matching the baked layout).
-        w_arg = W if elementwise_affine else RSTD
-        fn(X, w_arg, Y, RSTD, Float32(float(eps)), Float32(float(offset)))
-        return
-
     stream = _cute_stream()
     # Cache the marshaled handles for the INPUTS (X, W) -- their addresses are stable
     # across steps (weights always; activations under a reused-buffer harness), so they
@@ -1327,7 +862,7 @@ def _launch_fwd_vector(X, W, Y, RSTD, eps, offset, casting_mode, elementwise_aff
     rstd_ct = to_cute_tensor(RSTD, assumed_align=4)
     w_ct = _to_cute_cached(W, assumed_align=16) if elementwise_affine else rstd_ct
     n_cols = X.shape[1]
-    num_warps = fwd_warp_count(n_cols, vec, X.shape[0], _is_hopper(X.device))
+    num_warps = fwd_warp_count(n_cols, vec)
     num_threads = 32 * num_warps
     num_vec_tiles = (n_cols // vec + num_threads - 1) // num_threads
     # Optionally bucket n_cols in the compile key to reduce cold-compile churn.
@@ -1475,26 +1010,6 @@ def _launch_bwd_fused(
     num_warps,
 ):
     """Launch the aligned register-resident affine backward specialization."""
-    packed = _use_packed_math(X.device, X.shape[1], vec)
-    if _use_ffi():
-        n_cols_ = X.shape[1]
-        num_threads_ = 32 * num_warps
-        fn = _get_bwd_fused_ffi(
-            X.dtype,
-            dY.dtype,
-            W.dtype,
-            X.device.index,
-            casting_mode,
-            n_cols_,
-            vec,
-            num_vec_tiles,
-            num_threads_,
-            num_warps,
-            packed,
-        )
-        fn(dY, X, W, RSTD, dX, dW_partial, Float32(float(offset)))
-        return
-
     stream = _cute_stream()
     dy_ct = _to_cute_cached(dY, assumed_align=16)
     x_ct = _to_cute_cached(X, assumed_align=16)
@@ -1504,7 +1019,7 @@ def _launch_bwd_fused(
     dw_ct = _to_cute_cached(dW_partial, assumed_align=16)  # fp32 (num_strips, n_cols)
     n_cols = X.shape[1]
     num_threads = 32 * num_warps
-    smem_bytes = (((2 * num_warps + 1) * 4 + 15) // 16) * 16
+    smem_bytes = (((num_warps + 1) * 4 + 15) // 16) * 16
 
     # The width and thread geometry size the register layouts and reduction
     # scratch, so every value is baked into the compiled specialization.
@@ -1530,7 +1045,6 @@ def _launch_bwd_fused(
         dY.dtype,
         W.dtype,
         casting_mode,
-        packed,
     )
     if _DEBUG:
         _rms_debug(f"_launch_bwd_fused reload_policy={reload_policy}")
@@ -1566,7 +1080,6 @@ def _launch_bwd_fused(
             num_threads,
             num_warps,
             smem_bytes,
-            packed,
             stream,
         )
         if _DEBUG:
@@ -1760,20 +1273,53 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         _launch_bwd_dw(dY, X, RSTD, dW_partial, rows_per_strip, casting_mode)
         _launch_bwd_dx(dY, X, W, RSTD, dX, offset, casting_mode, elementwise_affine)
 
-    # The 32-warp epilogue needs at least four partials per warp; keep the
-    # established torch reduction for smaller or non-Hopper auto-dispatches.
-    use_custom_dw_reduction = _DW_REDUCTION_POLICY == "custom" or (
-        _DW_REDUCTION_POLICY == "auto" and num_strips >= 128 and _is_hopper(W.device)
-    )
-    if use_custom_dw_reduction:
-        from liger_kernel.ops.cutedsl.ops.rms_norm_dw_reduce import reduce_dw_partials
-
-        dW = reduce_dw_partials(dW_partial, W.dtype)
-    elif _DW_REDUCTION_POLICY in ("auto", "torch"):
-        dW = dW_partial.sum(dim=0).to(W.dtype)
-    else:
-        raise ValueError(f"Invalid LIGER_RMS_DW_REDUCTION policy: {_DW_REDUCTION_POLICY}")
+    dW = dW_partial.sum(dim=0).to(W.dtype)
     return dX.view(*shape), dW
+
+
+# ---------------------------------------------------------------------------
+# Dispatch delegation (B200 optimization, iteration 2)
+# ---------------------------------------------------------------------------
+# The Quack-derived kernels in the multi-backend dispatcher
+# (``ops/backends/_cutedsl/rms_norm.py``) measurably beat the inline kernels
+# below on every benchmarked B200 shape (llama_3_8b, hidden 4096, bf16 @ seq
+# 8192, wall ms: fwd 0.0618->0.0250, bwd 0.2067->0.0841, full 0.2683->0.1261
+# — also faster than the Triton kernel there). They are, however, compile-
+# gated: hidden dim must be divisible by the vector width (16 bytes /
+# elem_size) and <= 32K (``_BWD_MAX_TILE_CUTEDSL``). Module-replacement users
+# (``LIGER_KERNEL_IMPL=cutedsl``) therefore route through the guarded
+# delegation below: fast Quack kernel when supported, the inline kernels
+# otherwise — mirroring the guards in the dispatcher's ``rms_norm_cutedsl``.
+_FAST_SUPPORTED_DTYPES = {torch.float16, torch.bfloat16, torch.float32}
+_FAST_DISPATCH_FN = None
+
+
+def _fast_dispatch_fn():
+    """Deferred-import the dispatcher's autograd Function (lazy; no cycle —
+    ``backends/_cutedsl/rms_norm`` only depends on ``ops/_nvidia_shared``)."""
+    global _FAST_DISPATCH_FN
+    if _FAST_DISPATCH_FN is None:
+        from liger_kernel.ops.backends._cutedsl.rms_norm import _LigerRMSNormCuTeDSLFunction
+
+        _FAST_DISPATCH_FN = _LigerRMSNormCuTeDSLFunction
+    return _FAST_DISPATCH_FN
+
+
+def _fast_dispatch_supported(X, W) -> bool:
+    """True when the Quack-derived dispatcher kernel can run this call."""
+    if not (isinstance(X, torch.Tensor) and X.is_cuda):
+        return False
+    if X.dtype not in _FAST_SUPPORTED_DTYPES:
+        return False
+    if W is not None and W.dtype not in _FAST_SUPPORTED_DTYPES:
+        return False
+    N = X.shape[-1]
+    vecwidth = 16 // X.element_size()
+    if N % vecwidth != 0:
+        return False
+    if N > 32768:  # _BWD_MAX_TILE_CUTEDSL in the dispatcher backend
+        return False
+    return True
 
 
 class LigerRMSNormFunction(torch.autograd.Function):
@@ -1783,6 +1329,11 @@ class LigerRMSNormFunction(torch.autograd.Function):
     Signature-compatible with ``liger_kernel.ops.rms_norm.LigerRMSNormFunction``:
     ``forward(X, W, eps, offset=0.0, casting_mode="llama", in_place=True, row_mode=None)``.
     See that class for the semantics of ``offset``, ``casting_mode`` and ``in_place``.
+
+    Runs the fast Quack-derived dispatcher kernel when the shape/dtype allow it
+    (see ``_fast_dispatch_supported``); otherwise falls back to the inline
+    kernels in this module (also reachable directly via ``rms_norm_forward`` /
+    ``rms_norm_backward``).
     """
 
     @staticmethod
@@ -1791,6 +1342,13 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
+        if _fast_dispatch_supported(X, W):
+            ctx._impl = "dispatch"
+            # Re-use THIS autograd node: parameterize the shared ctx exactly as
+            # the dispatcher's Function does, then let its backward handle dY.
+            return _fast_dispatch_fn().forward(ctx, X, W, eps, offset, casting_mode, in_place, row_mode)
+
+        ctx._impl = "inline"
         # Gather a TP-sharded input to a local tensor before normalizing (safe when
         # torch.distributed.tensor isn't importable on this build).
         X = _maybe_gather_dtensor(X)
@@ -1814,6 +1372,9 @@ class LigerRMSNormFunction(torch.autograd.Function):
         """
         Y: (B, T, H) or (BxT, H)
         """
+        if ctx._impl == "dispatch":
+            return _fast_dispatch_fn().backward(ctx, dY)
+
         if ctx.elementwise_affine:
             X, W, RSTD = ctx.saved_tensors
         else:

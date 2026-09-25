@@ -24,10 +24,9 @@ def infer_comm_backend():
         return "nccl"
     elif is_npu_available():
         # Use Ascend NPU if available (torch.npu)
-        # Ascend is not standard torch backend and requires extension.
-        # Assume that it is installed if NPUs are being used in
-        # multi device environment.
-        return "ascend"
+        # HCCL is registered by torch_npu as the process-group backend for
+        # communication between Ascend NPUs.
+        return "hccl"
     # XPU (Intel) if available
     elif torch.distributed.distributed_c10d.is_xccl_available():
         return "xccl"

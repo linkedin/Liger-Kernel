@@ -52,7 +52,13 @@ from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entro
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction  # noqa: F401
 from liger_kernel.ops.fused_linear_jsd import fused_linear_jsd_backward  # noqa: F401
 from liger_kernel.ops.fused_linear_jsd import fused_linear_jsd_forward  # noqa: F401
+from liger_kernel.ops.fused_linear_kl_div import LigerFusedLinearKLDivFunction  # noqa: F401
+from liger_kernel.ops.fused_linear_kl_div import fused_linear_kl_div_backward  # noqa: F401
+from liger_kernel.ops.fused_linear_kl_div import fused_linear_kl_div_forward  # noqa: F401
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction  # noqa: F401
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import (
+    LigerFusedLinearScaledCrossEntropyTPFunction,  # noqa: F401
+)
 from liger_kernel.ops.fused_moe import LigerFusedMoEFunction  # noqa: F401
 from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction  # noqa: F401
 from liger_kernel.ops.geglu import LigerGELUMulFunction  # noqa: F401

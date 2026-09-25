@@ -9,6 +9,8 @@ from liger_kernel.ops import LigerDyTFunction
 from liger_kernel.ops import LigerFusedAddRMSNormFunction
 from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops import LigerFusedLinearJSDFunction
+from liger_kernel.ops import LigerFusedLinearKLDivFunction
+from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyTPFunction
 from liger_kernel.ops import LigerFusedNeighborhoodAttentionFunction
 from liger_kernel.ops import LigerGELUMulFunction
 from liger_kernel.ops import LigerGroupNormFunction
@@ -94,8 +96,9 @@ def liger_fused_linear_cross_entropy(
     use_token_scaling: bool = False,
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
+    chunk_mem_const: int = 1,
 ):
-    loss, z_loss, token_accuracy, predicted_tokens = LigerFusedLinearCrossEntropyFunction.apply(
+    apply_args = (
         input,
         weight,
         target,
@@ -112,12 +115,38 @@ def liger_fused_linear_cross_entropy(
         return_token_accuracy,
         return_predicted_tokens,
     )
+    if getattr(LigerFusedLinearCrossEntropyFunction, "supports_inner_impl_dispatch", False):
+        apply_args += (None, None, chunk_mem_const)
+    loss, z_loss, token_accuracy, predicted_tokens = LigerFusedLinearCrossEntropyFunction.apply(*apply_args)
 
     if not return_z_loss and not return_token_accuracy and not return_predicted_tokens:
         return loss
 
     return CrossEntropyOutput(
         loss=loss, z_loss=z_loss, token_accuracy=token_accuracy, predicted_tokens=predicted_tokens
+    )
+
+
+def liger_fused_linear_scaled_cross_entropy_tp(
+    input,
+    weight,
+    target,
+    tp_group,
+    temperature: float = 1.0,
+    ignore_index: int = -100,
+    tiles_per_reduce: int = 1,
+    return_entropy: bool = False,
+):
+    """Return per-token TP negative log-likelihood and optional entropy."""
+    return LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+        input,
+        weight,
+        target,
+        tp_group,
+        temperature,
+        ignore_index,
+        tiles_per_reduce,
+        return_entropy,
     )
 
 
@@ -141,6 +170,32 @@ def liger_fused_linear_jsd(
         jsd_beta,
         ignore_index,
         temperature,
+        accum_dtype,
+        None,
+        None,
+    )
+
+
+def liger_fused_linear_kl_div(
+    student_input,
+    student_weight,
+    target,
+    shift_labels=None,
+    reduction: str = "batchmean",
+    ignore_index: int = -100,
+    temperature: float = 1.0,
+    eps: float = 1e-10,
+    accum_dtype: Optional[torch.dtype] = None,
+):
+    return LigerFusedLinearKLDivFunction.apply(
+        student_input,
+        student_weight,
+        target,
+        shift_labels,
+        reduction,
+        ignore_index,
+        temperature,
+        eps,
         accum_dtype,
     )
 
@@ -180,6 +235,8 @@ def liger_jsd(
         shift_labels,
         beta,
         ignore_index,
+        None,
+        None,
     )
 
 

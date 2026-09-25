@@ -1,6 +1,6 @@
 #pragma once
 
-#include "moe_fwd_bwd_tune_configs.hpp"
+#include "moe_fwd_bwd_tune_configs_sm100.hpp"
 
 // SM100 / Blackwell dispatch config set. Keep this separate from SM90 so
 // Blackwell-specific tuning can diverge without touching Hopper dispatch rows.

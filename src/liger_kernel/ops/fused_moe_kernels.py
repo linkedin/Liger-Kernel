@@ -826,7 +826,16 @@ def _moe_bwd_dX_expanded_kernel(
 ):
     """Grid: (num_m_tiles, ceil(H/BLOCK_N)).
     dx_expanded[sorted_pos] = d_gate @ W1_gate^T + d_up @ W1_up^T.
-    No atomics — rows are unique per CTA in sorted space."""
+    No atomics — rows are unique per CTA in sorted space.
+
+    NOTE: the gate and up contributions accumulate into SEPARATE fp32 tiles
+    (acc_gate, acc_up), mirroring the forward _fused_up_proj_swiglu_kernel.
+    Folding both dots into one shared accumulator (two tl.dot(..., acc=acc) per
+    loop iteration) miscompiles on some backends (observed on B300/sm_103): one
+    of the two contributions is dropped or corrupted, making dx ~50-64% wrong
+    while leaving the forward, dW1, and dW2 paths correct. Keeping the two
+    accumulators simultaneously live prevents the compiler from reassociating
+    them back into the hazardous single-accumulator recurrence."""
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
@@ -846,7 +855,8 @@ def _moe_bwd_dX_expanded_kernel(
     h_idx = n_start + n_offs
     h_mask = h_idx < H_dim
 
-    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    acc_gate = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    acc_up = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
     for k in tl.range(0, I_dim, BLOCK_K):
         k_idx = k + k_offs
@@ -859,7 +869,7 @@ def _moe_bwd_dX_expanded_kernel(
             gate_up_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
         )
         w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-        acc = tl.dot(d_gate, w_gate, acc=acc)
+        acc_gate = tl.dot(d_gate, w_gate, acc=acc_gate)
 
         d_up_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + (I_dim + k_idx)[None, :] * stride_d_pre_N
         d_up = tl.load(d_up_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
@@ -871,8 +881,9 @@ def _moe_bwd_dX_expanded_kernel(
             + h_idx[None, :] * stride_w_K
         )
         w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
+        acc_up = tl.dot(d_up, w_up, acc=acc_up)
 
-        acc = tl.dot(d_up, w_up, acc=acc)
+    acc = acc_gate + acc_up
 
     dxe_ptrs = dx_expanded_ptr + row_offs[:, None] * stride_dxe_TK + h_idx[None, :] * stride_dxe_H
     tl.store(dxe_ptrs, acc.to(dx_expanded_ptr.dtype.element_ty), mask=row_mask[:, None] & h_mask[None, :])

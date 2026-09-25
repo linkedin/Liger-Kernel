@@ -7,7 +7,7 @@
 // LIGER_CHECK / a non-zero NVSHMEM return code becomes a liger_cute_status_t +
 // a last-error string instead of unwinding across the .so boundary.
 //
-// Ported from LigerCommKernels' nvshmem_helpers.cu; the throw-based error model
+// Adapted from LigerCuteKernels' NVSHMEM helpers; the throw-based error model
 // (std::runtime_error) becomes the status-code model, and the explicit
 // clear_global_pools()/finalize ordering is preserved.
 #define LIGER_CUTE_BUILDING 1
@@ -24,6 +24,8 @@
 #include "liger_cute/detail/comm_schedule.cuh"
 #include "liger_cute/detail/status.h"
 #include "liger_cute/detail/symmetric_memory.h"
+#include "fused_scaled_linear_cross_entropy/state.h"
+#include "moe_nonrdc_module.h"
 
 namespace liger_cute {
 namespace detail {
@@ -77,6 +79,7 @@ void init_comm_schedule(int N, int M) {
 // deterministic across PEs so the collective nvshmem_free calls stay in
 // lockstep.
 void clear_global_pools() {
+  liger::fused_scaled_linear_cross_entropy::reset_fslce_tp_configuration();
   global_symmetric_stack().clear();
   global_buffer_pool().clear();
 }
@@ -149,6 +152,7 @@ liger_cute_status_t liger_cute_nvshmem_init_pmi(void) {
 liger_cute_status_t liger_cute_nvshmem_finalize(void) {
   return liger_cute::detail::guarded([&]() -> liger_cute_status_t {
     liger_cute::detail::clear_global_pools();  // BEFORE finalize — see header
+    liger::finalize_sm90_nonrdc_moe();
     nvshmem_finalize();
     return LIGER_CUTE_OK;
   });
@@ -267,6 +271,7 @@ liger_cute_status_t liger_cute_pool_clear_all(void) {
 
 liger_cute_status_t liger_cute_pool_clear_buffers(void) {
   return liger_cute::detail::guarded([&]() -> liger_cute_status_t {
+    liger::fused_scaled_linear_cross_entropy::reset_fslce_tp_configuration();
     liger_cute::detail::global_buffer_pool().clear();
     return LIGER_CUTE_OK;
   });

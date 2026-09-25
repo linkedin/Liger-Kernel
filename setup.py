@@ -1,11 +1,22 @@
 # setup.py
 
+import re
 import subprocess
 
+from pathlib import Path
 from typing import Literal
 
 from setuptools import find_packages
 from setuptools import setup
+
+
+def get_project_version() -> str:
+    """Read the public package version shared with liger-cute-kernels."""
+    pyproject = Path(__file__).resolve().parent / "pyproject.toml"
+    match = re.search(r'(?m)^version\s*=\s*"([^"]+)"\s*$', pyproject.read_text())
+    if match is None:
+        raise RuntimeError(f"could not read the project version from {pyproject}")
+    return match.group(1)
 
 
 def get_default_dependencies():
@@ -31,11 +42,15 @@ def get_default_dependencies():
 
 def get_optional_dependencies():
     """Get optional dependency groups."""
+    # cuTile kernels use CompilerOptions.num_worker_warps (replace_hints / @ct.kernel),
+    # which only exists in cuda-tile >= 1.4.0. Pin the floor to 1.5.0 (validated) so the
+    # resolver can't backtrack to an older cuda-tile whose CompilerOptions lacks that
+    # field (which raises "unexpected keyword argument 'num_worker_warps'" at import).
     cutile_deps = [
-        "cuda-tile",
+        "cuda-tile>=1.5.0",
     ]
     cutile_tileiras_deps = [
-        "cuda-tile[tileiras]",
+        "cuda-tile[tileiras]>=1.5.0",
     ]
     cutedsl_deps = [
         "nvidia-cutlass-dsl>=4.6.0",
@@ -44,6 +59,9 @@ def get_optional_dependencies():
         # the marshalling launch when it is absent, but on short kernels that
         # per-call cost dominates: RMSNorm forward measured 53us -> 15us on B200.
         "apache-tvm-ffi>=0.1.0",
+    ]
+    lck_deps = [
+        f"liger-cute-kernels=={get_project_version()}",
     ]
     dev_deps = [
         "transformers>=4.52.0",
@@ -64,6 +82,7 @@ def get_optional_dependencies():
         "cutile": cutile_deps,
         "cutile-tileiras": cutile_tileiras_deps,
         "cutedsl": cutedsl_deps,
+        "lck": lck_deps,
         "dev": dev_deps,
     }
 

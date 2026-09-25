@@ -2,6 +2,13 @@ import torch
 import triton
 import triton.language as tl
 
+try:
+    from torch.distributed.tensor import DTensor as _DTensor
+    from torch.distributed.tensor import distribute_tensor as _distribute_tensor
+except Exception:
+    _DTensor = ()
+    _distribute_tensor = None
+
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
@@ -130,11 +137,34 @@ class LigerSiLUMulFunction(torch.autograd.Function):
         ctx.gate_multiplier = gate_multiplier
         ctx.down_multiplier = down_multiplier
 
+        if isinstance(a, _DTensor) or isinstance(b, _DTensor):
+            device_mesh, placements = (
+                (a.device_mesh, a.placements) if isinstance(a, _DTensor) else (b.device_mesh, b.placements)
+            )
+
+            # SwiGLU is elementwise, so each rank can operate on its local shard
+            # and preserve the input DTensor layout without communication.
+            if not isinstance(a, _DTensor):
+                a = _distribute_tensor(a, device_mesh=device_mesh, placements=placements)
+            if not isinstance(b, _DTensor):
+                b = _distribute_tensor(b, device_mesh=device_mesh, placements=placements)
+
+            a_local = a.to_local()
+            b_local = b.to_local()
+            a_in = a_local if gate_multiplier == 1.0 else a_local * gate_multiplier
+            c_local = swiglu_forward(a_in, b_local)
+            if down_multiplier != 1.0:
+                c_local = c_local * down_multiplier
+            ctx.save_for_backward(a_in, b_local)
+            ctx.dtensor_metadata = (device_mesh, placements)
+            return _DTensor.from_local(c_local, device_mesh, placements)
+
         a_in = a if gate_multiplier == 1.0 else a * gate_multiplier
         c = swiglu_forward(a_in, b)
         if down_multiplier != 1.0:
             c = c * down_multiplier
         ctx.save_for_backward(a_in, b)
+        ctx.dtensor_metadata = None
         return c
 
     @staticmethod
@@ -143,6 +173,24 @@ class LigerSiLUMulFunction(torch.autograd.Function):
         a_in, b = ctx.saved_tensors
         gate_multiplier = ctx.gate_multiplier
         down_multiplier = ctx.down_multiplier
+
+        if ctx.dtensor_metadata is not None:
+            device_mesh, placements = ctx.dtensor_metadata
+            if isinstance(dc, _DTensor):
+                dc_local = dc.to_local()
+            else:
+                dc_local = _distribute_tensor(dc, device_mesh=device_mesh, placements=placements).to_local()
+
+            if down_multiplier != 1.0:
+                dc_local = dc_local * down_multiplier
+            grad_a_in, grad_b_local = swiglu_backward(a_in, b, dc_local)
+            grad_a_local = grad_a_in if gate_multiplier == 1.0 else grad_a_in * gate_multiplier
+            return (
+                _DTensor.from_local(grad_a_local, device_mesh, placements),
+                _DTensor.from_local(grad_b_local, device_mesh, placements),
+                None,
+                None,
+            )
 
         if down_multiplier != 1.0:
             dc = dc * down_multiplier
