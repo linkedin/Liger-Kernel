@@ -18,6 +18,7 @@ from liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy import LigerFusedLi
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import LigerFusedScaledCrossEntropySM90Function
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import fused_scaled_cross_entropy_forward
+from liger_kernel.ops.cutedsl.ops.newton_schulz import cutedsl_newton_schulz_forward
 from liger_kernel.ops.cutedsl.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_backward
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_forward
@@ -52,4 +53,5 @@ __all__ = [
     "LigerSiLUMulFunction",
     "swiglu_backward",
     "swiglu_forward",
+    "cutedsl_newton_schulz_forward",
 ]
