@@ -166,8 +166,20 @@ $ pip install liger-kernel
 To also install the matching native Liger communication kernels:
 
 ```bash
-$ pip install "liger-kernel[lck]"
+$ pip install "liger-kernel[lck]" "liger-cute-kernels[cu12]"
 ```
+
+The native LCK release wheel build remains on **CUDA 12.9** (CUDA Toolkit 12.9.1).
+The optional `cu12` extra installs `nvidia-nvshmem-cu12==3.6.5`; `cu13`
+installs `nvidia-nvshmem-cu13==3.6.5` for CUDA 13 source builds. Plain
+`liger-cute-kernels` does not install NVSHMEM. Select only one extra, matching
+the native wheel's build toolkit: extras select dependencies, not a different
+compiled wheel. CUDA 13 source builds currently work for Hopper, but the
+combined release build is blocked by mixed CTA-group instructions in the
+Blackwell MoE backward kernel. Previously published artifacts are unchanged. The default
+`liger-kernel` installation is unchanged. See the
+[native wheel build instructions](liger_cute_kernels/README.md#building-the-native-wheel)
+for source builds and compatibility details.
 
 To install the nightly version:
 

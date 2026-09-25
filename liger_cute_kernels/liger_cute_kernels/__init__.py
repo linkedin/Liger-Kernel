@@ -11,8 +11,8 @@ extension and its support libraries side by side::
       liger_moe_sm90_nonrdc.cubin     # optional local/IB Hopper module
 
 The Python API loads the core through TVM FFI, so the runtime boundary is the
-torch-free core ABI rather than a Torch extension. NVSHMEM is installed through
-the separate ``nvidia-nvshmem-cu12`` runtime dependency.
+torch-free core ABI rather than a Torch extension. NVSHMEM is supplied separately;
+the ``cu12`` and ``cu13`` extras install the matching pinned runtime dependency.
 
 The package currently includes expert-parallel MoE and tensor-parallel fused
 scaled linear cross-entropy kernels. Consumers should go through

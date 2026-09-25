@@ -8,8 +8,8 @@ into ``liger_kernel``. The native wheel:
 
   * builds torch-free SM90a and SM100f cores with TVM FFI exports,
   * selects the matching core at runtime from the active GPU capability,
-  * installs NVSHMEM as a separate CUDA 12 dependency instead of copying its
-    shared libraries into this wheel, and
+  * offers CUDA 12/13 NVSHMEM dependencies through optional extras instead of
+    copying their shared libraries into this wheel, and
   * uses the same public version as the top-level ``liger-kernel`` package.
 
 ``liger_kernel.ops.cute`` (from the liger wheel) imports ``liger_cute_kernels.tvm_ffi``
@@ -51,8 +51,11 @@ setup(
     install_requires=[
         "torch",
         "apache-tvm-ffi",
-        "nvidia-nvshmem-cu12==3.6.5",
     ],
+    extras_require={
+        "cu12": ["nvidia-nvshmem-cu12==3.6.5"],
+        "cu13": ["nvidia-nvshmem-cu13==3.6.5"],
+    },
     # Self-contained package: its __init__.py is packaged by build_py and the
     # .so are placed beside it by LckBuildExt. The marker extension makes this a
     # platform wheel, while LckBdistWheel records that the TVM FFI core is not
