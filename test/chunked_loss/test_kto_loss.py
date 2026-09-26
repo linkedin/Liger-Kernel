@@ -478,3 +478,25 @@ def test_kto_frozen_weight(compiled, chunk_size):
     assert weight_lora.grad is None
     assert_verbose_allclose(loss_full, loss_lora, atol=1e-5, rtol=1e-5)
     assert_verbose_allclose(input_full.grad, input_lora.grad, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("chunk_size", [2, 4])
+def test_kto_rewards_sum_with_chunk_size(chunk_size):
+    B, T, H, V = 4, 16, 32, 64
+
+    _input = torch.randn(B, T, H, device=device, dtype=torch.float32)
+    _target = torch.randint(0, V, (B, T), device=device, dtype=torch.long)
+    _pref_labels = torch.tensor([True, False, True, False], device=device)
+    _weight = torch.randn(V, H, device=device, dtype=torch.float32)
+
+    # The summed rewards must not depend on how the batch is split into chunks
+    _, aux_ref = LigerFusedLinearKTOLoss(use_ref_model=False, chunk_size=1, compiled=False)(
+        _input=_input, lin_weight=_weight, target=_target, preference_labels=_pref_labels
+    )
+    _, aux = LigerFusedLinearKTOLoss(use_ref_model=False, chunk_size=chunk_size, compiled=False)(
+        _input=_input, lin_weight=_weight, target=_target, preference_labels=_pref_labels
+    )
+
+    # chosen_rewards_sum and rejected_rewards_sum
+    assert_verbose_allclose(aux[4], aux_ref[4], atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(aux[5], aux_ref[5], atol=1e-5, rtol=1e-5)
