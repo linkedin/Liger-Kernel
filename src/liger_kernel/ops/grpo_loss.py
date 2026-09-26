@@ -29,6 +29,9 @@ def _selective_log_softmax_kernel(
     MASK,
     TEMPERATURE: tl.constexpr,
     stride_input_ids_b,
+    stride_input_ids_l,
+    stride_mask_b,
+    stride_mask_l,
     L: tl.constexpr,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr = 4096,
@@ -37,11 +40,11 @@ def _selective_log_softmax_kernel(
     off_l = tl.program_id(1).cast(tl.int64)
 
     LOGITS += off_b * (L + 1) * N + off_l * N
-    INPUT_IDS += off_b * stride_input_ids_b + off_l
+    INPUT_IDS += off_b * stride_input_ids_b + off_l * stride_input_ids_l
     LOG_P += off_b * L + off_l
 
     if MASK is not None:
-        MASK += off_b * stride_input_ids_b + off_l
+        MASK += off_b * stride_mask_b + off_l * stride_mask_l
         not_skip = tl.load(MASK)
         if not_skip == 0:
             return
@@ -75,7 +78,18 @@ def fused_selective_log_softmax(logits: torch.Tensor, input_ids: torch.Tensor, t
     log_p = torch.zeros(B, L, dtype=torch.float32, device=logits.device)
     kwargs = {"BLOCK_N": 2048, "num_stages": 4, "num_warps": 1}
     _selective_log_softmax_kernel[(B, L)](
-        logits, input_ids, log_p, mask, temperature, input_ids.stride(0), L, N, **kwargs
+        logits,
+        input_ids,
+        log_p,
+        mask,
+        temperature,
+        input_ids.stride(0),
+        input_ids.stride(1),
+        mask.stride(0) if mask is not None else 0,
+        mask.stride(1) if mask is not None else 0,
+        L,
+        N,
+        **kwargs,
     )
     return log_p
 
