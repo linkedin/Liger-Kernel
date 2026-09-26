@@ -89,7 +89,12 @@ def _jsd_kernel(
                     beta_P = beta * P
                     one_minus_beta_Q = (1 - beta) * Q
                     M = beta_P + one_minus_beta_Q
-                    log_M = tl.log(M)
+                    # Same log-space log_M as ops/jsd.py: M == 0 when an entry
+                    # underflows to zero under both distributions (#1453).
+                    log_beta_P = Y + tl.log(beta)
+                    log_one_minus_beta_Q = X + tl.log(1 - beta)
+                    max_log = tl.maximum(log_beta_P, log_one_minus_beta_Q)
+                    log_M = max_log + tl.log(tl.exp(log_beta_P - max_log) + tl.exp(log_one_minus_beta_Q - max_log))
 
                     loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
                     dX = one_minus_beta_Q * (X - log_M)
