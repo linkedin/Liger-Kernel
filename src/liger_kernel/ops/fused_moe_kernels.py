@@ -8,16 +8,26 @@
 # inspired by the SonicMoE paper (arXiv:2512.14080), ported to portable Triton
 # (no Hopper-specific WGMMA/TMA) for general GPU support.
 
+import importlib.util
 import os
 
 import triton
 import triton.language as tl
 
-# LIGER_FUSED_MOE_AUTOTUNE=0 pins each kernel to one config, skipping Triton's
-# `do_bench` loop whose per-config working sets can OOM (see issue #1246). Must
-# be set before importing liger_kernel. Temporary escape hatch until triton's
-# autotuner handles such errors itself.
-_AUTOTUNE_DISABLED = os.environ.get("LIGER_FUSED_MOE_AUTOTUNE", "1").lower() in ("0", "false", "no")
+# LIGER_FUSED_MOE_AUTOTUNE=0 skips Triton's do_bench autotune loop (issue #1246).
+# Also defaults off on MPS + triton_apple_backend (MPS event timing).
+_env = os.environ.get("LIGER_FUSED_MOE_AUTOTUNE")
+if _env is not None:
+    _AUTOTUNE_DISABLED = _env.lower() in ("0", "false", "no")
+else:
+    try:
+        import torch
+
+        _AUTOTUNE_DISABLED = (
+            torch.backends.mps.is_available() and importlib.util.find_spec("triton_apple_backend") is not None
+        )
+    except ImportError:
+        _AUTOTUNE_DISABLED = False
 
 # ---------------------------------------------------------------------------
 # Routing metadata overview

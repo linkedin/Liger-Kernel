@@ -27,6 +27,7 @@ from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import register_op
 from liger_kernel.testing import assert_op_correctness
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 LAYER_NORM_TEST_SHAPES = [
@@ -97,9 +98,9 @@ def test_layer_norm_explicit_backend_unavailable():
             with pytest.raises(BackendNotAvailableError) as ei:
                 dispatch(
                     "layer_norm",
-                    torch.zeros(4, 8, device="cuda"),
-                    torch.zeros(8, device="cuda"),
-                    torch.zeros(8, device="cuda"),
+                    torch.zeros(4, 8, device=device),
+                    torch.zeros(8, device=device),
+                    torch.zeros(8, device=device),
                     1e-6,
                     backend=fake_backend,
                 )
@@ -122,9 +123,9 @@ def test_layer_norm_global_set_backend(backend):
         pytest.skip("No layer_norm backends registered")
 
     M, N = 32, 256
-    x = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
-    w = torch.ones(N, device="cuda", dtype=torch.float32, requires_grad=True)
-    b = torch.randn(N, device="cuda", dtype=torch.float32, requires_grad=True)
+    x = torch.randn(M, N, device=device, dtype=torch.float32, requires_grad=True)
+    w = torch.ones(N, device=device, dtype=torch.float32, requires_grad=True)
+    b = torch.randn(N, device=device, dtype=torch.float32, requires_grad=True)
 
     try:
         liger_kernel.set_backend(backend)
@@ -152,9 +153,9 @@ def test_layer_norm_env_per_op(backend):
         pytest.skip("No layer_norm backends registered")
 
     M, N = 32, 256
-    x = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
-    w = torch.ones(N, device="cuda", dtype=torch.float32, requires_grad=True)
-    b = torch.randn(N, device="cuda", dtype=torch.float32, requires_grad=True)
+    x = torch.randn(M, N, device=device, dtype=torch.float32, requires_grad=True)
+    w = torch.ones(N, device=device, dtype=torch.float32, requires_grad=True)
+    b = torch.randn(N, device=device, dtype=torch.float32, requires_grad=True)
 
     saved = os.environ.get("LIGER_KERNEL_BACKEND_LAYER_NORM")
     try:
@@ -222,14 +223,12 @@ def test_layer_norm_explicit_mode(backend, mode, shape):
     fallback path in the host launcher."""
     if backend == "__none__":
         pytest.skip("No layer_norm backends registered")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
 
     M, N = shape
     g = torch.Generator(device="cpu").manual_seed(0)
-    x = torch.randn(M, N, dtype=torch.bfloat16, generator=g).to("cuda").requires_grad_(True)
-    w = torch.randn(N, dtype=torch.bfloat16, generator=g).to("cuda").requires_grad_(True)
-    b = torch.randn(N, dtype=torch.bfloat16, generator=g).to("cuda").requires_grad_(True)
+    x = torch.randn(M, N, dtype=torch.bfloat16, generator=g).to(device).requires_grad_(True)
+    w = torch.randn(N, dtype=torch.bfloat16, generator=g).to(device).requires_grad_(True)
+    b = torch.randn(N, dtype=torch.bfloat16, generator=g).to(device).requires_grad_(True)
 
     try:
         y = liger_kernel.functional.layer_norm(

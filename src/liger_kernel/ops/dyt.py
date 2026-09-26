@@ -1,4 +1,6 @@
+import importlib
 import operator
+import os
 
 import torch
 import triton
@@ -20,14 +22,33 @@ if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
 else:
     from triton.language.math import tanh
 
+# LIGER_DYT_AUTOTUNE=0 skips Triton's do_bench autotune loop (issue #1246).
+# Also defaults off on MPS + triton_apple_backend (MPS event timing).
+_env = os.environ.get("LIGER_DYT_AUTOTUNE")
+if _env is not None:
+    _AUTOTUNE_DISABLED = _env.lower() in ("0", "false", "no")
+else:
+    try:
+        _AUTOTUNE_DISABLED = (
+            torch.backends.mps.is_available() and importlib.util.find_spec("triton_apple_backend") is not None
+        )
+    except ImportError:
+        _AUTOTUNE_DISABLED = False
 
-@triton.autotune(
-    configs=[
+
+def _get_dyt_autotune_configs():
+    if _AUTOTUNE_DISABLED:
+        return [triton.Config({"BLOCK_N": 1024}, num_stages=1, num_warps=4)]
+    return [
         triton.Config({"BLOCK_N": bn}, num_stages=ns, num_warps=nw)
         for bn in [1024, 2048, 4096]
         for ns in [1, 2]
         for nw in [4, 8, 16]
-    ],
+    ]
+
+
+@triton.autotune(
+    configs=_get_dyt_autotune_configs(),
     key=["N"],
 )
 @triton.jit
@@ -53,12 +74,7 @@ def _dyt_fwd_kernel(X, Y, Alpha, Gamma, Beta, HAVE_BETA: tl.constexpr, N: tl.con
 
 
 @triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_N": bn}, num_stages=ns, num_warps=nw)
-        for bn in [1024, 2048, 4096]
-        for ns in [1, 2]
-        for nw in [4, 8, 16]
-    ],
+    configs=_get_dyt_autotune_configs(),
     key=["N"],
     # DA is indexed by program_id(0), so different BLOCK_N configs write to
     # different slot counts per SM. Autotune trials don't zero outputs between
@@ -134,6 +150,8 @@ def liger_dyt_bwd(dy, x, alpha, gamma, beta):
         NUM_SMS = torch.xpu.get_device_properties(x.device).gpu_subslice_count
     elif device == "npu":
         NUM_SMS = get_npu_core_count()
+    elif device == "mps":
+        NUM_SMS = torch.backends.mps.get_core_count()
     da = torch.zeros(NUM_SMS, triton.cdiv(N, 512), dtype=torch.float32, device=x.device)
     dg = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device)
     db = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device) if HAVE_BETA else None

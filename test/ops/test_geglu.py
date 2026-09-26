@@ -22,6 +22,7 @@ from liger_kernel.backends.dispatch import available_backends
 from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import get_registered
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 GEGLU_TEST_SHAPES = [
@@ -65,7 +66,6 @@ def test_geglu_correctness(backend, shape, dtype):
         pytest.skip("No geglu backends registered in this environment")
 
     M, N = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(0)
     a_cpu = torch.randn(M, N, dtype=torch.float32, generator=g)
     b_cpu = torch.randn(M, N, dtype=torch.float32, generator=g)

@@ -17,6 +17,9 @@ intermediate dA tensor.
 the backward pass (recompute-vs-store trade-off).
 """
 
+import importlib
+import os
+
 import torch
 import torch.nn.functional as F
 import triton
@@ -27,6 +30,19 @@ try:
     from triton.tools.tensor_descriptor import TensorDescriptor
 except ModuleNotFoundError:
     TensorDescriptor = None
+
+# LIGER_MLP_AUTOTUNE=0 skips Triton's do_bench autotune loop (issue #1246).
+# Also defaults off on MPS + triton_apple_backend (MPS event timing).
+_env = os.environ.get("LIGER_MLP_AUTOTUNE")
+if _env is not None:
+    _AUTOTUNE_DISABLED = _env.lower() in ("0", "false", "no")
+else:
+    try:
+        _AUTOTUNE_DISABLED = (
+            torch.backends.mps.is_available() and importlib.util.find_spec("triton_apple_backend") is not None
+        )
+    except ImportError:
+        _AUTOTUNE_DISABLED = False
 
 
 @triton.jit
@@ -59,8 +75,17 @@ def _host_descriptor_pre_hook_fwd(nargs):
     nargs["desc_U"].block_shape = [1, BLOCK_M, BLOCK_N]
 
 
-@triton.autotune(
-    configs=[
+def _get_fwd_autotune_configs():
+    if _AUTOTUNE_DISABLED:
+        return [
+            triton.Config(
+                {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 64, "GROUP_SIZE_M": 8},
+                num_warps=4,
+                num_stages=2,
+                pre_hook=_host_descriptor_pre_hook_fwd,
+            )
+        ]
+    return [
         triton.Config(
             {"BLOCK_M": BM, "BLOCK_N": BN, "BLOCK_K": BK, "GROUP_SIZE_M": GS},
             num_warps=w,
@@ -73,7 +98,11 @@ def _host_descriptor_pre_hook_fwd(nargs):
         for GS in [1, 8]  # GROUP_SIZE_M = 1 equal to no L2 swizzle.
         for w in [4, 8]
         for s in [2, 3]
-    ],
+    ]
+
+
+@triton.autotune(
+    configs=_get_fwd_autotune_configs(),
     key=["dim", "hidden_dim", "bucket_M"],
 )
 # grid = [ceil(S/Block_M) * ceil(hidden_dim/Block_N), B]
@@ -153,8 +182,17 @@ def _host_descriptor_pre_hook_fwd_inference(nargs):
     nargs["desc_A"].block_shape = [1, BLOCK_M, BLOCK_N]
 
 
-@triton.autotune(
-    configs=[
+def _get_fwd_inference_autotune_configs():
+    if _AUTOTUNE_DISABLED:
+        return [
+            triton.Config(
+                {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 64, "GROUP_SIZE_M": 4},
+                num_warps=4,
+                num_stages=2,
+                pre_hook=_host_descriptor_pre_hook_fwd_inference,
+            )
+        ]
+    return [
         triton.Config(
             {"BLOCK_M": BM, "BLOCK_N": BN, "BLOCK_K": BK, "GROUP_SIZE_M": GS},
             num_warps=w,
@@ -167,7 +205,11 @@ def _host_descriptor_pre_hook_fwd_inference(nargs):
         for GS in [1, 4]  # GROUP_SIZE_M = 1 equal to no L2 swizzle.
         for w in [4, 8]
         for s in [2, 3]
-    ],
+    ]
+
+
+@triton.autotune(
+    configs=_get_fwd_inference_autotune_configs(),
     key=["dim", "hidden_dim", "bucket_M"],
 )
 # grid = [ceil(S/Block_M) * ceil(hidden_dim/Block_N), B]
@@ -319,8 +361,17 @@ def _host_descriptor_pre_hook_bwd_dI(nargs):
     nargs["desc_dI"].block_shape = [1, BLOCK_M, BLOCK_N]
 
 
-@triton.autotune(
-    configs=[
+def _get_bwd_dI_autotune_configs():
+    if _AUTOTUNE_DISABLED:
+        return [
+            triton.Config(
+                {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 64, "GROUP_SIZE_M": 8},
+                num_warps=4,
+                num_stages=2,
+                pre_hook=_host_descriptor_pre_hook_bwd_dI,
+            )
+        ]
+    return [
         triton.Config(
             {"BLOCK_M": BM, "BLOCK_N": BN, "BLOCK_K": BK, "GROUP_SIZE_M": GS},
             num_warps=w,
@@ -333,7 +384,11 @@ def _host_descriptor_pre_hook_bwd_dI(nargs):
         for GS in [1, 8]  # GROUP_SIZE_M = 1 equal to no L2 swizzle.
         for w in [4, 8]
         for s in [2, 3]
-    ],
+    ]
+
+
+@triton.autotune(
+    configs=_get_bwd_dI_autotune_configs(),
     key=["dim", "hidden_dim", "bucket_M"],
 )
 # grid = [ceil(S/Block_M) * ceil(dim/Block_N), B]
@@ -649,7 +704,7 @@ class LigerMLPFunction(torch.autograd.Function):
             raise RuntimeError(
                 "LigerMLP requires triton.tools.tensor_descriptor, which is not available in this Triton build."
             )
-        assert input.is_cuda and gate_weight.is_cuda and up_weight.is_cuda and down_weight.is_cuda
+        assert all(t.device.type != "cpu" for t in (input, gate_weight, up_weight, down_weight))
         input, gate_weight, up_weight, down_weight = _check_inputs(input, gate_weight, up_weight, down_weight)
         # Note:
         # PyTorch automatically disables global gradient computation during
