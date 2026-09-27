@@ -1240,3 +1240,85 @@ def _reference_per_token_loss(
 def _masked_mean(values, mask):
     mask = mask.to(values.dtype)
     return (values * mask).sum() / mask.sum().clamp(min=1.0)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("bias", [False, True])
+@pytest.mark.parametrize("use_ref_model", [False, True])
+@pytest.mark.parametrize("V", [64, 4096 + 37])  # the second exceeds the vocab chunk of the selective logprob
+def test_grpo_frozen_lm_head(compiled, bias, use_ref_model, V):
+    """A frozen lm_head (LoRA/PEFT): no weight or bias gradient is computed or returned, and the loss and
+    input gradient are unchanged."""
+    torch.compiler.reset()  # as in test_correctness_large_seq_exercises_chunking: start from a clean compile state
+    B, T, H = 2, 16, 32
+    torch.manual_seed(42)
+    _input = torch.randn(B, T, H, device=device, dtype=torch.float32)
+    weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    lin_bias = torch.randn(V, device=device, dtype=torch.float32) if bias else None
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[:, -3:] = 0
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+    ref_kwargs = {}
+    if use_ref_model:
+        ref_kwargs = dict(
+            ref_input=_input + 0.01 * torch.randn_like(_input),
+            ref_weight=weight.clone(),
+            ref_bias=lin_bias.clone() if bias else None,
+        )
+
+    def run(weight_requires_grad, bias_requires_grad):
+        x = _input.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(weight_requires_grad)
+        b = lin_bias.clone().requires_grad_(bias_requires_grad) if bias else None
+        loss_fn = LigerFusedLinearGRPOLoss(
+            beta=0.04 if use_ref_model else 0.0, use_ref_model=use_ref_model, compiled=compiled, chunk_size=1
+        )
+        loss, _ = loss_fn(x, w, selected_token_ids, attention_mask, advantages, bias=b, **ref_kwargs)
+        loss.backward()
+        return loss, x, w, b
+
+    loss_full, x_full, w_full, b_full = run(True, True)
+    loss_lora, x_lora, w_lora, b_lora = run(False, False)
+
+    assert w_full.grad is not None
+    assert w_lora.grad is None
+    if bias:
+        assert b_full.grad is not None
+        assert b_lora.grad is None
+    assert_verbose_allclose(loss_full, loss_lora, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(x_full.grad, x_lora.grad, atol=1e-5, rtol=1e-5)
+
+    if bias:
+        # trainable weight, frozen bias: the weight gradient is unchanged and the bias gets none
+        _, x_mixed, w_mixed, b_mixed = run(True, False)
+        assert b_mixed.grad is None
+        assert_verbose_allclose(w_full.grad, w_mixed.grad, atol=1e-5, rtol=1e-5)
+        assert_verbose_allclose(x_full.grad, x_mixed.grad, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("bias", [False, True])
+def test_selective_logprob_backward_skips_frozen_params(monkeypatch, bias):
+    """The chunked selective-logprob backward is asked for weight/bias gradients only when they require grad,
+    so a frozen lm_head costs neither the gradient buffer nor the per-chunk GEMM."""
+    import liger_kernel.chunked_loss.fused_linear_ppo as ppo
+
+    calls = []
+    real_backward = ppo._selective_logprob_backward
+
+    def spy(*args, **kwargs):
+        calls.append((kwargs["compute_grad_weight"], kwargs["compute_grad_bias"]))
+        return real_backward(*args, **kwargs)
+
+    monkeypatch.setattr(ppo, "_selective_logprob_backward", spy)
+    torch.manual_seed(0)
+    N, H, V = 10, 16, 50
+    targets = torch.randint(0, V, (N,), device=device)
+    hidden = torch.randn(N, H, device=device, requires_grad=True)
+    for weight_requires_grad, bias_requires_grad in ((False, False), (True, False), (True, True)):
+        weight = torch.randn(V, H, device=device, requires_grad=weight_requires_grad)
+        b = torch.randn(V, device=device, requires_grad=bias_requires_grad) if bias else None
+        out = ppo._ChunkedSelectiveLogProbFunction.apply(hidden, weight, targets, b, 1.0, 16)
+        out.sum().backward()
+        assert calls[-1] == (weight_requires_grad, bias and bias_requires_grad)
+        assert (weight.grad is not None) == weight_requires_grad

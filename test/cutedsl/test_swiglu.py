@@ -31,8 +31,13 @@ pytestmark = pytest.mark.skipif(
     reason="nvidia-cutlass-dsl + CUDA GPU required for CuteDSL SwiGLU",
 )
 
+# Native fused-linear SwiGLU requires exact SM100 (Blackwell) compute capability.
+sm100_available = cutedsl_available and torch.cuda.is_available() and torch.cuda.get_device_capability() == (10, 0)
+
 if cutedsl_available:
     from liger_kernel.ops.cutedsl.ops.swiglu import LigerSiLUMulCuteDSLFunction
+    from liger_kernel.ops.cutedsl.ops.swiglu import fused_swiglu
+    from liger_kernel.ops.cutedsl.ops.swiglu import pack_swiglu_weights
     from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_forward as cutedsl_forward
 
 
@@ -278,3 +283,171 @@ def test_cutedsl_cuda_graph(shape, dtype):
 
     max_abs_diff = (graph_out.float() - eager_out.float()).abs().max().item()
     assert max_abs_diff == 0.0, f"graph vs eager mismatch: max_abs_diff={max_abs_diff}"
+
+
+@pytest.mark.skipif(not sm100_available, reason="fused linear SwiGLU requires SM100")
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (33, 128, 96),  # non-tile-aligned tokens
+        (128, 256, 130),  # padded output tail
+        (256, 128, 130),
+        (1024, 128, 96),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float16,
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_fused_linear_cutedsl_matches_pytorch(shape, dtype):
+    m, k, n = shape
+    torch.manual_seed(0)
+    scale = k**-0.5
+    x = torch.randn(m, k, device=device, dtype=dtype)
+    gate_weight = torch.randn(n, k, device=device, dtype=dtype) * scale
+    up_weight = torch.randn(n, k, device=device, dtype=dtype) * scale
+    gate_up_weight = torch.cat((gate_weight, up_weight), dim=0)
+
+    actual = fused_swiglu(x, gate_up_weight)
+    gate = torch.nn.functional.linear(x, gate_weight)
+    up = torch.nn.functional.linear(x, up_weight)
+    expected = torch.nn.functional.silu(gate) * up
+
+    assert actual.shape == (m, n)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
+
+
+def test_fused_linear_cutedsl_fp32_matches_pytorch():
+    m, k, n = 4, 64, 35
+    x = torch.randn(m, k, device=device, dtype=torch.float32)
+    gate_weight = torch.randn(n, k, device=device, dtype=torch.float32)
+    up_weight = torch.randn(n, k, device=device, dtype=torch.float32)
+    gate_up_weight = torch.cat((gate_weight, up_weight), dim=0)
+
+    actual = fused_swiglu(x, gate_up_weight)
+    expected = torch.nn.functional.silu(torch.nn.functional.linear(x, gate_weight))
+    expected *= torch.nn.functional.linear(x, up_weight)
+
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.skipif(not sm100_available, reason="fused linear SwiGLU requires SM100")
+def test_fused_linear_cutedsl_uses_current_stream():
+    m, k, n = 64, 64, 32
+    x = torch.zeros(m, k, device=device, dtype=torch.bfloat16)
+    gate_weight = torch.ones(n, k, device=device, dtype=torch.bfloat16) / k
+    up_weight = torch.ones_like(gate_weight) / k
+    gate_up_weight = torch.cat((gate_weight, up_weight), dim=0)
+    torch.cuda.synchronize()
+
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
+        torch.cuda._sleep(5_000_000)
+        x.fill_(1)
+        actual = fused_swiglu(x, gate_up_weight)
+    stream.synchronize()
+
+    expected = torch.nn.functional.silu(torch.nn.functional.linear(x, gate_weight))
+    expected *= torch.nn.functional.linear(x, up_weight)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
+
+
+@pytest.mark.skipif(not sm100_available, reason="fused linear SwiGLU requires SM100")
+def test_fused_linear_cutedsl_stacked_zero_copy_weight():
+    """A plain ``torch.cat([gate, up])`` stack (i.e. a model's fused
+    ``gate_up_proj.weight``) is consumed directly, with no pre-packing and no
+    extra weight copy when the output dim is already tile-aligned."""
+    m, k, n = 512, 256, 448  # n divisible by EPILOGUE_TILE_SIZE -> zero-copy
+    torch.manual_seed(0)
+    x = torch.randn(m, k, device=device, dtype=torch.bfloat16)
+    gate_weight = torch.randn(n, k, device=device, dtype=torch.bfloat16) * k**-0.5
+    up_weight = torch.randn(n, k, device=device, dtype=torch.bfloat16) * k**-0.5
+    gate_up_weight = torch.cat((gate_weight, up_weight), dim=0).contiguous()
+    weight_ptr = gate_up_weight.data_ptr()
+
+    actual = fused_swiglu(x, gate_up_weight)
+
+    # The kernel must not have repacked / reallocated the weight.
+    assert gate_up_weight.data_ptr() == weight_ptr
+    expected = torch.nn.functional.silu(torch.nn.functional.linear(x, gate_weight))
+    expected *= torch.nn.functional.linear(x, up_weight)
+    assert actual.shape == (m, n)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
+
+
+def test_pack_swiglu_weights_is_a_plain_stack():
+    """``pack_swiglu_weights`` is now a simple concatenation that unpacks back
+    into gate/up with trivial slicing (no bespoke 32-row interleave)."""
+    n, k = 448, 128
+    gate_weight = torch.randn(n, k)
+    up_weight = torch.randn(n, k)
+
+    stacked, output_features = pack_swiglu_weights(gate_weight, up_weight)
+
+    assert output_features == n
+    assert stacked.shape == (2 * n, k)
+    torch.testing.assert_close(stacked[:n], gate_weight)
+    torch.testing.assert_close(stacked[n:], up_weight)
+
+
+@pytest.mark.skipif(not sm100_available, reason="fused linear SwiGLU requires SM100")
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (128, 256, 128),  # tile-aligned
+        (256, 128, 130),  # padded output tail
+        (33, 128, 96),  # non-tile-aligned tokens
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float16,
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_fused_linear_cutedsl_separate_weights(shape, dtype):
+    """``fused_swiglu(a, gate, up)`` accepts two *separate* ``[N, K]`` tensors
+    and matches both PyTorch and the stacked-weight call."""
+    m, k, n = shape
+    torch.manual_seed(0)
+    scale = k**-0.5
+    x = torch.randn(m, k, device=device, dtype=dtype)
+    gate_weight = torch.randn(n, k, device=device, dtype=dtype) * scale
+    up_weight = torch.randn(n, k, device=device, dtype=dtype) * scale
+
+    actual = fused_swiglu(x, gate_weight, up_weight)
+
+    expected = torch.nn.functional.silu(torch.nn.functional.linear(x, gate_weight))
+    expected *= torch.nn.functional.linear(x, up_weight)
+    assert actual.shape == (m, n)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=0.05, rtol=0.03)
+
+    # Separate and stacked calling conventions must agree exactly.
+    stacked = fused_swiglu(x, torch.cat((gate_weight, up_weight), dim=0))
+    torch.testing.assert_close(actual, stacked)
+
+
+@pytest.mark.skipif(not sm100_available, reason="fused linear SwiGLU requires SM100")
+def test_fused_linear_cutedsl_separate_weights_validation():
+    """Mismatched separate weights raise clear errors (not cryptic tensor-bool
+    ambiguity), and ``output_features`` stays keyword-only."""
+    k, n = 128, 96
+    x = torch.randn(8, k, device=device, dtype=torch.bfloat16)
+    gate_weight = torch.randn(n, k, device=device, dtype=torch.bfloat16) * k**-0.5
+    up_weight = torch.randn(n + 32, k, device=device, dtype=torch.bfloat16) * k**-0.5
+
+    with pytest.raises(ValueError, match="identical shapes"):
+        fused_swiglu(x, gate_weight, up_weight)
+
+    with pytest.raises(TypeError, match="same dtype"):
+        fused_swiglu(x, gate_weight, gate_weight.half())

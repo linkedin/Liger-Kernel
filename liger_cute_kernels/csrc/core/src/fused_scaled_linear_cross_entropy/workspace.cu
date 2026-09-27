@@ -8,6 +8,9 @@
 
 #include "buffer_pool.cuh"
 #include "forward_reduce.cuh"
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+#include "forward_gemm_sm100.cuh"
+#endif
 #include "liger_cute/check.h"
 #include "liger_cute/detail/tp_reduce.cuh"
 
@@ -15,8 +18,13 @@ namespace liger {
 namespace fused_scaled_linear_cross_entropy {
 namespace {
 
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+using Config = BackwardGemmConfigSm100<100>;
+using Launch = BackwardGemmLaunchSm100<100>;
+#else
 using Config = BackwardGemmConfigSm90<90>;
 using Launch = BackwardGemmLaunchSm90<90>;
+#endif
 
 // The ring depth is a compile-time constant shared with the kernel template
 // (dx_reduce.cuh): the symmetric capacity and CTA-local mbarrier indexing have
@@ -28,6 +36,8 @@ bool g_configured = false;
 std::size_t g_staging_bytes = 0;
 std::size_t g_durable_bytes = 0;
 std::size_t g_packed_durable_bytes = 0;
+std::size_t g_reduced_shard_bytes = 0;
+std::size_t g_remote_payload_bytes = 0;
 std::size_t g_reduced_bytes = 0;
 
 std::size_t checked_multiply(std::size_t lhs, std::size_t rhs, const char* name) {
@@ -93,6 +103,28 @@ std::size_t durable_bytes_at(int tokens, int hidden) {
 		"dX durable");
 }
 
+std::size_t forward_wave_state_bytes_at(
+		int tokens, int local_partition_size) {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+	std::size_t rows_per_rank =
+		(static_cast<std::size_t>(tokens) +
+			static_cast<std::size_t>(local_partition_size) - 1) /
+		static_cast<std::size_t>(local_partition_size);
+	return checked_multiply(
+		checked_multiply(
+			rows_per_rank,
+			static_cast<std::size_t>(
+				forward_reduced_state_fields<true>()),
+			"forward wave state"),
+		sizeof(float),
+		"forward wave state");
+#else
+	(void)tokens;
+	(void)local_partition_size;
+	return 0;
+#endif
+}
+
 void ensure_configured() {
 	LIGER_CHECK(
 		g_configured,
@@ -122,11 +154,54 @@ int resident_cta_capacity() {
 	LIGER_CHECK(
 		properties.multiProcessorCount > 0 &&
 			properties.multiProcessorCount <= kMaxDxResidentCtas,
-		"fused_scaled_linear_cross_entropy backward: SM90 device reports ",
+		"fused_scaled_linear_cross_entropy backward: device reports ",
 		properties.multiProcessorCount,
 		" SMs, but the CTA-owned dX workspace supports at most ",
 		kMaxDxResidentCtas);
 	return properties.multiProcessorCount;
+}
+
+void validate_configured_symmetric_query(
+		int max_tokens,
+		int max_hidden,
+		int max_tiles_per_reduce,
+		int max_comm_channels) {
+	if (!g_configured) return;
+	LIGER_CHECK(
+		max_tokens == g_capacity.max_tokens &&
+			max_hidden == g_capacity.max_hidden &&
+			max_tiles_per_reduce == g_capacity.max_tiles_per_reduce &&
+			max_comm_channels == g_capacity.max_comm_channels,
+		"fused_scaled_linear_cross_entropy backward workspace query must "
+		"match the configured capacity (configured tokens ",
+		g_capacity.max_tokens,
+		", hidden ",
+		g_capacity.max_hidden,
+		", TilesPerReduce ",
+		g_capacity.max_tiles_per_reduce,
+		", communication channels ",
+		g_capacity.max_comm_channels,
+		"; requested tokens ",
+		max_tokens,
+		", hidden ",
+		max_hidden,
+		", TilesPerReduce ",
+		max_tiles_per_reduce,
+		", communication channels ",
+		max_comm_channels,
+		")");
+}
+
+void validate_configured_device_query(int max_local_vocab) {
+	if (!g_configured) return;
+	LIGER_CHECK(
+		max_local_vocab == g_capacity.max_local_vocab,
+		"fused_scaled_linear_cross_entropy backward workspace query must "
+		"match the configured capacity (configured local vocabulary ",
+		g_capacity.max_local_vocab,
+		"; requested ",
+		max_local_vocab,
+		")");
 }
 
 }  // namespace
@@ -191,6 +266,27 @@ void configure_backward_tp_symmetric(
 	g_packed_durable_bytes =
 		(g_durable_bytes + static_cast<std::size_t>(local_partition_size) - 1) /
 		static_cast<std::size_t>(local_partition_size);
+	std::size_t forward_wave_state_bytes =
+		forward_wave_state_bytes_at(
+			max_tokens, local_partition_size);
+	std::size_t forward_wave_storage_bytes =
+		checked_multiply(
+			forward_wave_state_bytes,
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+			static_cast<std::size_t>(
+				kForwardWaveSourceSlotsSm100 + 1),
+#else
+			0u,
+#endif
+			"forward wave source and running state");
+	g_reduced_shard_bytes =
+		g_packed_durable_bytes > forward_wave_storage_bytes
+		? g_packed_durable_bytes
+		: forward_wave_storage_bytes;
+	g_remote_payload_bytes =
+		g_packed_durable_bytes > forward_wave_state_bytes
+		? g_packed_durable_bytes
+		: forward_wave_state_bytes;
 	g_reduced_bytes = local_partition_size > 1
 		? (g_staging_bytes > g_durable_bytes
 			? g_staging_bytes
@@ -202,14 +298,19 @@ void configure_backward_tp_symmetric(
 		pool.get_symmetric(Names::kDxReduced, g_reduced_bytes));
 	auto* reduced_shard = static_cast<float*>(
 		pool.get_symmetric(
-			Names::kDxReducedShard, g_packed_durable_bytes));
+			Names::kDxReducedShard, g_reduced_shard_bytes));
+	std::size_t remote_inbox_bytes = checked_multiply(
+		g_remote_payload_bytes,
+		static_cast<std::size_t>(
+			liger_cute::detail::kRemoteRingInboxSlots),
+		"dX remote inbox");
 	auto* remote_inbox = static_cast<float*>(
 		pool.get_symmetric(
-			Names::kDxRemoteInbox, g_packed_durable_bytes));
+			Names::kDxRemoteInbox, remote_inbox_bytes));
 	auto* remote_signals = static_cast<std::uint64_t*>(
 		pool.get_symmetric(
 			Names::kDxRemoteSignals,
-			2 * sizeof(std::uint64_t)));
+			liger_cute::detail::remote_ring_signal_bytes()));
 	std::size_t sync_bytes = sync_bytes_at(max_resident_ctas, team_size);
 	auto* sync = static_cast<std::uint64_t*>(
 		pool.get_symmetric(Names::kDxSync, sync_bytes));
@@ -236,8 +337,10 @@ void configure_backward_tp_symmetric(
 			partial,
 			reduced,
 			reduced_shard,
+			g_reduced_shard_bytes,
 			remote_inbox,
 			remote_signals,
+			g_remote_payload_bytes,
 			sync,
 			sync_bytes,
 			peer_partial_storage,
@@ -260,9 +363,19 @@ std::size_t backward_tp_pool_symmetric_bytes(
 		int max_hidden,
 		int max_tiles_per_reduce,
 		int max_comm_channels) {
+	LIGER_CHECK(max_tokens > 0, "max_tokens must be positive");
+	LIGER_CHECK(max_hidden > 0, "max_hidden must be positive");
+	LIGER_CHECK(
+		max_tiles_per_reduce >= 1,
+		"max_tiles_per_reduce must be positive");
 	LIGER_CHECK(
 		max_comm_channels >= 1,
 		"max_comm_channels must be positive");
+	validate_configured_symmetric_query(
+		max_tokens,
+		max_hidden,
+		max_tiles_per_reduce,
+		max_comm_channels);
 	int max_ctas =
 		g_configured ? g_capacity.max_resident_ctas : resident_cta_capacity();
 	int team_size = g_configured
@@ -270,19 +383,52 @@ std::size_t backward_tp_pool_symmetric_bytes(
 		: liger_cute::detail::kMaxTpReduceTeamSize;
 	if (g_configured) {
 		return g_staging_bytes + g_reduced_bytes +
-			2u * g_packed_durable_bytes +
+			g_reduced_shard_bytes +
+			checked_multiply(
+				g_remote_payload_bytes,
+				static_cast<std::size_t>(
+					liger_cute::detail::
+						kRemoteRingInboxSlots),
+				"remote inbox buffers") +
 			sync_bytes_at(max_ctas, team_size) +
-			2 * sizeof(std::uint64_t);
+			liger_cute::detail::remote_ring_signal_bytes();
 	}
 	std::size_t staging = staging_bytes_at(max_tiles_per_reduce, max_ctas);
 	std::size_t durable = durable_bytes_at(max_tokens, max_hidden);
 	std::size_t reduced = staging > durable ? staging : durable;
-	return staging + reduced + 2u * durable +
+	std::size_t forward_wave_state =
+		forward_wave_state_bytes_at(max_tokens, 1);
+	std::size_t forward_wave_storage =
+		checked_multiply(
+			forward_wave_state,
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+			static_cast<std::size_t>(
+				kForwardWaveSourceSlotsSm100 + 1),
+#else
+			0u,
+#endif
+			"forward wave source and running state");
+	std::size_t reduced_shard =
+		durable > forward_wave_storage
+		? durable
+		: forward_wave_storage;
+	std::size_t remote_payload =
+		durable > forward_wave_state
+		? durable
+		: forward_wave_state;
+	return staging + reduced + reduced_shard +
+		checked_multiply(
+			remote_payload,
+			static_cast<std::size_t>(
+				liger_cute::detail::kRemoteRingInboxSlots),
+			"remote inbox buffers") +
 		sync_bytes_at(max_ctas, team_size) +
-		2 * sizeof(std::uint64_t);
+		liger_cute::detail::remote_ring_signal_bytes();
 }
 
 std::size_t backward_tp_pool_device_bytes(int max_local_vocab) {
+	LIGER_CHECK(max_local_vocab > 0, "max_local_vocab must be positive");
+	validate_configured_device_query(max_local_vocab);
 	int team_size = g_configured
 		? g_capacity.team_size
 		: liger_cute::detail::kMaxTpReduceTeamSize;
@@ -357,6 +503,21 @@ std::size_t backward_dx_configured_packed_durable_bytes() {
 	return g_packed_durable_bytes;
 }
 
+std::size_t tp_reduced_shard_configured_bytes() {
+	ensure_configured();
+	return g_reduced_shard_bytes;
+}
+
+std::size_t tp_remote_inbox_slot_configured_bytes() {
+	ensure_configured();
+	return g_remote_payload_bytes;
+}
+
+int backward_tp_max_local_vocab() {
+	ensure_configured();
+	return g_capacity.max_local_vocab;
+}
+
 void validate_backward_tp_shape(
 		int tokens, int hidden, int local_vocab) {
 	ensure_configured();
@@ -406,6 +567,8 @@ void reset_fslce_tp_configuration() {
 	g_staging_bytes = 0;
 	g_durable_bytes = 0;
 	g_packed_durable_bytes = 0;
+	g_reduced_shard_bytes = 0;
+	g_remote_payload_bytes = 0;
 	g_reduced_bytes = 0;
 	reset_forward_tp_workspace_configuration();
 }

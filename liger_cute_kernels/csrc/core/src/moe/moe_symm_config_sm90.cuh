@@ -27,6 +27,8 @@ struct MoeSymmConfig {
 	int max_num_experts;   // max experts across all configs
 	int hidden_dim;        // fixed across configs
 	int num_pes;
+	int num_hosts;
+	int gpus_per_host;
 	int experts_per_pe;    // max_num_experts / num_pes
 	int max_top_k;         // max top_k across configs (exposed via the flat ABI)
 	nvshmem_team_t team;   // NVSHMEM team

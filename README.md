@@ -152,6 +152,7 @@ pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/
 - `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
 - `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
 - `nvidia-cutlass-dsl >= 4.6.0`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
+- `liger-cute-kernels`: Native CUTLASS + NVSHMEM kernels for Hopper and Blackwell, installed at the exact matching Liger version by the `lck` extra.
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -161,6 +162,24 @@ To install the stable version:
 ```bash
 $ pip install liger-kernel
 ```
+
+To also install the matching native Liger communication kernels:
+
+```bash
+$ pip install "liger-kernel[lck]" "liger-cute-kernels[cu12]"
+```
+
+The native LCK release wheel build remains on **CUDA 12.9** (CUDA Toolkit 12.9.1).
+The optional `cu12` extra installs `nvidia-nvshmem-cu12==3.6.5`; `cu13`
+installs `nvidia-nvshmem-cu13==3.6.5` for CUDA 13 source builds. Plain
+`liger-cute-kernels` does not install NVSHMEM. Select only one extra, matching
+the native wheel's build toolkit: extras select dependencies, not a different
+compiled wheel. CUDA 13 source builds currently work for Hopper, but the
+combined release build is blocked by mixed CTA-group instructions in the
+Blackwell MoE backward kernel. Previously published artifacts are unchanged. The default
+`liger-kernel` installation is unchanged. See the
+[native wheel build instructions](liger_cute_kernels/README.md#building-the-native-wheel)
+for source builds and compatibility details.
 
 To install the nightly version:
 
@@ -196,6 +215,9 @@ pip install -e ".[cutile-tileiras]"
 
 # Setup CuTe DSL (NVIDIA CUTLASS Python DSL) Dependencies
 pip install -e ".[cutedsl]"
+
+# Setup native Liger communication kernels
+pip install -e ".[lck]"
 
 ```
 
@@ -424,6 +446,7 @@ loss.backward()
 | OLMo2   | `liger_kernel.transformers.apply_liger_kernel_to_olmo2`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | Olmo3   | `liger_kernel.transformers.apply_liger_kernel_to_olmo3`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GLM-4   | `liger_kernel.transformers.apply_liger_kernel_to_glm4`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
+| DeepSeek-V3   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v3`     | RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | DeepSeek-V4   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v4`     | RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GPT-OSS   | `liger_kernel.transformers.apply_liger_kernel_to_gpt_oss`     | RoPE, RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
 | InternVL3   | `liger_kernel.transformers.apply_liger_kernel_to_internvl`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
@@ -471,6 +494,7 @@ loss.backward()
 | KLDivergence                    | `liger_kernel.transformers.LigerKLDIVLoss`                  |
 | JSD                             | `liger_kernel.transformers.LigerJSD`                        |
 | Fused Linear JSD                  | `liger_kernel.transformers.LigerFusedLinearJSD`             |
+| Fused Linear KL Divergence        | `liger_kernel.transformers.LigerFusedLinearKLDivLoss`       |
 | TVD                             | `liger_kernel.transformers.LigerTVDLoss`                    |
 
 ### Experimental Kernels

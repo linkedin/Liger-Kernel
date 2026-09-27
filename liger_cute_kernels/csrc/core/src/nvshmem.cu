@@ -25,6 +25,7 @@
 #include "liger_cute/detail/status.h"
 #include "liger_cute/detail/symmetric_memory.h"
 #include "fused_scaled_linear_cross_entropy/state.h"
+#include "moe_nonrdc_module.h"
 
 namespace liger_cute {
 namespace detail {
@@ -151,6 +152,7 @@ liger_cute_status_t liger_cute_nvshmem_init_pmi(void) {
 liger_cute_status_t liger_cute_nvshmem_finalize(void) {
   return liger_cute::detail::guarded([&]() -> liger_cute_status_t {
     liger_cute::detail::clear_global_pools();  // BEFORE finalize — see header
+    liger::finalize_sm90_nonrdc_moe();
     nvshmem_finalize();
     return LIGER_CUTE_OK;
   });
