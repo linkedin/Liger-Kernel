@@ -104,9 +104,8 @@ if(LIGER_CUTE_ENABLE_SM90_NONRDC_MOE)
         "-I${CMAKE_CURRENT_SOURCE_DIR}/include"
         "-I${CMAKE_CURRENT_SOURCE_DIR}/src/moe"
         "-I${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy"
-        "-I${NVSHMEM_INCLUDE_DIR}"
-        "-I${CUDAToolkit_INCLUDE_DIRS}")
-    foreach(_include_dir IN LISTS CUTLASS_INCLUDE_DIRS)
+        "-I${NVSHMEM_INCLUDE_DIR}")
+    foreach(_include_dir IN LISTS CUDAToolkit_INCLUDE_DIRS CUTLASS_INCLUDE_DIRS)
         list(APPEND _nonrdc_moe_include_args "-I${_include_dir}")
     endforeach()
     file(GLOB_RECURSE _nonrdc_moe_dependencies
