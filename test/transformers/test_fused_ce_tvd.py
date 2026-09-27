@@ -160,11 +160,18 @@ def test_gradient_at_probability_ties():
     reachable in practice: self-distillation ties everything, and a teacher that
     permutes the student's logits leaves the log-sum-exp untouched so every
     unpermuted slot ties exactly while still carrying probability mass.
+
+    Logits take only the values 0 and -1e4, so every ``exp`` is exactly 1 or 0 and
+    both log-sum-exps are exact integer sums in any reduction order. With random
+    logits the swapped rows' fp32 log-sum-exps can differ by an ulp depending on
+    how the kernel and ``torch.softmax`` order their reductions, which silently
+    breaks the ties on some devices.
     """
     torch.manual_seed(0)
     BT, V = 4, 256
 
-    student = torch.randn(BT, V, device=device, dtype=torch.float32)
+    student = torch.where(torch.rand(BT, V, device=device) < 0.5, 0.0, -1e4)
+    student[:, 0], student[:, 1] = 0.0, -1e4
     teacher = student.clone()
     teacher[:, [0, 1]] = teacher[:, [1, 0]]
     target = torch.randint(0, V, (BT,), device=device, dtype=torch.long)
