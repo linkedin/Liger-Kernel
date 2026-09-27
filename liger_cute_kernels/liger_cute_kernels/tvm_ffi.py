@@ -92,7 +92,10 @@ def _load_nvshmem_libraries(pkg_dir: Path) -> None:
         None,
     )
     if host is None:
-        raise ImportError("NVSHMEM runtime not found; install nvidia-nvshmem-cu12==3.6.5")
+        raise ImportError(
+            "NVSHMEM runtime not found; install 'liger-cute-kernels[cu12]' or "
+            "'liger-cute-kernels[cu13]' to match the CUDA version used to build the native wheel"
+        )
     ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
     uid_bootstrap = host.parent / "nvshmem_bootstrap_uid.so.3"
     if uid_bootstrap.is_file():
