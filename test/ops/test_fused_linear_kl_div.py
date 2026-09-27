@@ -13,7 +13,8 @@ End-to-end fused-linear-KL correctness (shapes, dtypes, reductions, AMP) lives
 in ``test/transformers/test_fused_linear_kl_div.py``.
 
 Mirrors ``test/ops/test_fused_linear_jsd.py`` in structure: collects cleanly on
-a CPU-only box (the conftest ``autouse`` fixture skips when CUDA is unavailable).
+a CPU-only box (the conftest ``autouse`` fixture skips when neither CUDA nor MPS
+is available). Tensors are placed with ``infer_device()``.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import liger_kernel.ops.fused_linear_kl_div as flkl_ops
 from liger_kernel.backends.dispatch import available_backends
 from liger_kernel.backends.dispatch import dispatch
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 KL_PRIMITIVE_SHAPES = [
@@ -83,7 +85,6 @@ def test_kl_loss_and_grad_correctness(backend, shape, dtype, with_labels):
         pytest.skip("No kl_loss_and_grad backends registered in this environment")
 
     BT, V = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(0)
 
     logits_cpu = torch.randn(BT, V, dtype=torch.float32, generator=g)
@@ -159,9 +160,9 @@ def test_fused_linear_kl_default_path_dispatches_inner_kl(monkeypatch):
     monkeypatch.setattr(flkl_ops, "dispatch", tracking_dispatch)
 
     BT, H, V = 32, 64, 512
-    student_input = torch.randn(BT, H, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    student_weight = torch.randn(V, H, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    target = torch.softmax(torch.randn(BT, V, device="cuda", dtype=torch.float32), dim=-1).to(torch.bfloat16)
+    student_input = torch.randn(BT, H, device=device, dtype=torch.bfloat16, requires_grad=True)
+    student_weight = torch.randn(V, H, device=device, dtype=torch.bfloat16, requires_grad=True)
+    target = torch.softmax(torch.randn(BT, V, device=device, dtype=torch.float32), dim=-1).to(torch.bfloat16)
 
     flkl_ops.LigerFusedLinearKLDivFunction.apply(student_input, student_weight, target).backward()
 
