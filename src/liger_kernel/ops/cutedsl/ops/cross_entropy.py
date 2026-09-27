@@ -231,6 +231,17 @@ def _ce_fwd_kernel(
 
     # token_accuracy and predicted_tokens both reduce to the row's argmax column.
     NEED_ARGMAX = const_expr(RETURN_TOKEN_ACCURACY or RETURN_PREDICTED_TOKENS)
+    # CuTe DSL 4.6 can narrow these dynamic output stores to bf16 in feature-enabled
+    # FP32 training specializations. Rebuild explicitly typed pointers to keep them fp32.
+    if const_expr(mX.element_type.width == 32):
+        gLossFp32 = cute.make_tensor(
+            cute.make_ptr(Float32, mLoss.iterator.toint(), cute.AddressSpace.gmem, assumed_align=4),
+            cute.make_layout((mLoss.shape[0],)),
+        )
+        gZLossFp32 = cute.make_tensor(
+            cute.make_ptr(Float32, mZLoss.iterator.toint(), cute.AddressSpace.gmem, assumed_align=4),
+            cute.make_layout((mZLoss.shape[0],)),
+        )
 
     # Cross-warp reduction scratch (one (m, d)[, argmax][, scaled_x_sum] per warp), carved from
     # one smem pool sized for NUM_WARPS; the cp.async tile buffer comes from the same pool below.
@@ -477,9 +488,15 @@ def _ce_fwd_kernel(
         loss = Float32(0.0)
         zl = Float32(0.0)
     if tid == 0:
-        mLoss[row] = loss.to(mLoss.element_type)
+        if const_expr(mX.element_type.width == 32):
+            gLossFp32[row] = loss
+        else:
+            mLoss[row] = loss.to(mLoss.element_type)
         if const_expr(RETURN_Z_LOSS):
-            mZLoss[row] = zl.to(mZLoss.element_type)
+            if const_expr(mX.element_type.width == 32):
+                gZLossFp32[row] = zl
+            else:
+                mZLoss[row] = zl.to(mZLoss.element_type)
 
     # token_accuracy / predicted_tokens: ignored rows get 0.0 / -1 (matches Triton).
     # The ignored sentinel is folded in at fp32 (col_out) before the single int cast — the
