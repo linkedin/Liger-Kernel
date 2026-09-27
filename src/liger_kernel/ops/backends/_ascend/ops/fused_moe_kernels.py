@@ -44,8 +44,10 @@ def _moe_router_histogram_kernel(
 
     Ascend: 2-D block loads + batched atomic_add with safe expert indices.
     A 1-D flatten path can fault on vector-core UB/D-cache under long MoE runs.
+    Pad the K inner dim to 8 i32 so 2-D reductions do not drop lanes.
     """
     tile_id = tl.program_id(0)
+    HIST_K_POW2: tl.constexpr = 8 if K_POW2 < 8 else K_POW2
 
     e_offs = tl.arange(0, E_POW2)
     tl.store(
@@ -55,7 +57,7 @@ def _moe_router_histogram_kernel(
     )
 
     tok_offs = tile_id * TOKENS_PER_TILE + tl.arange(0, TOKENS_PER_TILE)
-    k_offs = tl.arange(0, K_POW2)
+    k_offs = tl.arange(0, HIST_K_POW2)
     tok_mask = tok_offs < T
     load_mask = tok_mask[:, None] & (k_offs[None, :] < K)
     safe_k = tl.minimum(k_offs, K - 1)
@@ -65,15 +67,15 @@ def _moe_router_histogram_kernel(
         other=-1,
     )
 
-    flat_experts = tl.reshape(expert_ids, [TOKENS_PER_TILE * K_POW2])
-    flat_mask = tl.reshape(load_mask, [TOKENS_PER_TILE * K_POW2])
+    flat_experts = tl.reshape(expert_ids, [TOKENS_PER_TILE * HIST_K_POW2])
+    flat_mask = tl.reshape(load_mask, [TOKENS_PER_TILE * HIST_K_POW2])
     in_bounds = (flat_experts >= 0) & (flat_experts < E)
     valid = flat_mask & in_bounds
     safe_experts = tl.where(valid, flat_experts, 0)
 
     tl.atomic_add(
         partial_sum_ptr + safe_experts * n_tiles + tile_id,
-        tl.full([TOKENS_PER_TILE * K_POW2], 1, dtype=tl.int32),
+        tl.full([TOKENS_PER_TILE * HIST_K_POW2], 1, dtype=tl.int32),
         mask=valid,
     )
 
@@ -408,9 +410,10 @@ def _token_gather_weighted_sum_kernel(
     """
     t = tl.program_id(0)
     IS_K1: tl.constexpr = K_dim == 1
+    TILE_H: tl.constexpr = BLOCK_H + BLOCK_H // 2
 
-    for h_tile in tl.static_range(triton.cdiv(H_dim, BLOCK_H)):
-        h_idx = h_tile * BLOCK_H + tl.arange(0, BLOCK_H)
+    for h_tile in tl.static_range(triton.cdiv(H_dim, TILE_H)):
+        h_idx = h_tile * TILE_H + tl.arange(0, TILE_H)
         h_mask = h_idx < H_dim
 
         if IS_K1:
@@ -423,7 +426,7 @@ def _token_gather_weighted_sum_kernel(
                 w_val = tl.load(w_ptr + t).to(tl.float32)
                 acc = y_vals * w_val
         else:
-            acc = tl.zeros([BLOCK_H], dtype=tl.float32)
+            acc = tl.zeros([TILE_H], dtype=tl.float32)
             for k_tile in tl.range(triton.cdiv(K_dim, BLOCK_K)):
                 k_offs = k_tile * BLOCK_K + tl.arange(0, BLOCK_K)
                 k_mask = k_offs < K_dim
@@ -435,10 +438,10 @@ def _token_gather_weighted_sum_kernel(
                 y_vals = tl.load(y_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
 
                 if w_is_None:
-                    acc += tl.sum(y_vals, axis=0)
+                    w_vals = k_mask.to(tl.float32)
                 else:
                     w_vals = tl.load(w_ptr + flat_idx, mask=k_mask, other=0.0).to(tl.float32)
-                    acc += tl.sum(y_vals * w_vals[:, None], axis=0)
+                acc += tl.sum(y_vals * w_vals[:, None], axis=0)
 
         out_ptrs = out_ptr + t * stride_out_T + h_idx * stride_out_H
         tl.store(out_ptrs, acc.to(out_ptr.dtype.element_ty), mask=h_mask)
@@ -479,17 +482,20 @@ def _moe_bwd_down_proj_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    pid_base,
 ):
-    """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
+    """Grid: (num_row_programs, ceil(I/BLOCK_N)). One live row per program.
 
     Recomputes dA' = dO @ W2^T, applies SwiGLU backward, and writes d_pre_act,
     weighted_act, and dS. Caller chunks the M dimension when the grid overflows.
     """
-    pid_m = tl.program_id(0)
+    pid_m = tl.program_id(0) + pid_base
     pid_n = tl.program_id(1)
 
-    row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    tile_id = pid_m // BLOCK_M
+    row_off = pid_m % BLOCK_M
+    row_start = tl.load(tile_row_start_ptr + tile_id) + row_off
+    expert_idx = tl.load(tile_expert_ptr + tile_id)
     n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
@@ -498,7 +504,7 @@ def _moe_bwd_down_proj_kernel(
     k_offs = tl.arange(0, BLOCK_K)
 
     row_offs = row_start + m_offs
-    row_mask = row_offs < expert_end
+    row_mask = (m_offs == 0) & (row_offs < expert_end)
     n_idx = n_start + n_offs
     n_mask = n_idx < I_dim
     out_mask = row_mask[:, None] & n_mask[None, :]
@@ -644,54 +650,60 @@ def _moe_bwd_dX_expanded_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    pid_base,
 ):
-    """Grid: (num_m_tiles,). dx_expanded[sorted_pos] = d_gate @ W1_gate^T + d_up @ W1_up^T."""
-    pid_m = tl.program_id(0)
+    """Grid: (num_row_programs, ceil(H/BLOCK_N)). One live row per program.
 
-    row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    dx_expanded[sorted_pos] = d_gate @ W1_gate^T + d_up @ W1_up^T.
+    """
+    pid_m = tl.program_id(0) + pid_base
+    pid_n = tl.program_id(1)
+
+    tile_id = pid_m // BLOCK_M
+    row_off = pid_m % BLOCK_M
+    row_start = tl.load(tile_row_start_ptr + tile_id) + row_off
+    expert_idx = tl.load(tile_expert_ptr + tile_id)
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
     m_offs = tl.arange(0, BLOCK_M)
     k_offs = tl.arange(0, BLOCK_K)
+    n_offs = tl.arange(0, BLOCK_N)
 
     row_offs = row_start + m_offs
-    row_mask = row_offs < expert_end
+    row_mask = (m_offs == 0) & (row_offs < expert_end)
 
-    for n_start in tl.range(0, H_dim, BLOCK_N):
-        n_offs = tl.arange(0, BLOCK_N)
-        h_idx = n_start + n_offs
-        h_mask = h_idx < H_dim
+    h_idx = pid_n * BLOCK_N + n_offs
+    h_mask = h_idx < H_dim
 
-        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-        for k in tl.range(0, I_dim, BLOCK_K):
-            k_idx = k + k_offs
-            k_mask = k_idx < I_dim
+    for k in tl.range(0, I_dim, BLOCK_K):
+        k_idx = k + k_offs
+        k_mask = k_idx < I_dim
 
-            d_gate_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + k_idx[None, :] * stride_d_pre_N
-            d_gate = tl.load(d_gate_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
+        d_gate_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + k_idx[None, :] * stride_d_pre_N
+        d_gate = tl.load(d_gate_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-            w_gate_ptrs = (
-                gate_up_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
-            )
-            w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-            acc += tl.dot(d_gate, w_gate)
+        w_gate_ptrs = (
+            gate_up_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
+        )
+        w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
+        acc += tl.dot(d_gate, w_gate)
 
-            d_up_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + (I_dim + k_idx)[None, :] * stride_d_pre_N
-            d_up = tl.load(d_up_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
+        d_up_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + (I_dim + k_idx)[None, :] * stride_d_pre_N
+        d_up = tl.load(d_up_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-            w_up_ptrs = (
-                gate_up_proj_ptr
-                + expert_idx * stride_w_E
-                + (I_dim + k_idx)[:, None] * stride_w_N
-                + h_idx[None, :] * stride_w_K
-            )
-            w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-            acc += tl.dot(d_up, w_up)
+        w_up_ptrs = (
+            gate_up_proj_ptr
+            + expert_idx * stride_w_E
+            + (I_dim + k_idx)[:, None] * stride_w_N
+            + h_idx[None, :] * stride_w_K
+        )
+        w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
+        acc += tl.dot(d_up, w_up)
 
-        dxe_ptrs = dx_expanded_ptr + row_offs[:, None] * stride_dxe_TK + h_idx[None, :] * stride_dxe_H
-        tl.store(dxe_ptrs, acc.to(dx_expanded_ptr.dtype.element_ty), mask=row_mask[:, None] & h_mask[None, :])
+    dxe_ptrs = dx_expanded_ptr + row_offs[:, None] * stride_dxe_TK + h_idx[None, :] * stride_dxe_H
+    tl.store(dxe_ptrs, acc.to(dx_expanded_ptr.dtype.element_ty), mask=row_mask[:, None] & h_mask[None, :])
 
 
 @triton.jit
