@@ -24,8 +24,9 @@ def is_llama4_available():
 pytestmark = pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
 
 
-def _build_patched_model():
-    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+@pytest.fixture
+def patched_model():
+    from transformers.models.llama4 import modeling_llama4
 
     config = transformers.models.llama4.configuration_llama4.Llama4TextConfig(
         dtype=torch.float32,
@@ -39,14 +40,20 @@ def _build_patched_model():
         vocab_size=64,
         moe_layers=[],
     )
-    model = Llama4ForCausalLM(config)
-    # Only the forward is swapped: the norm/MLP/rope kernels are Triton and would need a GPU.
-    apply_liger_kernel_to_llama4(model=model, rope=False, rms_norm=False, swiglu=False)
-    return model
+    model = modeling_llama4.Llama4ForCausalLM(config)
+    # apply_liger_kernel_to_llama4 swaps Llama4ForCausalLM.forward at class level, so restore it
+    # afterwards to keep the patch from leaking into later tests in the same session.
+    original_forward = modeling_llama4.Llama4ForCausalLM.forward
+    try:
+        # Only the forward is swapped: the norm/MLP/rope kernels are Triton and would need a GPU.
+        apply_liger_kernel_to_llama4(model=model, rope=False, rms_norm=False, swiglu=False)
+        yield model
+    finally:
+        modeling_llama4.Llama4ForCausalLM.forward = original_forward
 
 
-def test_llama4_skip_logits_false_materializes_logits_in_training():
-    model = _build_patched_model()
+def test_llama4_skip_logits_false_materializes_logits_in_training(patched_model):
+    model = patched_model
     model.train()
 
     input_ids = torch.randint(0, 64, (2, 8))
@@ -57,8 +64,8 @@ def test_llama4_skip_logits_false_materializes_logits_in_training():
     assert output.loss is not None
 
 
-def test_llama4_skip_logits_true_without_labels_raises():
-    model = _build_patched_model()
+def test_llama4_skip_logits_true_without_labels_raises(patched_model):
+    model = patched_model
     model.eval()
 
     input_ids = torch.randint(0, 64, (2, 8))
