@@ -1,3 +1,4 @@
+from typing import TYPE_CHECKING
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -5,19 +6,20 @@ from typing import Union
 
 import torch
 
-from transformers.cache_utils import Cache
-
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerCausalLMOutputWithPast
 
+if TYPE_CHECKING:
+    from transformers.cache_utils import Cache
+
 
 def lce_forward(
     self,
-    input_ids: torch.LongTensor = None,
+    input_ids: Optional[torch.LongTensor] = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+    past_key_values: Optional[Union["Cache", List[torch.FloatTensor]]] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
@@ -30,18 +32,27 @@ def lce_forward(
     **kwargs,
 ) -> Union[Tuple, LigerCausalLMOutputWithPast]:
     r"""
-    labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-        Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-        config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-        (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        logits_to_keep (`int` or `torch.Tensor`, *optional*):
+            If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
+            `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
+            token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
+            If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
+            This is useful when using packed tensor format (single dimension for batch and sequence length).
+
+    Returns:
 
     Example:
 
     ```python
-    >>> from transformers import AutoTokenizer, Llama4ForCausalLM
+    >>> from transformers import AutoTokenizer, DeepseekV3ForCausalLM
 
-    >>> model = Llama4ForCausalLM.from_pretrained("meta-llama4/Llama4-2-7b-hf")
-    >>> tokenizer = AutoTokenizer.from_pretrained("meta-llama4/Llama4-2-7b-hf")
+    >>> model = DeepseekV3ForCausalLM.from_pretrained("deepseek-ai/DeepSeek-V3")
+    >>> tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-V3")
 
     >>> prompt = "Hey, are you conscious? Can you talk to me?"
     >>> inputs = tokenizer(prompt, return_tensors="pt")
@@ -67,17 +78,18 @@ def lce_forward(
         use_cache=use_cache,
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
-        return_dict=True,
         cache_position=cache_position,
         **kwargs,
     )
 
-    hidden_states = outputs[0]
+    hidden_states = outputs.last_hidden_state
     # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
     kept_hidden_states = hidden_states[:, slice_indices, :]
 
     shift_labels = kwargs.pop("shift_labels", None)
+    # Remove output-control parameters that shouldn't be passed to loss functions
+    kwargs.pop("return_dict", None)
     logits = None
     loss = None
     token_accuracy = None
@@ -101,8 +113,7 @@ def lce_forward(
             **kwargs,
         )
         loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
-
-    else:  # materialize logits
+    else:
         logits = self.lm_head(kept_hidden_states)
         if labels is not None or shift_labels is not None:
             loss = self.loss_function(

@@ -64,3 +64,11 @@ def test_nvshmem_loader_uses_dependency_package(tmp_path, monkeypatch):
     tvm_ffi._load_nvshmem_libraries(tmp_path / "wheel-package")
 
     assert [path for path, _ in loaded] == [str(host), str(uid)]
+
+
+def test_nvshmem_loader_missing_runtime_recommends_cuda_extras(tmp_path, monkeypatch):
+    monkeypatch.setattr(tvm_ffi, "_nvshmem_library_dirs", lambda _: [tmp_path])
+    monkeypatch.setattr(tvm_ffi, "_NVSHMEM_LIBS_LOADED", False)
+
+    with pytest.raises(ImportError, match=r"liger-cute-kernels\[cu12\].*liger-cute-kernels\[cu13\].*build"):
+        tvm_ffi._load_nvshmem_libraries(tmp_path)

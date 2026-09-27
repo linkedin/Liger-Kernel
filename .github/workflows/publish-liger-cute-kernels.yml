@@ -71,7 +71,7 @@ jobs:
     - name: Configure CUDA 12.9 dependencies
       run: |
         nvcc --version | tee nvcc-version.txt
-        grep -q 'release 12.9' nvcc-version.txt
+        grep -q 'release 12\.9,' nvcc-version.txt
         test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.35"
         python - <<'PY' >> "$GITHUB_ENV"
         import importlib.util
@@ -185,7 +185,7 @@ jobs:
         LIGER_CUTE_VERSION: ${{ steps.version.outputs.version }}
       run: |
         cd liger_cute_kernels
-        python -m pip wheel . \
+        python -m pip wheel ".[cu12]" \
           --no-deps \
           --no-build-isolation \
           --wheel-dir dist
@@ -238,12 +238,19 @@ jobs:
         if metadata["Version"] != os.environ["EXPECTED_VERSION"]:
             raise SystemExit(f"wheel version {metadata['Version']} != {os.environ['EXPECTED_VERSION']}")
         requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
-        nvshmem = next(
-            (requirement for requirement in requirements if requirement.name == "nvidia-nvshmem-cu12"),
-            None,
-        )
-        if nvshmem is None or str(nvshmem.specifier) != "==3.6.5":
-            raise SystemExit(f"missing pinned NVSHMEM dependency: {requirements}")
+        nvshmem = [requirement for requirement in requirements if requirement.name.startswith("nvidia-nvshmem-")]
+        if len(nvshmem) != 2 or not {"cu12", "cu13"} <= set(metadata.get_all("Provides-Extra", [])):
+            raise SystemExit(f"missing CUDA-selectable NVSHMEM extras: {requirements}")
+        for extra in ("cu12", "cu13"):
+            matches = [requirement for requirement in nvshmem if requirement.name == f"nvidia-nvshmem-{extra}"]
+            if len(matches) != 1:
+                raise SystemExit(f"expected one NVSHMEM requirement for {extra}: {nvshmem}")
+            requirement = matches[0]
+            if str(requirement.specifier) != "==3.6.5" or requirement.marker is None:
+                raise SystemExit(f"NVSHMEM must be pinned and optional: {requirement}")
+            for selected in ("", "cu12", "cu13"):
+                if requirement.marker.evaluate({"extra": selected}) != (selected == extra):
+                    raise SystemExit(f"incorrect NVSHMEM extra selection: {requirement}")
         print(f"{wheel.name}: {wheel.stat().st_size / 1024**2:.1f} MiB")
         PY
 
