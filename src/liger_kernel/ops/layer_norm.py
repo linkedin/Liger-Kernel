@@ -74,9 +74,9 @@ def _layer_norm_forward_kernel(
     var = tl.sum(X_centered_masked * X_centered_masked, axis=0) / n_cols
     rstd = rsqrt(var + eps.to(tl.float32))
 
-    # Store statistics (convert back to original dtype only once)
-    tl.store(row_Mean_ptr, mean.to(X_row.dtype))
-    tl.store(row_RSTD_ptr, rstd.to(X_row.dtype))
+    # Preserve the fp32 statistics used by forward for the backward pass.
+    tl.store(row_Mean_ptr, mean)
+    tl.store(row_RSTD_ptr, rstd)
 
     # Fused normalization and affine transformation
     # Y = (X - mean) * rstd * W + B = X_centered * rstd * W + B
@@ -187,8 +187,8 @@ def layer_norm_forward(X, W, B, eps):
 
     # Allocate output tensors
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-    Mean = torch.empty(n_rows, dtype=X.dtype, device=X.device)
-    RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
+    Mean = torch.empty(n_rows, dtype=torch.float32, device=X.device)
+    RSTD = torch.empty(n_rows, dtype=torch.float32, device=X.device)
 
     # Validate input dimensions
     if X.shape[1] != W.shape[0]:
