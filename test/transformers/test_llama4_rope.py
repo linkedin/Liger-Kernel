@@ -204,6 +204,10 @@ def test_row_offset_does_not_wrap_int32(bsz, seq_len, num_q_heads, num_kv_heads,
     pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
     freqs_cis = rotary_emb(q, pos_ids)
 
+    # The kernel rotates q/k in place, so keep an unrotated copy of the last token for the reference.
+    q_last = q[:, -1:].float().clone()
+    k_last = k[:, -1:].float().clone()
+
     q_out, k_out = LigerLlama4RopeFunction.apply(q, k, freqs_cis)
 
     # A wrapped index leaves the last row untouched or fills it from elsewhere.
@@ -212,8 +216,6 @@ def test_row_offset_does_not_wrap_int32(bsz, seq_len, num_q_heads, num_kv_heads,
     assert q_out[0, -1].abs().sum() > 0
     assert k_out[0, -1].abs().sum() > 0
 
-    ref_q, ref_k = apply_rotary_emb(
-        q[:, -1:].float(), k[:, -1:].float(), freqs_cis[-1:].unsqueeze(0)
-    )
+    ref_q, ref_k = apply_rotary_emb(q_last, k_last, freqs_cis[:, -1:])
     assert torch.allclose(q_out[:, -1:].float(), ref_q, atol=1e-1, rtol=1e-5)
     assert torch.allclose(k_out[:, -1:].float(), ref_k, atol=1e-1, rtol=1e-5)
