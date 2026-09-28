@@ -282,6 +282,11 @@ def _tma_supported(dtype: torch.dtype, head_dim: int, device: torch.device = Non
     # innermost TMA box must be 16-byte aligned
     if (head_dim * bits) % 128 != 0:
         return False
+    # The TMA launch uses block = 16 * (hd_half / vec) threads; a CUDA block is
+    # capped at 1024 threads. Oversized heads (e.g. bf16 head_dim=2048 -> 2048
+    # threads) would fail to launch, so fall back to the portable token kernel.
+    if 16 * (hd_half // vec) > 1024:
+        return False
     return True
 
 

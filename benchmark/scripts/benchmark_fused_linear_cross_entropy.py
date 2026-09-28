@@ -1,3 +1,5 @@
+import os
+
 import torch
 
 from benchmark_model_configs import MODEL_REGISTRY
@@ -76,6 +78,7 @@ def setup_fused_linear_cross_entropy(input: SingleBenchmarkRunInput):
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
+    cutile_backend = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower() == "cutile"
 
     if args.sweep_mode == "model_config":
         common_configs = build_model_config_sweep(
@@ -109,11 +112,13 @@ if __name__ == "__main__":
             overwrite=args.overwrite,
         )
 
-    common_configs["kernel_providers"] = ["torch", "liger", "liger-fp32-accum"]
+    common_configs["kernel_providers"] = (
+        ["torch", "liger"] if cutile_backend else ["torch", "liger", "liger-fp32-accum"]
+    )
 
     run_benchmarks(
         bench_test_fn=build_speed_bench_fn(setup_fused_linear_cross_entropy),
-        kernel_operation_modes=["forward", "backward", "full"],
+        kernel_operation_modes=["forward", "full"] if cutile_backend else ["forward", "backward", "full"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,

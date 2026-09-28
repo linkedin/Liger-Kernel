@@ -1,7 +1,7 @@
 """
 Fused MoE expert computation via Triton grouped GEMM (Ascend backend).
 
-Forward: routing metadata (3 kernels) → fused gather+GEMM+SwiGLU → down-proj → token aggregation
+Forward: routing metadata (3 kernels) → gather+GEMM → SwiGLU epilogue → down-proj → token aggregation
 Backward: memory-efficient — recomputes dA' = dO@W2^T to avoid caching Y (TK×H bytes)
 """
 
@@ -28,6 +28,7 @@ from .fused_moe_kernels import _moe_bwd_dX_expanded_kernel
 from .fused_moe_kernels import _moe_router_histogram_kernel
 from .fused_moe_kernels import _moe_router_prefix_sum_kernel
 from .fused_moe_kernels import _moe_router_scatter_kernel
+from .fused_moe_kernels import _swiglu_from_pre_act_kernel
 from .fused_moe_kernels import _token_gather_weighted_sum_kernel
 
 # Token-dimension tile size for M. Fixed (not autotuned) because tile_row_start,
@@ -151,6 +152,14 @@ def _token_gather_block_k(K: int) -> int:
     return min(ASCEND_TOKEN_GATHER_BLOCK_K, K)
 
 
+def _row_launch_chunks(num_m_tiles, n_n_tiles):
+    """One program per (tile, row) so tl.dot sees a single live row."""
+    n_row = num_m_tiles * BLOCK_M_TOKEN
+    step = max(1, ASCEND_MAX_GRID_PROGRAMS // max(int(n_n_tiles), 1))
+    for base in range(0, n_row, step):
+        yield min(step, n_row - base), base
+
+
 def _launch_token_gather_kernel(src, weights, s_reverse_scatter_idx, out, T, K, H, *, weighted: bool):
     """Gather K routed rows per token and reduce along K (weighted or sum)."""
     _token_gather_weighted_sum_kernel[(T,)](
@@ -193,7 +202,7 @@ def _token_scatter_sum(src, s_reverse_scatter_idx, T, K, H):
 class LigerFusedMoEFunction(torch.autograd.Function):
     """Fused grouped GEMM MoE forward + memory-efficient backward.
 
-    Forward: routing metadata → fused gather+GEMM+SwiGLU → down-proj → token aggregation
+    Forward: routing metadata → gather+GEMM → SwiGLU epilogue → down-proj → token aggregation
     Backward: avoids caching Y (TK×H) by recomputing dA' = dO@W2^T in backward
     """
 
@@ -240,7 +249,6 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 tile_row_start,
                 tile_expert,
                 pre_act,
-                post_act,
                 H_dim=H,
                 I_dim=intermediate_dim,
                 stride_x_T=x.stride(0),
@@ -250,11 +258,20 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 stride_w_K=gate_up_proj.stride(2),
                 stride_pre_TK=pre_act.stride(0),
                 stride_pre_N=pre_act.stride(1),
-                stride_post_TK=post_act.stride(0),
-                stride_post_N=post_act.stride(1),
                 BLOCK_M=BLOCK_M_TOKEN,
                 BLOCK_N=ASCEND_GEMM_BLOCK_N,
                 BLOCK_K=ASCEND_GEMM_BLOCK_K,
+            )
+            _swiglu_from_pre_act_kernel[(min(TK, ASCEND_MAX_GRID_PROGRAMS),)](
+                pre_act,
+                post_act,
+                TK,
+                I_dim=intermediate_dim,
+                stride_pre_TK=pre_act.stride(0),
+                stride_pre_N=pre_act.stride(1),
+                stride_post_TK=post_act.stride(0),
+                stride_post_N=post_act.stride(1),
+                BLOCK_N=ASCEND_GEMM_BLOCK_N,
             )
 
         Y = torch.empty(TK, H, dtype=x.dtype, device=x.device)
@@ -340,9 +357,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
 
         if num_m_tiles > 0:
             n_i_tiles = triton.cdiv(intermediate_dim, ASCEND_BWD_BLOCK_N)
-            max_m_per_launch = max(1, ASCEND_MAX_GRID_PROGRAMS // n_i_tiles)
-            for m_off in range(0, num_m_tiles, max_m_per_launch):
-                m_count = min(max_m_per_launch, num_m_tiles - m_off)
+            for m_count, m_off in _row_launch_chunks(num_m_tiles, n_i_tiles):
                 _moe_bwd_down_proj_kernel[(m_count, n_i_tiles)](
                     dO,
                     x_gather_idx,
@@ -351,8 +366,8 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                     down_proj,
                     pre_act,
                     expert_start_idx,
-                    tile_row_start[m_off : m_off + m_count],
-                    tile_expert[m_off : m_off + m_count],
+                    tile_row_start,
+                    tile_expert,
                     d_pre_act,
                     weighted_act,
                     dS,
@@ -372,6 +387,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                     BLOCK_M=BLOCK_M_TOKEN,
                     BLOCK_N=ASCEND_BWD_BLOCK_N,
                     BLOCK_K=ASCEND_GEMM_BLOCK_K,
+                    pid_base=m_off,
                 )
 
         ddown_proj = torch.zeros_like(down_proj)
@@ -402,26 +418,29 @@ class LigerFusedMoEFunction(torch.autograd.Function):
 
         dx_expanded = torch.empty(TK, H, dtype=dO.dtype, device=dO.device)
         if num_m_tiles > 0:
-            _moe_bwd_dX_expanded_kernel[(num_m_tiles,)](
-                d_pre_act,
-                gate_up_proj,
-                expert_start_idx,
-                tile_row_start,
-                tile_expert,
-                dx_expanded,
-                H_dim=H,
-                I_dim=intermediate_dim,
-                stride_d_pre_TK=d_pre_act.stride(0),
-                stride_d_pre_N=d_pre_act.stride(1),
-                stride_w_E=gate_up_proj.stride(0),
-                stride_w_N=gate_up_proj.stride(1),
-                stride_w_K=gate_up_proj.stride(2),
-                stride_dxe_TK=dx_expanded.stride(0),
-                stride_dxe_H=dx_expanded.stride(1),
-                BLOCK_M=BLOCK_M_TOKEN,
-                BLOCK_N=ASCEND_GEMM_BLOCK_N,
-                BLOCK_K=ASCEND_GEMM_BLOCK_K,
-            )
+            n_h_tiles = triton.cdiv(H, ASCEND_GEMM_BLOCK_N)
+            for m_count, m_off in _row_launch_chunks(num_m_tiles, n_h_tiles):
+                _moe_bwd_dX_expanded_kernel[(m_count, n_h_tiles)](
+                    d_pre_act,
+                    gate_up_proj,
+                    expert_start_idx,
+                    tile_row_start,
+                    tile_expert,
+                    dx_expanded,
+                    H_dim=H,
+                    I_dim=intermediate_dim,
+                    stride_d_pre_TK=d_pre_act.stride(0),
+                    stride_d_pre_N=d_pre_act.stride(1),
+                    stride_w_E=gate_up_proj.stride(0),
+                    stride_w_N=gate_up_proj.stride(1),
+                    stride_w_K=gate_up_proj.stride(2),
+                    stride_dxe_TK=dx_expanded.stride(0),
+                    stride_dxe_H=dx_expanded.stride(1),
+                    BLOCK_M=BLOCK_M_TOKEN,
+                    BLOCK_N=ASCEND_GEMM_BLOCK_N,
+                    BLOCK_K=ASCEND_GEMM_BLOCK_K,
+                    pid_base=m_off,
+                )
 
         dx = _token_scatter_sum(dx_expanded, s_reverse_scatter_idx, T, K, H)
 

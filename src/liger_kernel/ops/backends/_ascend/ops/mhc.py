@@ -25,6 +25,11 @@ from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 
+# Only on mix cube+vector and tl.atomic_add launches. BiShengIR 1.2.0
+# (triton-ascend 3.2.2) auto-multi-buffer races fp32 mix results and hangs
+# compiling mix + atomic_add. Recognized on 3.2.1 as well (default was True).
+_NO_MULTIBUFFER = dict(multibuffer=False)
+
 # ---------------------------------------------------------------------------
 # UB-aware block size helpers  (via unified compute_default_tiling_strategy)
 # ---------------------------------------------------------------------------
@@ -205,6 +210,7 @@ def mhc_mm_norm_fwd(
         BLOCK_N=block_n,
         BLOCK_K=block_k,
         BLOCK_M=block_m,
+        **_NO_MULTIBUFFER,
     )
     return out_mix, out_invr
 
@@ -365,6 +371,7 @@ def mhc_mm_norm_bwd(
         BLOCK_N=block_n,
         BLOCK_K=block_k,
         BLOCK_M=block_m,
+        **_NO_MULTIBUFFER,
     )
     if out_grad_phi.dtype != phi.dtype:
         out_grad_phi = out_grad_phi.to(phi.dtype)
@@ -999,6 +1006,7 @@ def mhc_pre_bwd(
         stride_ghh=out_grad_h.stride(1),
         BLOCK_N=block_n,
         BLOCK_C=block_c,
+        **_NO_MULTIBUFFER,
     )
     return out_grad_x, out_grad_h
 
@@ -1305,6 +1313,7 @@ def mhc_post_res_bwd(
         stride_ghrj=out_grad_hres.stride(2),
         BLOCK_N=block_n,
         BLOCK_C=block_c,
+        **_NO_MULTIBUFFER,
     )
     return out_grad_x, out_grad_f, out_grad_hpost, out_grad_hres
 
@@ -1458,6 +1467,7 @@ def mhc_coeffs_bwd_assemble(
         stride_grn=grad_res_flat.stride(0),
         BLOCK_HC=BLOCK_HC,
         BLOCK_RES=BLOCK_RES,
+        **_NO_MULTIBUFFER,
     )
     return (
         grad_mix,

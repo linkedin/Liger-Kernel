@@ -132,6 +132,9 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
     else:
         n_non_ignore = BT
 
+    if n_non_ignore == 0:
+        return torch.tensor(0.0, device=_input.device, dtype=_input.dtype), torch.zeros_like(_input)
+
     # Use NPU core count for grid size
     num_cores = get_npu_core_count()
     grid_size = min(num_cores, n_rows)
@@ -191,6 +194,8 @@ class LigerJSDFunction(torch.autograd.Function):
         shift_labels: Optional[torch.Tensor] = None,
         beta: float = 0.5,
         ignore_index: int = -100,
+        jsd_impl=None,
+        jsd_mode=None,
     ) -> torch.Tensor:
         """
         Args:
@@ -199,10 +204,12 @@ class LigerJSDFunction(torch.autograd.Function):
             shift_labels (Optional[torch.LongTensor]): indicator of next predicted vocab with shape (BT) where each value is in [0, V-1].
             beta (float): coefficient beta of generalized JSD in the interval [0, 1]. It implements forward/reverse KL when beta equals 0 and 1 respectively. Default: `0.5`
             ignore_index (int): the index to ignore. Default: -100
+            jsd_impl / jsd_mode: accepted for NVIDIA JSD signature parity; unused on Ascend.
 
         Returns:
             loss (torch.Tensor): generalized JSD
         """
+        _ = (jsd_impl, jsd_mode)
         has_label = False
         if shift_labels is not None:
             assert shift_labels.shape == (_input.shape[0],), (
@@ -222,6 +229,8 @@ class LigerJSDFunction(torch.autograd.Function):
         dX = jsd_backward(dX, grad_output)
         return (
             dX,
+            None,
+            None,
             None,
             None,
             None,

@@ -43,13 +43,22 @@ from liger_kernel.ops.experimental.embedding import LigerEmbeddingFunction  # no
 from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction  # noqa: F401
 from liger_kernel.ops.fused_add_rms_norm import fused_add_rms_norm_backward  # noqa: F401
 from liger_kernel.ops.fused_add_rms_norm import fused_add_rms_norm_forward  # noqa: F401
+from liger_kernel.ops.fused_ce_tvd import LigerFusedCETVDFunction  # noqa: F401
+from liger_kernel.ops.fused_ce_tvd import fused_ce_tvd_backward  # noqa: F401
+from liger_kernel.ops.fused_ce_tvd import fused_ce_tvd_forward  # noqa: F401
 from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction  # noqa: F401
 from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_backward  # noqa: F401
 from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward  # noqa: F401
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction  # noqa: F401
 from liger_kernel.ops.fused_linear_jsd import fused_linear_jsd_backward  # noqa: F401
 from liger_kernel.ops.fused_linear_jsd import fused_linear_jsd_forward  # noqa: F401
+from liger_kernel.ops.fused_linear_kl_div import LigerFusedLinearKLDivFunction  # noqa: F401
+from liger_kernel.ops.fused_linear_kl_div import fused_linear_kl_div_backward  # noqa: F401
+from liger_kernel.ops.fused_linear_kl_div import fused_linear_kl_div_forward  # noqa: F401
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction  # noqa: F401
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import (
+    LigerFusedLinearScaledCrossEntropyTPFunction,  # noqa: F401
+)
 from liger_kernel.ops.fused_moe import LigerFusedMoEFunction  # noqa: F401
 from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction  # noqa: F401
 from liger_kernel.ops.geglu import LigerGELUMulFunction  # noqa: F401
@@ -70,6 +79,7 @@ from liger_kernel.ops.llama4_rope import LigerLlama4RopeFunction  # noqa: F401
 from liger_kernel.ops.mhc import LigerMHCCoeffsFunction  # noqa: F401
 from liger_kernel.ops.mhc import LigerMHCPostResFunction  # noqa: F401
 from liger_kernel.ops.mhc import LigerMHCPreFunction  # noqa: F401
+from liger_kernel.ops.mlp import LigerMLPFunction  # noqa: F401
 from liger_kernel.ops.modulated_rms_norm import LigerModulatedRMSNormFunction  # noqa: F401
 from liger_kernel.ops.modulated_rms_norm import modulated_rms_norm_backward  # noqa: F401
 from liger_kernel.ops.modulated_rms_norm import modulated_rms_norm_forward  # noqa: F401
@@ -89,6 +99,7 @@ from liger_kernel.ops.rope import rope_backward  # noqa: F401
 from liger_kernel.ops.rope import rope_forward  # noqa: F401
 from liger_kernel.ops.softmax import LigerSoftmaxFunction  # noqa: F401
 from liger_kernel.ops.sparsemax import LigerSparsemaxFunction  # noqa: F401
+from liger_kernel.ops.swiglu import LigerFusedGateUpSiLUMulFunction  # noqa: F401
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction  # noqa: F401
 from liger_kernel.ops.swiglu import swiglu_backward  # noqa: F401
 from liger_kernel.ops.swiglu import swiglu_forward  # noqa: F401

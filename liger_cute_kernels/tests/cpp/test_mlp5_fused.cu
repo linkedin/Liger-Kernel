@@ -147,11 +147,12 @@ mlp5_fused_test_kernel(
 		int expert = expert_for_m_block[m];
 		int expert_k_offset = expert * num_k_tiles;
 		if (is_producer) {
-			liger::mlp5_fused_producer<Traits>(
+			liger::mlp5_fused_producer<Traits, Compute == 90>(
 				pipe, prod_state, smem.tile,
 				tma_load_du, tma_load_dv, tma_load_b, tma_load_c,
-				m, expert_k_offset,
-				num_tokens, hidden_dim, intermediate_dim, total_k_cols,
+				m, (Compute == 90) ? expert : expert_k_offset,
+				num_tokens, hidden_dim, intermediate_dim,
+				total_k_cols / intermediate_dim, total_k_cols,
 				num_n_tiles, num_k_tiles, split_idx, num_splits);
 		} else if (is_consumer) {
 			if constexpr (Compute == 100) {
@@ -340,19 +341,40 @@ static void run5_once(const Mlp5Shape& s, Inputs& in, int num_splits,
 		make_shape(s.num_tokens, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
 	auto tDV = make_tensor(make_gmem_ptr(in.dDV.ptr),
 		make_shape(s.num_tokens, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
-	// B/C: MN-major view (H, E·I) with H contiguous (stride 1) → operand B.
-	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
-		make_shape(s.hidden_dim, in.total_k_cols), make_stride(Int<1>{}, s.hidden_dim));
-	auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
-		make_shape(s.hidden_dim, in.total_k_cols), make_stride(Int<1>{}, s.hidden_dim));
 	// dX: row-major [padded_T, H].
 	auto tDX = make_tensor(make_gmem_ptr(dX),
 		make_shape(padded, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 
 	auto tma_du = make_tma_copy(SM90_TMA_LOAD{},  tDU, typename Traits::SmemLayoutZ_1{});
 	auto tma_dv = make_tma_copy(SM90_TMA_LOAD{},  tDV, typename Traits::SmemLayoutZ_1{});
-	auto tma_b  = make_tma_copy(SM90_TMA_LOAD{},  tB,  typename Traits::SmemLayoutW_1{});
-	auto tma_c  = make_tma_copy(SM90_TMA_LOAD{},  tC,  typename Traits::SmemLayoutW_1{});
+	auto tma_b = [&]() {
+		if constexpr (Compute == 90) {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(s.hidden_dim, s.intermediate_dim, s.num_experts),
+				make_stride(Int<1>{}, s.hidden_dim,
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(s.hidden_dim, in.total_k_cols),
+				make_stride(Int<1>{}, s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_c = [&]() {
+		if constexpr (Compute == 90) {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(s.hidden_dim, s.intermediate_dim, s.num_experts),
+				make_stride(Int<1>{}, s.hidden_dim,
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(s.hidden_dim, in.total_k_cols),
+				make_stride(Int<1>{}, s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		}
+	}();
 	auto tma_dx = make_tma_copy(SM90_TMA_STORE{}, tDX, typename Traits::SmemLayoutStore_1{});
 
 	size_t smem_size = sizeof(Mlp5FusedKernelSmem<Traits, Compute>);
@@ -490,17 +512,39 @@ static void run5_bench(const Mlp5Shape& s, const BenchCfg& cfg) {
 		make_shape(s.num_tokens, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
 	auto tDV = make_tensor(make_gmem_ptr(in.dDV.ptr),
 		make_shape(s.num_tokens, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
-	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
-		make_shape(s.hidden_dim, in.total_k_cols), make_stride(Int<1>{}, s.hidden_dim));
-	auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
-		make_shape(s.hidden_dim, in.total_k_cols), make_stride(Int<1>{}, s.hidden_dim));
 	auto tDX = make_tensor(make_gmem_ptr(dX),
 		make_shape(padded, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
 
 	auto tma_du = make_tma_copy(SM90_TMA_LOAD{},  tDU, typename Traits::SmemLayoutZ_1{});
 	auto tma_dv = make_tma_copy(SM90_TMA_LOAD{},  tDV, typename Traits::SmemLayoutZ_1{});
-	auto tma_b  = make_tma_copy(SM90_TMA_LOAD{},  tB,  typename Traits::SmemLayoutW_1{});
-	auto tma_c  = make_tma_copy(SM90_TMA_LOAD{},  tC,  typename Traits::SmemLayoutW_1{});
+	auto tma_b = [&]() {
+		if constexpr (Compute == 90) {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(s.hidden_dim, s.intermediate_dim, s.num_experts),
+				make_stride(Int<1>{}, s.hidden_dim,
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+				make_shape(s.hidden_dim, in.total_k_cols),
+				make_stride(Int<1>{}, s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+		}
+	}();
+	auto tma_c = [&]() {
+		if constexpr (Compute == 90) {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(s.hidden_dim, s.intermediate_dim, s.num_experts),
+				make_stride(Int<1>{}, s.hidden_dim,
+					s.intermediate_dim * s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		} else {
+			auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+				make_shape(s.hidden_dim, in.total_k_cols),
+				make_stride(Int<1>{}, s.hidden_dim));
+			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+		}
+	}();
 	auto tma_dx = make_tma_copy(SM90_TMA_STORE{}, tDX, typename Traits::SmemLayoutStore_1{});
 
 	size_t smem_size = sizeof(Mlp5FusedKernelSmem<Traits, Compute>);
