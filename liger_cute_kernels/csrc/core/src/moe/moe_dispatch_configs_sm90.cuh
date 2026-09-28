@@ -1,6 +1,6 @@
 #pragma once
 
-#include "moe_fwd_bwd_tune_configs.hpp"
+#include "moe_fwd_bwd_tune_configs_sm90.hpp"
 
 // SM90 / Hopper dispatch config set. The action macros receive the same row
 // shapes as the base tuning menus:
@@ -12,8 +12,12 @@
 // 13-param LIGER_MOE_BWD_DISPATCH_ENTRY_* macros and the moe_bwd_fwd_bf16_tuned<>
 // template.
 
+#if defined(LIGER_CUTE_SM90_NONRDC_TARGET_MIXTRAL)
+#define LIGER_MOE_FWD_EXTRA_CONFIGS_SM90(X, XG)
+#else
 #define LIGER_MOE_FWD_EXTRA_CONFIGS_SM90(X, XG) \
 	LIGER_MOE_FWD_TUNE_CONFIGS_SM90_ONLY(X)
+#endif
 
 #define LIGER_MOE_BWD_EXTRA_CONFIGS_SM90(XG)
 

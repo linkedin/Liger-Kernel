@@ -47,6 +47,8 @@ The public API mirrors ``liger_kernel.ops.swiglu``:
 ``swiglu_forward`` / ``swiglu_backward`` / ``LigerSiLUMulCuteDSLFunction``.
 """
 
+import functools
+
 import torch
 
 try:
@@ -54,13 +56,18 @@ try:
 except ImportError:
     pass
 
+import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
 import cutlass.cute.arch as carch
 import cutlass.cute.math as cute_math
 
 from cutlass.cute.runtime import from_dlpack
+from cutlass.cute.runtime import make_fake_stream
 
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import EPILOGUE_TILE_SIZE
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import K_ALIGNMENT
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import run_grouped_epilogue_gemm_stacked
 from liger_kernel.ops.cutedsl.ops.utils import make_fake_tensor
 from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
 from liger_kernel.ops.utils import ensure_contiguous
@@ -431,7 +438,7 @@ def _swiglu_bwd_vec_kernel(
 # ---------------------------------------------------------------------------
 def _make_fwd_vec(vec: int):
     @cute.jit
-    def fwd(mA, mB, mC, gate_mult: cutlass.Float32):
+    def fwd(mA, mB, mC, gate_mult: cutlass.Float32, stream: cuda.CUstream = None):
         copy_atom = cute.make_copy_atom(
             cute.nvgpu.CopyUniversalOp(), mA.element_type, num_bits_per_copy=vec * mA.element_type.width
         )
@@ -447,6 +454,7 @@ def _make_fwd_vec(vec: int):
         _swiglu_fwd_vec_kernel(gA, gB, gC, tiled_copy, gate_mult).launch(
             grid=[cute.size(gC, mode=[1]), 1, 1],
             block=[_NUM_THREADS, 1, 1],
+            stream=stream,
         )
 
     return fwd
@@ -454,7 +462,7 @@ def _make_fwd_vec(vec: int):
 
 def _make_bwd_vec(vec: int):
     @cute.jit
-    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32):
+    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32, stream: cuda.CUstream = None):
         copy_atom = cute.make_copy_atom(
             cute.nvgpu.CopyUniversalOp(), mA.element_type, num_bits_per_copy=vec * mA.element_type.width
         )
@@ -470,6 +478,7 @@ def _make_bwd_vec(vec: int):
         _swiglu_bwd_vec_kernel(gDC, gA, gB, tiled_copy, gate_mult).launch(
             grid=[cute.size(gA, mode=[1]), 1, 1],
             block=[_NUM_THREADS, 1, 1],
+            stream=stream,
         )
 
     return bwd
@@ -480,7 +489,7 @@ def _make_bwd_vec(vec: int):
 # ---------------------------------------------------------------------------
 def _make_fwd(vec: int, predicated: bool, packed_math: bool):
     @cute.jit
-    def fwd(mA, mB, mC, gate_mult: cutlass.Float32):
+    def fwd(mA, mB, mC, gate_mult: cutlass.Float32, stream: cuda.CUstream = None):
         thr_layout = cute.make_layout(_NUM_THREADS, stride=vec)
         val_layout = cute.make_layout(vec, stride=1)
         tiler, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
@@ -494,6 +503,7 @@ def _make_fwd(vec: int, predicated: bool, packed_math: bool):
         _swiglu_fwd_kernel(gA, gB, gC, cC, mC.shape, thr_layout, val_layout, gate_mult, predicated, packed_math).launch(
             grid=[cute.size(gC, mode=[1]), 1, 1],
             block=[cute.size(tv_layout, mode=[0]), 1, 1],
+            stream=stream,
         )
 
     return fwd
@@ -501,7 +511,7 @@ def _make_fwd(vec: int, predicated: bool, packed_math: bool):
 
 def _make_bwd(vec: int, predicated: bool, packed_math: bool):
     @cute.jit
-    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32):
+    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32, stream: cuda.CUstream = None):
         thr_layout = cute.make_layout(_NUM_THREADS, stride=vec)
         val_layout = cute.make_layout(vec, stride=1)
         tiler, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
@@ -517,6 +527,7 @@ def _make_bwd(vec: int, predicated: bool, packed_math: bool):
         ).launch(
             grid=[cute.size(gA, mode=[1]), 1, 1],
             block=[cute.size(tv_layout, mode=[0]), 1, 1],
+            stream=stream,
         )
 
     return bwd
@@ -577,14 +588,37 @@ def _dyn(t: torch.Tensor):
     return from_dlpack(t.detach()).mark_layout_dynamic()
 
 
+# Cache the ``cuda.CUstream`` wrapper keyed on torch's raw stream handle so we don't
+# rebuild it every launch. The kernels MUST run on PyTorch's *current* stream (not the
+# default/null stream) so the op is CUDA-graph capturable and preserves ordering under
+# multi-stream execution (pipeline parallelism, grad checkpointing). This is the
+# non-TVM-FFI (``_dyn``) counterpart to TVM-FFI's env-stream mechanism; mirrors
+# rms_norm.py / rope.py.
+_stream_cache: dict = {}
+
+
+def _cute_stream():
+    raw = torch.cuda.current_stream().cuda_stream
+    s = _stream_cache.get(raw)
+    if s is None:
+        s = cuda.CUstream(raw)
+        _stream_cache[raw] = s
+    return s
+
+
 class _DynCaller:
-    """Wraps a non-TVM-FFI compiled function so callers always pass raw tensors."""
+    """Wraps a non-TVM-FFI compiled function so callers always pass raw tensors.
+
+    The compiled function bakes a trailing ``stream`` parameter (the ``@cute.jit``
+    launcher's last arg); we source PyTorch's current stream here so the caller's
+    invocation signature stays identical to the TVM-FFI env-stream path.
+    """
 
     def __init__(self, compiled):
         self._compiled = compiled
 
     def __call__(self, a, b, c, gm):
-        return self._compiled(_dyn(a), _dyn(b), _dyn(c), gm)
+        return self._compiled(_dyn(a), _dyn(b), _dyn(c), gm, _cute_stream())
 
 
 def _get_compiled(kind: str, ref: torch.Tensor, vec: int, predicated: bool, packed_math: bool):
@@ -597,12 +631,17 @@ def _get_compiled(kind: str, ref: torch.Tensor, vec: int, predicated: bool, pack
     if _TVM_FFI_PRESENT:
         # TVM-FFI: 1-D sym_int fake tensor; PyTorch tensors passed directly — no
         # from_dlpack overhead. Divisibility=1 since the predicated path makes no
-        # alignment guarantee beyond element size.
+        # alignment guarantee beyond element size. ``use_tvm_ffi_env_stream=True``
+        # drops the stream from the FFI signature: the compiled fn runs on the
+        # caller's env stream (torch.cuda.current_stream()), so the launch is
+        # CUDA-graph capturable with no per-call stream marshalling.
         cute_dtype = torch2cute_dtype_map[ref.dtype]
         fake = make_fake_tensor(cute_dtype, (cute.sym_int(),), 1)
-        fn = cute.compile(maker, fake, fake, fake, gm, options="--enable-tvm-ffi")
+        fn = cute.compile(
+            maker, fake, fake, fake, gm, make_fake_stream(use_tvm_ffi_env_stream=True), options="--enable-tvm-ffi"
+        )
     else:
-        compiled = cute.compile(maker, _dyn(ref), _dyn(ref), _dyn(ref), gm)
+        compiled = cute.compile(maker, _dyn(ref), _dyn(ref), _dyn(ref), gm, _cute_stream())
         fn = _DynCaller(compiled)
     _COMPILE_CACHE[key] = fn
     return fn
@@ -629,11 +668,198 @@ def _get_compiled_vec(kind: str, dtype: torch.dtype, vec: int, device_index: int
         return make_fake_tensor(cute_dtype, (cute.sym_int(), inner), vec)
 
     if kind == "fwd":
-        fn = cute.compile(_make_fwd_vec(vec), fake(), fake(), fake(), gm, options="--enable-tvm-ffi")
+        fn = cute.compile(
+            _make_fwd_vec(vec),
+            fake(),
+            fake(),
+            fake(),
+            gm,
+            make_fake_stream(use_tvm_ffi_env_stream=True),
+            options="--enable-tvm-ffi",
+        )
     else:
-        fn = cute.compile(_make_bwd_vec(vec), fake(), fake(), fake(), gm, options="--enable-tvm-ffi")
+        fn = cute.compile(
+            _make_bwd_vec(vec),
+            fake(),
+            fake(),
+            fake(),
+            gm,
+            make_fake_stream(use_tvm_ffi_env_stream=True),
+            options="--enable-tvm-ffi",
+        )
     _VEC_COMPILE_CACHE[key] = fn
     return fn
+
+
+# ---------------------------------------------------------------------------
+# Fused linear SwiGLU
+# ---------------------------------------------------------------------------
+@cute.jit
+def _fused_swiglu_epilogue(gate, up, out):
+    _silu_mul_fwd_packed(gate, up, out, cutlass.Float32(1.0))
+
+
+def _validate_and_stack_gate_up(gate_weight, up_weight):
+    """Validate two ``[N, K]`` projections and concatenate into ``[2N, K]``.
+
+    This is the *separate weights* entry point. Because ``gate_weight`` and
+    ``up_weight`` are independent allocations, forming the single contiguous
+    buffer the SM100 kernel reads requires one copy (a strided view cannot span
+    two allocations). Callers on a hot path should pre-stack once and pass the
+    stacked tensor to :func:`fused_swiglu` to avoid this per-call copy.
+    """
+    if gate_weight.ndim != 2 or up_weight.ndim != 2:
+        raise ValueError("gate_weight and up_weight must both be 2D tensors.")
+    if gate_weight.shape != up_weight.shape:
+        raise ValueError(
+            f"gate_weight and up_weight must have identical shapes, got {gate_weight.shape} and {up_weight.shape}."
+        )
+    if gate_weight.dtype != up_weight.dtype:
+        raise TypeError(
+            f"gate_weight and up_weight must have the same dtype, got {gate_weight.dtype} and {up_weight.dtype}."
+        )
+    if gate_weight.device != up_weight.device:
+        raise ValueError(
+            f"gate_weight and up_weight must be on the same device, got {gate_weight.device} and {up_weight.device}."
+        )
+    return torch.cat((gate_weight, up_weight), dim=0)
+
+
+def pack_swiglu_weights(gate_weight, up_weight):
+    """Stack ``[N, K]`` gate/up weights into a plain ``[2N, K]`` tensor.
+
+    The fused SM100 kernel now consumes a *simply stacked* weight (gate rows
+    followed by up rows) directly, reinterpreting the strides on the fly, so no
+    bespoke interleave is materialized. This helper is kept for convenience and
+    API compatibility: it is a single ``torch.cat`` (one contiguous copy) for
+    callers that hold two separate tensors. Callers that already have a fused
+    ``gate_up_proj`` weight can skip this and pass it straight to
+    :func:`fused_swiglu`; callers with two separate tensors can also pass them
+    directly as ``fused_swiglu(a, gate, up)``.
+
+    Returns ``(stacked_weight, output_features)`` where ``output_features`` is
+    the per-projection output dimension ``N``.
+    """
+    return _validate_and_stack_gate_up(gate_weight, up_weight), gate_weight.shape[0]
+
+
+@functools.lru_cache(maxsize=32)
+def _validate_fused_swiglu_signature(a_shape, weight_shape, output_features):
+    if len(a_shape) != 2 or len(weight_shape) != 2:
+        raise ValueError("a and gate_up_weight must both be 2D tensors.")
+    if a_shape[1] != weight_shape[1]:
+        raise ValueError(f"Input and weight K dimensions must match, got {a_shape[1]} and {weight_shape[1]}.")
+    if weight_shape[0] % 2 != 0:
+        raise ValueError(f"gate_up_weight must have an even number of rows (2N), got {weight_shape[0]}.")
+
+    features = weight_shape[0] // 2
+    if output_features is None:
+        output_features = features
+    if not 0 < output_features <= features:
+        raise ValueError(f"output_features must be in [1, {features}], got {output_features}.")
+    return output_features
+
+
+def _native_fused_swiglu_supported(a):
+    if a.device.type != "cuda" or a.dtype not in (torch.float16, torch.bfloat16) or a.shape[1] % K_ALIGNMENT != 0:
+        return False
+    device_id = a.device.index if a.device.index is not None else torch.cuda.current_device()
+    return infer_device_arch(device_id) == "blackwell" and torch.cuda.get_device_capability(a.device) == (10, 0)
+
+
+def _pad_stacked_weight(gate_up_weight, features):
+    """Pad each projection up to a multiple of ``EPILOGUE_TILE_SIZE``.
+
+    Returns ``(stacked, padded_features)``. When ``features`` is already a
+    multiple of the tile size (the common case, e.g. LLaMA/Qwen MLPs) the input
+    is returned unchanged -- no copy, no memory spike.
+    """
+    padded = ((features + EPILOGUE_TILE_SIZE - 1) // EPILOGUE_TILE_SIZE) * EPILOGUE_TILE_SIZE
+    if padded == features:
+        return gate_up_weight, padded
+    stacked = gate_up_weight.new_zeros(2 * padded, gate_up_weight.shape[1])
+    stacked[:features].copy_(gate_up_weight[:features])
+    stacked[padded : padded + features].copy_(gate_up_weight[features:])
+    return stacked, padded
+
+
+def _fused_swiglu_sm100(a, stacked_gate_up_weight, output_features):
+    padded_features = stacked_gate_up_weight.shape[0] // 2
+    out = torch.empty(
+        a.shape[0],
+        padded_features,
+        device=a.device,
+        dtype=a.dtype,
+    )
+    run_grouped_epilogue_gemm_stacked(
+        a.contiguous(),
+        stacked_gate_up_weight.contiguous(),
+        out,
+        _fused_swiglu_epilogue,
+    )
+    return out[:, :output_features]
+
+
+def fused_swiglu(a, gate_weight, up_weight=None, *, output_features=None):
+    """Fused gate/up projections + SwiGLU with an SM100 fast path.
+
+    Two calling conventions are supported:
+
+    * **Stacked (zero-copy)** -- ``fused_swiglu(a, gate_up_weight)`` where
+      ``gate_up_weight`` is a plainly stacked ``[2N, K]`` tensor: the gate rows
+      ``[0:N]`` followed by the up rows ``[N:2N]`` (e.g. ``torch.cat([gate,
+      up])`` or a model's fused ``gate_up_proj.weight``). The SM100 kernel
+      reinterprets the stacked strides on the fly and reads it directly with
+      **no extra weight copy**.
+    * **Separate** -- ``fused_swiglu(a, gate_weight, up_weight)`` where each is
+      ``[N, K]``. They are concatenated into one ``[2N, K]`` buffer before the
+      native kernel runs (**one copy** -- a strided view cannot span two
+      separate allocations; the fallback path uses them directly with no copy).
+      Prefer the stacked form on hot paths to avoid this per-call concat.
+
+    ``output_features`` (keyword-only) optionally trims trailing padded columns
+    of the per-projection output; it is inferred as ``N`` when omitted. Returns
+    ``silu(x @ gate.T) * (x @ up.T)`` of shape ``[M, N]``.
+    """
+    if a.device.type != "cuda" or gate_weight.device.type != "cuda":
+        raise ValueError("a and weights must be CUDA tensors.")
+    if up_weight is not None:
+        if not isinstance(up_weight, torch.Tensor):
+            raise TypeError(
+                "up_weight must be a tensor of shape [N, K]; 'output_features' is keyword-only "
+                "(call fused_swiglu(a, gate_up_weight, output_features=...))."
+            )
+        if up_weight.device.type != "cuda":
+            raise ValueError("a and weights must be CUDA tensors.")
+        # Separate projections: stack into one buffer (option (a) -- one copy).
+        gate_up_weight = _validate_and_stack_gate_up(gate_weight, up_weight)
+    else:
+        # Already stacked [2N, K] -- consumed as a zero-copy strided view.
+        gate_up_weight = gate_weight
+    if a.device != gate_up_weight.device:
+        raise ValueError(
+            f"a and gate_up_weight must be on the same device, got {a.device} and {gate_up_weight.device}."
+        )
+    if a.dtype != gate_up_weight.dtype:
+        raise TypeError(f"a and gate_up_weight must have the same dtype, got {a.dtype} and {gate_up_weight.dtype}.")
+    _validate_supported_dtype(a.dtype)
+    output_features = _validate_fused_swiglu_signature(
+        tuple(a.shape),
+        tuple(gate_up_weight.shape),
+        output_features,
+    )
+
+    features = gate_up_weight.shape[0] // 2
+    stacked, padded_features = _pad_stacked_weight(gate_up_weight, features)
+
+    if _native_fused_swiglu_supported(a):
+        return _fused_swiglu_sm100(a, stacked, output_features)
+
+    gate_weight = stacked[:padded_features]
+    up_weight = stacked[padded_features:]
+    gate = torch.nn.functional.linear(a, gate_weight)
+    up = torch.nn.functional.linear(a, up_weight)
+    return swiglu_forward(gate, up)[2][:, :output_features]
 
 
 # ---------------------------------------------------------------------------

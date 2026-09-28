@@ -7,7 +7,7 @@
 // never reach the boundary. Frontends must use the flat liger_cute_* control
 // entry points or the TVM FFI facade rather than including this header.
 //
-// Ported from LigerCommKernels' utils/buffer_pool.cuh; the torch-free change is
+// Adapted from LigerCuteKernels' buffer-pool utilities; the torch-free change is
 // TORCH_CHECK/abort -> LIGER_CHECK (throws liger_cute::Error, caught at the
 // boundary).
 #pragma once

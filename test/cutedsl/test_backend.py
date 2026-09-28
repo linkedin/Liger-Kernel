@@ -2,7 +2,7 @@
 
 Run with the backend selected, e.g.::
 
-    LIGER_KERNEL_IMPL=cutedsl pytest test/transformers/test_cutedsl_backend.py -v
+    LIGER_KERNEL_IMPL=cutedsl pytest test/cutedsl/test_backend.py -v
 
 The suite is skipped unless CUDA is present *and* the env var is set, so it never
 runs (or fails) in an environment where the CuTe DSL backend isn't active.

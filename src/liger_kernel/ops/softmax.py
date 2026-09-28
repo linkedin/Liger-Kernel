@@ -17,7 +17,7 @@ def _softmax_single_block_forward_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
-    row_id = tl.program_id(0)
+    row_id = tl.program_id(0).to(tl.int64)
     offs = tl.arange(0, BLOCK_SIZE)
     mask = offs < n_cols
 
@@ -38,7 +38,7 @@ def _softmax_multi_block_forward_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
-    row_id = tl.program_id(0)
+    row_id = tl.program_id(0).to(tl.int64)
     offs = tl.arange(0, BLOCK_SIZE)
 
     m = tl.float32(-float("inf"))
@@ -71,7 +71,7 @@ def _softmax_single_block_backward_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
-    row_id = tl.program_id(0)
+    row_id = tl.program_id(0).to(tl.int64)
     offs = tl.arange(0, BLOCK_SIZE)
     mask = offs < n_cols
 
@@ -93,7 +93,7 @@ def _softmax_multi_block_backward_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
-    row_id = tl.program_id(0)
+    row_id = tl.program_id(0).to(tl.int64)
     offs = tl.arange(0, BLOCK_SIZE)
     acc = tl.float32(0.0)
 
