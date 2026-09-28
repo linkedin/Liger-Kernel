@@ -41,7 +41,7 @@ def _attn_res_fwd_kernel(
     n_blocks,  # N
     n_tokens,  # B*T
     D,  # hidden dim
-    eps,
+    eps: tl.constexpr,
     BLOCK_D: tl.constexpr,
     MAX_BLOCKS: tl.constexpr,
 ):

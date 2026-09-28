@@ -14,6 +14,7 @@ import functools
 import importlib
 import operator
 
+from contextlib import contextmanager
 from typing import Callable
 
 import torch
@@ -27,6 +28,17 @@ from liger_kernel.utils import infer_device
 
 def is_hip() -> bool:
     return torch.version.hip is not None
+
+
+@contextmanager
+def device_context(device):
+    device = torch.device(device)
+    backend = getattr(torch, device.type, None)
+    if backend is not None and hasattr(backend, "device"):
+        with backend.device(device):
+            yield
+    else:
+        yield
 
 
 def ensure_contiguous(fn):
@@ -129,6 +141,7 @@ def element_mul_kernel(
         tl.store(X_ptr + X_offsets, X_block * grad_output, mask=X_offsets < n_cols)
 
 
+@functools.cache
 def get_npu_core_count(default: int = 20) -> int:
     """Return NPU vector core count.
     Fallback to `default` if Triton runtime or NPU device is unavailable.

@@ -77,9 +77,9 @@ def _layer_norm_fwd_kernel_ct(
     var = total_sum_sq / n_cols - mean * mean
     rstd = ct.rsqrt(var + eps)  # scalar
 
-    # Cache mean and rstd for backward
-    ct.scatter(mean_out, row_idx, ct.astype(mean, mean_out.dtype))
-    ct.scatter(rstd_out, row_idx, ct.astype(rstd, rstd_out.dtype))
+    # Preserve the fp32 statistics used by forward for the backward pass.
+    ct.scatter(mean_out, row_idx, mean)
+    ct.scatter(rstd_out, row_idx, rstd)
 
     # ---- Pass 2: Y = (X - mean) * rstd * W + B ----
     for ci in range(n_chunks):
@@ -216,8 +216,8 @@ def _layer_norm_forward_ct(X, W, B, eps):
     aligned = (n_cols & (n_cols - 1)) == 0  # True when n_cols is a power of 2
 
     Y = torch.empty_like(X2d)
-    Mean = torch.empty(n_rows, dtype=X.dtype, device=X.device)
-    RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
+    Mean = torch.empty(n_rows, dtype=torch.float32, device=X.device)
+    RSTD = torch.empty(n_rows, dtype=torch.float32, device=X.device)
 
     grid = (n_rows, 1, 1)
     ct.launch(

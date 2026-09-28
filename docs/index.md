@@ -186,7 +186,7 @@ url={https://openreview.net/forum?id=36SjAIT42G}
 ```
 
 ### Star History
-[![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.com/#linkedin/Liger-Kernel&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.dera.page/#linkedin/Liger-Kernel&Date)
 
 <p align="right" style="font-size: 14px; color: #555; margin-top: 20px;">
     <a href="#readme-top" style="text-decoration: none; color: #007bff; font-weight: bold;">
