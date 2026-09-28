@@ -123,6 +123,12 @@ def liger_cross_entropy_kernel(
     if RETURN_PREDICTED_TOKENS:
         predicted_tokens_ptr += program_id * predicted_tokens_stride
 
+    if HAS_SOFTCAPPING:
+        softcap = softcap.to(tl.float32)
+    if HAS_WEIGHT:
+        sum_non_ignore_weight = sum_non_ignore_weight.to(tl.float32)
+        weight_sum = weight_sum.to(tl.float32)
+
     if HAS_WEIGHT:
         weight_y = tl.load(weight_ptr + y).cast(tl.float32)
 
@@ -152,6 +158,7 @@ def liger_cross_entropy_kernel(
         ).cast(tl.float32)
         if HAS_SOFTCAPPING:
             X_block = softcap * tanh(X_block / softcap)
+            X_block = tl.where(X_offsets < n_cols, X_block, float("-inf"))
         block_max = tl.max(X_block)
 
         # Track argmax for accuracy / predicted tokens computation

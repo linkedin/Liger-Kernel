@@ -74,6 +74,15 @@ def test_configure_symmetric_valid(tvm_ffi_module):
     assert tvm_ffi_module.moe_configure_symmetric(**_CFG) is None
 
 
+@pytest.mark.skipif(not _HAS_CUDA, reason="configure uploads the comm schedule to device constant memory")
+def test_configure_symmetric_rejects_changed_topology(tvm_ffi_module):
+    assert tvm_ffi_module.moe_configure_symmetric(**_CFG) is None
+    changed = {**_CFG, "num_hosts": 2, "gpus_per_host": 1}
+
+    with pytest.raises(RuntimeError, match="topology changed after initialization"):
+        tvm_ffi_module.moe_configure_symmetric(**changed)
+
+
 def test_configure_symmetric_topology_mismatch_raises(tvm_ffi_module):
     # num_hosts * gpus_per_host (1 * 2) != num_pes (4): LIGER_CHECK fails in the
     # core and the message crosses the boundary into the Python exception.
@@ -95,6 +104,50 @@ def test_fwd_rejects_wrong_dtype(tvm_ffi_module):
     with pytest.raises(RuntimeError, match="float32 vs\\. bfloat16.*X"):
         tvm_ffi_module.moe_fused_fwd_bf16(
             X, expert_indices, expert_weights, B, B, B, num_experts=E, top_k=K, team_handle=0
+        )
+
+
+@pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA tensors")
+def test_fwd_rejects_mismatched_gate_hidden_dim(tvm_ffi_module):
+    tvm_ffi_module.moe_configure_symmetric(**_CFG)
+    T, D, E, K = 16, _CFG["hidden_dim"], _CFG["max_num_experts"], _CFG["max_top_k"]
+    experts_per_pe = E // _CFG["num_pes"]
+    intermediate_dim = 16
+    X = torch.zeros(T, D, dtype=torch.bfloat16, device="cuda")
+    expert_indices = torch.zeros(T, K, dtype=torch.int32, device="cuda")
+    expert_weights = torch.zeros(T, K, dtype=torch.bfloat16, device="cuda")
+    bad_B = torch.zeros(
+        experts_per_pe,
+        intermediate_dim,
+        D // 2,
+        dtype=torch.bfloat16,
+        device="cuda",
+    )
+    C = torch.zeros(
+        experts_per_pe,
+        intermediate_dim,
+        D,
+        dtype=torch.bfloat16,
+        device="cuda",
+    )
+    A = torch.zeros(
+        experts_per_pe,
+        D,
+        intermediate_dim,
+        dtype=torch.bfloat16,
+        device="cuda",
+    )
+    with pytest.raises(RuntimeError, match="all_B hidden dimension must match X"):
+        tvm_ffi_module.moe_fused_fwd_bf16(
+            X,
+            expert_indices,
+            expert_weights,
+            bad_B,
+            C,
+            A,
+            num_experts=E,
+            top_k=K,
+            team_handle=0,
         )
 
 

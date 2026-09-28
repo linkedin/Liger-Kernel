@@ -74,24 +74,21 @@ def _jsd_kernel(
                     loss = X_prob * (X - Y)
                     dX = loss + X_prob
                 else:
-                    max_val = tl.maximum(tl.max(X, axis=0), tl.max(Y, axis=0))
+                    max_val = tl.maximum(X, Y)
                     X_shifted = X - max_val
                     Y_shifted = Y - max_val
 
-                    # Pre-compute exp(max_val) since it's used twice
-                    exp_max = tl.exp(max_val)
+                    # Compute log(M) before rescaling to probability space. Computing M
+                    # directly can underflow to zero for low-probability vocabulary blocks.
+                    M_shifted = beta * tl.exp(Y_shifted) + (1 - beta) * tl.exp(X_shifted)
+                    log_M = max_val + tl.log(M_shifted)
 
-                    # Compute exp terms with compensation
-                    Q = tl.exp(X_shifted) * exp_max  # = exp(X)
-                    P = tl.exp(Y_shifted) * exp_max  # = exp(Y)
-
-                    # Pre-compute common terms
+                    Q = tl.exp(X)
+                    P = tl.exp(Y)
                     beta_P = beta * P
                     one_minus_beta_Q = (1 - beta) * Q
-                    M = beta_P + one_minus_beta_Q
-                    log_M = tl.log(M)
 
-                    loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
+                    loss = beta_P * (Y - log_M) + one_minus_beta_Q * (X - log_M)
                     dX = one_minus_beta_Q * (X - log_M)
 
                 # Pre-compute scaling factor
@@ -131,6 +128,9 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
         n_non_ignore = (shift_labels != ignore_index).sum().item()
     else:
         n_non_ignore = BT
+
+    if n_non_ignore == 0:
+        return torch.tensor(0.0, device=_input.device, dtype=_input.dtype), torch.zeros_like(_input)
 
     # Use NPU core count for grid size
     num_cores = get_npu_core_count()
@@ -191,6 +191,8 @@ class LigerJSDFunction(torch.autograd.Function):
         shift_labels: Optional[torch.Tensor] = None,
         beta: float = 0.5,
         ignore_index: int = -100,
+        jsd_impl=None,
+        jsd_mode=None,
     ) -> torch.Tensor:
         """
         Args:
@@ -199,10 +201,12 @@ class LigerJSDFunction(torch.autograd.Function):
             shift_labels (Optional[torch.LongTensor]): indicator of next predicted vocab with shape (BT) where each value is in [0, V-1].
             beta (float): coefficient beta of generalized JSD in the interval [0, 1]. It implements forward/reverse KL when beta equals 0 and 1 respectively. Default: `0.5`
             ignore_index (int): the index to ignore. Default: -100
+            jsd_impl / jsd_mode: accepted for NVIDIA JSD signature parity; unused on Ascend.
 
         Returns:
             loss (torch.Tensor): generalized JSD
         """
+        _ = (jsd_impl, jsd_mode)
         has_label = False
         if shift_labels is not None:
             assert shift_labels.shape == (_input.shape[0],), (
@@ -222,6 +226,8 @@ class LigerJSDFunction(torch.autograd.Function):
         dX = jsd_backward(dX, grad_output)
         return (
             dX,
+            None,
+            None,
             None,
             None,
             None,

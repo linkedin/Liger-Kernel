@@ -11,6 +11,8 @@ from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerMoeCausalLMOutputWithPast
 
+_GPT_OSS_FLCE_CHUNK_MEM_CONST = 8
+
 
 def lce_forward(
     self,
@@ -138,6 +140,7 @@ def lce_forward(
     output_hidden_states = (
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
+    flce_chunk_mem_const = kwargs.pop("chunk_mem_const", _GPT_OSS_FLCE_CHUNK_MEM_CONST)
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs: MoeModelOutputWithPast = self.model(
@@ -175,6 +178,7 @@ def lce_forward(
             labels=labels,
             shift_labels=shift_labels,
             hidden_size=self.config.hidden_size,
+            chunk_mem_const=flce_chunk_mem_const,
             **kwargs,
         )
         loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)

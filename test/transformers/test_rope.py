@@ -30,6 +30,8 @@ SLEEP_SECONDS = 0.1
         # so we don't test it here
         (3, 423, 73, 213, 92),
         (3, 423, 73, 155, 92),
+        # long sequence (perf-relevant; also exercises the int64 program-id path)
+        (1, 8192, 32, 8, 128),
     ],
 )
 @pytest.mark.parametrize(
@@ -42,6 +44,7 @@ SLEEP_SECONDS = 0.1
             1e-5,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
+        (torch.float16, 1e-2, 1e-5),
     ],
 )
 @pytest.mark.parametrize(
@@ -115,6 +118,7 @@ def test_correctness(
     [
         (torch.float32, 1e-5, 1e-5),
         (torch.bfloat16, 1e-1, 1e-5),
+        (torch.float16, 1e-2, 1e-5),
     ],
 )
 @pytest.mark.parametrize(
@@ -181,3 +185,71 @@ def test_functional_correctness(
 
     assert torch.allclose(q1_grad, q2_grad, atol=atol, rtol=rtol)
     assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "seq_len, num_heads, head_dim",
+    [
+        (128, 32, 64),
+        (256, 16, 128),
+        (423, 73, 92),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        (torch.float16, 1e-2, 1e-5),
+    ],
+)
+def test_vision_2d_cos_sin(seq_len, num_heads, head_dim, dtype, atol, rtol):
+    """Vision RoPE feeds a 2-D ``(seq_len, head_dim)`` cos/sin table (no batch dim).
+
+    ``liger_rotary_pos_emb_vision`` transposes q/k to 4-D but forwards cos/sin
+    *unchanged* as rank-2 tensors, so the kernel must accept a rank-2 table. This
+    guards the Triton kernel's 2-D handling (it survives because the per-batch cos
+    offset multiplies by ``batch_idx == 0``). Numerics are checked against
+    HuggingFace, which is fed the equivalent 3-D table.
+    """
+    rotary_emb = transformers_version_dispatch(
+        "4.48.0",
+        LlamaRotaryEmbedding,
+        LlamaRotaryEmbedding,
+        before_kwargs={"dim": head_dim, "device": device},
+        after_kwargs={"config": LlamaConfig(num_kv_heads=num_heads, head_dim=head_dim), "device": device},
+    )
+
+    _q = torch.randn((seq_len, num_heads, head_dim), device=device).to(dtype)
+    _k = torch.randn((seq_len, num_heads, head_dim), device=device).to(dtype)
+
+    def to_4d(x):
+        return x.unsqueeze(0).transpose(1, 2).contiguous()
+
+    q_hf = to_4d(_q).clone().requires_grad_(True)
+    k_hf = to_4d(_k).clone().requires_grad_(True)
+    q_tt = to_4d(_q).clone().requires_grad_(True)
+    k_tt = to_4d(_k).clone().requires_grad_(True)
+
+    pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
+    cos_3d, sin_3d = rotary_emb(k_hf, pos_ids)  # (1, seq_len, head_dim)
+    cos_2d, sin_2d = cos_3d[0], sin_3d[0]  # (seq_len, head_dim) -- the vision table
+
+    hf_q, hf_k = apply_rotary_pos_emb(q_hf, k_hf, cos_3d, sin_3d)
+    tt_q, tt_k = liger_rotary_pos_emb(q_tt, k_tt, cos_2d, sin_2d)
+
+    assert torch.allclose(hf_q, tt_q, atol=atol, rtol=rtol)
+    assert torch.allclose(hf_k, tt_k, atol=atol, rtol=rtol)
+
+    dq = torch.randn_like(hf_q)
+    dk = torch.randn_like(hf_k)
+    q_hf_grad, k_hf_grad = torch.autograd.grad((hf_q, hf_k), (q_hf, k_hf), (dq, dk), allow_unused=True)
+    q_tt_grad, k_tt_grad = torch.autograd.grad((tt_q, tt_k), (q_tt, k_tt), (dq.clone(), dk.clone()), allow_unused=True)
+
+    assert torch.allclose(q_hf_grad, q_tt_grad, atol=atol, rtol=rtol)
+    assert torch.allclose(k_hf_grad, k_tt_grad, atol=atol, rtol=rtol)
