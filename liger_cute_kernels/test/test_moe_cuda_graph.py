@@ -439,12 +439,18 @@ def _strided_fwd_worker(rank: int, world_size: int, init_file: str):
 # ── forward + backward: two graphs ────────────────────────────────────────────
 
 
-def _fwd_bwd_graph_worker(rank: int, world_size: int, init_file: str):
+def _fwd_bwd_graph_worker(rank: int, world_size: int, init_file: str, sparse_routing: bool = False):
     _init(rank, world_size, init_file)
     team = nvshmem.team_world()
     try:
         _configure(world_size)
         X, gate_W, all_B, all_C, all_A, ei, ew = _make_inputs(rank, world_size)
+        if sparse_routing:
+            # Leave all but the first expert on each PE empty to exercise skipped
+            # Phase-2 cells without making an entire PE inactive.
+            peers = (torch.arange(_T, device="cuda").unsqueeze(1) + torch.arange(_K, device="cuda")) % world_size
+            ei = (peers * (_E // world_size)).to(torch.int32).contiguous()
+            ew = torch.full_like(ew, 1.0 / _K)
 
         def fwd():
             return tvm_ffi.moe_fused_fwd_bf16(
@@ -1135,13 +1141,18 @@ def test_moe_fwd_packed_w13_strided_views():
 
 
 @pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
-def test_moe_fwd_bwd_cuda_graph():
+@pytest.mark.parametrize("tma_get", ("1", "0"))
+@pytest.mark.parametrize("sparse_routing", (False, True))
+def test_moe_fwd_bwd_cuda_graph(monkeypatch, tma_get, sparse_routing):
     """Fused MoE forward and backward each capture into a CUDA graph and replay.
 
     The backward runs under capture reading the forward's symmetric intermediates;
     grads from the replayed graphs must match the eager reference.
+    Exercise both local TMA and the NVSHMEM fallback; the SM90 split build selects
+    its local-only and IB-capable specializations respectively on a local team.
     """
-    _run(_world_size(), _fwd_bwd_graph_worker)
+    monkeypatch.setenv("LIGER_GET_TMA", tma_get)
+    _run(_world_size(), _fwd_bwd_graph_worker, sparse_routing)
 
 
 @pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")

@@ -194,6 +194,7 @@ class _LigerRMSNormCuTeDSLBackward(ReductionBase):
         mdX: cute.Tensor,  # dX [M, N]
         mdW: Optional[cute.Tensor],  # dW partial [sm_count, N] fp32
         sm_count: Int32,
+        stream: cuda.CUstream,
         mdS: Optional[cute.Tensor] = None,  # Residual grad dS_out [M, N] — FARN epilogue fold
     ):
         assert mX.element_type == self.dtype
@@ -224,6 +225,7 @@ class _LigerRMSNormCuTeDSLBackward(ReductionBase):
             grid=[num_blocks, self.cluster_n, 1],
             block=[num_threads, 1, 1],
             cluster=[1, self.cluster_n, 1] if self.cluster_n > 1 else None,
+            stream=stream,
         )
 
     @cute.kernel
@@ -555,6 +557,7 @@ def _get_bwd_kernel(
         dx_cute,
         dw_cute,
         Int32(0),
+        cute.runtime.make_fake_stream(use_tvm_ffi_env_stream=True),
         ds_cute,
         options="--enable-tvm-ffi",
     )
@@ -718,9 +721,8 @@ def _rms_norm_cutedsl_backward(
         has_ds=ds_flat is not None,
     )
 
-    # CuTe DSL compiled kernels read torch.cuda.current_stream() at launch;
-    # the kernel ABI does NOT take a stream positional. Mirrors the
-    # LayerNorm sibling's launch call.
+    # The environment-stream argument configured in _get_bwd_kernel is supplied
+    # by TVM FFI from the current PyTorch stream, so callers omit it here.
     compiled(
         x_flat,
         w_eff,

@@ -74,6 +74,15 @@ def test_configure_symmetric_valid(tvm_ffi_module):
     assert tvm_ffi_module.moe_configure_symmetric(**_CFG) is None
 
 
+@pytest.mark.skipif(not _HAS_CUDA, reason="configure uploads the comm schedule to device constant memory")
+def test_configure_symmetric_rejects_changed_topology(tvm_ffi_module):
+    assert tvm_ffi_module.moe_configure_symmetric(**_CFG) is None
+    changed = {**_CFG, "num_hosts": 2, "gpus_per_host": 1}
+
+    with pytest.raises(RuntimeError, match="topology changed after initialization"):
+        tvm_ffi_module.moe_configure_symmetric(**changed)
+
+
 def test_configure_symmetric_topology_mismatch_raises(tvm_ffi_module):
     # num_hosts * gpus_per_host (1 * 2) != num_pes (4): LIGER_CHECK fails in the
     # core and the message crosses the boundary into the Python exception.

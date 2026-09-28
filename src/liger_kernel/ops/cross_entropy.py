@@ -158,6 +158,7 @@ def liger_cross_entropy_kernel(
         ).cast(tl.float32)
         if HAS_SOFTCAPPING:
             X_block = softcap * tanh(X_block / softcap)
+            X_block = tl.where(X_offsets < n_cols, X_block, float("-inf"))
         block_max = tl.max(X_block)
 
         # Track argmax for accuracy / predicted tokens computation

@@ -246,6 +246,10 @@ struct Mlp3FusedSmem {
 	alignas(128) Element smem_DYT[smem_DYT_size];
 	alignas(128) Element smem_Z[smem_Z_size];
 	alignas(128) Element store_buf[2 * smem_store_size];
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	int total_cells;
+	int consumer_cell_idx[2];
+#endif
 	alignas(16) uint32_t tmem_base;
 	alignas(16) typename Traits::AccumulatorPipeline::SharedStorage acc_pipe;
 
@@ -403,25 +407,19 @@ static __device__ __forceinline__ void run(
 		int k_slice   = cell_idx % k_split;
 		int cell_om   = cell_idx / k_split;
 		int chunk_idx = cell_om / outer_split;
-		int lane      = cell_om - chunk_idx * outer_split;
+		cell_om -= chunk_idx * outer_split;
 
-		int e, m_chunk, n_chunk, walk_begin, walk_end;
+		int e, m_chunk, n_chunk;
 		if constexpr (Traits::kMSplit) {
 			// M-split: hold Z(n) shared. chunk = (e, n_tile), walks m_tile.
 			e            = chunk_idx / num_n_tiles;
 			n_chunk      = chunk_idx - e * num_n_tiles;
 			m_chunk      = 0;
-			int m_per    = num_m_tiles / outer_split;
-			walk_begin   = lane * m_per;
-			walk_end     = walk_begin + m_per;
 		} else {
 			// N-split: hold dY^T(m) shared. chunk = (e, m_tile), walks n_tile.
 			e            = chunk_idx / num_m_tiles;
 			m_chunk      = chunk_idx - e * num_m_tiles;
 			n_chunk      = 0;
-			int n_per    = num_n_tiles / outer_split;
-			walk_begin   = lane * n_per;
-			walk_end     = walk_begin + n_per;
 		}
 
 		// Intersect this expert's global K range with the current
@@ -442,7 +440,9 @@ static __device__ __forceinline__ void run(
 			kb_hi = s_hi;
 		}
 
-		for (int w = walk_begin; w < walk_end; ++w) {
+		for (int w = cell_om;
+		     w < (Traits::kMSplit ? num_m_tiles : num_n_tiles);
+		     w += outer_split) {
 			int m_tile = Traits::kMSplit ? w       : m_chunk;
 			int n_tile = Traits::kMSplit ? n_chunk : w;
 			auto gDYT = local_tile(mDYT,
@@ -527,6 +527,7 @@ struct Mlp3ConsumerImpl<90> {
 template <typename Traits,
           bool Expert3D = false,
           int Compute = 90,
+          int StaticWarpGroup = -1,
           typename Pipeline, typename SmemType,
           typename TmaReduceAddDA>
 static __device__ __forceinline__ void run(
@@ -553,10 +554,10 @@ static __device__ __forceinline__ void run(
 		using Element = typename Traits::Element;
 	typename Traits::TiledMma tiled_mma;
 
-	const int my_wg = (threadIdx.x / Traits::WarpGroupSize) - 1;     // 0 or 1
-	const int my_barrier_id = 1 + my_wg;                              // 1 or 2
+	const int my_wg = StaticWarpGroup >= 0
+		? StaticWarpGroup
+		: (threadIdx.x / Traits::WarpGroupSize) - 1;
 	const int tid_in_mma = threadIdx.x - Traits::WarpGroupSize;       // 0..255
-	const int tid_in_wg  = tid_in_mma % Traits::WarpGroupSize;        // 0..127
 	auto thr_mma = tiled_mma.get_slice(tid_in_mma);
 
 	auto sDYT = make_tensor(make_smem_ptr(smem.DYT_data()), typename Traits::SmemLayoutDYT{});
@@ -577,8 +578,6 @@ static __device__ __forceinline__ void run(
 	auto sStore = make_tensor(make_smem_ptr(my_store_ptr),
 		typename Traits::SmemLayoutStoreSlot{});
 
-	const bool is_my_wg_leader = (tid_in_wg == 0);
-
 	auto mdA = [&]() {
 		if constexpr (Expert3D) {
 			return tma_reduce_da.get_tma_tensor(make_shape(
@@ -593,81 +592,89 @@ static __device__ __forceinline__ void run(
 	}();
 	auto cta_tma_da = tma_reduce_da.get_slice(Int<0>{});
 
-	int total_chunks = num_experts * (Traits::kMSplit ? num_n_tiles : num_m_tiles);
-	int total_cells  = total_chunks * outer_split * k_split;
+#if !defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	int total_chunks =
+		num_experts * (Traits::kMSplit ? num_n_tiles : num_m_tiles);
+	int total_cells = total_chunks * outer_split * k_split;
+#endif
 
 	constexpr int K_PIPE_MMAS = 1;
 
 	// Carries across walk iters AND across cells for cross-tile K-loop /
 	// store overlap. Drained once at the end.
+#if !defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
 	bool store_in_flight = false;
+#endif
 
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	if (tid_in_mma % Traits::WarpGroupSize == 0)
+		smem.consumer_cell_idx[my_wg] = cell_start;
+	cutlass::arch::NamedBarrier::sync(
+		Traits::WarpGroupSize, 1 + my_wg);
+	auto advance_cell = [&]() {
+		cutlass::arch::NamedBarrier::sync(
+			Traits::WarpGroupSize, 1 + my_wg);
+		if (tid_in_mma % Traits::WarpGroupSize == 0)
+			smem.consumer_cell_idx[my_wg] += cell_stride;
+		cutlass::arch::NamedBarrier::sync(
+			Traits::WarpGroupSize, 1 + my_wg);
+	};
+	// Empty expert ranges and K-slices must advance the shared cursor too.
+	for (; smem.consumer_cell_idx[my_wg] < smem.total_cells; advance_cell()) {
+		int cell_idx = smem.consumer_cell_idx[my_wg];
+#else
 	for (int cell_idx = cell_start;
 	     cell_idx < total_cells;
 	     cell_idx += cell_stride) {
+#endif
 
 		int k_slice   = cell_idx % k_split;
 		int cell_om   = cell_idx / k_split;
 		int chunk_idx = cell_om / outer_split;
-		int lane      = cell_om - chunk_idx * outer_split;
+		cell_om -= chunk_idx * outer_split;
 
-		int e, m_chunk, n_chunk, walk_begin, walk_end;
+		int e, m_chunk, n_chunk;
 		if constexpr (Traits::kMSplit) {
 			// M-split: hold Z(n) shared. chunk = (e, n_tile), walks m_tile.
 			e            = chunk_idx / num_n_tiles;
 			n_chunk      = chunk_idx - e * num_n_tiles;
 			m_chunk      = 0;
-			int m_per    = num_m_tiles / outer_split;
-			walk_begin   = lane * m_per;
-			walk_end     = walk_begin + m_per;
 		} else {
 			// N-split: hold dY^T(m) shared. chunk = (e, m_tile), walks n_tile.
 			e            = chunk_idx / num_m_tiles;
 			m_chunk      = chunk_idx - e * num_m_tiles;
 			n_chunk      = 0;
-			int n_per    = num_n_tiles / outer_split;
-			walk_begin   = lane * n_per;
-			walk_end     = walk_begin + n_per;
 		}
 
 		// Intersect this expert's global K range with the current
 		// batch's K-window.
-		int kb_lo = max(expert_k_starts[e], batch_kb_start);
-		int kb_hi = min(expert_k_ends[e],   batch_kb_end);
-		if (kb_hi <= kb_lo) continue;
+		int k_total =
+			min(expert_k_ends[e], batch_kb_end) -
+			max(expert_k_starts[e], batch_kb_start);
+		if (k_total <= 0) continue;
 
 		// K-split: clip to this cell's k_slice sub-range (must match producer).
-		{
-			int k_total = kb_hi - kb_lo;
-			int k_per   = (k_total + k_split - 1) / k_split;
-			int s_lo    = kb_lo + k_slice * k_per;
-			int s_hi    = min(s_lo + k_per, kb_hi);
-			if (s_hi <= s_lo) continue;   // empty slice
-			kb_lo = s_lo;
-			kb_hi = s_hi;
-		}
+		int k_per = (k_total + k_split - 1) / k_split;
+		int k_count = min(k_per, k_total - k_slice * k_per);
+		if (k_count <= 0) continue;   // empty slice
 
-		int k_count = kb_hi - kb_lo;
-
-		for (int w = walk_begin; w < walk_end; ++w) {
+		for (int w = cell_om;
+		     w < (Traits::kMSplit ? num_m_tiles : num_n_tiles);
+		     w += outer_split) {
 			int m_tile = Traits::kMSplit ? w       : m_chunk;
 			int n_tile = Traits::kMSplit ? n_chunk : w;
 
 			clear(acc);
 			auto state_release = state;
-			int prologue_count = (k_count < K_PIPE_MMAS) ? k_count : K_PIPE_MMAS;
+			pipe.consumer_wait(state);
+			warpgroup_fence_operand(acc);
+			warpgroup_arrive();
+			gemm(tiled_mma, tCsDYT(_, _, _, state.index()),
+				tCsZ(_, _, _, state.index()), acc);
+			warpgroup_commit_batch();
+			++state;
 
-			for (int k = 0; k < prologue_count; ++k) {
-				pipe.consumer_wait(state);
-				warpgroup_fence_operand(acc);
-				warpgroup_arrive();
-				gemm(tiled_mma, tCsDYT(_, _, _, state.index()),
-					tCsZ(_, _, _, state.index()), acc);
-				warpgroup_commit_batch();
-				++state;
-			}
-
-			for (int k = prologue_count; k < k_count; ++k) {
+			for (int k = K_PIPE_MMAS; k < k_count; ++k) {
 				pipe.consumer_wait(state);
 				warpgroup_fence_operand(acc);
 				warpgroup_arrive();
@@ -685,10 +692,8 @@ static __device__ __forceinline__ void run(
 
 			warpgroup_wait<0>();
 			warpgroup_fence_operand(acc);
-			for (int k = 0; k < prologue_count; ++k) {
-				pipe.consumer_release(state_release);
-				++state_release;
-			}
+			pipe.consumer_release(state_release);
+			++state_release;
 
 			// ── Epilogue ──────────────────────────────────────
 			// Each WG writes its (WgTileM × EpiChunkN) slot to store_buf
@@ -703,10 +708,15 @@ static __device__ __forceinline__ void run(
 			//                   [w*WgTileN, (w+1)*WgTileN).
 			CUTE_UNROLL
 			for (int r = 0; r < Traits::NumEpiRounds; ++r) {
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+				cute::tma_store_wait<0>();
+#else
 				if (store_in_flight)
 					cute::tma_store_wait<0>();
+#endif
 
-				cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, my_barrier_id);
+				cutlass::arch::NamedBarrier::sync(
+					Traits::WarpGroupSize, 1 + my_wg);
 
 				int chunk_start = r * Traits::EpiChunkN;
 				CUTE_UNROLL
@@ -739,9 +749,10 @@ static __device__ __forceinline__ void run(
 					}
 				}
 
-				cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, my_barrier_id);
+				cutlass::arch::NamedBarrier::sync(
+					Traits::WarpGroupSize, 1 + my_wg);
 
-				if (is_my_wg_leader) {
+				if (tid_in_mma % Traits::WarpGroupSize == 0) {
 					cute::tma_store_fence();
 					int da_m = Expert3D ? m_tile : e * num_m_tiles + m_tile;
 					// Store box = ONE atom-row (AtomTileM). Each WG issues
@@ -784,12 +795,18 @@ static __device__ __forceinline__ void run(
 					}
 					cute::tma_store_arrive();
 				}
+#if !defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
 				store_in_flight = true;
+#endif
 			}
 		}
 	}
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	cute::tma_store_wait<0>();
+#else
 	if (store_in_flight)
 		cute::tma_store_wait<0>();
+#endif
 }
 };  // Mlp3ConsumerImpl<90>
 
@@ -799,6 +816,7 @@ static __device__ __forceinline__ void run(
 // for the Blackwell path.
 // ───────────────────────────────────────────────────────────────────
 template <typename Traits, int Compute = 90, bool Expert3D = false,
+          int StaticWarpGroup = -1,
           typename Pipeline, typename SmemType,
           typename TmaReduceAddDA>
 __device__ __forceinline__ void mlp3_consumer(
@@ -832,7 +850,8 @@ __device__ __forceinline__ void mlp3_consumer(
 			batch_kb_start, batch_kb_end, k_split,
 			pair_init_barrier, pair_init_phase);
 	} else {
-		Mlp3ConsumerImpl<Compute>::template run<Traits, Expert3D>(
+		Mlp3ConsumerImpl<Compute>::template run<
+			Traits, Expert3D, Compute, StaticWarpGroup>(
 			pipe, state, smem, tma_reduce_da,
 			expert_k_starts, expert_k_ends, num_experts,
 			hidden_dim, intermediate_dim, total_n_rows,

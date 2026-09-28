@@ -121,6 +121,18 @@ def _prepare_native_call(process_group: "ProcessGroup", device, tokens, hidden, 
 
 
 class LigerFusedLinearScaledCrossEntropyNativeTPFunction(torch.autograd.Function):
+    """Autograd adapter for native CUTLASS + NVSHMEM TP cross entropy.
+
+    ``weight`` is an equally sized, contiguous vocabulary shard and ``target``
+    contains global vocabulary indices. The forward returns per-token NLL, or
+    ``(nll, entropy)`` when requested. Backward returns a TP-reduced input
+    gradient and the rank-local weight gradient.
+
+    The process group must already have a corresponding NVSHMEM team. Node-
+    local TP uses NVLS. Multi-host execution derives node-local and
+    matching-rank remote teams from a uniformly partitioned TP process group.
+    """
+
     @staticmethod
     def forward(
         ctx,
