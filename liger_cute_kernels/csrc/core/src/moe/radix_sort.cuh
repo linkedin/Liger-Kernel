@@ -199,6 +199,8 @@ __device__ __forceinline__ void sort_tokens(
 		if (tid == 0) {
 			sort.expert_offsets[0] = 0;
 			for (int e = 0; e < num_experts; ++e) {
+				if (sort.expert_counts != nullptr)
+					sort.expert_counts[e] = sort_counts[e];
 				int aligned = ((sort_counts[e] + TileM - 1) / TileM) * TileM;
 				sort.expert_offsets[e + 1] = sort.expert_offsets[e] + aligned;
 			}

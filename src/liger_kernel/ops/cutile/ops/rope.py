@@ -148,6 +148,13 @@ def rope_forward(q, k, cos, sin):
     # call needed on q/k for the fast path.
     ALIGNED = (TILE_HD == head_dim_half) and (TILE_QH == n_q_heads) and (TILE_KH == n_k_heads)
 
+    # The vision rotary helper (liger_rotary_pos_emb_vision) passes 2-D
+    # (seq_len, head_dim) tables; add a leading batch dim so the kernels' 3-D
+    # (batch, seq, dim) indexing applies, matching the Triton / CuTe DSL reference.
+    if cos.dim() == 2:
+        cos = cos.unsqueeze(0)
+        sin = sin.unsqueeze(0)
+
     cos_3d = cos.contiguous()
     sin_3d = sin.contiguous()
     cos_bs = cos_3d.shape[0]
@@ -222,6 +229,13 @@ def rope_backward(
     head_dim_half = head_dim // 2
     n_row = bsz * seq_len
     grid = (n_row,)
+
+    # Defensive 2-D (seq_len, head_dim) -> (1, seq_len, head_dim) guard for direct
+    # callers of the functional backward (the autograd path already saves a 3-D
+    # cos/sin from rope_forward). Mirrors the forward and the CuTe DSL reference.
+    if cos.dim() == 2:
+        cos = cos.unsqueeze(0)
+        sin = sin.unsqueeze(0)
 
     if ALIGNED:
         ct.launch(

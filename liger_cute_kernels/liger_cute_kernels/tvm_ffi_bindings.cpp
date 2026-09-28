@@ -3,10 +3,24 @@
 
 #include <cuda_runtime.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 
+#include "backward_gemm_sm90.cuh"
+#include "backward.cuh"
+#ifndef LIGER_CUTE_DISPATCH_COMPUTE
+#define LIGER_CUTE_DISPATCH_COMPUTE 0
+#endif
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+#include "backward_gemm_sm100.cuh"
+#include "forward_gemm_sm100.cuh"
+#else
+#include "forward_gemm_sm90.cuh"
+#endif
+#include "forward_reduce.cuh"
+#include "workspace.cuh"
 #include "moe_launch.h"
 
 namespace liger {
@@ -77,6 +91,18 @@ void RequireTensor(ffi::TensorView tensor, int ndim, DLDataType dtype, const cha
 void RequireCudaTensor(ffi::TensorView tensor, int ndim, DLDataType dtype, const char* name) {
   RequireTensor(tensor, ndim, dtype, name);
   TVM_FFI_ICHECK_EQ(tensor.device().device_type, kDLCUDA) << name;
+}
+
+void RequireSameCudaDevice(ffi::TensorView tensor, ffi::TensorView reference, const char* name) {
+  TVM_FFI_ICHECK_EQ(tensor.device().device_type, reference.device().device_type)
+      << name << " must be on the same device as x";
+  TVM_FFI_ICHECK_EQ(tensor.device().device_id, reference.device().device_id)
+      << name << " must be on the same device as x";
+}
+
+void RequirePositiveInverseTemperature(double inverse_temperature) {
+  TVM_FFI_ICHECK(std::isfinite(inverse_temperature) && inverse_temperature > 0.0)
+      << "inverse_temperature must be finite and positive";
 }
 
 void RequireCudaMoeWeight(ffi::TensorView tensor, DLDataType dtype, const char* name) {
@@ -237,7 +263,7 @@ void moe_fused_fwd_bf16(
     ffi::TensorView all_B, ffi::TensorView all_C, ffi::TensorView all_A, int64_t num_experts,
     int64_t top_k, int64_t team_handle, ffi::TensorView Y, ffi::TensorView token_expert_slots,
     ffi::TensorView tile_expert_ids, ffi::TensorView symm_meta) {
-  RequireCpuInt64(symm_meta, 13);
+  RequireCpuInt64(symm_meta, 17);
   DLDataType bf16{kDLBfloat, 16, 1};
   DLDataType i32{kDLInt, 32, 1};
   RequireCudaTensor(X, 2, bf16, "X");
@@ -283,6 +309,7 @@ void moe_fused_fwd_bf16(
   void* x_sorted = nullptr;
   void* y_buf = nullptr;
   void* all_expert_offsets = nullptr;
+  void* all_expert_counts = nullptr;
   liger::MoeFwdArgs args{};
   args.X = X.data_ptr();
   args.expert_indices = static_cast<const int*>(expert_indices.data_ptr());
@@ -306,6 +333,7 @@ void moe_fused_fwd_bf16(
   args.x_sorted_out = &x_sorted;
   args.y_buf_out = &y_buf;
   args.all_expert_offsets_out = &all_expert_offsets;
+  args.all_expert_counts_out = &all_expert_counts;
   try {
     liger::moe_fused_fwd_dispatch(args, &chosen_tile_m);
   } catch (const std::exception& e) {
@@ -314,7 +342,8 @@ void moe_fused_fwd_bf16(
   WriteMeta(symm_meta, 0, x_sorted, cfg.max_total_slots, cfg.hidden_dim, 3);
   WriteMeta(symm_meta, 4, y_buf, cfg.max_total_slots, cfg.hidden_dim, 3);
   WriteMeta(symm_meta, 8, all_expert_offsets, cfg.num_pes, cfg.max_num_experts + 1, 7);
-  static_cast<int64_t*>(symm_meta.data_ptr())[12] = chosen_tile_m;
+  WriteMeta(symm_meta, 12, all_expert_counts, cfg.num_pes, cfg.max_num_experts, 7);
+  static_cast<int64_t*>(symm_meta.data_ptr())[16] = chosen_tile_m;
 }
 
 void moe_fused_bwd_bf16(
@@ -323,7 +352,7 @@ void moe_fused_bwd_bf16(
     ffi::TensorView all_B, ffi::TensorView all_C, ffi::TensorView all_A, int64_t num_experts,
     int64_t top_k, int64_t team_handle, ffi::TensorView dX, ffi::TensorView dB,
     ffi::TensorView dC, ffi::TensorView dA, ffi::TensorView dW) {
-  RequireCpuInt64(symm_meta, 13);
+  RequireCpuInt64(symm_meta, 17);
   DLDataType bf16{kDLBfloat, 16, 1};
   DLDataType i32{kDLInt, 32, 1};
   RequireCudaTensor(dY, 2, bf16, "dY");
@@ -342,6 +371,7 @@ void moe_fused_bwd_bf16(
   Meta2 x_sorted = ReadMeta(symm_meta, 0);
   Meta2 y_buf = ReadMeta(symm_meta, 4);
   Meta2 expert_offsets = ReadMeta(symm_meta, 8);
+  Meta2 expert_counts = ReadMeta(symm_meta, 12);
   int64_t stream_handle =
       reinterpret_cast<int64_t>(TVMFFIEnvGetStream(dY.device().device_type, dY.device().device_id));
   int device = 0;
@@ -353,6 +383,7 @@ void moe_fused_bwd_bf16(
   args.token_expert_slots = static_cast<int*>(token_expert_slots.data_ptr());
   args.tile_expert_ids = static_cast<int*>(tile_expert_ids.data_ptr());
   args.expert_offsets = static_cast<int*>(expert_offsets.ptr);
+  args.expert_counts = static_cast<int*>(expert_counts.ptr);
   args.expert_indices = static_cast<int*>(expert_indices.data_ptr());
   args.expert_weights = expert_weights.data_ptr();
   args.all_B = all_B.data_ptr();
@@ -373,10 +404,369 @@ void moe_fused_bwd_bf16(
   args.dA = dA.data_ptr();
   args.dW = dW.data_ptr();
   try {
-    liger::moe_bwd_dispatch(args, static_cast<int>(static_cast<const int64_t*>(symm_meta.data_ptr())[12]));
+    liger::moe_bwd_dispatch(args, static_cast<int>(static_cast<const int64_t*>(symm_meta.data_ptr())[16]));
   } catch (const std::exception& e) {
     ThrowCoreError("moe_fused_bwd_bf16", e);
   }
+}
+
+void fused_linear_scaled_cross_entropy_configure_forward(
+    int64_t max_tokens, int64_t max_local_vocab) {
+  TVM_FFI_ICHECK_GT(max_tokens, 0);
+  TVM_FFI_ICHECK_GT(max_local_vocab, 0);
+  try {
+    liger::fused_scaled_linear_cross_entropy::configure_forward_tp_workspace(
+        static_cast<int>(max_tokens), static_cast<int>(max_local_vocab));
+  } catch (const std::exception& e) {
+    ThrowCoreError("fused_linear_scaled_cross_entropy_configure_forward", e);
+  }
+}
+
+void fused_linear_scaled_cross_entropy_configure_backward(
+    int64_t max_tokens, int64_t max_hidden, int64_t max_local_vocab,
+    int64_t max_tiles_per_reduce, int64_t team_handle) {
+  TVM_FFI_ICHECK_GT(max_tokens, 0);
+  TVM_FFI_ICHECK_GT(max_hidden, 0);
+  TVM_FFI_ICHECK_GT(max_local_vocab, 0);
+  TVM_FFI_ICHECK(
+      max_tiles_per_reduce == 1 || max_tiles_per_reduce == 2 ||
+      max_tiles_per_reduce == 4);
+  try {
+    liger::fused_scaled_linear_cross_entropy::configure_backward_tp_symmetric(
+        static_cast<int>(max_tokens), static_cast<int>(max_hidden),
+        static_cast<int>(max_local_vocab), static_cast<int>(max_tiles_per_reduce), 1, team_handle);
+  } catch (const std::exception& e) {
+    ThrowCoreError("fused_linear_scaled_cross_entropy_configure_backward", e);
+  }
+}
+
+int64_t fused_linear_scaled_cross_entropy_forward_workspace_bytes(
+    int64_t max_tokens, int64_t max_local_vocab) {
+  TVM_FFI_ICHECK_GT(max_tokens, 0);
+  TVM_FFI_ICHECK_GT(max_local_vocab, 0);
+  return static_cast<int64_t>(
+      liger::fused_scaled_linear_cross_entropy::
+          forward_tp_workspace_device_bytes(
+              static_cast<int>(max_tokens),
+              static_cast<int>(max_local_vocab)));
+}
+
+int64_t fused_linear_scaled_cross_entropy_backward_workspace_bytes(
+    int64_t max_tokens, int64_t max_hidden, int64_t max_local_vocab,
+    int64_t max_tiles_per_reduce) {
+  TVM_FFI_ICHECK_GT(max_tokens, 0);
+  TVM_FFI_ICHECK_GT(max_hidden, 0);
+  TVM_FFI_ICHECK_GT(max_local_vocab, 0);
+  TVM_FFI_ICHECK(
+      max_tiles_per_reduce == 1 || max_tiles_per_reduce == 2 ||
+      max_tiles_per_reduce == 4);
+  try {
+    std::size_t symmetric =
+        liger::fused_scaled_linear_cross_entropy::
+            backward_tp_pool_symmetric_bytes(
+                static_cast<int>(max_tokens),
+                static_cast<int>(max_hidden),
+                static_cast<int>(max_tiles_per_reduce),
+                1);
+    std::size_t device =
+        liger::fused_scaled_linear_cross_entropy::
+            backward_tp_pool_device_bytes(
+                static_cast<int>(max_local_vocab));
+    return static_cast<int64_t>(symmetric + device);
+  } catch (const std::exception& e) {
+    ThrowCoreError(
+        "fused_linear_scaled_cross_entropy_backward_workspace_bytes",
+        e);
+  }
+  return 0;
+}
+
+int64_t fused_linear_scaled_cross_entropy_forward_diagnostic_entries() {
+  return liger::fused_scaled_linear_cross_entropy::
+      forward_tp_diagnostic_entries();
+}
+
+void fused_linear_scaled_cross_entropy_forward_diagnostics(
+    ffi::TensorView output) {
+  DLDataType i64{kDLInt, 64, 1};
+  RequireCudaTensor(output, 1, i64, "output");
+  int entries = liger::fused_scaled_linear_cross_entropy::
+      forward_tp_diagnostic_entries();
+  TVM_FFI_ICHECK_GE(output.size(0), entries);
+  cudaStream_t stream = reinterpret_cast<cudaStream_t>(
+      TVMFFIEnvGetStream(
+          output.device().device_type,
+          output.device().device_id));
+  try {
+    liger::fused_scaled_linear_cross_entropy::
+        copy_forward_tp_diagnostics(
+            static_cast<std::uint64_t*>(output.data_ptr()),
+            static_cast<int>(output.size(0)),
+            stream);
+  } catch (const std::exception& e) {
+    ThrowCoreError(
+        "fused_linear_scaled_cross_entropy_forward_diagnostics",
+        e);
+  }
+}
+
+int64_t fused_linear_scaled_cross_entropy_backward_diagnostic_entries() {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+  return liger::fused_scaled_linear_cross_entropy::
+      kBackwardDiagnosticEntries;
+#else
+  return 0;
+#endif
+}
+
+void fused_linear_scaled_cross_entropy_backward_diagnostics(
+    ffi::TensorView output) {
+  DLDataType i64{kDLInt, 64, 1};
+  RequireCudaTensor(output, 1, i64, "output");
+  int entries =
+      fused_linear_scaled_cross_entropy_backward_diagnostic_entries();
+  TVM_FFI_ICHECK_GE(output.size(0), entries);
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+  cudaStream_t stream = reinterpret_cast<cudaStream_t>(
+      TVMFFIEnvGetStream(
+          output.device().device_type,
+          output.device().device_id));
+  try {
+    liger::fused_scaled_linear_cross_entropy::
+        fused_linear_scaled_cross_entropy_backward_diagnostics_sm100(
+            static_cast<std::uint64_t*>(output.data_ptr()),
+            static_cast<std::size_t>(output.size(0)),
+            stream);
+  } catch (const std::exception& e) {
+    ThrowCoreError(
+        "fused_linear_scaled_cross_entropy_backward_diagnostics",
+        e);
+  }
+#endif
+}
+
+void fused_linear_scaled_cross_entropy_forward(
+    ffi::TensorView x, ffi::TensorView weight, ffi::TensorView target,
+    int64_t vocab_start, int64_t ignore_index, double inverse_temperature,
+    int64_t team_handle, bool return_entropy, ffi::TensorView nll,
+    ffi::TensorView lse, ffi::TensorView entropy) {
+  DLDataType bf16{kDLBfloat, 16, 1};
+  DLDataType f32{kDLFloat, 32, 1};
+  DLDataType i64{kDLInt, 64, 1};
+  RequireCudaTensor(x, 2, bf16, "x");
+  RequireCudaTensor(weight, 2, bf16, "weight");
+  RequireCudaTensor(target, 1, i64, "target");
+  RequireCudaTensor(nll, 1, f32, "nll");
+  RequireCudaTensor(lse, 1, f32, "lse");
+  RequireCudaTensor(entropy, 1, f32, "entropy");
+  RequireSameCudaDevice(weight, x, "weight");
+  RequireSameCudaDevice(target, x, "target");
+  RequireSameCudaDevice(nll, x, "nll");
+  RequireSameCudaDevice(lse, x, "lse");
+  RequireSameCudaDevice(entropy, x, "entropy");
+
+  int64_t tokens = x.size(0);
+  int64_t hidden = x.size(1);
+  int64_t local_vocab = weight.size(0);
+  TVM_FFI_ICHECK_EQ(weight.size(1), hidden);
+  TVM_FFI_ICHECK_EQ(target.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(nll.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(lse.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(entropy.size(0), tokens);
+  TVM_FFI_ICHECK_GE(vocab_start, 0);
+  RequirePositiveInverseTemperature(inverse_temperature);
+
+  using namespace liger::fused_scaled_linear_cross_entropy;
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+  ForwardTpParamsSm100<100> params;
+#else
+  ForwardTpParamsSm90<90> params;
+#endif
+  params.gemm.x = x.data_ptr();
+  params.gemm.weight = weight.data_ptr();
+  params.gemm.target = static_cast<const int64_t*>(target.data_ptr());
+  params.gemm.tokens = static_cast<int>(tokens);
+  params.gemm.hidden = static_cast<int>(hidden);
+  params.gemm.local_vocab = static_cast<int>(local_vocab);
+  params.gemm.vocab_start = vocab_start;
+  params.gemm.ignore_index = ignore_index;
+  params.gemm.inverse_temperature = static_cast<float>(inverse_temperature);
+  params.nll = static_cast<float*>(nll.data_ptr());
+  params.lse = static_cast<float*>(lse.data_ptr());
+  params.entropy = static_cast<float*>(entropy.data_ptr());
+  params.team_handle = team_handle;
+  cudaStream_t stream = reinterpret_cast<cudaStream_t>(
+      TVMFFIEnvGetStream(x.device().device_type, x.device().device_id));
+  try {
+    if (return_entropy) {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_forward_sm100<true, 100>(params, stream);
+#else
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_forward<true, 90>(params, stream);
+#endif
+    } else {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_forward_sm100<false, 100>(params, stream);
+#else
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_forward<false, 90>(params, stream);
+#endif
+    }
+  } catch (const std::exception& e) {
+    ThrowCoreError("fused_linear_scaled_cross_entropy_forward", e);
+  }
+}
+
+void fused_linear_scaled_cross_entropy_backward(
+    ffi::TensorView grad_output, ffi::TensorView entropy_grad, ffi::TensorView x,
+    ffi::TensorView weight, ffi::TensorView target, ffi::TensorView lse,
+    ffi::TensorView entropy, int64_t vocab_start, int64_t ignore_index,
+    double inverse_temperature, int64_t team_handle, int64_t tiles_per_reduce,
+    bool return_entropy, ffi::TensorView grad_input, ffi::TensorView grad_weight) {
+  DLDataType bf16{kDLBfloat, 16, 1};
+  DLDataType f32{kDLFloat, 32, 1};
+  DLDataType i64{kDLInt, 64, 1};
+  RequireCudaTensor(grad_output, 1, f32, "grad_output");
+  RequireCudaTensor(entropy_grad, 1, f32, "entropy_grad");
+  RequireCudaTensor(x, 2, bf16, "x");
+  RequireCudaTensor(weight, 2, bf16, "weight");
+  RequireCudaTensor(target, 1, i64, "target");
+  RequireCudaTensor(lse, 1, f32, "lse");
+  RequireCudaTensor(entropy, 1, f32, "entropy");
+  RequireCudaTensor(grad_input, 2, bf16, "grad_input");
+  RequireCudaTensor(grad_weight, 2, bf16, "grad_weight");
+  RequireSameCudaDevice(entropy_grad, x, "entropy_grad");
+  RequireSameCudaDevice(weight, x, "weight");
+  RequireSameCudaDevice(target, x, "target");
+  RequireSameCudaDevice(grad_output, x, "grad_output");
+  RequireSameCudaDevice(lse, x, "lse");
+  RequireSameCudaDevice(entropy, x, "entropy");
+  RequireSameCudaDevice(grad_input, x, "grad_input");
+  RequireSameCudaDevice(grad_weight, x, "grad_weight");
+
+  int64_t tokens = x.size(0);
+  int64_t hidden = x.size(1);
+  int64_t local_vocab = weight.size(0);
+  TVM_FFI_ICHECK_EQ(weight.size(1), hidden);
+  TVM_FFI_ICHECK_EQ(target.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(grad_output.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(entropy_grad.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(lse.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(entropy.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(grad_input.size(0), tokens);
+  TVM_FFI_ICHECK_EQ(grad_input.size(1), hidden);
+  TVM_FFI_ICHECK_EQ(grad_weight.size(0), local_vocab);
+  TVM_FFI_ICHECK_EQ(grad_weight.size(1), hidden);
+  TVM_FFI_ICHECK(
+      tiles_per_reduce == 1 || tiles_per_reduce == 2 || tiles_per_reduce == 4);
+  RequirePositiveInverseTemperature(inverse_temperature);
+
+  using namespace liger::fused_scaled_linear_cross_entropy;
+  cudaStream_t stream = reinterpret_cast<cudaStream_t>(
+      TVMFFIEnvGetStream(x.device().device_type, x.device().device_id));
+  try {
+    TVM_FFI_ICHECK_EQ(team_handle, backward_dx_team_handle())
+        << "team_handle must match the configured tensor-parallel team";
+    BackwardScratch scratch = reserve_backward_scratch(static_cast<int>(local_vocab));
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+    BackwardTpParamsSm100<100> params;
+    params.team_handle = team_handle;
+#else
+    BackwardTpParamsSm90<90> params;
+#endif
+    params.gemm.x = x.data_ptr();
+    params.gemm.weight = weight.data_ptr();
+    params.gemm.target = static_cast<const int64_t*>(target.data_ptr());
+    params.gemm.grad_output = static_cast<const float*>(grad_output.data_ptr());
+    params.gemm.lse = static_cast<const float*>(lse.data_ptr());
+    params.gemm.entropy = static_cast<const float*>(entropy.data_ptr());
+    params.gemm.entropy_grad = static_cast<const float*>(entropy_grad.data_ptr());
+    params.gemm.grad_input = grad_input.data_ptr();
+    params.gemm.grad_weight = grad_weight.data_ptr();
+    params.gemm.dz_workspace = scratch.dz_workspace;
+    params.gemm.dz_workspace_bytes = scratch.dz_workspace_bytes;
+    params.gemm.tokens = static_cast<int>(tokens);
+    params.gemm.hidden = static_cast<int>(hidden);
+    params.gemm.local_vocab = static_cast<int>(local_vocab);
+    params.gemm.vocab_start = vocab_start;
+    params.gemm.ignore_index = ignore_index;
+    params.gemm.inverse_temperature = static_cast<float>(inverse_temperature);
+    params.tiles_per_reduce = static_cast<int>(tiles_per_reduce);
+    params.num_comm_channels = 1;
+    if (return_entropy) {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_backward_sm100<true, 100>(params, stream);
+#else
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_backward<true, 90>(params, stream);
+#endif
+    } else {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_backward_sm100<false, 100>(params, stream);
+#else
+      liger::fused_scaled_linear_cross_entropy::
+          fused_linear_scaled_cross_entropy_backward<false, 90>(params, stream);
+#endif
+    }
+  } catch (const std::exception& e) {
+    ThrowCoreError("fused_linear_scaled_cross_entropy_backward", e);
+  }
+}
+
+void fused_linear_scaled_cross_entropy_backward_phase_bench(
+    ffi::TensorView grad_output, ffi::TensorView entropy_grad, ffi::TensorView x,
+    ffi::TensorView weight, ffi::TensorView target, ffi::TensorView lse,
+    ffi::TensorView entropy, int64_t vocab_start, int64_t ignore_index,
+    double inverse_temperature, int64_t team_handle, int64_t phase,
+    bool return_entropy, ffi::TensorView grad_input, ffi::TensorView grad_weight) {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 100
+  using namespace liger::fused_scaled_linear_cross_entropy;
+  cudaStream_t stream = reinterpret_cast<cudaStream_t>(
+      TVMFFIEnvGetStream(x.device().device_type, x.device().device_id));
+  try {
+    int64_t tokens = x.size(0);
+    int64_t hidden = x.size(1);
+    int64_t local_vocab = weight.size(0);
+    BackwardScratch scratch = reserve_backward_scratch(static_cast<int>(local_vocab));
+    BackwardTpParamsSm100<100> params;
+    params.team_handle = team_handle;
+    params.gemm.x = x.data_ptr();
+    params.gemm.weight = weight.data_ptr();
+    params.gemm.target = static_cast<const int64_t*>(target.data_ptr());
+    params.gemm.grad_output = static_cast<const float*>(grad_output.data_ptr());
+    params.gemm.lse = static_cast<const float*>(lse.data_ptr());
+    params.gemm.entropy = static_cast<const float*>(entropy.data_ptr());
+    params.gemm.entropy_grad = static_cast<const float*>(entropy_grad.data_ptr());
+    params.gemm.grad_input = grad_input.data_ptr();
+    params.gemm.grad_weight = grad_weight.data_ptr();
+    params.gemm.dz_workspace = scratch.dz_workspace;
+    params.gemm.dz_workspace_bytes = scratch.dz_workspace_bytes;
+    params.gemm.tokens = static_cast<int>(tokens);
+    params.gemm.hidden = static_cast<int>(hidden);
+    params.gemm.local_vocab = static_cast<int>(local_vocab);
+    params.gemm.vocab_start = vocab_start;
+    params.gemm.ignore_index = ignore_index;
+    params.gemm.inverse_temperature = static_cast<float>(inverse_temperature);
+    params.tiles_per_reduce = 1;
+    params.num_comm_channels = 1;
+    fused_linear_scaled_cross_entropy_backward_phase_bench_sm100(
+        params, return_entropy, static_cast<int>(phase), stream);
+  } catch (const std::exception& e) {
+    ThrowCoreError("fused_linear_scaled_cross_entropy_backward_phase_bench", e);
+  }
+#else
+  (void)grad_output; (void)entropy_grad; (void)x; (void)weight; (void)target;
+  (void)lse; (void)entropy; (void)vocab_start; (void)ignore_index;
+  (void)inverse_temperature; (void)team_handle; (void)phase;
+  (void)return_entropy; (void)grad_input; (void)grad_weight;
+  TVM_FFI_THROW(RuntimeError)
+      << "the per-phase backward benchmark is only built for SM100";
+#endif
 }
 
 }  // namespace
@@ -401,3 +791,36 @@ TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_configure_symmetric, moe_configure_symmetric);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_pop_fwd, moe_pop_fwd);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_fused_fwd_bf16, moe_fused_fwd_bf16);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_fused_bwd_bf16, moe_fused_bwd_bf16);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_configure_forward,
+    fused_linear_scaled_cross_entropy_configure_forward);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_configure_backward,
+    fused_linear_scaled_cross_entropy_configure_backward);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_forward_workspace_bytes,
+    fused_linear_scaled_cross_entropy_forward_workspace_bytes);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_backward_workspace_bytes,
+    fused_linear_scaled_cross_entropy_backward_workspace_bytes);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_forward_diagnostic_entries,
+    fused_linear_scaled_cross_entropy_forward_diagnostic_entries);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_forward_diagnostics,
+    fused_linear_scaled_cross_entropy_forward_diagnostics);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_backward_diagnostic_entries,
+    fused_linear_scaled_cross_entropy_backward_diagnostic_entries);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_backward_diagnostics,
+    fused_linear_scaled_cross_entropy_backward_diagnostics);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_forward,
+    fused_linear_scaled_cross_entropy_forward);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_backward,
+    fused_linear_scaled_cross_entropy_backward);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_backward_phase_bench,
+    fused_linear_scaled_cross_entropy_backward_phase_bench);

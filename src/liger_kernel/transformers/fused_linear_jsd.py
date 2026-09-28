@@ -101,4 +101,6 @@ class LigerFusedLinearJSD(torch.nn.Module):
             self.ignore_index,
             self.temperature,
             self.accum_dtype,
+            None,
+            None,
         )

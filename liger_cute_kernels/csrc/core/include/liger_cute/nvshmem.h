@@ -1,6 +1,6 @@
 // nvshmem.h — flat extern "C" ABI for NVSHMEM bootstrap, teams, and the comm schedule.
 //
-// Ported from LigerCommKernels' nvshmem_helpers.h, adapted to the liger_cute
+// Adapted from LigerCuteKernels' NVSHMEM helpers and the liger_cute
 // boundary contract (see liger_cute.h): every entry point returns a
 // liger_cute_status_t, results come back through out-pointers, and the failure
 // detail is read with liger_cute_last_error_string(). No exceptions cross the

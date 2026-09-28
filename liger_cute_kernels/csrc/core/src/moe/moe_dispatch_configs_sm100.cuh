@@ -1,6 +1,6 @@
 #pragma once
 
-#include "moe_fwd_bwd_tune_configs.hpp"
+#include "moe_fwd_bwd_tune_configs_sm100.hpp"
 
 // SM100 / Blackwell dispatch config set. Keep this separate from SM90 so
 // Blackwell-specific tuning can diverge without touching Hopper dispatch rows.
@@ -17,11 +17,9 @@
 // the canonical joined 256x256 shape, while the existing S3, EN34, and TK3
 // fields tune both kernels together.
 #define LIGER_MOE_BWD_TUNE_CONFIGS_SM100(X) \
-	X(2, 128, 64, 4, 256, 256, 64, 4, 32, 64, 64, 2, 128) \
-	X(2, 128, 64, 4, 256, 256, 64, 5, 32, 64, 64, 2, 128) \
-	X(8, 128, 64, 4, 256, 256, 64, 5, 32, 64, 64, 2, 128) \
-	X(2, 128, 64, 4, 256, 256, 64, 6, 32, 64, 64, 2, 128) \
-	X(2, 128, 64, 4, 256, 256, 64, 5, 32, 64, 128, 2, 128)
+	X(2, 128, 64, 3, 256, 256, 64, 4, 32, 64, 64, 2, 128) \
+	X(2, 128, 64, 3, 256, 256, 64, 5, 32, 64, 64, 2, 128) \
+	X(8, 128, 64, 3, 256, 256, 64, 5, 32, 64, 64, 2, 128)
 
 #define LIGER_MOE_BWD_EXTRA_CONFIGS_SM100(XG)
 

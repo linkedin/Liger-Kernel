@@ -56,7 +56,8 @@ using Element = cutlass::bfloat16_t;
 using TraitsFused = Mlp1Traits<Element, /*TileM=*/128, /*TileN=*/128,
                                /*TileK=*/64, /*Stages=*/4, /*EpiChunkN=*/64>;
 using TraitsAct   = Mlp1Traits<Element, /*TileM=*/128, /*TileN=*/128,
-                               /*TileK=*/64, /*Stages=*/3, /*EpiChunkN=*/32>;
+                               /*TileK=*/64, /*Stages=*/4, /*EpiChunkN=*/32,
+                               /*ActStoreTileM=*/32>;
 
 #define CUDA_OK(expr)                                                       \
 	do {                                                                    \
@@ -215,9 +216,10 @@ mlp1_act_test_kernel(
 			return liger::mlp1_make_pipe<Traits>(smem.pipe_storage);
 	}();
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
-	cute::TMEM::Allocator1Sm tmem_alloc{};
+	cute::TMEM::Allocator2Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
+		cute::cluster_sync();
 		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tile.tmem_base);
 			__syncwarp();
@@ -225,9 +227,12 @@ mlp1_act_test_kernel(
 	}
 #endif
 	__syncthreads();
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+	if constexpr (Compute == 100)
+		cute::cluster_sync();
+#endif
 
-	PipeState prod_state = cutlass::make_producer_start_state<Pipeline>();
-	PipeState cons_state;
+	uint32_t pipe_count = 0;
 
 	// Single block per M-tile here (gridDim.y == 1), so split_idx/num_splits
 	// degenerate to "this block owns every n-tile".
@@ -237,9 +242,13 @@ mlp1_act_test_kernel(
 	for (int m = blockIdx.x; m < num_m_tiles; m += gridDim.x) {
 		int expert = expert_ids[m];
 		int expert_n_offset = expert * num_n_tiles;
+		PipeState state = is_producer
+			? cutlass::make_producer_start_state<Pipeline>()
+			: PipeState{};
+		state.advance(pipe_count);
 		if (is_producer) {
 			liger::mlp1_fused_act_producer<Traits, Expert3D>(
-				pipe, prod_state, smem.tile,
+				pipe, state, smem.tile,
 				tma_load_x, tma_load_b, tma_load_c,
 				m, Expert3D ? expert : expert_n_offset,
 				num_tokens, hidden_dim,
@@ -249,14 +258,14 @@ mlp1_act_test_kernel(
 		} else if (is_consumer) {
 			if constexpr (Compute == 100) {
 				liger::mlp1_fused_act_consumer<Traits, 100>(
-					pipe, cons_state, smem.tile,
+					pipe, state, smem.tile,
 					tma_store_du, tma_store_dv, tma_store_z,
 					m, num_n_tiles * Traits::TileN,
 					num_m_tiles, num_n_tiles, num_k_tiles, split_idx, num_splits);
 			} else {
 #if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 1000)
 				liger::mlp1_fused_act_consumer<Traits, 90>(
-					pipe, cons_state, smem.tile,
+					pipe, state, smem.tile,
 					tma_store_du, tma_store_dv, tma_store_z,
 					m, num_n_tiles * Traits::TileN,
 					num_m_tiles, num_n_tiles, num_k_tiles, split_idx, num_splits);
@@ -265,11 +274,13 @@ mlp1_act_test_kernel(
 #endif
 			}
 		}
+		pipe_count = state.count();
 	}
 	__syncthreads();
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
+		cute::cluster_sync();
 		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
 			tmem_alloc.free(smem.tile.tmem_base, kTmemColumns);
@@ -371,7 +382,8 @@ static RefOutputs cpu_reference(
 }
 
 // Build host inputs (bf16-rounded floats) + device buffers shared by both
-// variants. expert_ids[m] = m % num_experts.
+// variants. Offset large-E cases to exercise production-scale flattened TMA
+// coordinates without requiring many M tiles.
 struct Inputs {
 	std::vector<float> X, B, C;           // bf16-rounded host copies
 	std::vector<int>   expert_ids;
@@ -398,7 +410,8 @@ static void make_inputs(const Mlp1Shape& s, Inputs& in, unsigned seed) {
 	in.total_n_rows = s.num_experts * s.intermediate_dim;
 
 	in.expert_ids.resize(in.num_m_tiles);
-	for (int m = 0; m < in.num_m_tiles; ++m) in.expert_ids[m] = m % s.num_experts;
+	for (int m = 0; m < in.num_m_tiles; ++m)
+		in.expert_ids[m] = (m + (s.num_experts > 48 ? 48 : 0)) % s.num_experts;
 
 	upload_bf16(in.dX, in.X);
 	upload_bf16(in.dB, in.B);
@@ -565,21 +578,46 @@ static void run_act(const Mlp1Shape& s) {
 			return make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
 		}
 	}();
-	auto tma_du = make_tma_copy(SM90_TMA_STORE{}, mkZ(dU), typename Traits::SmemLayoutStoreSlot{});
-	auto tma_dv = make_tma_copy(SM90_TMA_STORE{}, mkZ(dV), typename Traits::SmemLayoutStoreSlot{});
-	auto tma_z  = make_tma_copy(SM90_TMA_STORE{}, mkZ(dZ), typename Traits::SmemLayoutStoreSlot{});
+	auto tma_du = make_tma_copy(
+		SM90_TMA_STORE{}, mkZ(dU), typename Traits::SmemLayoutActStoreSlot{});
+	auto tma_dv = make_tma_copy(
+		SM90_TMA_STORE{}, mkZ(dV), typename Traits::SmemLayoutActStoreSlot{});
+	auto tma_z = make_tma_copy(
+		SM90_TMA_STORE{}, mkZ(dZ), typename Traits::SmemLayoutActStoreSlot{});
 
-	size_t smem_size = sizeof(Mlp1ActKernelSmem<Traits, Compute>);
+	size_t smem_size = Compute == 100
+		? static_cast<size_t>(232000)
+		: sizeof(Mlp1ActKernelSmem<Traits, Compute>);
 	auto kernel = mlp1_act_test_kernel<Traits, Compute, Compute == 90,
 		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
 	CUDA_OK(cudaFuncSetAttribute(kernel,
 		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-	dim3 grid(in.num_m_tiles, 1);
-	kernel<<<grid, Traits::NumThreads, smem_size>>>(
-		tma_x, tma_b, tma_c, tma_du, tma_dv, tma_z, in.d_expert_ids,
-		s.num_tokens, s.hidden_dim, in.total_n_rows, in.num_m_tiles, in.num_n_tiles);
-	CUDA_OK(cudaGetLastError());
+	dim3 grid(2, 4);
+	if constexpr (Compute == 100) {
+		cudaLaunchConfig_t config{};
+		config.gridDim = grid;
+		config.blockDim = Traits::NumThreads;
+		config.dynamicSmemBytes = smem_size;
+		cudaLaunchAttribute cluster_attr{};
+		cluster_attr.id = cudaLaunchAttributeClusterDimension;
+		cluster_attr.val.clusterDim.x = 2;
+		cluster_attr.val.clusterDim.y = 1;
+		cluster_attr.val.clusterDim.z = 1;
+		config.attrs = &cluster_attr;
+		config.numAttrs = 1;
+		CUDA_OK(cudaLaunchKernelEx(
+			&config, kernel,
+			tma_x, tma_b, tma_c, tma_du, tma_dv, tma_z, in.d_expert_ids,
+			s.num_tokens, s.hidden_dim, in.total_n_rows,
+			in.num_m_tiles, in.num_n_tiles));
+	} else {
+		kernel<<<grid, Traits::NumThreads, smem_size>>>(
+			tma_x, tma_b, tma_c, tma_du, tma_dv, tma_z, in.d_expert_ids,
+			s.num_tokens, s.hidden_dim, in.total_n_rows,
+			in.num_m_tiles, in.num_n_tiles);
+		CUDA_OK(cudaGetLastError());
+	}
 	CUDA_OK(cudaDeviceSynchronize());
 
 	auto U = download_rows(dU, padded, s.num_tokens, s.intermediate_dim);
@@ -874,6 +912,7 @@ static const std::vector<Mlp1Shape> kShapes = {
 	{128, 512,  256, 1},   // deeper K, two N-tiles
 	{256, 256,  256, 2},   // two M-tiles across two experts
 	{384, 256,  128, 3},   // three M-tiles, one expert each
+	{1280, 2048, 512, 1},  // reaches pipeline count 130 on the fifth M tile
 };
 
 // Large, GPU-saturating shapes for the TFLOPS benchmark. T is a multiple of

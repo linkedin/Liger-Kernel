@@ -18,6 +18,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_internvl
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_muse_glimmer
 from liger_kernel.transformers import apply_liger_kernel_to_paligemma
 from liger_kernel.transformers import apply_liger_kernel_to_pixtral
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
@@ -46,6 +47,7 @@ from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mllama
+from test.utils import revert_liger_kernel_to_muse_glimmer
 from test.utils import revert_liger_kernel_to_Paligemma
 from test.utils import revert_liger_kernel_to_pixtral
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
@@ -122,6 +124,24 @@ try:
     QWEN3_VL_AVAILABLE = True
 except ImportError:
     QWEN3_VL_AVAILABLE = False
+
+
+try:
+    # MuseGlimmer is only available in transformers>=5.15.0
+    import transformers
+
+    from packaging import version
+    from transformers.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerConfig
+    from transformers.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerTextConfig
+    from transformers.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerVisionConfig
+    from transformers.models.muse_glimmer.image_processing_muse_glimmer import MuseGlimmerImageProcessor
+    from transformers.models.muse_glimmer.modeling_muse_glimmer import MuseGlimmerForConditionalGeneration
+    from transformers.models.muse_glimmer.processing_muse_glimmer import MuseGlimmerProcessor
+    from transformers.models.muse_glimmer.video_processing_muse_glimmer import MuseGlimmerVideoProcessor
+
+    MUSE_GLIMMER_AVAILABLE = version.parse(transformers.__version__) >= version.parse("5.15.0")
+except ImportError:
+    MUSE_GLIMMER_AVAILABLE = False
 
 try:
     from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeConfig
@@ -813,6 +833,60 @@ if QWEN2_5_VL_AVAILABLE:
         ),
     )
 
+
+if MUSE_GLIMMER_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_muse_glimmer"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_muse_glimmer,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_muse_glimmer,
+        model_class=MuseGlimmerForConditionalGeneration,
+        mini_model_config=MuseGlimmerConfig(
+            attn_implementation="sdpa",
+            # Must match the ids the fake tokenizer assigns to `<|patch|>` / `<|video|>`
+            image_token_id=11,
+            video_token_id=10,
+            # The vision adapter consumes `vision hidden_size * merge_size ** 2` after pixel shuffle
+            out_hidden_size=128 * 2**2,
+            projector_hidden_size=256,
+            projector_hidden_act="gelu",
+            text_config=MuseGlimmerTextConfig(
+                bos_token_id=0,
+                eos_token_id=1,
+                pad_token_id=2,
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=1024,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_activation="silu",
+                max_position_embeddings=4096,
+                initializer_range=0.02,
+                rms_norm_eps=1e-5,
+                post_norm_eps=1e-8,
+                sliding_window=128,
+                attention_dropout=0.0,
+                attention_bias=False,
+                tie_word_embeddings=False,
+                use_cache=False,
+            ),
+            vision_config=MuseGlimmerVisionConfig(
+                hidden_size=128,
+                intermediate_size=256,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                hidden_act="gelu",
+                patch_size=14,
+                pos_emb_height=8,
+                pos_emb_width=8,
+                max_position_embeddings=64,
+                merge_size=2,
+                layer_norm_eps=1e-5,
+            ),
+        ),
+    )
+
+
 if QWEN3_VL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen3_vl"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl,
@@ -1104,6 +1178,29 @@ def create_processor(model_name: str):
             image_processor=image_processor,
             video_processor=video_processor,
             tokenizer=qwen_tokenizer,
+        )
+
+    elif model_name == "mini_muse_glimmer":
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(FAKE_CONFIGS_PATH, "meta-models/Muse-Glimmer-30B/tokenizer_config.json")
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        muse_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        # `max_image_tokens` is capped so the 64x64 procedural test image stays cheap.
+        image_processor = MuseGlimmerImageProcessor(patch_size=14, merge_size=2, max_image_tokens=256)
+        video_processor = MuseGlimmerVideoProcessor(patch_size=14, merge_size=2)
+        return MuseGlimmerProcessor(
+            image_processor=image_processor,
+            video_processor=video_processor,
+            tokenizer=muse_tokenizer,
         )
 
     elif model_name in ("mini_qwen3_vl", "mini_qwen3_vl_moe", "mini_qwen3_5", "mini_qwen3_5_moe"):
@@ -1610,6 +1707,29 @@ def run_mini_model_multimodal(
                     reason="Qwen2.5-VL not available in this version of transformers",
                 ),
                 pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
+            ],
+        ),
+        pytest.param(
+            "mini_muse_glimmer",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not MUSE_GLIMMER_AVAILABLE,
+                    reason="MuseGlimmer not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not is_torchvision_available(),
+                    reason="MuseGlimmerImageProcessor requires torchvision",
+                ),
             ],
         ),
         pytest.param(
