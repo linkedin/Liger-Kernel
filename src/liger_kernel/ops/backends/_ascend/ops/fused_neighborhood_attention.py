@@ -2338,6 +2338,10 @@ def fused_neighborhood_attention_forward(
         block_n,
     )
 
+    # triton-ascend 3.2.2: consecutive forwards on the same stream hang unless
+    # QK+AV retire first (`test_fused_neighborhood_attention_deterministic`).
+    torch.npu.current_stream().synchronize()
+
     if return_lse:
         raise NotImplementedError("return_lse=True is not supported yet.")
 

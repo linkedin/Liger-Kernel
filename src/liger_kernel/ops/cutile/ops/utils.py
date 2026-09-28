@@ -7,6 +7,8 @@ import cuda.tile as ct
 ConstBool = ct.Constant[bool]
 ConstInt = ct.Constant[int]
 
+LOG2E = 1.4426950408889634
+
 
 def _next_power_of_2(n: int):
     """Return the smallest power of 2 greater than or equal to n."""
@@ -19,6 +21,10 @@ def _next_power_of_2(n: int):
     n |= n >> 32
     n += 1
     return n
+
+
+def _select_cross_entropy_block_size(vocab_size: int) -> int:
+    return min(4096, _next_power_of_2(vocab_size))
 
 
 @ct.kernel(occupancy=1)
