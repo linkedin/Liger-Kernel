@@ -15,13 +15,13 @@ Sweep parameters (all optional; defaults reproduce the previous behaviour)::
     --providers NAME [NAME ...]     explicit provider list
 
 Providers: ``torch``, ``liger`` (Triton FLCE, ``reduction="none"``),
-and ``cutedsl-sm90`` (fixed 1024-token wave-batched backward).
+``cutile``, and ``cutedsl-sm90`` (fixed 1024-token wave-batched backward).
 
 Example::
 
     python benchmark_fused_scaled_cross_entropy_sm90.py \\
         --tokens 4096 --hidden 4096 --vocab 131072 \\
-        --providers torch liger cutedsl-sm90
+        --providers torch liger cutile cutedsl-sm90
 """
 
 import argparse
@@ -53,6 +53,7 @@ REPRESENTATIVE_CONFIG = {
 }
 
 CUTEDSL_PREFIX = "cutedsl-sm90"
+CUTILE_PREFIX = "cutile"
 # Seed of the fixed per-token upstream gradient, so every provider and every
 # repetition sees byte-identical ``d(NLL)/d(loss)`` values.
 GRAD_SEED = 1234
@@ -110,6 +111,29 @@ class CuteDSLHopperLMHeadScaledCE(torch.nn.Module):
         )
 
 
+class CuTileLMHeadScaledCE(torch.nn.Module):
+    def __init__(self, hidden_size: int, vocab_size: int, dtype: torch.dtype, temperature: float = 1.0):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.empty(vocab_size, hidden_size, dtype=dtype))
+        self.temperature = temperature
+        torch.nn.init.normal_(self.weight, std=hidden_size**-0.5)
+
+    def forward(self, x, target):
+        from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import (
+            LigerFusedLinearScaledCrossEntropyFunction,
+        )
+
+        return LigerFusedLinearScaledCrossEntropyFunction.apply(
+            x,
+            self.weight,
+            target,
+            self.temperature,
+            -100,
+            1,
+            False,
+        )
+
+
 def fixed_grad_output(tokens: int) -> torch.Tensor:
     """The fixed ``[M]`` upstream gradient of the per-token NLL."""
     generator = torch.Generator(device=device).manual_seed(GRAD_SEED)
@@ -137,6 +161,8 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
     provider = input.kernel_provider
     if provider == CUTEDSL_PREFIX:
         layer = CuteDSLHopperLMHeadScaledCE(hidden_size, vocab_size, dtype)
+    elif provider == CUTILE_PREFIX:
+        layer = CuTileLMHeadScaledCE(hidden_size, vocab_size, dtype)
     elif provider == "liger":
         layer = TritonLMHeadCE(hidden_size, vocab_size, dtype)
     elif provider == "torch":
@@ -145,18 +171,19 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
         raise ValueError(f"Unknown provider {provider!r}")
 
     layer = layer.to(device)
-    return x, lambda: layer(x, target), fixed_grad_output(total_tokens)
+    weight = layer.weight if hasattr(layer, "weight") else layer.linear.weight
+    return x, weight, lambda: layer(x, target), fixed_grad_output(total_tokens)
 
 
-def probe_forward_fn(x, fwd_fn, grad_output):
-    """Adapter for the shared memory-probing helpers (setup returns a 3-tuple)."""
+def probe_forward_fn(x, weight, fwd_fn, grad_output):
+    """Adapter for the shared memory-probing helpers (setup returns a 4-tuple)."""
     return fwd_fn()
 
 
 def bench_speed_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     import triton
 
-    x, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
+    x, weight, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
@@ -173,12 +200,17 @@ def bench_speed_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) 
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    ms_50, ms_20, ms_80 = triton.testing.do_bench(bench_fn, grad_to_none=[x], rep=10, quantiles=QUANTILES)
+    ms_50, ms_20, ms_80 = triton.testing.do_bench(
+        bench_fn,
+        grad_to_none=[x, weight],
+        rep=10,
+        quantiles=QUANTILES,
+    )
     return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
 
 
 def bench_memory_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
+    x, weight, fwd_fn, grad_output = setup_fused_scaled_cross_entropy_sm90(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
@@ -188,11 +220,13 @@ def bench_memory_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput)
 
         def bench_fn():
             x.grad = None
+            weight.grad = None
             y.backward(grad_output, retain_graph=True)
     elif mode == "full":
 
         def bench_fn():
             x.grad = None
+            weight.grad = None
             fwd_fn().backward(grad_output)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -219,10 +253,10 @@ def parse_sweep_args():
 def resolve_providers(sweep_args):
     if sweep_args.providers:
         for provider in sweep_args.providers:
-            if provider not in ("torch", "liger", CUTEDSL_PREFIX):
+            if provider not in ("torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX):
                 raise ValueError(f"Unknown provider {provider!r}")
         return list(sweep_args.providers)
-    return ["torch", "liger", CUTEDSL_PREFIX]
+    return ["torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX]
 
 
 if __name__ == "__main__":

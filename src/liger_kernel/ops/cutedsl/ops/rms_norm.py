@@ -1277,6 +1277,51 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     return dX.view(*shape), dW
 
 
+# ---------------------------------------------------------------------------
+# Dispatch delegation (B200 optimization, iteration 2)
+# ---------------------------------------------------------------------------
+# The Quack-derived kernels in the multi-backend dispatcher
+# (``ops/backends/_cutedsl/rms_norm.py``) measurably beat the inline kernels
+# below on every benchmarked B200 shape (llama_3_8b, hidden 4096, bf16 @ seq
+# 8192, wall ms: fwd 0.0618->0.0250, bwd 0.2067->0.0841, full 0.2683->0.1261
+# — also faster than the Triton kernel there). They are, however, compile-
+# gated: hidden dim must be divisible by the vector width (16 bytes /
+# elem_size) and <= 32K (``_BWD_MAX_TILE_CUTEDSL``). Module-replacement users
+# (``LIGER_KERNEL_IMPL=cutedsl``) therefore route through the guarded
+# delegation below: fast Quack kernel when supported, the inline kernels
+# otherwise — mirroring the guards in the dispatcher's ``rms_norm_cutedsl``.
+_FAST_SUPPORTED_DTYPES = {torch.float16, torch.bfloat16, torch.float32}
+_FAST_DISPATCH_FN = None
+
+
+def _fast_dispatch_fn():
+    """Deferred-import the dispatcher's autograd Function (lazy; no cycle —
+    ``backends/_cutedsl/rms_norm`` only depends on ``ops/_nvidia_shared``)."""
+    global _FAST_DISPATCH_FN
+    if _FAST_DISPATCH_FN is None:
+        from liger_kernel.ops.backends._cutedsl.rms_norm import _LigerRMSNormCuTeDSLFunction
+
+        _FAST_DISPATCH_FN = _LigerRMSNormCuTeDSLFunction
+    return _FAST_DISPATCH_FN
+
+
+def _fast_dispatch_supported(X, W) -> bool:
+    """True when the Quack-derived dispatcher kernel can run this call."""
+    if not (isinstance(X, torch.Tensor) and X.is_cuda):
+        return False
+    if X.dtype not in _FAST_SUPPORTED_DTYPES:
+        return False
+    if W is not None and W.dtype not in _FAST_SUPPORTED_DTYPES:
+        return False
+    N = X.shape[-1]
+    vecwidth = 16 // X.element_size()
+    if N % vecwidth != 0:
+        return False
+    if N > 32768:  # _BWD_MAX_TILE_CUTEDSL in the dispatcher backend
+        return False
+    return True
+
+
 class LigerRMSNormFunction(torch.autograd.Function):
     """
     CuTe DSL autograd wrapper for RMSNorm.
@@ -1284,6 +1329,11 @@ class LigerRMSNormFunction(torch.autograd.Function):
     Signature-compatible with ``liger_kernel.ops.rms_norm.LigerRMSNormFunction``:
     ``forward(X, W, eps, offset=0.0, casting_mode="llama", in_place=True, row_mode=None)``.
     See that class for the semantics of ``offset``, ``casting_mode`` and ``in_place``.
+
+    Runs the fast Quack-derived dispatcher kernel when the shape/dtype allow it
+    (see ``_fast_dispatch_supported``); otherwise falls back to the inline
+    kernels in this module (also reachable directly via ``rms_norm_forward`` /
+    ``rms_norm_backward``).
     """
 
     @staticmethod
@@ -1292,6 +1342,13 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
+        if _fast_dispatch_supported(X, W):
+            ctx._impl = "dispatch"
+            # Re-use THIS autograd node: parameterize the shared ctx exactly as
+            # the dispatcher's Function does, then let its backward handle dY.
+            return _fast_dispatch_fn().forward(ctx, X, W, eps, offset, casting_mode, in_place, row_mode)
+
+        ctx._impl = "inline"
         # Gather a TP-sharded input to a local tensor before normalizing (safe when
         # torch.distributed.tensor isn't importable on this build).
         X = _maybe_gather_dtensor(X)
@@ -1315,6 +1372,9 @@ class LigerRMSNormFunction(torch.autograd.Function):
         """
         Y: (B, T, H) or (BxT, H)
         """
+        if ctx._impl == "dispatch":
+            return _fast_dispatch_fn().backward(ctx, dY)
+
         if ctx.elementwise_affine:
             X, W, RSTD = ctx.saved_tensors
         else:

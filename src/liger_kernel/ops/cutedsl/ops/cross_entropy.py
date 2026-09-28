@@ -184,7 +184,7 @@ def _scale_in_place_host(mX: cute.Tensor, mScale: cute.Tensor, stream: cuda.CUst
 
 def _scale_in_place(x, scale):
     x_ct = to_cute_tensor(x)
-    scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
+    scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=scale.element_size())
     stream = _cute_stream()
     key = (x.dtype, scale.dtype)
     if key not in _scale_compile_cache:
@@ -582,17 +582,40 @@ def _ce_fwd_kernel(
             w_vidx = w_vidx + THREADS
         cute.arch.cp_async_wait_group(0)  # drain remaining prefetches
         cute.arch.barrier()  # all grad writes visible before the target correction
-        # -(1 - ls) * weight_y / N_loss correction at the (non-ignored) target index, one thread.
+        # True-class gradient correction at the (non-ignored) target index, one thread.
+        # dx_y = softmax(x_y) - (1 - ls) cancels catastrophically once the model is confident
+        # (softmax(x_y) -> 1), so the -(1 - ls) term must be folded in *before* the result is
+        # rounded to X's low-precision dtype. The pass-2 loop already stored the per-element
+        # part softmax(x_y)*coef (+smoothing) at gX[y], but reading that low-precision value back
+        # and adding -(1 - ls)/N would lose most of the significant bits in bf16/fp16. Instead we
+        # recompute the *entire* dx_y once, fully in fp32, and OVERWRITE gX[y] with a single
+        # store. ori_xy is the (softcapped) fp32 logit at y, so softmax_y matches the loop exactly.
         do_correction = y != ignore_index
         if tid == 0:
             if do_correction:
-                dxy = (Float32(0.0) - (Float32(1.0) - label_smoothing)) * w_eff * inv_n_loss
+                softmax_y = cute.math.exp2(ori_xy * LOG2_E + neg_m2_p2, fastmath=True) / d
+                # dloss_ori (+ z_loss) coefficient, identical to the loop's `coef`.
+                if const_expr(HAS_WEIGHT):
+                    coef_y = (Float32(1.0) - label_smoothing) * w_eff * inv_n_loss
+                else:
+                    coef_y = inv_n_loss
+                if const_expr(HAS_ZLOSS):
+                    coef_y = coef_y + (Float32(2.0) * lse_sq_scale * lse) * inv_n_z
+                dxy = softmax_y * coef_y
+                # additive label-smoothing term (matches the loop's NEED_WBLOCK/else split).
+                if const_expr(HAS_SMOOTHING):
+                    eps_g = eps * inv_n_loss
+                    if const_expr(HAS_WEIGHT):
+                        dxy = dxy + (softmax_y * weight_sum - w_eff) * eps_g
+                    else:
+                        dxy = dxy + (Float32(0.0) - eps_g)
+                # true-class term: dx_y picks up -(1 - ls) * weight_y / N_loss.
+                dxy = dxy + (Float32(0.0) - (Float32(1.0) - label_smoothing)) * w_eff * inv_n_loss
                 if const_expr(HAS_SOFTCAP):
                     # same chain factor at y: t_y = tanh(x_y/softcap) = ori_xy_capped/softcap.
                     t_y = ori_xy / softcap
-                    dxy = dxy * (1.0 - t_y * t_y)
-                corr = gX[y].to(Float32) + dxy
-                gX[y] = corr.to(gX.element_type)
+                    dxy = dxy * (Float32(1.0) - t_y * t_y)
+                gX[y] = dxy.to(gX.element_type)
 
 
 # =============================================================================
@@ -713,7 +736,7 @@ def _launch_ce_fwd(
     softcap_val = float(softcap) if has_softcap else 0.0
     x_ct = to_cute_tensor(x)
     y_ct = to_cute_tensor(y, assumed_align=8)  # int64
-    loss_ct = to_cute_tensor(loss, assumed_align=2)  # bf16/fp16/fp32 scalar
+    loss_ct = to_cute_tensor(loss, assumed_align=loss.element_size())  # bf16/fp16/fp32 scalar
     stream = _cute_stream()
     # Key on EVERY dtype the kernel bakes at compile time, not just x.dtype:
     #   mX.element_type (x), mY.element_type (y), mLoss.element_type (loss, via
@@ -727,7 +750,7 @@ def _launch_ce_fwd(
     # False, and the compile key carries that flag so a real-output compile can't reuse it.
     # Reuse the already-marshalled loss_ct/y_ct handles for the dummies (no extra from_dlpack
     # on the common path — one fewer DLPack capsule per call).
-    z_ct = to_cute_tensor(z_loss_out, assumed_align=2) if return_z_loss else loss_ct
+    z_ct = to_cute_tensor(z_loss_out, assumed_align=loss.element_size()) if return_z_loss else loss_ct
     ta_ct = to_cute_tensor(token_acc_out, assumed_align=4) if return_token_accuracy else loss_ct
     pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
     # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.

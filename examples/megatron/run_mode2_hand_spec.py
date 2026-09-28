@@ -3,8 +3,8 @@
 Adapted from Megatron's ``examples/run_simple_mcore_train_loop.py``. The
 relevant additions (vs. that file) are:
 
-  1. Direct imports of ``LigerMegatronRMSNorm`` and ``LigerMegatronCrossEntropy``
-     (no monkey-patch).
+  1. Direct imports of ``LigerMegatronRMSNorm``, ``LigerMegatronCrossEntropy``
+     and ``LigerMegatronSwiGLU`` (no monkey-patch).
 
   2. ``model_provider()`` assembles a ``TransformerBlockSubmodules`` by hand,
      placing ``LigerMegatronRMSNorm`` into every norm slot:
@@ -20,9 +20,16 @@ relevant additions (vs. that file) are:
      a ``LigerMegatronCrossEntropy`` instance. Cross-entropy has no spec slot
      in Megatron, so subclassing is the symmetric "hand-built" path.
 
-  4. ``_print_norm_classes`` + ``_print_ce_class`` after model construction
-     — print the resolved class for every norm slot AND the resolved CE
-     class on the model so you can verify Liger took over.
+  4. ``_LigerSwiGLUMLP(MLP)`` owns a ``LigerMegatronSwiGLU`` instance and is
+     placed in the ``mlp`` spec slot. The activation likewise has no usable
+     spec slot of its own — ``MLPSubmodules.activation_func`` is only read when
+     ``config.use_te_activation_func`` is set — but the MLP *class* is a slot,
+     so subclassing it is the hand-built equivalent.
+
+  5. ``_print_norm_classes`` + ``_print_ce_class`` + ``_print_swiglu_class``
+     after model construction — print the resolved class for every norm slot,
+     the resolved CE class, and the per-MLP SwiGLU module, so you can verify
+     Liger took over.
 
 Run with:
     torchrun --nproc_per_node=2 --master_addr=127.0.0.1 --master_port=29500 \\
@@ -38,6 +45,7 @@ from pathlib import Path
 from typing import Iterator
 
 import torch
+import torch.nn.functional as F
 
 from megatron.core import dist_checkpointing
 from megatron.core import parallel_state
@@ -73,6 +81,7 @@ from torch.utils.data import DataLoader
 # --- Liger integration: Mode 2 ---------------------------------------------
 from liger_kernel.megatron import LigerMegatronCrossEntropy
 from liger_kernel.megatron import LigerMegatronRMSNorm
+from liger_kernel.megatron import LigerMegatronSwiGLU
 
 # ---------------------------------------------------------------------------
 
@@ -80,6 +89,39 @@ _SEQUENCE_LENGTH = 64
 _NUM_ITERS = 5
 _NUM_LAYERS = 2
 _LABEL_SMOOTHING = 0.1
+
+# One shared, stateless activation for every layer.
+#
+# Keep this as a module-level singleton, not a child module.
+# If registered as a child, Megatron checkpointing calls ``sharded_state_dict()`` on it,
+# but ``LigerMegatronSwiGLU`` is stateless and has nothing to shard.
+_LIGER_SWIGLU = LigerMegatronSwiGLU()
+
+
+class _LigerSwiGLUMLP(MLP):
+    """``MLP`` subclass whose activation is ``LigerMegatronSwiGLU``.
+
+    SwiGLU has no reliable standalone spec slot for this path.
+    ``MLPSubmodules.activation_func`` is only used in the TransformerEngine path,
+    while standard ``MLP.forward`` resolves ``bias_swiglu_impl`` directly.
+
+    So we use the MLP class slot: subclass ``MLP`` and call Liger SwiGLU explicitly.
+    ``forward`` keeps only the fused-SwiGLU branch relevant to this config.
+    """
+
+    def forward(self, hidden_states, per_token_scale=None, **kwargs):
+        assert per_token_scale is None, "this example does not cover the MoE per-token-scale path"
+
+        # [s, b, 2 * ffn/p] — gate and up halves concatenated on the last dim.
+        intermediate, bias = self.linear_fc1(hidden_states)
+        intermediate = _LIGER_SWIGLU(
+            intermediate,
+            bias,
+            self.config.activation_func_fp8_input_store,
+            False,  # cpu_offload_input
+        )
+        # [s, b, h]
+        return self.linear_fc2(intermediate)
 
 
 class _LigerCEGPTModel(GPTModel):
@@ -124,6 +166,9 @@ def model_provider() -> GPTModel:
         use_cpu_initialization=True,
         pipeline_dtype=torch.float32,
         normalization="RMSNorm",
+        gated_linear_unit=True,
+        activation_func=F.silu,
+        add_bias_linear=False,
     )
 
     # ↓↓ Mode 2 — explicit slot-level placement of LigerMegatronRMSNorm ↓↓
@@ -144,8 +189,8 @@ def model_provider() -> GPTModel:
             ),
             self_attn_bda=get_bias_dropout_add,
             pre_mlp_layernorm=LigerMegatronRMSNorm,
-            mlp=partial(
-                MLP.as_mlp_submodule,
+            mlp=ModuleSpec(
+                module=_LigerSwiGLUMLP,
                 submodules=MLPSubmodules(
                     linear_fc1=ColumnParallelLinear,
                     linear_fc2=RowParallelLinear,
@@ -240,6 +285,27 @@ def _print_ce_class(model: torch.nn.Module) -> None:
     print()
 
 
+def _print_swiglu_class(model: torch.nn.Module) -> None:
+    """Show that every MLP routes its activation through ``LigerMegatronSwiGLU``.
+
+    Mode 2 does not touch Megatron's module-level ``bias_swiglu_impl`` at all, so unlike
+    Mode 1 there is no patched symbol to inspect. The activation is also intentionally
+    not a registered child (see ``_LIGER_SWIGLU``), so it will not appear in the module
+    tree either — the evidence is that each ``mlp`` slot resolved to ``_LigerSwiGLUMLP``.
+    """
+    print("=== Resolved SwiGLU MLPs ===")
+    found = 0
+    for name, mod in model.named_modules():
+        if isinstance(mod, _LigerSwiGLUMLP):
+            print(f"  {name:50s}  {type(mod).__name__} → {type(_LIGER_SWIGLU).__name__}")
+            found += 1
+    if not found:
+        print("  (none found — the MLP spec slot did not pick up _LigerSwiGLUMLP)")
+    else:
+        print(f"  in_place={_LIGER_SWIGLU.in_place}")
+    print()
+
+
 def main() -> None:
     # TP=1, DP=2 — CE patch (TP=1 only). Norms are correct under any TP value, so
     # demonstrating both Liger features in one script means running data-parallel.
@@ -254,6 +320,7 @@ def main() -> None:
         print(gpt_model)
         _print_norm_classes(gpt_model)
         _print_ce_class(gpt_model)
+        _print_swiglu_class(gpt_model)
 
     ddp_cfg = DistributedDataParallelConfig(
         grad_reduce_in_fp32=False,

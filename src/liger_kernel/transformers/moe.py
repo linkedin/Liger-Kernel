@@ -8,9 +8,9 @@ The autograd op currently lives in the ``cute`` backend
 (``liger_kernel.ops.cute.ops.moe``); ``cute`` is just the backend implementation
 and the frontend stays backend-neutral.
 
-The op is backed by the separate, optional ``liger_cute_kernels`` (lck) wheel.
+The op is backed by the separate, optional ``liger_cute_kernels`` package.
 Importing it eagerly here means that pulling in this module on an environment
-without the lck wheel fails fast with a clear, actionable error rather than
+without the native package fails fast with a clear, actionable error rather than
 blowing up later inside ``forward``.
 """
 
@@ -25,14 +25,14 @@ import torch.nn as nn
 # Import the backend autograd op eagerly so a missing/unbuildable backend
 # sub-package surfaces immediately as a clear error at import time. The op module
 # loads the native ``liger_cute_kernels.tvm_ffi`` facade at its own import, which
-# raises ImportError when the lck wheel is absent.
+# raises ImportError when the native package is absent.
 try:
     from liger_kernel.ops.cute.ops.moe import moe_fused
-except ImportError as exc:  # pragma: no cover - depends on a CUDA/lck build
+except ImportError as exc:  # pragma: no cover - depends on a native CUDA build
     raise ImportError(
         "LigerExpertParallelFusedMoe requires the fused MoE backend, which is "
-        "backed by the separate liger_cute_kernels (lck) wheel. Install the "
-        "matching lck wheel for your CUDA/torch environment, or build it locally "
+        "backed by the separate liger_cute_kernels package. Install the "
+        "matching native package for your CUDA/torch environment, or build it locally "
         "(see the liger_cute_kernels/ module at the repo root)."
     ) from exc
 
