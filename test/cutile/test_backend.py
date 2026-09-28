@@ -11,10 +11,18 @@ CUTILE_PREFIX = "liger_kernel.ops.cutile."
 # Transformer modules bind liger_kernel.ops.* at import time (geglu != GELUMul name).
 TRANSFORMER_MODULES = {
     "LigerCrossEntropyFunction": "liger_kernel.transformers.cross_entropy",
+    "LigerDyTFunction": "liger_kernel.transformers.dyt",
+    "LigerFusedAddRMSNormFunction": "liger_kernel.transformers.fused_add_rms_norm",
+    "LigerFusedLinearCrossEntropyFunction": "liger_kernel.transformers.fused_linear_cross_entropy",
     "LigerFusedLinearJSDFunction": "liger_kernel.transformers.fused_linear_jsd",
     "LigerGELUMulFunction": "liger_kernel.transformers.geglu",
+    "GrpoLossFunction": "liger_kernel.transformers.grpo_loss",
     "LigerJSDFunction": "liger_kernel.transformers.jsd",
     "LigerLayerNormFunction": "liger_kernel.transformers.layer_norm",
+    "LigerPolyNormFunction": "liger_kernel.transformers.poly_norm",
+    "LigerRMSNormFunction": "liger_kernel.transformers.rms_norm",
+    "LigerSiLUMulFunction": "liger_kernel.transformers.swiglu",
+    "LigerSoftmaxFunction": "liger_kernel.transformers.softmax",
 }
 
 pytestmark = [

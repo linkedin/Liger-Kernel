@@ -6,6 +6,14 @@ import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
 
+# torch.distributed.tensor is a lazy submodule on torch 2.12+; bind it once so
+# downstream ``torch.distributed.tensor.distribute_tensor`` / ``.Shard`` access
+# doesn't AttributeError before any explicit import has happened.
+try:
+    import torch.distributed.tensor  # noqa: F401
+except Exception:
+    pass
+
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
@@ -31,6 +39,16 @@ if device == "cuda":
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 SLEEP_SECONDS = 0.1
+
+_BLOCK_RMS_NORM_OVERFLOW_ROWS = 2**23 + 16
+_BLOCK_RMS_NORM_OVERFLOW_COLS = 256
+_BLOCK_RMS_NORM_MIN_FREE_BYTES = (
+    2
+    * _BLOCK_RMS_NORM_OVERFLOW_ROWS
+    * _BLOCK_RMS_NORM_OVERFLOW_COLS
+    * torch.tensor([], dtype=torch.bfloat16).element_size()
+    + _BLOCK_RMS_NORM_OVERFLOW_ROWS * torch.tensor([], dtype=torch.float32).element_size()
+)
 
 
 class BaseRMSNorm(nn.Module):
@@ -99,6 +117,35 @@ class GemmaRMSNorm(nn.Module):
         return output.type_as(x)
 
 
+def test_block_rms_norm_int32_row_offset_wraps():
+    """The blocked kernel's first overflowing row offset wraps in int32."""
+    row_idx = torch.tensor(2**23, dtype=torch.int32)
+    row_stride = torch.tensor(_BLOCK_RMS_NORM_OVERFLOW_COLS, dtype=torch.int32)
+
+    assert (row_idx * row_stride).item() == -(2**31)
+    assert row_idx.to(torch.int64).mul(row_stride).item() == 2**31
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.mem_get_info()[0] < _BLOCK_RMS_NORM_MIN_FREE_BYTES,
+    reason="requires 8.6 GB of free CUDA memory for the first overflowing blocked RMSNorm row",
+)
+def test_block_rms_norm_large_row_offset():
+    """The blocked forward path must address the first row beyond the int32 range."""
+    x = torch.zeros(
+        _BLOCK_RMS_NORM_OVERFLOW_ROWS,
+        _BLOCK_RMS_NORM_OVERFLOW_COLS,
+        dtype=torch.bfloat16,
+        device="cuda",
+    )
+    x[-1].fill_(1)
+    w = torch.ones(_BLOCK_RMS_NORM_OVERFLOW_COLS, dtype=torch.bfloat16, device="cuda")
+
+    y = LigerRMSNormFunction.apply(x, w, 1e-6, 0.0, "llama", True, False)
+
+    assert torch.allclose(y[-1], torch.ones_like(y[-1]), atol=1e-2, rtol=1e-2)
+
+
 @pytest.mark.flaky(reruns=3, reruns_delay=2)
 @pytest.mark.parametrize(
     "bs, sl, hd",
@@ -159,7 +206,7 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     # reference (llama or gemma)
     ref_rms = reference(hidden_size=hd, elementwise_affine=elementwise_affine).to(device).to(dtype)
     ref_o = ref_rms(h1)
-    ref_o.backward(do, retain_graph=True)
+    ref_o.backward(do)
 
     # triton
     triton_rms = (
@@ -174,7 +221,8 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
         .to(dtype)
     )
     triton_o = triton_rms(h2)
-    triton_o.backward(do, retain_graph=True)
+    # clone since in_place=True lets backward overwrite the grad-output buffer
+    triton_o.backward(do.clone())
 
     assert_verbose_allclose(ref_o, triton_o, atol=atol, rtol=rtol)
     if elementwise_affine:
@@ -232,8 +280,9 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset
 
     grad = torch.randn_like(y2)
 
-    y1.backward(grad)
-    y2.backward(grad)
+    # Clone grad since in_place=True lets backward overwrite the grad-output buffer
+    y1.backward(grad.clone())
+    y2.backward(grad.clone())
 
     assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
 
