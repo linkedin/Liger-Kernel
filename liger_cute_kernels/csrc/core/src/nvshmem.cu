@@ -210,6 +210,7 @@ liger_cute_status_t liger_cute_nvshmem_team_destroy(int64_t team_handle) {
     if (team == NVSHMEM_TEAM_WORLD || team == NVSHMEM_TEAM_INVALID) {
       return LIGER_CUTE_OK;
     }
+    liger::fused_scaled_linear_cross_entropy::release_fslce_tp_team(team_handle);
     nvshmem_team_destroy(team);
     return LIGER_CUTE_OK;
   });

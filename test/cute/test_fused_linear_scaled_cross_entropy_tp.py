@@ -331,6 +331,208 @@ def _run(
         shutil.rmtree(rendezvous, ignore_errors=True)
 
 
+def _multi_context_worker(rank, world_size, init_file, bootstrap_subgroups, partial_overlap):
+    from liger_cute_kernels import nvshmem
+    from liger_cute_kernels import tvm_ffi
+
+    from liger_kernel.ops.configure import FusedLinearCrossEntropyConfig
+    from liger_kernel.ops.configure import configure
+
+    torch.cuda.set_device(rank)
+    dist.init_process_group(
+        "nccl",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=180),
+    )
+    bootstrap = dist.group.WORLD
+    bootstrap_partitions = [list(range(world_size))]
+    if bootstrap_subgroups:
+        bootstrap_partitions = [list(range(0, world_size, 2)), list(range(1, world_size, 2))]
+        for ranks in bootstrap_partitions:
+            group = dist.new_group(ranks)
+            if rank in ranks:
+                bootstrap = group
+
+    # Every torch rank creates groups in the same order, even when NVSHMEM is
+    # bootstrapped independently inside two non-WORLD groups.
+    local_groups = []
+    for layout in range(4):
+        for members in bootstrap_partitions:
+            if layout == 0:
+                partitions = [members[i : i + 2] for i in range(0, len(members), 2)]
+            elif layout == 1:
+                if partial_overlap:
+                    partitions = [members[:2], [members[2], members[4]], [members[3], members[5]]]
+                else:
+                    partitions = [members[::2], members[1::2]]
+            elif layout == 2:
+                partitions = [[member] for member in members]
+            else:
+                partitions = (
+                    [members] if not partial_overlap else [members[i : i + 2] for i in range(0, len(members), 2)]
+                )
+            for ranks in partitions:
+                group = dist.new_group(ranks)
+                if rank in ranks:
+                    local_groups.append((group, ranks))
+
+    cases = []
+    for index, (group, ranks) in enumerate(local_groups):
+        name = f"tp{index}"
+        assert configure(
+            process_groups={name: group},
+            bootstrap_group=bootstrap,
+            device=f"cuda:{rank}",
+            flsce=FusedLinearCrossEntropyConfig(_TOKENS + 128, _HIDDEN, _LOCAL_VOCAB, group=name),
+        )
+        generator = torch.Generator().manual_seed(8011 + ranks[0])
+        tokens = _TOKENS - index * 16
+        x = (
+            torch.randn(tokens, _HIDDEN, generator=generator)
+            .mul_(0.05)
+            .to(device="cuda", dtype=torch.bfloat16)
+            .requires_grad_(True)
+        )
+        generator.manual_seed(9000 + rank)
+        weight = (
+            torch.randn(_LOCAL_VOCAB, _HIDDEN, generator=generator)
+            .mul_(0.05)
+            .to(device="cuda", dtype=torch.bfloat16)
+            .requires_grad_(True)
+        )
+        weights = [torch.empty_like(weight) for _ in ranks]
+        dist.all_gather(weights, weight.detach(), group=group)
+        target = torch.arange(tokens, device="cuda", dtype=torch.int64) % (len(ranks) * _LOCAL_VOCAB)
+        grad_nll = torch.linspace(0.25, 1.0, tokens, device="cuda")
+        grad_entropy = torch.linspace(-0.2, 0.3, tokens, device="cuda")
+        nll, entropy, dx, dz = _reference(x.detach(), torch.cat(weights), target, grad_nll, grad_entropy)
+        start = ranks.index(rank) * _LOCAL_VOCAB
+        dw = dz[:, start : start + _LOCAL_VOCAB].t() @ x.detach().float()
+        case = (group, x, weight, target, grad_nll, grad_entropy, (nll, entropy, dx, dw))
+        cases.append(case)
+        # Unequal call counts on disjoint old teams must not contaminate the
+        # epochs of a later overlapping partition.
+        for _ in range(1 + ranks[0] % 3):
+            with torch.no_grad():
+                LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+                    x,
+                    weight,
+                    target,
+                    group,
+                    _TEMPERATURE,
+                    _IGNORE_INDEX,
+                    1,
+                    True,
+                )
+        torch.cuda.synchronize()
+        dist.barrier(group=bootstrap)
+
+    def forward(case):
+        group, x, weight, target, _, _, _ = case
+        return LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+            x,
+            weight,
+            target,
+            group,
+            _TEMPERATURE,
+            _IGNORE_INDEX,
+            1,
+            True,
+        )
+
+    for _ in range(2):
+        outputs = [forward(case) for case in cases]
+        for case, actual in reversed(list(zip(cases, outputs))):
+            _, x, weight, _, grad_nll, grad_entropy, expected = case
+            x.grad = weight.grad = None
+            torch.autograd.backward(actual, (grad_nll, grad_entropy))
+            torch.testing.assert_close(actual[0], expected[0], atol=3e-4, rtol=3e-4)
+            torch.testing.assert_close(actual[1], expected[1], atol=3e-4, rtol=3e-4)
+            torch.testing.assert_close(x.grad.float(), expected[2], atol=8e-3, rtol=4e-2)
+            torch.testing.assert_close(weight.grad.float(), expected[3], atol=8e-3, rtol=4e-2)
+
+    graphs = []
+    for case in cases[:2]:
+        group, x, weight, target, grad_nll, grad_entropy, expected = case
+        team = nvshmem.resolve_team(group, create=False)
+        vocab_start = dist.get_rank(group) * _LOCAL_VOCAB
+        graph = torch.cuda.CUDAGraph()
+        torch.cuda.synchronize()
+        with torch.cuda.graph(graph):
+            nll, lse, entropy = tvm_ffi.fused_linear_scaled_cross_entropy_forward(
+                x,
+                weight,
+                target,
+                vocab_start,
+                _IGNORE_INDEX,
+                1.0 / _TEMPERATURE,
+                team,
+                True,
+            )
+            dx, dw = tvm_ffi.fused_linear_scaled_cross_entropy_backward(
+                grad_nll,
+                grad_entropy,
+                x,
+                weight,
+                target,
+                lse,
+                entropy,
+                vocab_start,
+                _IGNORE_INDEX,
+                1.0 / _TEMPERATURE,
+                team,
+                1,
+                True,
+            )
+        graphs.append((graph, (nll, entropy, dx, dw), expected))
+    for _ in range(3):
+        with torch.no_grad():
+            forward(cases[-1])
+        for graph, actual, expected in reversed(graphs):
+            graph.replay()
+            torch.cuda.synchronize()
+            for index, (result, reference) in enumerate(zip(actual, expected)):
+                atol, rtol = (3e-4, 3e-4) if index < 2 else (8e-3, 4e-2)
+                torch.testing.assert_close(result.float(), reference, atol=atol, rtol=rtol)
+    del graphs, graph
+    torch.cuda.synchronize()
+    nvshmem.pool_clear_all()
+    # Reusing the same team after pool clear must rebuild its native context.
+    assert configure(
+        bootstrap_group=bootstrap,
+        device=f"cuda:{rank}",
+        flsce=FusedLinearCrossEntropyConfig(_TOKENS + 128, _HIDDEN, _LOCAL_VOCAB, group="tp0"),
+    )
+    with torch.no_grad():
+        actual = forward(cases[0])
+    torch.testing.assert_close(actual[0], cases[0][-1][0], atol=3e-4, rtol=3e-4)
+    torch.cuda.synchronize()
+    nvshmem.finalize()
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize(
+    ("world_size", "bootstrap_subgroups", "partial_overlap"),
+    [(4, False, False), (6, False, True), (8, True, False)],
+)
+def test_native_multiple_tp_contexts(world_size, bootstrap_subgroups, partial_overlap, monkeypatch):
+    if not _NATIVE_AVAILABLE or _NDEV < world_size:
+        pytest.skip(f"requires native LCK and at least {world_size} CUDA devices")
+    monkeypatch.setenv("NVSHMEM_DISABLE_NCCL", "1")
+    monkeypatch.setenv("NVSHMEM_DISABLE_NVLS", "0")
+    monkeypatch.setenv("NVSHMEM_REMOTE_TRANSPORT", "none")
+    monkeypatch.setenv("NVSHMEM_SYMMETRIC_SIZE", "6G")
+    with tempfile.TemporaryDirectory(prefix="liger_tp_contexts_") as rendezvous:
+        mp.spawn(
+            _multi_context_worker,
+            args=(world_size, os.path.join(rendezvous, "store"), bootstrap_subgroups, partial_overlap),
+            nprocs=world_size,
+            join=True,
+        )
+
+
 @pytest.mark.parametrize("world_size", [1, 2, 4, 8])
 def test_tp_frontend_world_process_group(world_size):
     if not _NATIVE_AVAILABLE:

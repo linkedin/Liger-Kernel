@@ -772,7 +772,7 @@ struct BackwardTpParamsSm100 {
 	int num_comm_channels = 4;
 	// NVSHMEM team used by the matching forward. The SM100 IB path supports two
 	// uniform hosts with 1, 2, 4, or 8 selected GPUs per host.
-	std::int64_t team_handle = 0;
+	std::int64_t team_handle = -1;
 };
 
 // Collective over params.team_handle. Produces globally reduced BF16 dX and

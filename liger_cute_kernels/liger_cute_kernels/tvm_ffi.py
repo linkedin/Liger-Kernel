@@ -330,16 +330,18 @@ def moe_fused_bwd_bf16(
 def fused_linear_scaled_cross_entropy_configure_forward(
     max_tokens: int,
     max_local_vocab: int,
+    team_handle: int = -1,
 ) -> None:
     """Reserve reusable forward workspace for the maximum local problem.
 
-    This is a collective configuration call across the NVSHMEM team used by
-    subsequent forward launches. Capacities are immutable until the shared
-    buffer pool is cleared, so every rank must pass identical values.
+    Pass ``team_handle`` when multiple contexts are prepared. The default is
+    only valid before context setup or when exactly one context is prepared.
+    Capacities are immutable until the shared buffer pool is cleared.
     """
     _load_module().fused_linear_scaled_cross_entropy_configure_forward(
         int(max_tokens),
         int(max_local_vocab),
+        int(team_handle),
     )
 
 
@@ -352,10 +354,11 @@ def fused_linear_scaled_cross_entropy_configure_backward(
 ) -> None:
     """Reserve backward/NVLS/remote-ring workspace for an NVSHMEM TP team.
 
-    All PEs in ``team_handle`` must call this with identical maxima before the
-    first forward or backward launch. ``max_tiles_per_reduce`` must cover every
-    later ``tiles_per_reduce`` request. Multi-host teams must have uniform
-    per-host membership and host-major team-rank ordering.
+    Initial setup is collective across NVSHMEM WORLD, with identical maxima.
+    Later calls only validate capacities for an already prepared team. Use
+    ``configure_context`` for additional teams at a coordinated setup boundary.
+    ``max_tiles_per_reduce`` must cover every later request. Multi-host teams
+    must have uniform per-host membership and host-major team-rank ordering.
     """
     from .configuration import _validate_flsce_call
 
@@ -366,6 +369,32 @@ def fused_linear_scaled_cross_entropy_configure_backward(
         int(max_local_vocab),
         int(max_tiles_per_reduce),
         int(team_handle),
+    )
+
+
+def fused_linear_scaled_cross_entropy_configure_context(
+    max_tokens: int,
+    max_hidden: int,
+    max_local_vocab: int,
+    max_tiles_per_reduce: int,
+    team_handle: int,
+    context_slot: int,
+) -> None:
+    """Collectively prepare a TP context; every bootstrap PE uses the same slot.
+
+    The first reservation fixes process-wide capacities. Cache-hit PEs must
+    still participate when other PEs prepare new groups in this slot.
+    """
+    from .configuration import _validate_flsce_call
+
+    _validate_flsce_call(max_tokens, max_hidden, max_local_vocab, max_tiles_per_reduce, team_handle)
+    _load_module().fused_linear_scaled_cross_entropy_configure_context(
+        int(max_tokens),
+        int(max_hidden),
+        int(max_local_vocab),
+        int(max_tiles_per_reduce),
+        int(team_handle),
+        int(context_slot),
     )
 
 
@@ -407,23 +436,25 @@ def fused_linear_scaled_cross_entropy_backward_workspace_bytes(
 
 def fused_linear_scaled_cross_entropy_forward_diagnostics(
     device: torch.device | str,
+    team_handle: int = -1,
 ) -> torch.Tensor:
-    """Return the device timestamp/counter block from the latest forward."""
+    """Return forward diagnostics for a team (implicit only with one context)."""
     module = _load_module()
     entries = int(module.fused_linear_scaled_cross_entropy_forward_diagnostic_entries())
     output = torch.empty(entries, dtype=torch.int64, device=device)
-    module.fused_linear_scaled_cross_entropy_forward_diagnostics(output)
+    module.fused_linear_scaled_cross_entropy_forward_diagnostics(output, int(team_handle))
     return output
 
 
 def fused_linear_scaled_cross_entropy_backward_diagnostics(
     device: torch.device | str,
+    team_handle: int = -1,
 ) -> torch.Tensor:
-    """Return the device timestamp/counter block from the latest backward."""
+    """Return backward diagnostics for a team (implicit only with one context)."""
     module = _load_module()
     entries = int(module.fused_linear_scaled_cross_entropy_backward_diagnostic_entries())
     output = torch.empty(entries, dtype=torch.int64, device=device)
-    module.fused_linear_scaled_cross_entropy_backward_diagnostics(output)
+    module.fused_linear_scaled_cross_entropy_backward_diagnostics(output, int(team_handle))
     return output
 
 

@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <set>
 
 #include <nvshmem.h>
 #include <nvshmemx.h>
@@ -15,6 +16,7 @@
 #include "buffer_pool.cuh"
 #include "forward_remote_reduce.cuh"
 #include "liger_cute/check.h"
+#include "workspace.cuh"
 
 namespace liger {
 namespace fused_scaled_linear_cross_entropy {
@@ -23,6 +25,7 @@ namespace {
 int g_capacity_tokens = 0;
 int g_capacity_local_vocab = 0;
 std::size_t g_capacity_split_partials_bytes = 0;
+std::set<std::int64_t> g_prepared_slots;
 
 #if LIGER_CUTE_DISPATCH_COMPUTE == 100
 using ForwardWorkspaceLaunch = ForwardGemmLaunchSm100<100>;
@@ -247,20 +250,24 @@ void configure_forward_tp_workspace(int max_tokens, int max_local_vocab) {
 
 	std::size_t split_bytes =
 		split_partials_bytes_at(max_tokens, max_local_vocab);
-	if (max_tokens <= g_capacity_tokens &&
-		max_local_vocab <= g_capacity_local_vocab &&
-		split_bytes <= g_capacity_split_partials_bytes) {
-		return;
-	}
 	LIGER_CHECK(
-		g_capacity_tokens == 0,
+		g_capacity_tokens == 0 ||
+			(max_tokens <= g_capacity_tokens &&
+			 max_local_vocab <= g_capacity_local_vocab &&
+			 split_bytes <= g_capacity_split_partials_bytes),
 		"fused_scaled_linear_cross_entropy forward workspace is immutable "
 		"after its first configuration");
+	if (g_capacity_tokens != 0) {
+		max_tokens = g_capacity_tokens;
+		max_local_vocab = g_capacity_local_vocab;
+		split_bytes = g_capacity_split_partials_bytes;
+	}
+	auto& pool = tp_buffer_pool();
+	if (g_prepared_slots.count(pool.slot())) return;
 
 	using Names = ForwardBufferNames;
 	std::size_t token_bytes = token_bytes_at(max_tokens);
 	std::size_t packed_bytes = packed_bytes_at(max_tokens);
-	auto& pool = global_buffer_pool();
 
 	pool.get_device(Names::kLocalMax, token_bytes);
 	pool.get_device(Names::kGlobalMax, token_bytes);
@@ -318,6 +325,7 @@ void configure_forward_tp_workspace(int max_tokens, int max_local_vocab) {
 	g_capacity_tokens = max_tokens;
 	g_capacity_local_vocab = max_local_vocab;
 	g_capacity_split_partials_bytes = split_bytes;
+	g_prepared_slots.insert(pool.slot());
 }
 
 std::size_t forward_tp_workspace_device_bytes(
@@ -338,6 +346,7 @@ void reset_forward_tp_workspace_configuration() {
 	g_capacity_tokens = 0;
 	g_capacity_local_vocab = 0;
 	g_capacity_split_partials_bytes = 0;
+	g_prepared_slots.clear();
 }
 
 template <bool ReturnEntropy>
@@ -347,7 +356,8 @@ ForwardTpWorkspace reserve_forward_tp_workspace(int tokens) {
 	using Names = ForwardBufferNames;
 	std::size_t token_bytes = token_bytes_at(g_capacity_tokens);
 	std::size_t packed_bytes = packed_bytes_at(g_capacity_tokens);
-	auto& pool = global_buffer_pool();
+	auto& pool = tp_buffer_pool();
+	LIGER_CHECK(g_prepared_slots.count(pool.slot()), "forward TP context is not configured");
 
 	ForwardTpWorkspace workspace = {};
 	workspace.local.local_max = static_cast<float*>(
@@ -419,7 +429,7 @@ void copy_forward_tp_diagnostics(
 		required,
 		" are required");
 #if LIGER_CUTE_DISPATCH_COMPUTE == 100
-	auto& pool = global_buffer_pool();
+	auto& pool = tp_buffer_pool();
 	auto* diagnostics = static_cast<std::uint64_t*>(
 		pool.get_device(
 			ForwardBufferNames::kDiagnostics,

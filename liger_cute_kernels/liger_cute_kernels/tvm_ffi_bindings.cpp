@@ -22,6 +22,7 @@
 #include "forward_reduce.cuh"
 #include "workspace.cuh"
 #include "moe_launch.h"
+#include "liger_cute/detail/tp_reduce.cuh"
 
 namespace liger {
 void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m);
@@ -411,14 +412,39 @@ void moe_fused_bwd_bf16(
 }
 
 void fused_linear_scaled_cross_entropy_configure_forward(
-    int64_t max_tokens, int64_t max_local_vocab) {
+    int64_t max_tokens, int64_t max_local_vocab, int64_t team_handle) {
   TVM_FFI_ICHECK_GT(max_tokens, 0);
   TVM_FFI_ICHECK_GT(max_local_vocab, 0);
   try {
+    if (team_handle >= 0) {
+      liger_cute::detail::TpReduceContextScope selected(team_handle);
+      liger::fused_scaled_linear_cross_entropy::configure_forward_tp_workspace(
+          static_cast<int>(max_tokens), static_cast<int>(max_local_vocab));
+      return;
+    }
     liger::fused_scaled_linear_cross_entropy::configure_forward_tp_workspace(
         static_cast<int>(max_tokens), static_cast<int>(max_local_vocab));
   } catch (const std::exception& e) {
     ThrowCoreError("fused_linear_scaled_cross_entropy_configure_forward", e);
+  }
+}
+
+void fused_linear_scaled_cross_entropy_configure_context(
+    int64_t max_tokens, int64_t max_hidden, int64_t max_local_vocab,
+    int64_t max_tiles_per_reduce, int64_t team_handle, int64_t context_slot) {
+  TVM_FFI_ICHECK_GT(max_tokens, 0);
+  TVM_FFI_ICHECK_GT(max_hidden, 0);
+  TVM_FFI_ICHECK_GT(max_local_vocab, 0);
+  TVM_FFI_ICHECK_GE(context_slot, 0);
+  TVM_FFI_ICHECK(
+      max_tiles_per_reduce == 1 || max_tiles_per_reduce == 2 || max_tiles_per_reduce == 4);
+  try {
+    liger::fused_scaled_linear_cross_entropy::configure_backward_tp_context(
+        static_cast<int>(max_tokens), static_cast<int>(max_hidden),
+        static_cast<int>(max_local_vocab), static_cast<int>(max_tiles_per_reduce),
+        1, team_handle, context_slot);
+  } catch (const std::exception& e) {
+    ThrowCoreError("fused_linear_scaled_cross_entropy_configure_context", e);
   }
 }
 
@@ -471,7 +497,7 @@ int64_t fused_linear_scaled_cross_entropy_backward_workspace_bytes(
     std::size_t device =
         liger::fused_scaled_linear_cross_entropy::
             backward_tp_pool_device_bytes(
-                static_cast<int>(max_local_vocab));
+                static_cast<int>(max_local_vocab), static_cast<int>(max_tokens));
     return static_cast<int64_t>(symmetric + device);
   } catch (const std::exception& e) {
     ThrowCoreError(
@@ -487,7 +513,7 @@ int64_t fused_linear_scaled_cross_entropy_forward_diagnostic_entries() {
 }
 
 void fused_linear_scaled_cross_entropy_forward_diagnostics(
-    ffi::TensorView output) {
+    ffi::TensorView output, int64_t team_handle) {
   DLDataType i64{kDLInt, 64, 1};
   RequireCudaTensor(output, 1, i64, "output");
   int entries = liger::fused_scaled_linear_cross_entropy::
@@ -498,6 +524,7 @@ void fused_linear_scaled_cross_entropy_forward_diagnostics(
           output.device().device_type,
           output.device().device_id));
   try {
+    liger_cute::detail::TpReduceContextScope selected(team_handle);
     liger::fused_scaled_linear_cross_entropy::
         copy_forward_tp_diagnostics(
             static_cast<std::uint64_t*>(output.data_ptr()),
@@ -520,7 +547,7 @@ int64_t fused_linear_scaled_cross_entropy_backward_diagnostic_entries() {
 }
 
 void fused_linear_scaled_cross_entropy_backward_diagnostics(
-    ffi::TensorView output) {
+    ffi::TensorView output, int64_t team_handle) {
   DLDataType i64{kDLInt, 64, 1};
   RequireCudaTensor(output, 1, i64, "output");
   int entries =
@@ -532,6 +559,7 @@ void fused_linear_scaled_cross_entropy_backward_diagnostics(
           output.device().device_type,
           output.device().device_id));
   try {
+    liger_cute::detail::TpReduceContextScope selected(team_handle);
     liger::fused_scaled_linear_cross_entropy::
         fused_linear_scaled_cross_entropy_backward_diagnostics_sm100(
             static_cast<std::uint64_t*>(output.data_ptr()),
@@ -668,15 +696,14 @@ void fused_linear_scaled_cross_entropy_backward(
   cudaStream_t stream = reinterpret_cast<cudaStream_t>(
       TVMFFIEnvGetStream(x.device().device_type, x.device().device_id));
   try {
-    TVM_FFI_ICHECK_EQ(team_handle, backward_dx_team_handle())
-        << "team_handle must match the configured tensor-parallel team";
+    liger_cute::detail::TpReduceContextScope selected(team_handle);
     BackwardScratch scratch = reserve_backward_scratch(static_cast<int>(local_vocab));
 #if LIGER_CUTE_DISPATCH_COMPUTE == 100
     BackwardTpParamsSm100<100> params;
-    params.team_handle = team_handle;
 #else
     BackwardTpParamsSm90<90> params;
 #endif
+    params.team_handle = team_handle;
     params.gemm.x = x.data_ptr();
     params.gemm.weight = weight.data_ptr();
     params.gemm.target = static_cast<const int64_t*>(target.data_ptr());
@@ -732,6 +759,7 @@ void fused_linear_scaled_cross_entropy_backward_phase_bench(
     int64_t tokens = x.size(0);
     int64_t hidden = x.size(1);
     int64_t local_vocab = weight.size(0);
+    liger_cute::detail::TpReduceContextScope selected(team_handle);
     BackwardScratch scratch = reserve_backward_scratch(static_cast<int>(local_vocab));
     BackwardTpParamsSm100<100> params;
     params.team_handle = team_handle;
@@ -797,6 +825,9 @@ TVM_FFI_DLL_EXPORT_TYPED_FUNC(
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(
     fused_linear_scaled_cross_entropy_configure_backward,
     fused_linear_scaled_cross_entropy_configure_backward);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(
+    fused_linear_scaled_cross_entropy_configure_context,
+    fused_linear_scaled_cross_entropy_configure_context);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(
     fused_linear_scaled_cross_entropy_forward_workspace_bytes,
     fused_linear_scaled_cross_entropy_forward_workspace_bytes);

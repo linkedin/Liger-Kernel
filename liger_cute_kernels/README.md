@@ -86,20 +86,50 @@ whose members all participate. Do not call a WORLD-collective setup only on
 
 Calling `configure` without operator sections initializes only the runtime.
 A later collective call can add an operator without clearing the other's
-resources. Repeating a section with equal or smaller capacity is a no-op for
-its native reservation. Reserve the maximum across actor/reference consumers
+resources. Repeating an already prepared section with equal or smaller capacity
+reuses its native reservation. Reserve the maximum across actor/reference consumers
 upfront, including fixed-size microbatches; requests exceeding the reservation
 raise before kernel launch. FLSCE hidden capacity includes the frontend's
 alignment padding. MoE hidden size and expert count remain fixed; token and
 top-k requests may be smaller than the reserved limits.
 
-The existing native workspaces remain process-global: this API supports one
-CUDA device and one TP partition plus one EP partition per process.
-Equivalent process-group objects with the same ordered membership reuse a team.
-Replacing an operator's partition or growing a live reservation is explicitly
-unsupported; this is not a multi-context allocator. Call setup serially at a
-coordinated boundary, outside CUDA graph capture, and do not overlap launches
-that share operator scratch buffers. MoE still allocates stack buffers during
+FLSCE capacities remain process-wide, while native execution contexts are cached
+by NVSHMEM team handle. Each context has its own local/remote teams, peer mappings,
+scratch buffers, and launch epochs. Prepare additional actor/reference TP groups
+with another collective call; the groups can have different TP sizes:
+
+```python
+configure(
+    process_groups={"reference_tp": reference_tp_group},
+    flsce=FusedLinearCrossEntropyConfig(
+        max_tokens=2048,  # Must fit the original process-wide reservation.
+        hidden_size=4096,
+        local_vocab_size=local_vocab_size,
+        group="reference_tp",
+    ),
+)
+```
+
+Pass the appropriate process group to each FLSCE call. Backward retains the
+forward's team, and captured graphs retain their original context. Equivalent
+process-group objects with the same ordered membership reuse a native context.
+The Python fast path caches `ProcessGroup -> team_handle`, so repeated execution
+does not reconstruct rank lists or create teams. Native context lookup does not
+allocate or query topology.
+
+Additional contexts consume additional workspace. Symmetric allocations use
+collectively ordered slots, not local team-handle values. When only some teams in
+a new partition are already cached, every bootstrap PE still reserves that slot
+to preserve NVSHMEM heap ordering; cached teams continue using their original
+buffers and epochs. Slot storage is retained until pool clear or finalization.
+
+This API supports one CUDA device and one MoE EP partition per process. Growing
+a live reservation or replacing the MoE partition remains unsupported. Call
+setup serially at a coordinated boundary, outside CUDA graph capture. Serialize
+launches sharing the same context's scratch buffers, and issue collectives in
+consistent order across participating ranks. Destroy teams or clear pools only
+after all dependent launches, backwards, and graphs have finished. MoE still
+allocates stack buffers during
 warm-up; all bootstrap PEs must warm up matching allocation sequences/depths
 before independent execution or graph capture.
 

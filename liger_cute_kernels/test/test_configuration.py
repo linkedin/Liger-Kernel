@@ -59,7 +59,7 @@ def runtime(monkeypatch):
     monkeypatch.setattr(nvshmem, "team_from_pg", lambda pg: 19)
     monkeypatch.setattr(nvshmem, "resolve_team", lambda pg, *, create: 19)
     monkeypatch.setattr(
-        tvm_ffi, "fused_linear_scaled_cross_entropy_configure_backward", lambda *args: calls.append(("backward", args))
+        tvm_ffi, "fused_linear_scaled_cross_entropy_configure_context", lambda *args: calls.append(("context", args))
     )
     monkeypatch.setattr(
         tvm_ffi, "fused_linear_scaled_cross_entropy_configure_forward", lambda *args: calls.append(("forward", args))
@@ -79,8 +79,7 @@ def test_shared_runtime_configures_both_operators_once(runtime):
     runtime.configure(flsce=FLSCE, moe=MOE)
     assert runtime.calls == [
         ("init", runtime.world),
-        ("backward", (2048, 512, 1024, 1, 19)),
-        ("forward", (2048, 1024)),
+        ("context", (2048, 512, 1024, 1, 19, 0)),
         ("moe", (2048, 512, 8, 2, 2, 1, 2)),
     ]
 
@@ -94,13 +93,13 @@ def test_add_operator_preserves_existing_reservation(runtime, first):
     assert runtime.calls[: len(before)] == before
     assert [name for name, _ in runtime.calls].count("init") == 1
     assert [name for name, _ in runtime.calls].count("moe") == 1
-    assert [name for name, _ in runtime.calls].count("backward") == 1
+    assert [name for name, _ in runtime.calls].count("context") == 1
 
 
 def test_runtime_only_then_operator_setup(runtime):
     runtime.configure()
     runtime.configure(flsce=FLSCE)
-    assert [name for name, _ in runtime.calls] == ["init", "backward", "forward"]
+    assert [name for name, _ in runtime.calls] == ["init", "context"]
 
 
 def test_actor_and_reference_can_reuse_larger_capacity(runtime):
@@ -113,7 +112,7 @@ def test_actor_and_reference_can_reuse_larger_capacity(runtime):
 
 def test_hidden_capacity_includes_native_padding(runtime):
     runtime.configure(flsce=replace(FLSCE, hidden_size=513))
-    assert runtime.calls[1] == ("backward", (2048, 520, 1024, 1, 19))
+    assert runtime.calls[1] == ("context", (2048, 520, 1024, 1, 19, 0))
 
 
 @pytest.mark.parametrize("section", ["flsce", "moe"])
@@ -126,12 +125,27 @@ def test_capacity_growth_rejected_without_touching_buffers(runtime, section):
     assert runtime.calls == before
 
 
-def test_group_replacement_is_explicitly_unsupported(runtime):
+def test_add_tp_partition_preserves_process_wide_capacity(runtime, monkeypatch):
     runtime.configure(flsce=FLSCE)
     subgroup = object()
     runtime.members[subgroup] = (0,)
-    with pytest.raises(RuntimeError, match="process-group replacement"):
-        runtime.configure(process_groups={"other": subgroup}, flsce=replace(FLSCE, group="other"))
+    monkeypatch.setattr(nvshmem, "resolve_team", lambda group, *, create: 20 if group is subgroup else 19)
+
+    def gather(output, value, group):
+        peer = list(value)
+        peer[1] = ((1,), value[1][1])
+        peer[5] = (("other", (1,)),)
+        output[:] = [value, tuple(peer)]
+
+    monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
+    runtime.configure(process_groups={"other": subgroup}, flsce=replace(FLSCE, max_tokens=512, group="other"))
+    assert runtime.calls[-1] == ("context", (2048, 512, 1024, 1, 20, 1))
+    assert configuration._configuration.flsce_teams == {19: (0, 1), 20: (0,)}
+    configuration._validate_flsce_call(2048, 512, 1024, 1, 19)
+    configuration._validate_flsce_call(512, 512, 1024, 1, 20)
+    before = list(runtime.calls)
+    runtime.configure(flsce=replace(FLSCE, group="other"))
+    assert runtime.calls == before
 
 
 def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
@@ -141,7 +155,7 @@ def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
     monkeypatch.setattr(nvshmem, "team_from_pg", lambda group: teams.append(group) or len(teams))
 
     def gather(output, value, group):
-        error, flsce, moe, hardware, state, group_specs = value
+        error, flsce, moe, hardware, state, group_specs, cached = value
         output[:] = [
             (
                 error,
@@ -150,6 +164,7 @@ def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
                 hardware,
                 state,
                 (("ep", (rank % 2, rank % 2 + 2)), ("tp", (rank // 2 * 2, rank // 2 * 2 + 1))),
+                cached,
             )
             for rank in range(4)
         ]
@@ -163,6 +178,63 @@ def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
     assert runtime.calls[0] == ("init", runtime.world)
     assert teams == [ep, tp]
     assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 2, 1, 2))
+
+
+def test_partial_context_cache_hits_still_reserve_collective_slot(runtime, monkeypatch):
+    subgroup = object()
+    runtime.members.update({runtime.world: tuple(range(6)), subgroup: (0, 1)})
+    partitions = [(0, 1), (0, 1), (2, 3), (2, 3), (4, 5), (4, 5)]
+    peer_hits = [False] * 6
+
+    def gather(output, value, group):
+        output[:] = []
+        for rank in range(6):
+            peer = list(value)
+            peer[1] = (partitions[rank], value[1][1])
+            peer[5] = (("tp", partitions[rank]),)
+            peer[6] = peer_hits[rank]
+            output.append(tuple(peer))
+
+    monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
+    runtime.configure(process_groups={"tp": subgroup}, flsce=replace(FLSCE, group="tp"))
+    partitions[:] = [(0, 1), (0, 1), (2, 4), (3, 5), (2, 4), (3, 5)]
+    peer_hits[:] = [True, True, False, False, False, False]
+    runtime.configure(flsce=replace(FLSCE, max_tokens=512, group="tp"))
+    assert runtime.calls[-1] == ("context", (2048, 512, 1024, 1, 19, 1))
+    assert configuration._configuration.flsce_context_slot == 2
+    peer_hits[:] = [True] * 6
+    before = list(runtime.calls)
+    runtime.configure(flsce=replace(FLSCE, group="tp"))
+    assert runtime.calls == before
+
+
+def test_inconsistent_tp_context_cache_rejected_before_setup(runtime, monkeypatch):
+    runtime.configure(flsce=FLSCE)
+    before = list(runtime.calls)
+
+    def gather(output, value, group):
+        peer = list(value)
+        peer[6] = False
+        output[:] = [value, tuple(peer)]
+
+    monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
+    with pytest.raises(RuntimeError, match="context cache differs"):
+        runtime.configure(flsce=FLSCE)
+    assert runtime.calls == before
+
+
+def test_destroyed_tp_team_requires_context_reconfiguration(runtime, monkeypatch):
+    prepared = []
+    monkeypatch.setattr(nvshmem, "team_from_pg", lambda pg: prepared.append(pg) or 19)
+    runtime.configure(process_groups={"tp": runtime.world}, flsce=replace(FLSCE, group="tp"))
+    monkeypatch.setattr(tvm_ffi, "team_destroy", lambda team: None)
+    nvshmem.team_destroy(19)
+    with pytest.raises(ValueError, match="no configured TP context"):
+        configuration._validate_flsce_call(512, 512, 1024, 1, 19)
+    assert configuration._configuration.flsce[1] == (2048, 512, 1024, 1)
+    runtime.configure(flsce=replace(FLSCE, group="tp"))
+    assert prepared == [runtime.world, runtime.world]
+    assert runtime.calls[-1] == ("context", (2048, 512, 1024, 1, 19, 1))
 
 
 def test_named_groups_are_prepared_in_sorted_order(runtime, monkeypatch):
@@ -182,9 +254,9 @@ def test_registered_names_persist_when_adding_groups_and_operators(runtime, monk
     runtime.configure(process_groups={"expert": runtime.world}, flsce=replace(FLSCE, group="tensor"))
     runtime.configure(moe=replace(MOE, group="expert"))
     runtime.configure(process_groups={"tensor": runtime.world}, flsce=replace(FLSCE, group="tensor"))
-    assert prepared == [runtime.world, runtime.world]
+    assert prepared == [runtime.world] * 7
     assert set(configuration._configuration.process_groups) == {"tensor", "expert"}
-    assert [name for name, _ in runtime.calls] == ["init", "backward", "forward", "moe"]
+    assert [name for name, _ in runtime.calls] == ["init", "context", "moe"]
 
 
 def test_registered_name_cannot_change_membership(runtime):
@@ -364,7 +436,7 @@ def test_native_setup_failure_leaves_flsce_unconfigured(runtime, monkeypatch):
     def fail(*args):
         raise RuntimeError("native allocation failed")
 
-    monkeypatch.setattr(tvm_ffi, "fused_linear_scaled_cross_entropy_configure_forward", fail)
+    monkeypatch.setattr(tvm_ffi, "fused_linear_scaled_cross_entropy_configure_context", fail)
     with pytest.raises(RuntimeError, match="native allocation failed"):
         runtime.configure(flsce=FLSCE)
     assert configuration._configuration.flsce is None
@@ -387,7 +459,7 @@ def test_pool_clear_requires_reconfiguration(runtime, monkeypatch):
         configuration._validate_moe_call(512, 512, 8, 2, 19, torch.device("cuda:0"))
     runtime.configure(flsce=FLSCE, moe=MOE)
     assert [name for name, _ in runtime.calls].count("init") == 1
-    assert [name for name, _ in runtime.calls].count("backward") == 2
+    assert [name for name, _ in runtime.calls].count("context") == 2
 
 
 @pytest.fixture
@@ -470,7 +542,7 @@ def test_public_module_configures_both_operators(runtime, public_configuration):
         )
         is True
     )
-    assert runtime.calls[1] == ("backward", (2048, 512, 1024, 1, 19))
+    assert runtime.calls[1] == ("context", (2048, 512, 1024, 1, 19, 0))
     assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 2, 1, 2))
 
 

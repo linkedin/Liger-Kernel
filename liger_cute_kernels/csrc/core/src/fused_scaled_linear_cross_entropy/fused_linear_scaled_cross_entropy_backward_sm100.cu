@@ -41,7 +41,7 @@ using backward_sm100::HostTraits;
 // monotonic dX reduce-scatter completion counter and one inter-host ring
 // completion epoch. Fixed size, pooled, never per-launch allocated.
 BackwardWaveWorkspaceSm100<100> reserve_backward_signals_sm100() {
-	auto& pool = liger_cute::detail::global_buffer_pool();
+	auto& pool = tp_buffer_pool();
 	auto* signals = static_cast<std::uint64_t*>(pool.get_device(
 		BackwardSymmetricNames::kBackwardSm100Signals,
 		static_cast<std::size_t>(kBackwardSignalEntries) *
@@ -219,7 +219,7 @@ void launch_instance(
 		wave_workspace.dz_tile_ready_entries =
 			static_cast<std::size_t>(num_waves) *
 			static_cast<std::size_t>(dz_pairs);
-		auto& pool = liger_cute::detail::global_buffer_pool();
+		auto& pool = tp_buffer_pool();
 		wave_workspace.dz_tile_ready =
 			static_cast<std::uint32_t*>(pool.get_device(
 				BackwardSymmetricNames::kBackwardSm100DzTileReady,
@@ -417,15 +417,12 @@ void dispatch_instance(
 template <bool ReturnEntropy, int Compute>
 void fused_linear_scaled_cross_entropy_backward_sm100(
 		const BackwardTpParamsSm100<Compute>& params, cudaStream_t stream) {
+	liger_cute::detail::TpReduceContextScope selected(params.team_handle);
 	static_assert(
 		Compute == 100,
 		"SM100 fused scaled linear cross entropy requires Compute=100");
 	if (params.gemm.tokens == 0) return;
 	validate(params);
-	LIGER_CHECK(
-		params.team_handle == 0 ||
-			params.team_handle == backward_dx_team_handle(),
-		"backward TP team must match the configured reduction team");
 
 	liger_cute::detail::TpReducePlan reduce =
 		liger_cute::detail::tp_reduce_plan();
@@ -448,7 +445,7 @@ void fused_linear_scaled_cross_entropy_backward_diagnostics_sm100(
 		"SM100 backward diagnostic output must hold ",
 		kBackwardDiagnosticEntries,
 		" uint64 entries");
-	auto& pool = liger_cute::detail::global_buffer_pool();
+	auto& pool = tp_buffer_pool();
 	auto* diagnostics =
 		static_cast<std::uint64_t*>(pool.get_device(
 			BackwardSymmetricNames::kBackwardSm100Diagnostics,

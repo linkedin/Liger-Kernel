@@ -48,6 +48,7 @@ __all__ = [
 _BOOTSTRAP_PG: Optional["torch.distributed.ProcessGroup"] = None
 _BOOTSTRAP_GLOBAL_RANKS: tuple[int, ...] | None = None
 _PG_TEAM_CACHE: dict[tuple[int, ...], int] = {}
+_PG_HANDLE_CACHE: dict[torch.distributed.ProcessGroup, int] = {}
 
 
 def _reset_team_state() -> None:
@@ -57,6 +58,7 @@ def _reset_team_state() -> None:
     _BOOTSTRAP_PG = None
     _BOOTSTRAP_GLOBAL_RANKS = None
     _PG_TEAM_CACHE.clear()
+    _PG_HANDLE_CACHE.clear()
     _reset_configuration()
 
 
@@ -174,9 +176,16 @@ def team_split_strided(parent: int, start: int, stride: int, size: int) -> int:
 
 def team_destroy(team_handle: int) -> None:
     tvm_ffi.team_destroy(team_handle)
+    from .configuration import _configuration
+
+    if _configuration is not None:
+        _configuration.flsce_teams.pop(team_handle, None)
     for key, handle in list(_PG_TEAM_CACHE.items()):
         if handle == team_handle:
             del _PG_TEAM_CACHE[key]
+    for pg, handle in list(_PG_HANDLE_CACHE.items()):
+        if handle == team_handle:
+            del _PG_HANDLE_CACHE[pg]
 
 
 def team_my_pe(team_handle: int) -> int:
@@ -290,7 +299,9 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
     # (collective) split — just return NVSHMEM_TEAM_WORLD. Avoids creating a team
     # that has to be destroyed before finalize.
     if my_group_parent_pes == tuple(range(bootstrap_size)):
-        return tvm_ffi.team_world()
+        handle = tvm_ffi.team_world()
+        _PG_HANDLE_CACHE[pg] = handle
+        return handle
 
     gathered = [None] * bootstrap_size
     dist.all_gather_object(gathered, my_group_parent_pes, group=bootstrap_pg)
@@ -326,6 +337,7 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
             f"team_from_pg: parent PE {my_parent_pe} did not land in any group (gathered groups: {unique_groups})"
         )
     _PG_TEAM_CACHE[my_group_parent_pes] = my_handle
+    _PG_HANDLE_CACHE[pg] = my_handle
     return my_handle
 
 
@@ -344,9 +356,14 @@ def resolve_team(pg: Optional["torch.distributed.ProcessGroup"], *, create: bool
     if pg is None:
         return tvm_ffi.team_world()
 
+    handle = _PG_HANDLE_CACHE.get(pg)
+    if handle is not None:
+        return handle
     parent_pes = _pg_parent_pes(pg)
     if parent_pes == tuple(range(len(_bootstrap_context()[1]))):
-        return tvm_ffi.team_world()
+        handle = tvm_ffi.team_world()
+        _PG_HANDLE_CACHE[pg] = handle
+        return handle
 
     key = parent_pes
     handle = _PG_TEAM_CACHE.get(key)
@@ -359,4 +376,5 @@ def resolve_team(pg: Optional["torch.distributed.ProcessGroup"], *, create: bool
             )
         handle = team_from_pg(pg)
         _PG_TEAM_CACHE[key] = handle
+    _PG_HANDLE_CACHE[pg] = handle
     return handle

@@ -158,6 +158,7 @@ template <bool ReturnEntropy, int Compute>
 void launch_forward_sm100(
 		const ForwardTpParamsSm100<Compute>& params,
 		cudaStream_t stream) {
+	liger_cute::detail::TpReduceContextScope selected(params.team_handle);
 	static_assert(
 		Compute == 100,
 		"SM100 fused scaled linear cross entropy requires Compute=100");

@@ -40,6 +40,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #if LIGER_CUTE_DISPATCH_COMPUTE == 100
 #include "backward_gemm_sm100.cuh"
@@ -98,9 +99,23 @@ struct BackwardTpCapacity {
 	int max_comm_channels;
 	int max_resident_ctas;
 	int max_stages;
-	int team_size;
-	std::int64_t team_handle;
 };
+
+// The shared allocator still owns all allocations. A context supplies a stable
+// collective slot prefix so unrelated teams never share signals or scratch.
+class TpBufferPool {
+ public:
+	explicit TpBufferPool(std::int64_t slot = 0) : slot_(slot) {}
+	std::int64_t slot() const { return slot_; }
+	void* get_device(const char* name, std::size_t bytes);
+	void* get_symmetric(const char* name, std::size_t bytes);
+
+ private:
+	std::string key(const char* name) const;
+	std::int64_t slot_;
+};
+
+TpBufferPool& tp_buffer_pool();
 
 // Collective. Must be called on every PE with the same values before the first
 // launch. CTA-owned NVLS staging is sized for full residency;
@@ -113,6 +128,17 @@ void configure_backward_tp_symmetric(
 	int max_tiles_per_reduce,
 	int max_comm_channels,
 	std::int64_t team_handle);
+
+// Explicit coordinated setup. context_slot must advance identically on every
+// NVSHMEM PE, including ranks whose team already has a cached context.
+void configure_backward_tp_context(
+	int max_tokens,
+	int max_hidden,
+	int max_local_vocab,
+	int max_tiles_per_reduce,
+	int max_comm_channels,
+	std::int64_t team_handle,
+	std::int64_t context_slot);
 
 // Before configuration, returns a conservative topology-independent estimate.
 // After configuration, the arguments must exactly match the immutable capacity
@@ -127,7 +153,7 @@ std::size_t backward_tp_pool_symmetric_bytes(
 // Before configuration, returns a conservative device-private estimate. After
 // configuration, max_local_vocab must exactly match the immutable capacity.
 // CTA ring state is in shared memory.
-std::size_t backward_tp_pool_device_bytes(int max_local_vocab);
+std::size_t backward_tp_pool_device_bytes(int max_local_vocab, int max_tokens = 0);
 
 // Collective: every PE of the configured team must call this with the same
 // arguments. Returns local and multicast staging pointers plus TP metadata.

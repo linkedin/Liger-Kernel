@@ -181,6 +181,32 @@ def test_equivalent_process_groups_share_team(monkeypatch, isolated_team_state):
     assert calls == [actor_group]
 
 
+@pytest.mark.parametrize("ranks", [(0, 2), (0, 1, 2, 3)])
+def test_team_lookup_fast_path_skips_rank_translation(monkeypatch, isolated_team_state, ranks):
+    pg = object()
+    monkeypatch.setattr(nvshmem, "_pg_parent_pes", lambda _: ranks)
+    monkeypatch.setattr(nvshmem, "_bootstrap_context", lambda: (object(), (0, 1, 2, 3)))
+    monkeypatch.setattr(tvm_ffi, "team_world", lambda: 0)
+    nvshmem._PG_TEAM_CACHE[(0, 2)] = 17
+    expected = nvshmem.resolve_team(pg, create=False)
+    monkeypatch.setattr(nvshmem, "_pg_parent_pes", lambda _: pytest.fail("cached PG must not reconstruct membership"))
+    monkeypatch.setattr(tvm_ffi, "team_world", lambda: pytest.fail("cached PG must not call native runtime"))
+    assert nvshmem.resolve_team(pg, create=False) == expected
+
+
+def test_team_destroy_invalidates_all_process_group_aliases(monkeypatch, isolated_team_state):
+    actor, ref, other = object(), object(), object()
+    nvshmem._PG_HANDLE_CACHE.update({actor: 17, ref: 17, other: 18})
+    nvshmem._PG_TEAM_CACHE.update({(0, 2): 17, (0, 1): 18})
+    monkeypatch.setattr(tvm_ffi, "team_destroy", lambda team: None)
+    nvshmem.team_destroy(17)
+    assert nvshmem._PG_HANDLE_CACHE == {other: 18}
+    assert nvshmem._PG_TEAM_CACHE == {(0, 1): 18}
+    nvshmem._reset_team_state()
+    assert nvshmem._PG_HANDLE_CACHE == {}
+    assert nvshmem._PG_TEAM_CACHE == {}
+
+
 def test_collective_team_setup_reuses_partially_overlapping_partition(monkeypatch, isolated_team_state):
     bootstrap = object()
     nvshmem._BOOTSTRAP_PG = bootstrap

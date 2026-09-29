@@ -52,7 +52,8 @@ class _Configuration:
     process_groups: dict[str, dist.ProcessGroup] = field(default_factory=dict)
     flsce: _OperatorSpec | None = None
     moe: _OperatorSpec | None = None
-    flsce_team: int | None = None
+    flsce_teams: dict[int, tuple[int, ...]] = field(default_factory=dict)
+    flsce_context_slot: int = 0
     moe_team: int | None = None
     preparing_flsce: bool = False
 
@@ -69,7 +70,8 @@ def _clear_capacities() -> None:
     if _configuration is not None:
         _configuration.flsce = None
         _configuration.moe = None
-        _configuration.flsce_team = None
+        _configuration.flsce_teams.clear()
+        _configuration.flsce_context_slot = 0
         _configuration.moe_team = None
 
 
@@ -163,7 +165,7 @@ def _describe_moe(config, process_groups, bootstrap_group):
 def _check_existing(name, requested, existing) -> None:
     if requested is None or existing is None:
         return
-    if requested[0] != existing[0]:
+    if name == "moe" and requested[0] != existing[0]:
         raise ValueError(f"{name} process-group replacement is unsupported; configure one partition per operator")
     if any(new > old for new, old in zip(requested[1], existing[1])):
         raise ValueError(f"{name} capacity growth is unsupported; configure the maximum across all consumers upfront")
@@ -221,7 +223,9 @@ def configure(
 
     A section can be added without clearing another operator's resources.
     Existing capacities may be reused by smaller requests, but cannot grow.
-    Each process supports one CUDA device and one partition per operator.
+    Each process supports one CUDA device. Repeated FLSCE sections can prepare
+    additional TP partitions within the original process-wide capacity.
+    MoE supports one EP partition.
     Configure at a coordinated setup boundary, never during graph capture.
 
     This API owns initialization, not third-party NVSHMEM interoperability.
@@ -286,10 +290,16 @@ def configure(
             _configuration is not None and _configuration.flsce is not None,
             _configuration is not None and _configuration.moe is not None,
             tuple(sorted(_configuration.process_groups)) if _configuration is not None else (),
+            _configuration.flsce_context_slot if _configuration is not None else 0,
+        )
+        flsce_cached = (
+            flsce_spec is not None
+            and _configuration is not None
+            and flsce_spec[0] in _configuration.flsce_teams.values()
         )
         plans = [None] * len(bootstrap_ranks)
         dist.all_gather_object(
-            plans, (error, flsce_spec, moe_spec, hardware, state, group_specs), group=bootstrap_group
+            plans, (error, flsce_spec, moe_spec, hardware, state, group_specs, flsce_cached), group=bootstrap_group
         )
         errors = [f"rank {rank}: {plan[0]}" for rank, plan in zip(bootstrap_ranks, plans) if plan[0] is not None]
         if errors:
@@ -300,6 +310,11 @@ def configure(
             )
         _check_partition(plans, 1, bootstrap_ranks)
         _check_partition(plans, 2, bootstrap_ranks)
+        if flsce_spec is not None:
+            parent_pe = {rank: i for i, rank in enumerate(bootstrap_ranks)}
+            for plan in plans:
+                if any(plans[parent_pe[rank]][6] != plan[6] for rank in plan[1][0]):
+                    raise RuntimeError("FLSCE context cache differs between members of a process group")
         names = tuple(name for name, _ in group_specs)
         if any(tuple(name for name, _ in plan[5]) != names for plan in plans):
             raise ValueError("process-group names must agree across the bootstrap group")
@@ -311,21 +326,24 @@ def configure(
             nvshmem.init_from_pg(bootstrap_group)
             _configuration = _Configuration(bootstrap_ranks, device)
         for name in names:
-            if name not in _configuration.process_groups:
-                nvshmem.team_from_pg(groups[name])
+            nvshmem.team_from_pg(groups[name])
             _configuration.process_groups[name] = groups[name]
         if flsce_spec is not None:
             group = _resolve_group(flsce.group, groups, bootstrap_group)
-            if _configuration.flsce is None:
+            if not all(plan[6] for plan in plans):
                 team = nvshmem.resolve_team(group, create=False)
+                capacity = _configuration.flsce[1] if _configuration.flsce is not None else flsce_spec[1]
                 _configuration.preparing_flsce = True
                 try:
-                    tvm_ffi.fused_linear_scaled_cross_entropy_configure_backward(*flsce_spec[1], team)
-                    tvm_ffi.fused_linear_scaled_cross_entropy_configure_forward(flsce_spec[1][0], flsce_spec[1][2])
+                    tvm_ffi.fused_linear_scaled_cross_entropy_configure_context(
+                        *capacity, team, _configuration.flsce_context_slot
+                    )
                 finally:
                     _configuration.preparing_flsce = False
-                _configuration.flsce = flsce_spec
-                _configuration.flsce_team = team
+                if _configuration.flsce is None:
+                    _configuration.flsce = flsce_spec
+                _configuration.flsce_teams[team] = flsce_spec[0]
+                _configuration.flsce_context_slot += 1
         if moe_spec is not None:
             group = _resolve_group(moe.group, groups, bootstrap_group)
             if _configuration.moe is None:
@@ -347,8 +365,8 @@ def _validate_flsce_call(tokens, hidden, vocab, tiles, team) -> None:
         return
     if any(actual > maximum for actual, maximum in zip((tokens, hidden, vocab, tiles), _configuration.flsce[1])):
         raise ValueError("FLSCE input exceeds configured capacity; configure the maximum upfront")
-    if team != _configuration.flsce_team:
-        raise ValueError("FLSCE process group differs from the configured TP group")
+    if not _configuration.preparing_flsce and team not in _configuration.flsce_teams:
+        raise ValueError("FLSCE process group has no configured TP context")
 
 
 def _validate_moe_call(tokens, hidden, experts, top_k, team, device) -> None:
