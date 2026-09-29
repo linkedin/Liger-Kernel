@@ -47,14 +47,17 @@ __all__ = [
 
 _BOOTSTRAP_PG: Optional["torch.distributed.ProcessGroup"] = None
 _BOOTSTRAP_GLOBAL_RANKS: tuple[int, ...] | None = None
-_PG_TEAM_CACHE: dict[int, int] = {}
+_PG_TEAM_CACHE: dict[tuple[int, ...], int] = {}
 
 
 def _reset_team_state() -> None:
+    from .configuration import _reset_configuration
+
     global _BOOTSTRAP_PG, _BOOTSTRAP_GLOBAL_RANKS
     _BOOTSTRAP_PG = None
     _BOOTSTRAP_GLOBAL_RANKS = None
     _PG_TEAM_CACHE.clear()
+    _reset_configuration()
 
 
 # ── Bootstrap ────────────────────────────────────────────────────────────────
@@ -171,6 +174,9 @@ def team_split_strided(parent: int, start: int, stride: int, size: int) -> int:
 
 def team_destroy(team_handle: int) -> None:
     tvm_ffi.team_destroy(team_handle)
+    for key, handle in list(_PG_TEAM_CACHE.items()):
+        if handle == team_handle:
+            del _PG_TEAM_CACHE[key]
 
 
 def team_my_pe(team_handle: int) -> int:
@@ -196,11 +202,18 @@ def team_translate_pe(src_team: int, src_pe: int, dst_team: int) -> int:
 
 def pool_clear_all() -> None:
     """Drain both the symmetric stack and the buffer pool (no NVSHMEM finalize)."""
+    from .configuration import _clear_capacities
+
     tvm_ffi.pool_clear_all()
+    _clear_capacities()
 
 
 def pool_clear_buffers() -> None:
     """Drain only the per-name buffer pool; keep the symmetric stack intact."""
+    from .configuration import _configuration
+
+    if _configuration is not None:
+        raise RuntimeError("pool_clear_buffers is unsupported with configure-managed resources; use pool_clear_all")
     tvm_ffi.pool_clear_buffers()
 
 
@@ -260,7 +273,8 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
 
     The group's ranks, after translation into bootstrap-group PE numbering, must
     form an arithmetic sequence. Returns the NVSHMEM team handle for the caller's
-    subgroup.
+    subgroup and caches it by ordered membership. Existing teams are reused;
+    all bootstrap ranks still participate when only some groups need a split.
     """
     import torch.distributed as dist
 
@@ -289,8 +303,16 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
                 f"the NVSHMEM bootstrap team; gathered parent-PE groups: {gathered}"
             )
 
-    my_handle = -1
+    cached = [None] * bootstrap_size
+    dist.all_gather_object(cached, my_group_parent_pes in _PG_TEAM_CACHE, group=bootstrap_pg)
     for group in unique_groups:
+        if any(cached[member] for member in group) and not all(cached[member] for member in group):
+            raise RuntimeError("NVSHMEM team cache differs between members of a process group")
+
+    my_handle = _PG_TEAM_CACHE.get(my_group_parent_pes, -1)
+    for group in unique_groups:
+        if all(cached[member] for member in group):
+            continue
         start, stride, size = _ranks_to_strided(group)
         # Every rank issues every split in the same order (the split is collective
         # across the parent team); each rank keeps the handle for the group it is
@@ -303,6 +325,7 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
         raise RuntimeError(
             f"team_from_pg: parent PE {my_parent_pe} did not land in any group (gathered groups: {unique_groups})"
         )
+    _PG_TEAM_CACHE[my_group_parent_pes] = my_handle
     return my_handle
 
 
@@ -325,7 +348,7 @@ def resolve_team(pg: Optional["torch.distributed.ProcessGroup"], *, create: bool
     if parent_pes == tuple(range(len(_bootstrap_context()[1]))):
         return tvm_ffi.team_world()
 
-    key = id(pg)
+    key = parent_pes
     handle = _PG_TEAM_CACHE.get(key)
     if handle is None:
         if not create:

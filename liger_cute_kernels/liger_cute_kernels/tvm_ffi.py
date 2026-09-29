@@ -15,6 +15,7 @@ import torch
 
 _MOD = None
 _NVSHMEM_LIBS_LOADED = False
+_NVSHMEM_HOST = None
 _ARCH_CORE_NAMES = {
     9: "libliger_cute_kernels_sm90a.so",
     10: "libliger_cute_kernels_sm100f.so",
@@ -78,7 +79,7 @@ def _nvshmem_library_dirs(pkg_dir: Path) -> list[Path]:
 
 
 def _load_nvshmem_libraries(pkg_dir: Path) -> None:
-    global _NVSHMEM_LIBS_LOADED
+    global _NVSHMEM_LIBS_LOADED, _NVSHMEM_HOST
     if _NVSHMEM_LIBS_LOADED:
         return
     directories = _nvshmem_library_dirs(pkg_dir)
@@ -96,11 +97,32 @@ def _load_nvshmem_libraries(pkg_dir: Path) -> None:
             "NVSHMEM runtime not found; install 'liger-cute-kernels[cu12]' or "
             "'liger-cute-kernels[cu13]' to match the CUDA version used to build the native wheel"
         )
-    ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
+    _NVSHMEM_HOST = ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
     uid_bootstrap = host.parent / "nvshmem_bootstrap_uid.so.3"
     if uid_bootstrap.is_file():
         ctypes.CDLL(str(uid_bootstrap), mode=ctypes.RTLD_GLOBAL)
     _NVSHMEM_LIBS_LOADED = True
+
+
+def nvshmem_is_initialized() -> bool:
+    """Query host-runtime status without initializing NVSHMEM.
+
+    Inspect global symbols first to detect an already active third-party
+    runtime before loading LCK's selected NVSHMEM dependency.
+    """
+    status = getattr(ctypes.CDLL(None), "nvshmemx_init_status", None)
+    if status is not None:
+        status.argtypes = []
+        status.restype = ctypes.c_int
+        if status() != 0:  # NVSHMEM_STATUS_NOT_INITIALIZED
+            return True
+    _load_nvshmem_libraries(Path(__file__).resolve().parent)
+    status = getattr(_NVSHMEM_HOST, "nvshmemx_init_status", None)
+    if status is None:
+        raise RuntimeError("NVSHMEM host runtime does not expose nvshmemx_init_status")
+    status.argtypes = []
+    status.restype = ctypes.c_int
+    return status() != 0
 
 
 def _int64_out() -> torch.Tensor:
@@ -230,6 +252,9 @@ def moe_fused_fwd_bf16(
     top_k: int,
     team_handle: int,
 ):
+    from .configuration import _validate_moe_call
+
+    _validate_moe_call(X.shape[0], X.shape[1], num_experts, top_k, team_handle, X.device)
     cfg = _moe_symm_config()
     num_tokens, hidden_dim = X.shape
     max_total_slots = int(cfg[0].item())
@@ -332,6 +357,9 @@ def fused_linear_scaled_cross_entropy_configure_backward(
     later ``tiles_per_reduce`` request. Multi-host teams must have uniform
     per-host membership and host-major team-rank ordering.
     """
+    from .configuration import _validate_flsce_call
+
+    _validate_flsce_call(max_tokens, max_hidden, max_local_vocab, max_tiles_per_reduce, team_handle)
     _load_module().fused_linear_scaled_cross_entropy_configure_backward(
         int(max_tokens),
         int(max_hidden),

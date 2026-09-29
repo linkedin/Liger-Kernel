@@ -62,6 +62,42 @@ class LigerExpertParallelFusedMoEFunction(torch.autograd.Function):
     """
 
     @staticmethod
+    def configure(
+        *,
+        max_tokens,
+        hidden_size,
+        num_experts,
+        top_k,
+        num_hosts,
+        gpus_per_host,
+        ep_group=None,
+        bootstrap_group=None,
+        device=None,
+    ):
+        """Collectively prepare MoE using the same LCK runtime as TP FLSCE.
+
+        All bootstrap ranks must participate. ``num_hosts`` and
+        ``gpus_per_host`` describe each EP team, not the bootstrap group.
+        Kernel warm-up is still required before CUDA graph capture.
+        """
+        from liger_cute_kernels import MoEConfig
+        from liger_cute_kernels import configure
+
+        configure(
+            bootstrap_group=bootstrap_group,
+            device=device,
+            moe=MoEConfig(
+                max_tokens=max_tokens,
+                hidden_size=hidden_size,
+                num_experts=num_experts,
+                top_k=top_k,
+                num_hosts=num_hosts,
+                gpus_per_host=gpus_per_host,
+                ep_group=ep_group,
+            ),
+        )
+
+    @staticmethod
     def forward(  # type: ignore[override]
         ctx,
         X: torch.Tensor,

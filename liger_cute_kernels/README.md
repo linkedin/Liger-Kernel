@@ -20,6 +20,123 @@ classifier projection with per-token NLL and optional entropy. Local MAX/SUM
 reductions run in the tensor-core epilogue through NVLS or DirectPeer, with a
 sharded inter-host ring follow-up for multi-host execution.
 
+## Public runtime configuration
+
+Use `liger_cute_kernels.configure(...)` to initialize NVSHMEM once and prepare
+FLSCE and/or MoE through one public setup boundary. This API requires the LCK
+Python package containing this extension; older wheels do not expose it.
+It does not change the native ABI or the CUDA 12.9 wheel build.
+
+```python
+import torch
+import torch.distributed as dist
+
+from liger_cute_kernels import FusedLinearCrossEntropyConfig, MoEConfig, configure
+
+# Initialize torch.distributed and create tp_group/ep_group first.
+torch.cuda.set_device(local_rank)
+configure(
+    bootstrap_group=dist.group.WORLD,
+    device=torch.device("cuda", local_rank),
+    flsce=FusedLinearCrossEntropyConfig(
+        max_tokens=8192,
+        hidden_size=4096,
+        local_vocab_size=32000,
+        tp_group=tp_group,
+    ),
+    moe=MoEConfig(
+        max_tokens=8192,
+        hidden_size=4096,
+        num_experts=128,
+        top_k=8,
+        num_hosts=1,  # This example assumes each EP group is within one host.
+        gpus_per_host=dist.get_world_size(ep_group),
+        ep_group=ep_group,
+    ),
+)
+```
+
+The bootstrap group defines `NVSHMEM_TEAM_WORLD`; it is **not inferred from
+the first operator's TP or EP group**. TP and EP can use different partitions
+of this common domain. Every bootstrap rank must call `configure`, in the same
+order, with the same operator sections, capacities, and topology. Local operator
+groups must form consistent, equal-sized, arithmetic-stride partitions in
+bootstrap PE numbering. All ranks must use matching GPU architectures and SM
+counts; TP groups must also have matching host topology. Multi-host TP/EP
+membership must be uniform and host-major. MoE's `num_hosts` and
+`gpus_per_host` describe each EP team, not the full bootstrap domain.
+
+Choose the bootstrap domain to include all intended TP and EP members. With
+pipeline parallelism, either arrange coordinated setup on every bootstrap rank,
+including ranks without an output head, or explicitly choose a smaller domain
+whose members all participate. Do not call a WORLD-collective setup only on
+`post_process` chunks.
+
+Calling `configure` without operator sections initializes only the runtime.
+A later collective call can add an operator without clearing the other's
+resources. Repeating a section with equal or smaller capacity is a no-op for
+its native reservation. Reserve the maximum across actor/reference consumers
+upfront, including fixed-size microbatches; requests exceeding the reservation
+raise before kernel launch. FLSCE hidden capacity includes the frontend's
+alignment padding. MoE hidden size and expert count remain fixed; token and
+top-k requests may be smaller than the reserved limits.
+
+The existing native workspaces remain process-global: this API supports one
+CUDA device and one TP partition plus one EP partition per process.
+Equivalent process-group objects with the same ordered membership reuse a team.
+Replacing an operator's partition or growing a live reservation is explicitly
+unsupported; this is not a multi-context allocator. Call setup serially at a
+coordinated boundary, outside CUDA graph capture, and do not overlap launches
+that share operator scratch buffers. MoE still allocates stack buffers during
+warm-up; all bootstrap PEs must warm up matching allocation sequences/depths
+before independent execution or graph capture.
+
+### Public Liger frontends
+
+Downstream integrations need not import NVSHMEM or TVM FFI directly:
+
+```python
+from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyTPFunction
+
+native_configured = LigerFusedLinearScaledCrossEntropyTPFunction.configure(
+    max_tokens=8192,
+    hidden_size=4096,
+    local_vocab_size=32000,
+    tp_group=tp_group,
+    bootstrap_group=dist.group.WORLD,
+    device=torch.device("cuda", local_rank),
+    dtype=torch.bfloat16,
+)
+```
+
+This returns `False` without bootstrapping for device/dtype/installations using
+the public fallback. Native configuration errors propagate rather than silently
+switching backends. All bootstrap ranks must use a consistent backend.
+`LigerExpertParallelFusedMoEFunction.configure(...)`, imported from
+`liger_kernel.ops.cute.ops.moe`, delegates to the same runtime with MoE capacity
+and topology arguments. The operation's `.apply(...)` interface is unchanged.
+
+### Ownership, offload, and teardown
+
+Set NVSHMEM environment variables **before the first configuration call**.
+Configuration checks the visible host runtime's initialization status and
+rejects already initialized unmanaged runtimes, including DeepEP V1 RDMA.
+Sharing ownership is unsupported in either initialization order: do not
+initialize another NVSHMEM owner after LCK. This check is not a general
+interoperability mechanism for separately loaded or hidden runtimes.
+DeepEP V2 and V1 paths that do not initialize NVSHMEM are not rejected merely
+because their Python modules are imported.
+
+The symmetric heap and workspaces remain resident during parameter/optimizer
+offload and colocated inference-engine sleep/wake. Account for them in the
+device memory budget; model offload does not release them.
+There is no per-model automatic finalization. Once all forwards, backwards,
+and graph replays have finished, synchronize and collectively call
+`liger_cute_kernels.nvshmem.finalize()` before destroying torch process groups.
+For an explicit quiescent pool reset, `nvshmem.pool_clear_all()` invalidates
+both operator reservations; configure them again before use. Partial
+`pool_clear_buffers()` is rejected while the public API manages resources.
+
 ## LigerMoE design
 
 ### Forward pass

@@ -93,18 +93,18 @@ def _reference(x, global_weight, target, grad_nll, grad_entropy):
 
 
 def _run_moe(rank: int, world_size: int):
-    from liger_cute_kernels import tvm_ffi
-
+    from liger_kernel.ops.cute.ops.moe import LigerExpertParallelFusedMoEFunction
     from liger_kernel.ops.cute.ops.moe import moe_fused
 
-    tvm_ffi.moe_configure_symmetric(
+    LigerExpertParallelFusedMoEFunction.configure(
         max_tokens=_MOE_TOKENS,
-        hidden_dim=_MOE_HIDDEN,
-        max_num_experts=_MOE_EXPERTS,
-        max_top_k=_MOE_TOP_K,
-        num_pes=world_size,
+        hidden_size=_MOE_HIDDEN,
+        num_experts=_MOE_EXPERTS,
+        top_k=_MOE_TOP_K,
         num_hosts=1,
         gpus_per_host=world_size,
+        ep_group=dist.group.WORLD,
+        device=torch.device("cuda", rank),
     )
     experts_per_rank = _MOE_EXPERTS // world_size
     generator = torch.Generator(device="cpu")
@@ -179,9 +179,22 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         tp_size = len(tp_ranks)
         group_index = _group_layout(layout, world_size).index(tp_ranks)
         if implementation == "native":
-            nvshmem.init_from_pg()
+            assert LigerFusedLinearScaledCrossEntropyTPFunction.configure(
+                max_tokens=_TOKENS + 128,
+                hidden_size=_HIDDEN,
+                local_vocab_size=_LOCAL_VOCAB,
+                tp_group=tp_group,
+                device=torch.device("cuda", rank),
+            )
             nvshmem_initialized = True
-            team_handle = nvshmem.resolve_team(tp_group)
+            team_handle = nvshmem.resolve_team(tp_group, create=False)
+            assert LigerFusedLinearScaledCrossEntropyTPFunction.configure(
+                max_tokens=_TOKENS,
+                hidden_size=_HIDDEN,
+                local_vocab_size=_LOCAL_VOCAB,
+                tp_group=tp_group,
+                device=torch.device("cuda", rank),
+            )
             if run_moe:
                 _run_moe(rank, world_size)
 
@@ -239,6 +252,15 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         torch.testing.assert_close(actual_entropy, expected_entropy, atol=3e-4, rtol=3e-4)
         torch.testing.assert_close(x.grad.float(), expected_dx, atol=8e-3, rtol=4e-2)
         torch.testing.assert_close(weight.grad.float(), expected_dw, atol=8e-3, rtol=4e-2)
+
+        if implementation == "native":
+            with pytest.raises(ValueError, match="exceeds configured capacity"):
+                LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+                    x.new_zeros((_TOKENS + 129, _HIDDEN)),
+                    weight,
+                    target.new_zeros((_TOKENS + 129,)),
+                    tp_group,
+                )
 
         torch.cuda.synchronize()
         if implementation == "native":
