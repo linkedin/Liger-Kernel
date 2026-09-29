@@ -112,7 +112,7 @@ the relevant initialized entries of its `pg_collection` explicitly; LCK does
 not depend on Megatron's collection type:
 
 ```python
-from liger_kernel.ops.cute import FusedLinearCrossEntropyConfig, MoEConfig, configure
+from liger_kernel.ops import FusedLinearCrossEntropyConfig, MoEConfig, configure
 
 configure(
     process_groups={"tp": pg_collection.tp, "ep": pg_collection.ep},
@@ -138,7 +138,9 @@ configure(
 
 There is one signature: `configure(*, process_groups=None, bootstrap_group=None, device=None,
 flsce=None, moe=None)`. Operator-specific values belong to configuration data,
-not methods on the operator classes. Either section can be omitted.
+not methods on the operator classes. Either section can be omitted. The
+`liger_kernel.ops.cute` implementation namespace remains private and does not
+export this configuration API.
 
 Accessing these aliases requires the optional LCK Python package; backend
 discovery does not import it, and accessing the aliases does not load the native

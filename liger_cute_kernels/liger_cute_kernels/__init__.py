@@ -16,7 +16,7 @@ the ``cu12`` and ``cu13`` extras install the matching pinned runtime dependency.
 
 The package currently includes expert-parallel MoE and tensor-parallel fused
 scaled linear cross-entropy kernels. Use ``configure`` for collective runtime
-setup, and ``liger_kernel.ops.cute`` for autograd-enabled execution.
+setup, and ``liger_kernel.ops`` for autograd-enabled execution.
 """
 
 from __future__ import annotations

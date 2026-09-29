@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import builtins
 import importlib.util
+import pkgutil
 import sys
 import types
 
@@ -387,7 +389,7 @@ def test_pool_clear_requires_reconfiguration(runtime, monkeypatch):
 
 
 @pytest.fixture
-def cute_frontend(monkeypatch):
+def private_frontend(monkeypatch):
     registry = types.ModuleType("liger_kernel.ops.backends.registry")
     registry.ImplInfo = SimpleNamespace
     registry.register_impl = lambda info: None
@@ -399,15 +401,51 @@ def cute_frontend(monkeypatch):
     return module
 
 
-def test_public_aliases_are_the_canonical_api(cute_frontend, monkeypatch):
+@pytest.fixture
+def public_ops(monkeypatch):
+    path = Path(__file__).resolve().parents[2] / "src/liger_kernel/ops/__init__.py"
+    spec = importlib.util.spec_from_file_location("lck_public_ops", path)
+    module = importlib.util.module_from_spec(spec)
+    original_import = builtins.__import__
+    original_import_module = importlib.import_module
+
+    # Isolate the public package boundary from unrelated Triton operator imports.
+    def import_dependencies(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("liger_cute_kernels"):
+            pytest.fail("public ops import must not import optional LCK")
+        if name.startswith("liger_kernel.ops.") and fromlist:
+            symbols = {symbol: object() for symbol in fromlist}
+            if name == "liger_kernel.ops.backends":
+                symbols.update(LIGER_KERNEL_IMPL_ENV="LIGER_KERNEL_IMPL", select_impl=lambda *args, **kwargs: None)
+            return SimpleNamespace(**symbols)
+        if name == "liger_kernel.utils":
+            return SimpleNamespace(infer_device=lambda: "cpu")
+        return original_import(name, globals, locals, fromlist, level)
+
+    def import_module(name, package=None):
+        if name.startswith("liger_cute_kernels"):
+            pytest.fail("public ops discovery must not import optional LCK")
+        if name == "liger_kernel.ops.backends":
+            return SimpleNamespace()
+        return original_import_module(name, package)
+
+    with monkeypatch.context() as context:
+        context.setattr(builtins, "__import__", import_dependencies)
+        context.setattr(importlib, "import_module", import_module)
+        context.setattr(pkgutil, "iter_modules", lambda paths: ())
+        spec.loader.exec_module(module)
+    return module
+
+
+def test_public_aliases_are_the_canonical_api(public_ops, monkeypatch):
     monkeypatch.setattr(tvm_ffi, "_load_module", lambda: pytest.fail("aliases must not load the native core"))
-    assert cute_frontend.configure is configure
-    assert cute_frontend.FusedLinearCrossEntropyConfig is FusedLinearCrossEntropyConfig
-    assert cute_frontend.MoEConfig is MoEConfig
+    assert public_ops.configure is configure
+    assert public_ops.FusedLinearCrossEntropyConfig is FusedLinearCrossEntropyConfig
+    assert public_ops.MoEConfig is MoEConfig
 
 
-def test_public_alias_configures_both_operators(runtime, cute_frontend):
-    cute_frontend.configure(
+def test_public_alias_configures_both_operators(runtime, public_ops):
+    public_ops.configure(
         process_groups={"tp": runtime.world, "ep": runtime.world},
         bootstrap_group=runtime.world,
         device="cuda:0",
@@ -418,25 +456,26 @@ def test_public_alias_configures_both_operators(runtime, cute_frontend):
     assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 2, 1, 2))
 
 
-def test_backend_discovery_does_not_import_optional_lck(cute_frontend, monkeypatch):
-    def reject_import(name):
-        pytest.fail(f"backend discovery must not import {name}")
-
-    monkeypatch.setattr(cute_frontend.importlib, "import_module", reject_import)
-    spec = cute_frontend.__spec__
-    spec.loader.exec_module(cute_frontend)
-    assert "configure" in cute_frontend.__all__
+def test_backend_discovery_does_not_import_optional_lck(public_ops):
+    assert "configure" not in vars(public_ops)
+    assert public_ops._CONFIGURATION_EXPORTS == ("configure", "FusedLinearCrossEntropyConfig", "MoEConfig")
 
 
-def test_alias_access_reports_missing_lck(cute_frontend, monkeypatch):
+def test_private_implementation_has_no_configuration_exports(private_frontend):
+    for name in ("configure", "FusedLinearCrossEntropyConfig", "MoEConfig"):
+        assert not hasattr(private_frontend, name)
+        assert name not in private_frontend.__all__
+
+
+def test_alias_access_reports_missing_lck(public_ops, monkeypatch):
     def missing(name):
         raise ModuleNotFoundError(f"No module named '{name}'", name=name)
 
-    monkeypatch.setattr(cute_frontend.importlib, "import_module", missing)
+    monkeypatch.setattr(importlib, "import_module", missing)
     with pytest.raises(ModuleNotFoundError, match="liger_cute_kernels"):
-        _ = cute_frontend.configure
+        _ = public_ops.configure
     with pytest.raises(AttributeError, match="unknown"):
-        _ = cute_frontend.unknown
+        _ = public_ops.unknown
 
 
 def test_operator_class_has_no_configure_method():

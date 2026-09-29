@@ -93,8 +93,8 @@ def _reference(x, global_weight, target, grad_nll, grad_entropy):
 
 
 def _run_moe(rank: int, world_size: int):
-    from liger_kernel.ops.cute import MoEConfig
-    from liger_kernel.ops.cute import configure
+    from liger_kernel.ops import MoEConfig
+    from liger_kernel.ops import configure
     from liger_kernel.ops.cute.ops.moe import moe_fused
 
     configure(
@@ -166,8 +166,8 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
     else:
         from liger_cute_kernels import nvshmem
 
-        from liger_kernel.ops.cute import FusedLinearCrossEntropyConfig
-        from liger_kernel.ops.cute import configure
+        from liger_kernel.ops import FusedLinearCrossEntropyConfig
+        from liger_kernel.ops import configure
 
     torch.cuda.set_device(rank)
     dist.init_process_group(

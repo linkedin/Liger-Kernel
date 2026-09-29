@@ -22,15 +22,8 @@ from __future__ import annotations
 
 import importlib
 
-from typing import TYPE_CHECKING
-
 from liger_kernel.ops.backends.registry import ImplInfo
 from liger_kernel.ops.backends.registry import register_impl
-
-if TYPE_CHECKING:
-    from liger_cute_kernels import FusedLinearCrossEntropyConfig as FusedLinearCrossEntropyConfig
-    from liger_cute_kernels import MoEConfig as MoEConfig
-    from liger_cute_kernels import configure as configure
 
 # Cached handle to the TVM FFI facade (from the separate liger_cute_kernels
 # package). None until first loaded.
@@ -63,17 +56,7 @@ def is_available() -> bool:
         return False
 
 
-_CONFIGURATION_EXPORTS = ("configure", "FusedLinearCrossEntropyConfig", "MoEConfig")
-
-
-def __getattr__(name: str):
-    """Expose the canonical LCK setup API without loading it during discovery."""
-    if name in _CONFIGURATION_EXPORTS:
-        return getattr(importlib.import_module("liger_cute_kernels"), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-__all__ = ["is_available", *_CONFIGURATION_EXPORTS]
+__all__ = ["is_available"]
 
 
 # Self-register as the opt-in "cute" implementation. Like cutile, ``cute`` has no
