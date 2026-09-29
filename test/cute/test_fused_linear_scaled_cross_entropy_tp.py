@@ -498,6 +498,19 @@ def _multi_context_worker(rank, world_size, init_file, bootstrap_subgroups, part
                 torch.testing.assert_close(result.float(), reference, atol=atol, rtol=rtol)
     del graphs, graph
     torch.cuda.synchronize()
+    original_team = nvshmem.resolve_team(cases[0][0], create=False)
+    nvshmem.team_destroy(original_team)
+    with pytest.raises(RuntimeError, match="not initialized"):
+        nvshmem.resolve_team(cases[0][0], create=False)
+    assert configure(
+        bootstrap_group=bootstrap,
+        device=f"cuda:{rank}",
+        flsce=FusedLinearCrossEntropyConfig(_TOKENS + 128, _HIDDEN, _LOCAL_VOCAB, group="tp0"),
+    )
+    with torch.no_grad():
+        actual = forward(cases[0])
+    torch.testing.assert_close(actual[0], cases[0][-1][0], atol=3e-4, rtol=3e-4)
+    torch.cuda.synchronize()
     nvshmem.pool_clear_all()
     # Reusing the same team after pool clear must rebuild its native context.
     assert configure(
