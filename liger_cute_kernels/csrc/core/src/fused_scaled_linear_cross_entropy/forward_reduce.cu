@@ -277,17 +277,17 @@ void configure_forward_tp_workspace(int max_tokens, int max_local_vocab) {
 	pool.get_device(Names::kSplitReady, split_ready_bytes_at(max_tokens));
 	if constexpr (LIGER_CUTE_DISPATCH_COMPUTE == 100) {
 		auto* partial_ready = pool.get_device(
-			tp_buffer_name(Names::kWavePartialReady),
+			buffer_name(Names::kWavePartialReady),
 			wave_partial_ready_bytes_at(
 				max_tokens, max_local_vocab));
 		auto* tile_ready = pool.get_device(
-			tp_buffer_name(Names::kWaveTileReady),
+			buffer_name(Names::kWaveTileReady),
 			wave_tile_ready_bytes_at(max_tokens));
 		auto* slot_released = pool.get_device(
-			tp_buffer_name(Names::kWaveSlotReleased),
+			buffer_name(Names::kWaveSlotReleased),
 			wave_slot_released_bytes());
 		auto* diagnostics = pool.get_device(
-			tp_buffer_name(Names::kDiagnostics),
+			buffer_name(Names::kDiagnostics),
 			diagnostic_bytes());
 		LIGER_CHECK(
 			cudaMemset(
@@ -373,21 +373,21 @@ ForwardTpWorkspace reserve_forward_tp_workspace(int tokens) {
 #if LIGER_CUTE_DISPATCH_COMPUTE == 100
 	workspace.wave_partial_ready = static_cast<std::uint64_t*>(
 		pool.get_device(
-			tp_buffer_name(Names::kWavePartialReady),
+			buffer_name(Names::kWavePartialReady),
 			wave_partial_ready_bytes_at(
 				g_capacity_tokens,
 				g_capacity_local_vocab)));
 	workspace.wave_tile_ready = static_cast<std::uint64_t*>(
 		pool.get_device(
-			tp_buffer_name(Names::kWaveTileReady),
+			buffer_name(Names::kWaveTileReady),
 			wave_tile_ready_bytes_at(g_capacity_tokens)));
 	workspace.wave_slot_released = static_cast<std::uint64_t*>(
 		pool.get_device(
-			tp_buffer_name(Names::kWaveSlotReleased),
+			buffer_name(Names::kWaveSlotReleased),
 			wave_slot_released_bytes()));
 	workspace.diagnostics = static_cast<std::uint64_t*>(
 		pool.get_device(
-			tp_buffer_name(Names::kDiagnostics),
+			buffer_name(Names::kDiagnostics),
 			diagnostic_bytes()));
 #endif
 	workspace.gemm_split_partials = pool.get_device(
@@ -434,7 +434,7 @@ void copy_forward_tp_diagnostics(
 	auto& pool = global_buffer_pool();
 	auto* diagnostics = static_cast<std::uint64_t*>(
 		pool.get_device(
-			tp_buffer_name(ForwardBufferNames::kDiagnostics),
+			buffer_name(ForwardBufferNames::kDiagnostics),
 			diagnostic_bytes()));
 	cudaError_t error = cudaMemcpyAsync(
 		output,

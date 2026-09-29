@@ -43,7 +43,7 @@ using backward_sm100::HostTraits;
 BackwardWaveWorkspaceSm100<100> reserve_backward_signals_sm100() {
 	auto& pool = liger_cute::detail::global_buffer_pool();
 	auto* signals = static_cast<std::uint64_t*>(pool.get_device(
-		tp_buffer_name(BackwardSymmetricNames::kBackwardSm100Signals),
+		buffer_name(BackwardSymmetricNames::kBackwardSm100Signals),
 		static_cast<std::size_t>(kBackwardSignalEntries) *
 			sizeof(std::uint64_t)));
 	BackwardWaveWorkspaceSm100<100> workspace = {};
@@ -57,7 +57,7 @@ BackwardWaveWorkspaceSm100<100> reserve_backward_signals_sm100() {
 	if constexpr (kBackwardDiagnosticTimestampsSm100) {
 		workspace.diagnostics =
 			static_cast<std::uint64_t*>(pool.get_device(
-				tp_buffer_name(BackwardSymmetricNames::kBackwardSm100Diagnostics),
+				buffer_name(BackwardSymmetricNames::kBackwardSm100Diagnostics),
 				static_cast<std::size_t>(
 					kBackwardDiagnosticEntries) *
 					sizeof(std::uint64_t)));
@@ -447,7 +447,7 @@ void fused_linear_scaled_cross_entropy_backward_diagnostics_sm100(
 	auto& pool = liger_cute::detail::global_buffer_pool();
 	auto* diagnostics =
 		static_cast<std::uint64_t*>(pool.get_device(
-			tp_buffer_name(BackwardSymmetricNames::kBackwardSm100Diagnostics),
+			buffer_name(BackwardSymmetricNames::kBackwardSm100Diagnostics),
 			static_cast<std::size_t>(kBackwardDiagnosticEntries) *
 				sizeof(std::uint64_t)));
 	check_cuda(

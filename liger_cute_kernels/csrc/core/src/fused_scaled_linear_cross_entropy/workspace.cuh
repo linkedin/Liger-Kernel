@@ -104,7 +104,7 @@ struct BackwardTpCapacity {
 // Only persistent signals and mappings are team-specific. Bulk scratch uses
 // the existing pool names and requires serialized FLSCE calls across teams.
 std::int64_t tp_context_slot();
-std::string tp_buffer_name(const char* name, std::int64_t slot = -1);
+std::string buffer_name(const char* name, std::int64_t slot = -1);
 
 // Collective. Must be called on every PE with the same values before the first
 // launch. CTA-owned NVLS staging is sized for full residency;

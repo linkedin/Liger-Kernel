@@ -45,7 +45,7 @@ using backward_sm100::HostLaunch;
 BackwardWaveWorkspaceSm100<100> reserve_bench_signals() {
 	auto& pool = liger_cute::detail::global_buffer_pool();
 	auto* signals = static_cast<std::uint64_t*>(pool.get_device(
-		tp_buffer_name(BackwardSymmetricNames::kBackwardSm100Signals),
+		buffer_name(BackwardSymmetricNames::kBackwardSm100Signals),
 		static_cast<std::size_t>(kBackwardSignalEntries) *
 			sizeof(std::uint64_t)));
 	BackwardWaveWorkspaceSm100<100> workspace = {};

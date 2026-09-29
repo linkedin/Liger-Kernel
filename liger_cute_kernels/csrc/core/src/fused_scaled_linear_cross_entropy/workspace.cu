@@ -227,7 +227,7 @@ std::int64_t tp_context_slot() {
 	return selected_context().slot;
 }
 
-std::string tp_buffer_name(const char* name, std::int64_t slot) {
+std::string buffer_name(const char* name, std::int64_t slot) {
 	if (slot < 0) slot = tp_context_slot();
 	if (slot == 0) return name;
 	return "fslce_context_" + std::to_string(slot) + "/" + name;
@@ -366,28 +366,28 @@ void configure_backward_tp_context(
 			Names::kDxRemoteInbox, remote_inbox_bytes));
 	auto* remote_signals = static_cast<std::uint64_t*>(
 		pool.get_symmetric(
-			tp_buffer_name(Names::kDxRemoteSignals, context_slot),
+			buffer_name(Names::kDxRemoteSignals, context_slot),
 			liger_cute::detail::remote_ring_signal_bytes()));
 	int max_team_size = nvshmem_n_pes() < liger_cute::detail::kMaxTpReduceTeamSize
 		? nvshmem_n_pes() : liger_cute::detail::kMaxTpReduceTeamSize;
 	g_sync_bytes = sync_bytes_at(max_resident_ctas, max_team_size);
 	auto* sync = static_cast<std::uint64_t*>(
-		pool.get_symmetric(tp_buffer_name(Names::kDxSync, context_slot), g_sync_bytes));
+		pool.get_symmetric(buffer_name(Names::kDxSync, context_slot), g_sync_bytes));
 	auto** peer_partial_storage = static_cast<float**>(
 		pool.get_device(
-			tp_buffer_name(Names::kDxPeerPartialPointers, context_slot),
+			buffer_name(Names::kDxPeerPartialPointers, context_slot),
 			static_cast<std::size_t>(team_size) * sizeof(float*)));
 	auto** peer_sync_storage = static_cast<std::uint64_t**>(
 		pool.get_device(
-			tp_buffer_name(Names::kDxPeerSyncPointers, context_slot),
+			buffer_name(Names::kDxPeerSyncPointers, context_slot),
 			static_cast<std::size_t>(team_size) *
 				sizeof(std::uint64_t*)));
 	pool.get_device(
 		Names::kDzWorkspace, Launch::dz_workspace_bytes(max_local_vocab));
 #if LIGER_CUTE_DISPATCH_COMPUTE == 100
-	pool.get_device(tp_buffer_name(Names::kBackwardSm100Signals, context_slot),
+	pool.get_device(buffer_name(Names::kBackwardSm100Signals, context_slot),
 		static_cast<std::size_t>(kBackwardSignalEntries) * sizeof(std::uint64_t));
-	pool.get_device(tp_buffer_name(Names::kBackwardSm100Diagnostics, context_slot),
+	pool.get_device(buffer_name(Names::kBackwardSm100Diagnostics, context_slot),
 		static_cast<std::size_t>(kBackwardDiagnosticEntries) * sizeof(std::uint64_t));
 	if constexpr (kBackwardSyncVariantSm100 == 2) {
 		pool.get_device(Names::kBackwardSm100DzTileReady,
@@ -397,7 +397,7 @@ void configure_backward_tp_context(
 	}
 #endif
 	auto* launch_epoch = static_cast<std::uint64_t*>(
-		pool.get_device(tp_buffer_name(Names::kDxLaunchEpoch, context_slot), sizeof(std::uint64_t)));
+		pool.get_device(buffer_name(Names::kDxLaunchEpoch, context_slot), sizeof(std::uint64_t)));
 	check_cuda(
 		cudaMemset(launch_epoch, 0, sizeof(std::uint64_t)),
 		"cudaMemset(dX launch epoch)");
@@ -548,9 +548,9 @@ DxReduceWorkspace<float> reserve_dx_reduce_workspace(
 	workspace.reduced = static_cast<float*>(
 		pool.get_symmetric(Names::kDxReduced, g_reduced_bytes));
 	workspace.sync = static_cast<std::uint64_t*>(
-		pool.get_symmetric(tp_buffer_name(Names::kDxSync), g_sync_bytes));
+		pool.get_symmetric(buffer_name(Names::kDxSync), g_sync_bytes));
 	workspace.launch_epoch = static_cast<const std::uint64_t*>(
-		pool.get_device(tp_buffer_name(Names::kDxLaunchEpoch), sizeof(std::uint64_t)));
+		pool.get_device(buffer_name(Names::kDxLaunchEpoch), sizeof(std::uint64_t)));
 	return workspace;
 }
 
