@@ -513,6 +513,7 @@ struct BackwardWaveWorkspaceSm100 {
 	std::uint64_t* dx_remote_merge_arrived = nullptr;
 	const std::uint64_t* launch_epoch = nullptr;
 	float* packed_shard = nullptr;
+	liger_cute::detail::DirectPeerReduceView direct{};
 	std::size_t packed_shard_elements = 0;
 	std::uint32_t* dz_tile_ready = nullptr;
 	std::size_t dz_tile_ready_entries = 0;

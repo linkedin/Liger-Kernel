@@ -66,15 +66,6 @@ namespace liger {
 // MoeSymmConfig + get_symm_config() now come from the shared header (included
 // below), so this TU can't drift from moe.cu's layout.
 
-// Global iteration counter — same role as the fwd counter in moe.cu.
-// Lives in device memory (allocated from BufferPool under the key
-// "moe_bwd_iter_counter"), atomicAdded at the end of each kernel by
-// CTA 0 thread 0. See PeSync::advance_iteration_counter() and the
-// detailed comment in mlp_comms.cuh for why the counter has to be
-// device-resident: a host-side atomic would be baked into a captured
-// CUDA graph as a constant, breaking the cross-PE wait-until-greater
-// protocol on every replay.
-
 // ============================================================================
 // MoeBwdConfig — bundles bwd-side traits + comm/grid constants
 // ============================================================================
@@ -371,9 +362,9 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 			(scfg.max_num_experts + 1) * sizeof(int)));
 
 	// ── Device-only ──────────────────────────────────────
-	b.cta_counter     = static_cast<int*>(pool.get_device("moe_bwd_cta_counter",   sizeof(int)));
-	b.phase_counter   = static_cast<int*>(pool.get_device("moe_bwd_phase_counter", grid_x * sizeof(int)));
-	b.barrier_counter = static_cast<int*>(pool.get_device("moe_bwd_barrier",       sizeof(int)));
+	b.cta_counter     = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_cta_counter"),   sizeof(int)));
+	b.phase_counter   = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_phase_counter"), grid_x * sizeof(int)));
+	b.barrier_counter = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_barrier"),       sizeof(int)));
 	cudaMemsetAsync(b.cta_counter,     0, sizeof(int),                stream);
 	cudaMemsetAsync(b.phase_counter,   0, grid_x * sizeof(int),       stream);
 	cudaMemsetAsync(b.barrier_counter, 0, sizeof(int),                stream);
@@ -392,10 +383,10 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	b.scratch_rows = static_cast<int>(scratch_rows);
 	size_t intermediate_bytes =
 		scratch_rows * intermediate_dim * sizeof(Element);
-	b.z_buf  = static_cast<Element*>(pool.get_device("moe_bwd_z_buf",  intermediate_bytes));
-	b.du_buf = static_cast<Element*>(pool.get_device("moe_bwd_du_buf", intermediate_bytes));
-	b.dv_buf = static_cast<Element*>(pool.get_device("moe_bwd_dv_buf", intermediate_bytes));
-	b.dz_buf = static_cast<Element*>(pool.get_device("moe_bwd_dz_buf", intermediate_bytes));
+	b.z_buf  = static_cast<Element*>(pool.get_device(moe_buffer_name("moe_bwd_z_buf"),  intermediate_bytes));
+	b.du_buf = static_cast<Element*>(pool.get_device(moe_buffer_name("moe_bwd_du_buf"), intermediate_bytes));
+	b.dv_buf = static_cast<Element*>(pool.get_device(moe_buffer_name("moe_bwd_dv_buf"), intermediate_bytes));
+	b.dz_buf = static_cast<Element*>(pool.get_device(moe_buffer_name("moe_bwd_dz_buf"), intermediate_bytes));
 
 	// expert_for_k_block: one int per K-block. The K-block / m-tile size
 	// ratio depends on Traits3::TileK vs Traits1::TileM; see
@@ -406,7 +397,7 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	// larger config (e.g. E=64, K=8) reads OOB past the cached size.
 	int max_num_k_blocks = scfg.max_total_slots / Config::Traits3::TileK;
 	b.expert_for_k_block = static_cast<int*>(
-		pool.get_device("moe_bwd_expert_for_k_block", max_num_k_blocks * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_expert_for_k_block"), max_num_k_blocks * sizeof(int)));
 
 	// Phase 2 per-expert K-range scratch — sized by scfg.max_num_experts
 	// (the pool caches by name, so we have to size to the worst case
@@ -414,9 +405,9 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	// Shared between mlp3 and mlp4 (they share TileK).
 	size_t expert_range_bytes = scfg.max_num_experts * sizeof(int);
 	b.expert_k_starts = static_cast<int*>(
-		pool.get_device("moe_bwd_expert_k_starts", expert_range_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_expert_k_starts"), expert_range_bytes));
 	b.expert_k_ends   = static_cast<int*>(
-		pool.get_device("moe_bwd_expert_k_ends",   expert_range_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_expert_k_ends"),   expert_range_bytes));
 
 	// ── Comm staging ─────────────────────────────────────
 	// Flat staging list — L = MC · kCommNumStages slots, where
@@ -462,10 +453,10 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	// Allocate at the UB (comm_l_ub ≥ MC·kCommNumStages); the kernel only
 	// touches [0, MC·kCommNumStages). Per-call resets (below) zero the live prefix.
 	size_t tile_sig_bytes = (size_t)comm_l_ub * sizeof(int);
-	b.x_src_ready    = static_cast<int*>(pool.get_device("moe_bwd_x_src_ready",    tile_sig_bytes));
-	b.x_src_consumed = static_cast<int*>(pool.get_device("moe_bwd_x_src_consumed", tile_sig_bytes));
-	b.dy_src_ready   = static_cast<int*>(pool.get_device("moe_bwd_dy_src_ready",   tile_sig_bytes));
-	b.dy_src_consumed= static_cast<int*>(pool.get_device("moe_bwd_dy_src_consumed",tile_sig_bytes));
+	b.x_src_ready    = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_x_src_ready"),    tile_sig_bytes));
+	b.x_src_consumed = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_x_src_consumed"), tile_sig_bytes));
+	b.dy_src_ready   = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_dy_src_ready"),   tile_sig_bytes));
+	b.dy_src_consumed= static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_dy_src_consumed"),tile_sig_bytes));
 	cudaMemsetAsync(b.x_src_ready,    0, tile_sig_bytes, stream);
 	cudaMemsetAsync(b.x_src_consumed, 0, tile_sig_bytes, stream);
 	cudaMemsetAsync(b.dy_src_ready,   0, tile_sig_bytes, stream);
@@ -473,8 +464,8 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 
 	// dX pipe signals: per-slot, [L = MC * NumStages] ints. UB-sized (see above).
 	size_t tile_pipe_bytes = (size_t)comm_l_ub * sizeof(int);
-	b.dst_ready     = static_cast<int*>(pool.get_device("moe_bwd_dst_ready",    tile_pipe_bytes));
-	b.dst_consumed  = static_cast<int*>(pool.get_device("moe_bwd_dst_consumed", tile_pipe_bytes));
+	b.dst_ready     = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_dst_ready"),    tile_pipe_bytes));
+	b.dst_consumed  = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_dst_consumed"), tile_pipe_bytes));
 	cudaMemsetAsync(b.dst_ready,    0, tile_pipe_bytes, stream);
 	cudaMemsetAsync(b.dst_consumed, 0, tile_pipe_bytes, stream);
 
@@ -482,11 +473,11 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	// One array per get pipe (see MoeBwdBuffers / CommBuffersBwd docstrings).
 	// Same shape as the staging signal arrays.
 	b.tile_expert_ids_x = static_cast<int*>(
-		pool.get_device("moe_bwd_tile_expert_ids_x", eid_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_tile_expert_ids_x"), eid_bytes));
 	b.tile_expert_ids_dy = static_cast<int*>(
-		pool.get_device("moe_bwd_tile_expert_ids_dy", eid_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_tile_expert_ids_dy"), eid_bytes));
 	b.tile_valid_rows_x = static_cast<int*>(
-		pool.get_device("moe_bwd_tile_valid_rows_x", eid_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_tile_valid_rows_x"), eid_bytes));
 
 	// ── Sort scratch (sized to scfg max for stability across calls) ──
 	int max_sorted_slots = scfg.max_total_slots;
@@ -494,15 +485,15 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	int max_tile_counts  = max_m_tiles * scfg.max_num_experts;
 
 	b.tile_expert_counts = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_tile_counts", max_tile_counts * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_sort_tile_counts"), max_tile_counts * sizeof(int)));
 	b.sorted_token_ids = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_sorted_ids", max_sorted_slots * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_sort_sorted_ids"), max_sorted_slots * sizeof(int)));
 	b.token_expert_slots = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_token_slots", max_sorted_slots * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_sort_token_slots"), max_sorted_slots * sizeof(int)));
 	b.cta_done = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_cta_done", num_blocks * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_sort_cta_done"), num_blocks * sizeof(int)));
 	b.cta_sums = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_cta_sums",
+		pool.get_device(moe_buffer_name("moe_bwd_sort_cta_sums"),
 			num_blocks * scfg.max_num_experts * sizeof(int)));
 
 	cudaMemsetAsync(b.cta_done, 0, num_blocks * sizeof(int), stream);
@@ -1151,7 +1142,10 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	const int num_experts = a.num_experts;
 	const int top_k       = a.top_k;
 	const nvshmem_team_t team = a.team;
+	MoeContextScope context_scope(team);
 	cudaStream_t stream   = a.stream;
+	if (get_symm_config().slot >= 0 && nvshmem_team_n_pes(team) > 1)
+		nvshmemx_barrier_on_stream(team, stream);
 	cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
 	if (cudaError_t e = cudaStreamIsCapturing(stream, &capture_status);
 			e != cudaSuccess)
@@ -1176,8 +1170,6 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	constexpr int kTileM      = Config::kTileM;
 	constexpr int kNumThreads = Config::kNumThreads;
 
-	// Iteration counter lives on the device; CTA 0 thread 0 atomicAdds it at
-	// the end of the kernel via PeSync::advance_iteration_counter().
 	int num_tokens       = a.num_tokens;
 	int hidden_dim       = a.hidden_dim;
 	int experts_per_pe   = a.experts_per_pe;
@@ -1303,6 +1295,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	p.comm.pe_sync.num_pes       = num_pes;
 	p.comm.pe_sync.my_pe         = my_pe;
 	p.comm.pe_sync.team          = team;
+	p.comm.num_hosts             = get_symm_config().num_hosts;
 	p.comm.hidden_dim       = hidden_dim;
 	p.comm.num_experts      = num_experts;
 	p.comm.experts_per_pe   = experts_per_pe;
@@ -1339,6 +1332,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	p.comm_bwd.my_pe         = my_pe;
 	p.comm_bwd.num_pes       = num_pes;
 	p.comm_bwd.team          = team;
+	p.comm_bwd.num_hosts     = get_symm_config().num_hosts;
 	p.comm_bwd.hidden_dim    = hidden_dim;
 	p.comm_bwd.num_experts   = num_experts;
 	p.comm_bwd.experts_per_pe = experts_per_pe;

@@ -45,6 +45,7 @@ class MoEConfig:
     num_hosts: int
     gpus_per_host: int
     group: str | None = None
+    max_inflight: int = 1
 
 
 def _load_lck() -> ModuleType | None:

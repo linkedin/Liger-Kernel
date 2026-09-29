@@ -425,6 +425,11 @@ void configure_tp_reduce(
 		static_cast<int>(direct_available),
 		context.raw.team_rank,
 		context.raw.team_size};
+	// Direct-peer all-reduce produces a full tile on each rank, so its
+	// downstream packed/scatter layout is the local-size-one layout.
+	context.plan.nvls = {
+		buffers.partial, buffers.reduced, buffers.sync,
+		buffers.reduced_shard, 0, 1};
 
 	if (nvls_available || remote_available) {
 		context.plan.backend = LocalReduceBackend::kNvls;

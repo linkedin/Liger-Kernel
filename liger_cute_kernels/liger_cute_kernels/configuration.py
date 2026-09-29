@@ -30,10 +30,11 @@ class FusedLinearCrossEntropyConfig:
 class MoEConfig:
     """MoE capacity and EP-team topology, not the bootstrap-world topology.
 
-    ``num_experts`` is the total expert count in the EP group. ``hidden_size``
-    and ``num_experts`` must match subsequent launches. Team ranks must be
+    ``num_experts`` is the maximum total expert count in an EP group.
+    ``hidden_size`` bounds subsequent launches. Team ranks must be
     host-major, with ``gpus_per_host`` consecutive members on each host.
     ``group`` names a registered process group; ``None`` uses the bootstrap group.
+    ``max_inflight`` bounds forwards retained for backward per EP context.
     """
 
     max_tokens: int
@@ -43,6 +44,7 @@ class MoEConfig:
     num_hosts: int
     gpus_per_host: int
     group: str | None = None
+    max_inflight: int = 1
 
 
 @dataclass
@@ -54,7 +56,8 @@ class _Configuration:
     moe: _OperatorSpec | None = None
     flsce_teams: dict[int, tuple[int, ...]] = field(default_factory=dict)
     flsce_context_slot: int = 0
-    moe_team: int | None = None
+    moe_teams: dict[int, _OperatorSpec] = field(default_factory=dict)
+    moe_context_slot: int = 0
     preparing_flsce: bool = False
 
 
@@ -72,7 +75,8 @@ def _clear_capacities() -> None:
         _configuration.moe = None
         _configuration.flsce_teams.clear()
         _configuration.flsce_context_slot = 0
-        _configuration.moe_team = None
+        _configuration.moe_teams.clear()
+        _configuration.moe_context_slot = 0
 
 
 def _ranks(group) -> tuple[int, ...]:
@@ -143,6 +147,7 @@ def _describe_moe(config, process_groups, bootstrap_group):
         top_k=config.top_k,
         num_hosts=config.num_hosts,
         gpus_per_host=config.gpus_per_host,
+        max_inflight=config.max_inflight,
     )
     group = _resolve_group(config.group, process_groups, bootstrap_group)
     ranks = _ranks(group)
@@ -159,18 +164,20 @@ def _describe_moe(config, process_groups, bootstrap_group):
         config.top_k,
         config.num_hosts,
         config.gpus_per_host,
+        config.max_inflight,
     )
 
 
 def _check_existing(name, requested, existing) -> None:
     if requested is None or existing is None:
         return
-    if name == "moe" and requested[0] != existing[0]:
-        raise ValueError(f"{name} process-group replacement is unsupported; configure one partition per operator")
-    if any(new > old for new, old in zip(requested[1], existing[1])):
+    axes = (0, 1, 2, 3, 6) if name == "moe" else range(len(requested[1]))
+    if any(requested[1][i] > existing[1][i] for i in axes):
         raise ValueError(f"{name} capacity growth is unsupported; configure the maximum across all consumers upfront")
-    if name == "moe" and any(requested[1][i] != existing[1][i] for i in (1, 2, 4, 5)):
-        raise ValueError("MoE hidden size, expert count, and topology must remain unchanged")
+    if name == "moe":
+        for prepared in _configuration.moe_teams.values():
+            if requested[0] == prepared[0] and requested[1][4:6] != prepared[1][4:6]:
+                raise ValueError("MoE topology for a prepared process group cannot change")
 
 
 def _check_group_partition(groups, bootstrap_ranks) -> None:
@@ -223,11 +230,13 @@ def configure(
 
     A section can be added without clearing another operator's resources.
     Existing capacities may be reused by smaller requests, but cannot grow.
-    Each process supports one CUDA device. Repeated FLSCE sections can prepare
-    additional TP partitions within the original process-wide capacity.
-    MoE supports one EP partition.
+    Each process supports one CUDA device. Repeated FLSCE and MoE sections prepare
+    additional TP and EP partitions within their original process-wide capacities.
+    MoE ``max_inflight`` reserves retained forward slots per EP context; increase
+    it upfront for multiple forwards awaiting backward (for example, MoE layers).
+    Release forwards in LIFO order within each EP context.
     Configure at a coordinated setup boundary, never during graph capture.
-    FLSCE calls and graph replays share scratch across TP groups: serialize
+    Calls and graph replays share scratch across groups: serialize
     them on each process with the same CUDA stream or explicit synchronization.
 
     This API owns initialization, not third-party NVSHMEM interoperability.
@@ -293,15 +302,23 @@ def configure(
             _configuration is not None and _configuration.moe is not None,
             tuple(sorted(_configuration.process_groups)) if _configuration is not None else (),
             _configuration.flsce_context_slot if _configuration is not None else 0,
+            _configuration.moe_context_slot if _configuration is not None else 0,
         )
         flsce_cached = (
             flsce_spec is not None
             and _configuration is not None
             and flsce_spec[0] in _configuration.flsce_teams.values()
         )
+        moe_cached = (
+            moe_spec is not None
+            and _configuration is not None
+            and any(moe_spec[0] == spec[0] for spec in _configuration.moe_teams.values())
+        )
         plans = [None] * len(bootstrap_ranks)
         dist.all_gather_object(
-            plans, (error, flsce_spec, moe_spec, hardware, state, group_specs, flsce_cached), group=bootstrap_group
+            plans,
+            (error, flsce_spec, moe_spec, hardware, state, group_specs, flsce_cached, moe_cached),
+            group=bootstrap_group,
         )
         errors = [f"rank {rank}: {plan[0]}" for rank, plan in zip(bootstrap_ranks, plans) if plan[0] is not None]
         if errors:
@@ -312,11 +329,12 @@ def configure(
             )
         _check_partition(plans, 1, bootstrap_ranks)
         _check_partition(plans, 2, bootstrap_ranks)
-        if flsce_spec is not None:
-            parent_pe = {rank: i for i, rank in enumerate(bootstrap_ranks)}
-            for plan in plans:
-                if any(plans[parent_pe[rank]][6] != plan[6] for rank in plan[1][0]):
-                    raise RuntimeError("FLSCE context cache differs between members of a process group")
+        parent_pe = {rank: i for i, rank in enumerate(bootstrap_ranks)}
+        for name, spec, section, cached in (("FLSCE", flsce_spec, 1, 6), ("MoE", moe_spec, 2, 7)):
+            if spec is not None:
+                for plan in plans:
+                    if any(plans[parent_pe[rank]][cached] != plan[cached] for rank in plan[section][0]):
+                        raise RuntimeError(f"{name} context cache differs between members of a process group")
         names = tuple(name for name, _ in group_specs)
         if any(tuple(name for name, _ in plan[5]) != names for plan in plans):
             raise ValueError("process-group names must agree across the bootstrap group")
@@ -348,12 +366,26 @@ def configure(
                 _configuration.flsce_context_slot += 1
         if moe_spec is not None:
             group = _resolve_group(moe.group, groups, bootstrap_group)
-            if _configuration.moe is None:
+            if not all(plan[7] for plan in plans):
                 team = nvshmem.resolve_team(group, create=False)
-                tokens, hidden, experts, top_k, hosts, local_pes = moe_spec[1]
-                tvm_ffi.moe_configure_symmetric(tokens, hidden, experts, top_k, len(moe_spec[0]), hosts, local_pes)
-                _configuration.moe = moe_spec
-                _configuration.moe_team = team
+                capacity = _configuration.moe[1] if _configuration.moe is not None else moe_spec[1]
+                tokens, hidden, experts, top_k, _, _, inflight = capacity
+                hosts, local_pes = moe_spec[1][4:6]
+                tvm_ffi.moe_configure_context(
+                    tokens,
+                    hidden,
+                    experts,
+                    top_k,
+                    hosts,
+                    local_pes,
+                    inflight,
+                    team,
+                    _configuration.moe_context_slot,
+                )
+                if _configuration.moe is None:
+                    _configuration.moe = moe_spec
+                _configuration.moe_teams[team] = moe_spec
+                _configuration.moe_context_slot += 1
 
 
 def _validate_flsce_call(tokens, hidden, vocab, tiles, team) -> None:
@@ -379,9 +411,7 @@ def _validate_moe_call(tokens, hidden, experts, top_k, team, device) -> None:
     _, capacity = _configuration.moe
     if device != _configuration.device:
         raise ValueError("MoE input device differs from the configured CUDA device")
-    if tokens > capacity[0] or top_k > capacity[3]:
+    if tokens > capacity[0] or hidden > capacity[1] or experts > capacity[2] or top_k > capacity[3]:
         raise ValueError("MoE input exceeds configured capacity; configure the maximum upfront")
-    if hidden != capacity[1] or experts != capacity[2]:
-        raise ValueError("MoE hidden size and expert count must match the configured values")
-    if team != _configuration.moe_team:
-        raise ValueError("MoE process group differs from the configured EP group")
+    if team not in _configuration.moe_teams:
+        raise ValueError("MoE process group has no configured EP context")

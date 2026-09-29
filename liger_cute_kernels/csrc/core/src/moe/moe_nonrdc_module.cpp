@@ -290,14 +290,6 @@ void configure_module(
 			module_state.path == path,
 			"non-RDC MoE cubin path changed after module initialization: ",
 			module_state.path, " -> ", path);
-		LIGER_CHECK(
-			module_state.num_hosts == num_hosts &&
-				module_state.gpus_per_host == gpus_per_host,
-			"non-RDC MoE topology changed after module initialization: "
-			"configured (num_hosts=", module_state.num_hosts,
-			", gpus_per_host=", module_state.gpus_per_host,
-			"), requested (num_hosts=", num_hosts,
-			", gpus_per_host=", gpus_per_host, ")");
 		if (!module_state.registered_with_nvshmem) {
 			const int init_status =
 				nvshmemx_cumodule_init(module_state.module);

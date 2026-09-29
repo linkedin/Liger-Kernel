@@ -23,6 +23,16 @@ namespace detail {
 constexpr int kMaxPEs = 512;
 
 #ifdef __CUDACC__
+// The topology travels with the launch, so another team's setup cannot change
+// the permutation observed by queued kernels or captured graphs.
+__host__ __device__ __forceinline__ int comm_peer(
+    int rank, int offset, int num_pes, int num_hosts) {
+  const int local_pes = num_pes / num_hosts;
+  const int slot = (rank % local_pes) * num_hosts + rank / local_pes;
+  const int next = (slot + offset) % num_pes;
+  return (next % num_hosts) * local_pes + next / num_hosts;
+}
+
 // __constant__ storage for the schedule tables, defined in nvshmem.cu. Declared
 // extern here so any kernel that includes this header can read them through the
 // inline accessor below without each TU re-defining the symbol. Resolved across

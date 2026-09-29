@@ -25,7 +25,7 @@ sharded inter-host ring follow-up for multi-host execution.
 Use `liger_cute_kernels.configure(...)` to initialize NVSHMEM once and prepare
 FLSCE and/or MoE through one public setup boundary. This API requires the LCK
 Python package containing this extension; older wheels do not expose it.
-It does not change the native ABI or the CUDA 12.9 wheel build.
+Use a matching native build exposing the TP and EP context entry points.
 
 ```python
 import torch
@@ -53,6 +53,7 @@ configure(
         num_hosts=1,  # This example assumes each EP group is within one host.
         gpus_per_host=dist.get_world_size(ep_group),
         group="ep",
+        max_inflight=1,  # Increase for multiple MoE forwards awaiting backward.
     ),
 )
 ```
@@ -90,8 +91,8 @@ resources. Repeating an already prepared section with equal or smaller capacity
 reuses its native reservation. Reserve the maximum across actor/reference consumers
 upfront, including fixed-size microbatches; requests exceeding the reservation
 raise before kernel launch. FLSCE hidden capacity includes the frontend's
-alignment padding. MoE hidden size and expert count remain fixed; token and
-top-k requests may be smaller than the reserved limits.
+alignment padding. MoE token, hidden, expert-count, and top-k requests may be
+smaller than the reserved limits.
 
 FLSCE capacities remain process-wide, while native execution contexts are cached
 by NVSHMEM team handle. Each context has its own local/remote teams, peer mappings,
@@ -131,16 +132,38 @@ ordinary PyTorch tensors, not pooled or symmetric-stack allocations. Symmetric
 tensors that must remain live across calls continue to use the symmetric stack;
 this change does not alter its ownership rules.
 
-This API supports one CUDA device and one MoE EP partition per process. Growing
-a live reservation or replacing the MoE partition remains unsupported. Call
+MoE uses the same group lifecycle: repeated `configure(moe=MoEConfig(...))`
+calls prepare additional EP partitions beneath the original process-wide
+capacities, including different EP sizes. Communication topology is passed by
+value to kernels rather than read from mutable device-global schedule tables.
+Each EP context owns its device workspace and symmetric-stack names. Fixed-size
+symmetric payload scratch stays shared. Pass the forward's team to low-level
+`moe_pop_fwd(team_handle)`; the autograd wrapper does this automatically.
+
+`MoEConfig.max_inflight` (default 1) reserves the maximum number of forwards
+awaiting backward **per EP context**. Count all MoE layers and microbatches whose
+intermediates can be live together. Forward intermediates remain in the symmetric
+stack, not the buffer pool. Reservation occurs collectively in `configure`, so
+independent EP execution never triggers a WORLD allocation. Exceeding this
+capacity raises before launch. Pop forwards in LIFO order within each context;
+different contexts have independent stacks. Equivalent groups share a context
+and its retained-forward limit. Warm up the shapes/configurations to be captured
+before capturing their graphs; a group's larger device scratch never invalidates
+another group's captured pointers.
+
+This API supports one CUDA device per process. Growing
+a live reservation remains unsupported. Call
 setup serially at a coordinated boundary, outside CUDA graph capture. **Serialize
-all FLSCE launches and graph replays on each process, including across different
-TP groups:** use the same CUDA stream or explicit stream synchronization. Issue
+all native launches and graph replays on each process, including across different
+TP/EP groups:** use the same CUDA stream or explicit stream synchronization. Issue
 collectives in consistent order across participating ranks. Destroy teams or clear pools only
-after all dependent launches, backwards, and graphs have finished. MoE still
-allocates stack buffers during
-warm-up; all bootstrap PEs must warm up matching allocation sequences/depths
-before independent execution or graph capture.
+after all dependent launches, backwards, and graphs have finished.
+The legacy low-level MoE setup retains WORLD-collective lazy stack allocation;
+use public `configure` for independent subgroup execution.
+
+Non-communicating kernels need no group workspace. The Triton vocab-parallel CE
+path already uses the caller's process group and per-call tensors; it does not
+share NVSHMEM counters or require a native capacity section.
 
 ### One API through either package
 

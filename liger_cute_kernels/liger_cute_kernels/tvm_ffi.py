@@ -229,13 +229,37 @@ def moe_configure_symmetric(
     )
 
 
-def moe_pop_fwd() -> None:
-    _load_module().moe_pop_fwd()
+def moe_configure_context(
+    max_tokens: int,
+    hidden_dim: int,
+    max_num_experts: int,
+    max_top_k: int,
+    num_hosts: int,
+    gpus_per_host: int,
+    max_inflight: int,
+    team_handle: int,
+    context_slot: int,
+) -> None:
+    _load_module().moe_configure_context(
+        max_tokens,
+        hidden_dim,
+        max_num_experts,
+        max_top_k,
+        num_hosts,
+        gpus_per_host,
+        max_inflight,
+        team_handle,
+        context_slot,
+    )
 
 
-def _moe_symm_config() -> torch.Tensor:
+def moe_pop_fwd(team_handle: int = -1) -> None:
+    _load_module().moe_pop_fwd(int(team_handle))
+
+
+def _moe_symm_config(team_handle: int = -1) -> torch.Tensor:
     out = torch.empty(7, dtype=torch.int32, device="cpu")
-    _load_module().moe_get_symm_config(out)
+    _load_module().moe_get_symm_config(out, int(team_handle))
     if int(out[6].item()) == 0:
         raise RuntimeError("liger_cute: call moe_configure_symmetric before moe_fused_fwd_bf16")
     return out
@@ -255,10 +279,10 @@ def moe_fused_fwd_bf16(
     from .configuration import _validate_moe_call
 
     _validate_moe_call(X.shape[0], X.shape[1], num_experts, top_k, team_handle, X.device)
-    cfg = _moe_symm_config()
+    cfg = _moe_symm_config(team_handle)
     num_tokens, hidden_dim = X.shape
     max_total_slots = int(cfg[0].item())
-    max_m_tiles = (max_total_slots + 127) // 128
+    max_m_tiles = (max_total_slots + 63) // 64
     Y = torch.empty((num_tokens, hidden_dim), dtype=torch.bfloat16, device=X.device)
     token_expert_slots = torch.empty((max_total_slots,), dtype=torch.int32, device=X.device)
     tile_expert_ids = torch.empty((max_m_tiles,), dtype=torch.int32, device=X.device)
@@ -300,6 +324,9 @@ def moe_fused_bwd_bf16(
     fwd_tile_m: int,
 ):
     del y_buf_meta, expert_offsets_meta, fwd_tile_m
+    from .configuration import _validate_moe_call
+
+    _validate_moe_call(dY.shape[0], dY.shape[1], num_experts, top_k, team_handle, dY.device)
     dX = torch.empty_like(dY)
     dB = torch.empty_like(all_B)
     dC = torch.empty_like(all_C)

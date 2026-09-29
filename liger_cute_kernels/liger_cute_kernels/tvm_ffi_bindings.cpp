@@ -22,6 +22,7 @@
 #include "forward_reduce.cuh"
 #include "workspace.cuh"
 #include "moe_launch.h"
+#include "moe_context.h"
 #include "liger_cute/detail/tp_reduce.cuh"
 
 namespace liger {
@@ -232,7 +233,8 @@ void team_translate_pe(int64_t src_team, int64_t src_pe, int64_t dst_team, ffi::
       "team_translate_pe");
 }
 
-void moe_get_symm_config(ffi::TensorView out) {
+void moe_get_symm_config(ffi::TensorView out, int64_t team_handle) {
+  liger::MoeContextScope context_scope(team_handle);
   RequireCpuInt32(out, 7);
   liger_cute_moe_symm_config_t cfg;
   CheckStatus(liger_cute_moe_get_symm_config(&cfg), "moe_get_symm_config");
@@ -257,13 +259,28 @@ void moe_configure_symmetric(
       "moe_configure_symmetric");
 }
 
-void moe_pop_fwd() { CheckStatus(liger_cute_moe_pop_fwd(), "moe_pop_fwd"); }
+void moe_configure_context(
+    int64_t tokens, int64_t hidden, int64_t experts, int64_t top_k,
+    int64_t hosts, int64_t local_pes, int64_t inflight, int64_t team, int64_t slot) {
+  try {
+    liger::moe_configure_context(
+        tokens, hidden, experts, top_k, hosts, local_pes, inflight, team, slot);
+  } catch (const std::exception& e) {
+    ThrowCoreError("moe_configure_context", e);
+  }
+}
+
+void moe_pop_fwd(int64_t team_handle) {
+  liger::MoeContextScope context_scope(team_handle);
+  CheckStatus(liger_cute_moe_pop_fwd(), "moe_pop_fwd");
+}
 
 void moe_fused_fwd_bf16(
     ffi::TensorView X, ffi::TensorView expert_indices, ffi::TensorView expert_weights,
     ffi::TensorView all_B, ffi::TensorView all_C, ffi::TensorView all_A, int64_t num_experts,
     int64_t top_k, int64_t team_handle, ffi::TensorView Y, ffi::TensorView token_expert_slots,
     ffi::TensorView tile_expert_ids, ffi::TensorView symm_meta) {
+  liger::MoeContextScope context_scope(team_handle);
   RequireCpuInt64(symm_meta, 17);
   DLDataType bf16{kDLBfloat, 16, 1};
   DLDataType i32{kDLInt, 32, 1};
@@ -295,8 +312,9 @@ void moe_fused_fwd_bf16(
   TVM_FFI_ICHECK_EQ(all_A.size(0), experts_per_pe);
   TVM_FFI_ICHECK_EQ(all_A.size(1), hidden_dim);
   TVM_FFI_ICHECK_EQ(all_A.size(2), intermediate_dim);
-  TVM_FFI_ICHECK_EQ(hidden_dim, cfg.hidden_dim);
-  TVM_FFI_ICHECK_EQ(num_experts, cfg.max_num_experts);
+  TVM_FFI_ICHECK_LE(hidden_dim, cfg.hidden_dim);
+  TVM_FFI_ICHECK_LE(num_experts, cfg.max_num_experts);
+  TVM_FFI_ICHECK_EQ(num_experts, experts_per_pe * cfg.num_pes);
   TVM_FFI_ICHECK(top_k >= 1 && top_k <= cfg.max_top_k);
   TVM_FFI_ICHECK_EQ(expert_indices.size(0), num_tokens);
   TVM_FFI_ICHECK_EQ(expert_indices.size(1), top_k);
@@ -340,10 +358,10 @@ void moe_fused_fwd_bf16(
   } catch (const std::exception& e) {
     ThrowCoreError("moe_fused_fwd_bf16", e);
   }
-  WriteMeta(symm_meta, 0, x_sorted, cfg.max_total_slots, cfg.hidden_dim, 3);
-  WriteMeta(symm_meta, 4, y_buf, cfg.max_total_slots, cfg.hidden_dim, 3);
-  WriteMeta(symm_meta, 8, all_expert_offsets, cfg.num_pes, cfg.max_num_experts + 1, 7);
-  WriteMeta(symm_meta, 12, all_expert_counts, cfg.num_pes, cfg.max_num_experts, 7);
+  WriteMeta(symm_meta, 0, x_sorted, cfg.max_total_slots, hidden_dim, 3);
+  WriteMeta(symm_meta, 4, y_buf, cfg.max_total_slots, hidden_dim, 3);
+  WriteMeta(symm_meta, 8, all_expert_offsets, cfg.num_pes, num_experts + 1, 7);
+  WriteMeta(symm_meta, 12, all_expert_counts, cfg.num_pes, num_experts, 7);
   static_cast<int64_t*>(symm_meta.data_ptr())[16] = chosen_tile_m;
 }
 
@@ -816,6 +834,7 @@ TVM_FFI_DLL_EXPORT_TYPED_FUNC(pool_clear_all, pool_clear_all);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(pool_clear_buffers, pool_clear_buffers);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_get_symm_config, moe_get_symm_config);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_configure_symmetric, moe_configure_symmetric);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_configure_context, moe_configure_context);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_pop_fwd, moe_pop_fwd);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_fused_fwd_bf16, moe_fused_fwd_bf16);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(moe_fused_bwd_bf16, moe_fused_bwd_bf16);

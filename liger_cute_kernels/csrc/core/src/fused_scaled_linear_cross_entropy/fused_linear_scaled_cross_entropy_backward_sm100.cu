@@ -212,6 +212,8 @@ void launch_instance(
 		reserve_backward_signals_sm100();
 	wave_workspace.launch_epoch = comm.launch_epoch;
 	wave_workspace.packed_shard = reduce.nvls.reduced_shard;
+	if (reduce.backend == liger_cute::detail::LocalReduceBackend::kDirectPeer)
+		wave_workspace.direct = reduce.direct;
 	wave_workspace.grid_ctas = grid_ctas;
 	wave_workspace.staging_rows = tma_operands.dx_staging_rows;
 	wave_workspace.num_waves = num_waves;
@@ -317,7 +319,7 @@ void launch_instance(
 			"cudaMemsetAsync(SM100 backward diagnostics)");
 	}
 	if constexpr (EnableLocalReduce) {
-		if (reduce.nvls.size > 1 || RequiresRemote) {
+		if (reduce.nvls.size > 1 || wave_workspace.direct.available || RequiresRemote) {
 			liger_cute::detail::begin_tp_reduce(
 				comm.launch_epoch, stream);
 		}
@@ -366,7 +368,7 @@ void launch_instance(
 			"cudaLaunchKernelEx(backward_gemm_tp_kernel_sm100)");
 	}
 	if constexpr (EnableLocalReduce) {
-		if (reduce.nvls.size > 1 || RequiresRemote) {
+		if (reduce.nvls.size > 1 || wave_workspace.direct.available || RequiresRemote) {
 			liger_cute::detail::end_tp_reduce(stream);
 		}
 	}
@@ -378,8 +380,9 @@ void dispatch_instance(
 		const liger_cute::detail::TpReducePlan& reduce,
 		cudaStream_t stream) {
 	LIGER_CHECK(
-		reduce.backend == liger_cute::detail::LocalReduceBackend::kNvls,
-		"the fused SM100 backward requires a node-local NVLS team");
+		reduce.backend == liger_cute::detail::LocalReduceBackend::kNvls ||
+			(reduce.direct.available && !reduce.remote.enabled()),
+		"the fused SM100 backward requires NVLS or node-local direct-peer access");
 	if (reduce.remote.enabled()) {
 		LIGER_CHECK(
 			(reduce.nvls.size == 1 ||

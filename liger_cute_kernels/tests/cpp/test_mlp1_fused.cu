@@ -7,17 +7,17 @@
 //
 // Self-contained (no torch, no nvshmem): each TEST builds its own inputs
 // on the host, drives a stand-alone launcher kernel modelled on
-// src/.../moe/mlp1.cu, and compares the device output against an fp32 CPU
-// reference computed from the *same bf16-rounded* inputs. The only error
-// source is bf16 input/output rounding (fast_silu is exact), so a tight
-// relative tolerance holds.
+// src/.../moe/mlp1.cu, and compares the device output against independent
+// cuBLAS BF16 GEMMs with FP32 accumulators and a CPU activation reference.
+// Matching the accumulation precision matters near cancellation: sequential
+// CPU GEMMs differ from tensor cores even with FP64 accumulation.
 //
 // Exercises the mlp1 consumers on BOTH architectures, one TEST per kernel,
 // AUTO-GATED to the running GPU so the output stays clean (only the matching
 // path's results are printed):
 //   * sm_100 (Blackwell) → Compute=100 / UMMA  (Traits::MainloopPipelineUmma)
 //   * sm_90  (Hopper)    → Compute=90  / WGMMA (Traits::MainloopPipeline)
-// Both paths share the same shapes, cpu_reference and tolerances (run_fused /
+// Both paths share the same shapes, reference and tolerances (run_fused /
 // run_act are templated only on Compute), so neither arch is held to a looser
 // bar. The non-matching path is still compiled — the Compute=100 body is gated
 // on __CUDA_ARCH__>=1000 and the Compute=90 launcher call on __CUDA_ARCH__<1000
@@ -26,6 +26,7 @@
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 
 #include <algorithm>
 #include <cmath>
@@ -326,60 +327,26 @@ static ErrStats compare(const std::vector<float>& got,
                         const std::vector<float>& ref) {
 	const float atol = 1e-3f;
 	float max_abs = 0.f, sum_rel = 0.f, max_rel = 0.f;
+	size_t worst = 0;
 	for (size_t i = 0; i < ref.size(); ++i) {
 		float d = std::fabs(got[i] - ref[i]);
 		float r = d / std::max(std::fabs(ref[i]), atol);
 		max_abs = std::max(max_abs, d);
-		max_rel = std::max(max_rel, r);
+		if (r > max_rel) { max_rel = r; worst = i; }
 		sum_rel += r;
+	}
+	if (max_rel >= 0.05f) {
+		printf("worst relative error at %zu: got=%.9g ref=%.9g abs=%.9g\n",
+			worst, got[worst], ref[worst], std::fabs(got[worst] - ref[worst]));
 	}
 	return {max_abs, sum_rel / ref.size(), max_rel};
 }
 
-// CPU reference: U = X·B[e]^T, V = X·C[e]^T per M-tile, then the requested
-// outputs. Inputs are bf16-rounded; accumulation is fp32.
 struct RefOutputs {
 	std::vector<float> Z;   // silu(U)·V
 	std::vector<float> Up;  // V·silu'(U)   (act only)
 	std::vector<float> Vp;  // silu(U)      (act only)
 };
-
-static RefOutputs cpu_reference(
-		const std::vector<float>& X,      // [tokens, hidden] bf16-rounded
-		const std::vector<float>& B,      // [E, inter, hidden]
-		const std::vector<float>& C,
-		const std::vector<int>&   expert_ids,
-		const Mlp1Shape& s, int TileM, bool with_act) {
-
-	int T = s.num_tokens, H = s.hidden_dim, I = s.intermediate_dim;
-	RefOutputs out;
-	out.Z.assign((size_t)T * I, 0.f);
-	if (with_act) { out.Up.assign((size_t)T * I, 0.f); out.Vp.assign((size_t)T * I, 0.f); }
-
-	int num_m_tiles = (T + TileM - 1) / TileM;
-	for (int m = 0; m < num_m_tiles; ++m) {
-		int e = expert_ids[m];
-		int r0 = m * TileM, r1 = std::min(r0 + TileM, T);
-		for (int r = r0; r < r1; ++r) {
-			for (int j = 0; j < I; ++j) {
-				float u = 0.f, v = 0.f;
-				const float* xr = &X[(size_t)r * H];
-				const float* bj = &B[((size_t)e * I + j) * H];
-				const float* cj = &C[((size_t)e * I + j) * H];
-				for (int k = 0; k < H; ++k) { u += xr[k] * bj[k]; v += xr[k] * cj[k]; }
-				float sig    = 1.0f / (1.0f + std::exp(-u));
-				float silu   = u * sig;
-				out.Z[(size_t)r * I + j] = silu * v;
-				if (with_act) {
-					float silu_d = sig + silu * (1.0f - sig);
-					out.Up[(size_t)r * I + j] = v * silu_d;
-					out.Vp[(size_t)r * I + j] = silu;
-				}
-			}
-		}
-	}
-	return out;
-}
 
 // Build host inputs (bf16-rounded floats) + device buffers shared by both
 // variants. Offset large-E cases to exercise production-scale flattened TMA
@@ -392,6 +359,50 @@ struct Inputs {
 	int num_m_tiles, num_n_tiles, total_n_rows;
 	~Inputs() { if (d_expert_ids) cudaFree(d_expert_ids); }
 };
+
+static void tensor_core_reference(
+		const Inputs& in, const Mlp1Shape& s, int tile_m,
+		bool with_act, RefOutputs& out) {
+	const size_t count = static_cast<size_t>(s.num_tokens) * s.intermediate_dim;
+	cublasHandle_t handle;
+	ASSERT_EQ(cublasCreate(&handle), CUBLAS_STATUS_SUCCESS);
+	float* device = nullptr;
+	CUDA_OK(cudaMalloc(&device, 2 * count * sizeof(float)));
+	const float alpha = 1.f, beta = 0.f;
+	for (int m = 0; m < in.num_m_tiles; ++m) {
+		const int row = m * tile_m;
+		const int rows = std::min(tile_m, s.num_tokens - row);
+		const size_t weight_offset =
+			static_cast<size_t>(in.expert_ids[m]) * s.intermediate_dim * s.hidden_dim;
+		for (int which = 0; which < 2; ++which) {
+			ASSERT_EQ(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+				s.intermediate_dim, rows, s.hidden_dim, &alpha,
+				(which == 0 ? in.dB.ptr : in.dC.ptr) + weight_offset,
+				CUDA_R_16BF, s.hidden_dim,
+				in.dX.ptr + static_cast<size_t>(row) * s.hidden_dim,
+				CUDA_R_16BF, s.hidden_dim, &beta,
+				device + which * count + static_cast<size_t>(row) * s.intermediate_dim,
+				CUDA_R_32F, s.intermediate_dim, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
+				CUBLAS_STATUS_SUCCESS);
+		}
+	}
+	std::vector<float> uv(2 * count);
+	CUDA_OK(cudaMemcpy(uv.data(), device, uv.size() * sizeof(float), cudaMemcpyDeviceToHost));
+	CUDA_OK(cudaFree(device));
+	ASSERT_EQ(cublasDestroy(handle), CUBLAS_STATUS_SUCCESS);
+	out.Z.resize(count);
+	if (with_act) { out.Up.resize(count); out.Vp.resize(count); }
+	for (size_t i = 0; i < count; ++i) {
+		const float u = uv[i], v = uv[count + i];
+		const float sig = 1.f / (1.f + std::exp(-u));
+		const float silu = u * sig;
+		out.Z[i] = silu * v;
+		if (with_act) {
+			out.Up[i] = v * (sig + silu * (1.f - sig));
+			out.Vp[i] = silu;
+		}
+	}
+}
 
 template <typename Traits>
 static void make_inputs(const Mlp1Shape& s, Inputs& in, unsigned seed) {
@@ -521,8 +532,9 @@ static void run_fused(const Mlp1Shape& s) {
 	auto Z = download_rows(dZ, padded, s.num_tokens, s.intermediate_dim);
 	cudaFree(dZ);
 
-	auto ref = cpu_reference(in.X, in.B, in.C, in.expert_ids, s,
-		Traits::TileM, /*with_act=*/false);
+	RefOutputs ref;
+	tensor_core_reference(in, s, Traits::TileM, /*with_act=*/false, ref);
+	ASSERT_FALSE(::testing::Test::HasFatalFailure());
 	auto e = compare(Z, ref.Z);
 	printf("[fused C=%-3d T=%d H=%d I=%d E=%d] mean_rel=%.3f%% max_rel=%.3f%% max_abs=%.3g\n",
 		Compute, s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
@@ -625,8 +637,9 @@ static void run_act(const Mlp1Shape& s) {
 	auto Z = download_rows(dZ, padded, s.num_tokens, s.intermediate_dim);
 	cudaFree(dU); cudaFree(dV); cudaFree(dZ);
 
-	auto ref = cpu_reference(in.X, in.B, in.C, in.expert_ids, s,
-		Traits::TileM, /*with_act=*/true);
+	RefOutputs ref;
+	tensor_core_reference(in, s, Traits::TileM, /*with_act=*/true, ref);
+	ASSERT_FALSE(::testing::Test::HasFatalFailure());
 	auto eU = compare(U, ref.Up);
 	auto eV = compare(V, ref.Vp);
 	auto eZ = compare(Z, ref.Z);
@@ -954,7 +967,7 @@ TEST(Mlp1FusedAct, Correctness) {
 }
 
 // ── Hopper (Compute=90 / WGMMA) — requires an sm_90 GPU at runtime ──
-// Same shapes, same cpu_reference, same tolerances as the Blackwell tests
+// Same shapes, same reference, same tolerances as the Blackwell tests
 // (run_fused/run_act are shared, templated only on Compute): the Hopper path is
 // held to the identical bar — no relaxed thresholds, no bias.
 TEST(Mlp1FusedSm90, Correctness) {

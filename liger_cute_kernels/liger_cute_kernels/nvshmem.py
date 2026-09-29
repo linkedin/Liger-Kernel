@@ -180,6 +180,7 @@ def team_destroy(team_handle: int) -> None:
 
     if _configuration is not None:
         _configuration.flsce_teams.pop(team_handle, None)
+        _configuration.moe_teams.pop(team_handle, None)
     for key, handle in list(_PG_TEAM_CACHE.items()):
         if handle == team_handle:
             del _PG_TEAM_CACHE[key]

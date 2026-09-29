@@ -64,7 +64,7 @@ def runtime(monkeypatch):
     monkeypatch.setattr(
         tvm_ffi, "fused_linear_scaled_cross_entropy_configure_forward", lambda *args: calls.append(("forward", args))
     )
-    monkeypatch.setattr(tvm_ffi, "moe_configure_symmetric", lambda *args: calls.append(("moe", args)))
+    monkeypatch.setattr(tvm_ffi, "moe_configure_context", lambda *args: calls.append(("moe", args)))
     yield SimpleNamespace(
         world=world,
         members=members,
@@ -80,7 +80,7 @@ def test_shared_runtime_configures_both_operators_once(runtime):
     assert runtime.calls == [
         ("init", runtime.world),
         ("context", (2048, 512, 1024, 1, 19, 0)),
-        ("moe", (2048, 512, 8, 2, 2, 1, 2)),
+        ("moe", (2048, 512, 8, 2, 1, 2, 1, 19, 0)),
     ]
 
 
@@ -148,6 +148,85 @@ def test_add_tp_partition_preserves_process_wide_capacity(runtime, monkeypatch):
     assert runtime.calls == before
 
 
+def test_add_ep_partition_preserves_process_wide_capacity(runtime, monkeypatch):
+    runtime.configure(moe=replace(MOE, max_inflight=2))
+    subgroup = object()
+    runtime.members[subgroup] = (0,)
+    monkeypatch.setattr(nvshmem, "resolve_team", lambda group, *, create: 20 if group is subgroup else 19)
+
+    def gather(output, value, group):
+        peer = list(value)
+        peer[2] = ((1,), value[2][1])
+        peer[5] = (("other", (1,)),)
+        output[:] = [value, tuple(peer)]
+
+    monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
+    runtime.configure(
+        process_groups={"other": subgroup},
+        moe=replace(MOE, max_tokens=512, gpus_per_host=1, group="other"),
+    )
+    assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 1, 1, 2, 20, 1))
+    assert set(configuration._configuration.moe_teams) == {19, 20}
+    configuration._validate_moe_call(2048, 512, 8, 2, 19, torch.device("cuda:0"))
+    configuration._validate_moe_call(512, 256, 4, 1, 20, torch.device("cuda:0"))
+    before = list(runtime.calls)
+    runtime.configure(moe=replace(MOE, group="other", gpus_per_host=1))
+    assert runtime.calls == before
+
+
+def test_partial_ep_cache_hits_reserve_collective_slot(runtime, monkeypatch):
+    subgroup = object()
+    runtime.members.update({runtime.world: tuple(range(6)), subgroup: (0, 1)})
+    partitions = [(0, 1), (0, 1), (2, 3), (2, 3), (4, 5), (4, 5)]
+    hits = [False] * 6
+
+    def gather(output, value, group):
+        output[:] = []
+        for rank in range(6):
+            peer = list(value)
+            peer[2] = (partitions[rank], value[2][1])
+            peer[5] = (("ep", partitions[rank]),)
+            peer[7] = hits[rank]
+            output.append(tuple(peer))
+
+    monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
+    runtime.configure(process_groups={"ep": subgroup}, moe=replace(MOE, group="ep"))
+    partitions[:] = [(0, 1), (0, 1), (2, 4), (3, 5), (2, 4), (3, 5)]
+    hits[:] = [True, True, False, False, False, False]
+    runtime.configure(moe=replace(MOE, max_tokens=512, group="ep"))
+    assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 1, 2, 1, 19, 1))
+    assert configuration._configuration.moe_context_slot == 2
+    hits[:] = [True] * 6
+    before = list(runtime.calls)
+    runtime.configure(moe=replace(MOE, group="ep"))
+    assert runtime.calls == before
+
+
+def test_inconsistent_ep_context_cache_rejected_before_setup(runtime, monkeypatch):
+    runtime.configure(moe=MOE)
+    before = list(runtime.calls)
+
+    def gather(output, value, group):
+        peer = list(value)
+        peer[7] = False
+        output[:] = [value, tuple(peer)]
+
+    monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
+    with pytest.raises(RuntimeError, match="context cache differs"):
+        runtime.configure(moe=MOE)
+    assert runtime.calls == before
+
+
+def test_destroyed_ep_team_requires_context_reconfiguration(runtime, monkeypatch):
+    runtime.configure(moe=MOE)
+    monkeypatch.setattr(tvm_ffi, "team_destroy", lambda team: None)
+    nvshmem.team_destroy(19)
+    with pytest.raises(ValueError, match="no configured EP context"):
+        configuration._validate_moe_call(512, 512, 8, 2, 19, torch.device("cuda:0"))
+    runtime.configure(moe=MOE)
+    assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 1, 2, 1, 19, 1))
+
+
 def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
     tp, ep = object(), object()
     runtime.members.update({runtime.world: (0, 1, 2, 3), tp: (0, 1), ep: (0, 2)})
@@ -155,7 +234,7 @@ def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
     monkeypatch.setattr(nvshmem, "team_from_pg", lambda group: teams.append(group) or len(teams))
 
     def gather(output, value, group):
-        error, flsce, moe, hardware, state, group_specs, cached = value
+        error, flsce, moe, hardware, state, group_specs, cached, moe_cached = value
         output[:] = [
             (
                 error,
@@ -165,6 +244,7 @@ def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
                 state,
                 (("ep", (rank % 2, rank % 2 + 2)), ("tp", (rank // 2 * 2, rank // 2 * 2 + 1))),
                 cached,
+                moe_cached,
             )
             for rank in range(4)
         ]
@@ -177,7 +257,7 @@ def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
     )
     assert runtime.calls[0] == ("init", runtime.world)
     assert teams == [ep, tp]
-    assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 2, 1, 2))
+    assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 1, 2, 1, 19, 0))
 
 
 def test_partial_context_cache_hits_still_reserve_collective_slot(runtime, monkeypatch):
@@ -330,6 +410,7 @@ def test_invalid_flsce_values_do_not_initialize(runtime, config):
         replace(MOE, num_experts=7),
         replace(MOE, top_k=9),
         replace(MOE, max_tokens=2**31 - 1),
+        replace(MOE, max_inflight=0),
     ],
 )
 def test_invalid_moe_values_do_not_initialize(runtime, config):
@@ -377,14 +458,14 @@ def test_capture_rejected_before_collectives(runtime, monkeypatch):
 
 @pytest.mark.parametrize(
     ("tokens", "hidden", "experts", "top_k", "team"),
-    [(2049, 512, 8, 2, 19), (512, 256, 8, 2, 19), (512, 512, 4, 2, 19), (512, 512, 8, 3, 19), (512, 512, 8, 2, 20)],
+    [(2049, 512, 8, 2, 19), (512, 1024, 8, 2, 19), (512, 512, 16, 2, 19), (512, 512, 8, 3, 19), (512, 512, 8, 2, 20)],
 )
 def test_moe_launch_rejects_invalid_request_before_native_call(
     runtime, monkeypatch, tokens, hidden, experts, top_k, team
 ):
     runtime.configure(moe=MOE)
     monkeypatch.setattr(
-        tvm_ffi, "_moe_symm_config", lambda: pytest.fail("must reject before querying native workspace")
+        tvm_ffi, "_moe_symm_config", lambda *args: pytest.fail("must reject before querying native workspace")
     )
     x = SimpleNamespace(shape=(tokens, hidden), device=torch.device("cuda:0"))
     with pytest.raises(ValueError):
@@ -394,6 +475,14 @@ def test_moe_launch_rejects_invalid_request_before_native_call(
 def test_moe_launch_within_capacity(runtime):
     runtime.configure(moe=MOE)
     configuration._validate_moe_call(512, 512, 8, 1, 19, torch.device("cuda:0"))
+
+
+def test_moe_retained_capacity_cannot_grow(runtime):
+    runtime.configure(moe=MOE)
+    before = list(runtime.calls)
+    with pytest.raises(RuntimeError, match="capacity growth"):
+        runtime.configure(moe=replace(MOE, max_inflight=2))
+    assert runtime.calls == before
 
 
 @pytest.mark.parametrize(
@@ -543,7 +632,7 @@ def test_public_module_configures_both_operators(runtime, public_configuration):
         is True
     )
     assert runtime.calls[1] == ("context", (2048, 512, 1024, 1, 19, 0))
-    assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 2, 1, 2))
+    assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 1, 2, 1, 19, 0))
 
 
 def test_backend_discovery_does_not_import_optional_lck(public_ops):

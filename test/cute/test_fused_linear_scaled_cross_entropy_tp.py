@@ -539,14 +539,14 @@ def _multi_context_worker(rank, world_size, init_file, bootstrap_subgroups, part
 
 
 @pytest.mark.parametrize(
-    ("world_size", "bootstrap_subgroups", "partial_overlap"),
-    [(4, False, False), (6, False, True), (8, True, False)],
+    ("world_size", "bootstrap_subgroups", "partial_overlap", "disable_nvls"),
+    [(4, False, False, False), (6, False, True, False), (8, True, False, False), (4, False, False, True)],
 )
-def test_native_multiple_tp_contexts(world_size, bootstrap_subgroups, partial_overlap, monkeypatch):
+def test_native_multiple_tp_contexts(world_size, bootstrap_subgroups, partial_overlap, disable_nvls, monkeypatch):
     if not _NATIVE_AVAILABLE or _NDEV < world_size:
         pytest.skip(f"requires native LCK and at least {world_size} CUDA devices")
     monkeypatch.setenv("NVSHMEM_DISABLE_NCCL", "1")
-    monkeypatch.setenv("NVSHMEM_DISABLE_NVLS", "0")
+    monkeypatch.setenv("NVSHMEM_DISABLE_NVLS", "1" if disable_nvls else "0")
     monkeypatch.setenv("NVSHMEM_REMOTE_TRANSPORT", "none")
     monkeypatch.setenv("NVSHMEM_SYMMETRIC_SIZE", "6G")
     with tempfile.TemporaryDirectory(prefix="liger_tp_contexts_") as rendezvous:

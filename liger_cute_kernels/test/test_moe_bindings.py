@@ -1,9 +1,8 @@
 """Unit tests for the ``liger_cute_kernels`` TVM FFI MoE bindings.
 
 These belong to the standalone ``liger_cute_kernels`` module — they import the
-compiled package directly and do NOT depend on ``liger_kernel``. The native
-kernels are not ported yet, so these do NOT check numerics; they exercise the
-binding *surface* that already exists:
+compiled package directly and do NOT depend on ``liger_kernel``. They exercise
+the binding surface and a real single-PE forward/backward roundtrip:
 
   * the ``liger_cute_kernels.tvm_ffi`` facade imports and exposes the MoE entry
     points,
@@ -15,9 +14,8 @@ binding *surface* that already exists:
 
 The whole module is skipped unless the compiled ``liger_cute_kernels`` package
 is importable (build it via this module's README.md). Tests that need device
-tensors are additionally skipped without CUDA. The full valid forward/backward
-needs an initialized NVSHMEM runtime (no bootstrap binding yet) and is left as
-an explicit skip.
+tensors are additionally skipped without CUDA. The roundtrip initializes
+NVSHMEM in an isolated worker and checks eager and captured execution.
 """
 
 import pytest
@@ -75,12 +73,11 @@ def test_configure_symmetric_valid(tvm_ffi_module):
 
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="configure uploads the comm schedule to device constant memory")
-def test_configure_symmetric_rejects_changed_topology(tvm_ffi_module):
+def test_configure_symmetric_accepts_changed_topology(tvm_ffi_module):
     assert tvm_ffi_module.moe_configure_symmetric(**_CFG) is None
     changed = {**_CFG, "num_hosts": 2, "gpus_per_host": 1}
 
-    with pytest.raises(RuntimeError, match="topology changed after initialization"):
-        tvm_ffi_module.moe_configure_symmetric(**changed)
+    assert tvm_ffi_module.moe_configure_symmetric(**changed) is None
 
 
 def test_configure_symmetric_topology_mismatch_raises(tvm_ffi_module):
@@ -151,13 +148,12 @@ def test_fwd_rejects_mismatched_gate_hidden_dim(tvm_ffi_module):
         )
 
 
-@pytest.mark.skip(
-    reason="full fwd/bwd allocates symmetric memory; needs an initialized NVSHMEM "
-    "runtime — bootstrap bindings not ported yet."
-)
-def test_fused_fwd_bwd_roundtrip(tvm_ffi_module):
-    # Placeholder for the end-to-end shape/lifetime contract once kernels and the
-    # NVSHMEM bootstrap path are wired up: fwd returns
-    # (Y, x_sorted, y_buf, all_expert_offsets, token_expert_slots,
-    #  tile_expert_ids, chosen_tile_m); bwd consumes them and returns the grads.
-    raise NotImplementedError
+@pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA tensors")
+def test_fused_fwd_bwd_roundtrip(monkeypatch):
+    from test_moe_cuda_graph import _fwd_bwd_graph_worker
+    from test_moe_cuda_graph import _run
+
+    monkeypatch.setenv("NVSHMEM_DISABLE_NCCL", "1")
+    monkeypatch.setenv("NVSHMEM_REMOTE_TRANSPORT", "none")
+    monkeypatch.setenv("NVSHMEM_SYMMETRIC_SIZE", "6G")
+    _run(1, _fwd_bwd_graph_worker)

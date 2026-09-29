@@ -86,6 +86,7 @@ __device__ __forceinline__ void moe_fused_fwd(
 		int num_pes,
 		int my_pe,
 		int gpus_per_node,
+		int num_hosts,
 		// MLP1 TMA descriptors
 		TmaLoadX  const& tma_load_x,
 		TmaLoadW1 const& tma_load_b,
@@ -168,7 +169,7 @@ __device__ __forceinline__ void moe_fused_fwd(
 		src_ready, src_consumed,
 		dst_ready, dst_consumed,
 		is_leader,
-		runtime_nsplit);
+		runtime_nsplit, num_hosts);
 
 	// Remote MLP dimensions: TMA descriptors cover the full flat staging
 	// list = MC · CommNumStages · TileM rows. MC = gridDim.x / NC — MUST match
