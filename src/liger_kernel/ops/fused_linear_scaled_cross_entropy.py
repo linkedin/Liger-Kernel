@@ -384,53 +384,6 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
     """
 
     @staticmethod
-    def configure(
-        *,
-        max_tokens,
-        hidden_size,
-        local_vocab_size,
-        tp_group=None,
-        bootstrap_group=None,
-        device=None,
-        dtype=torch.bfloat16,
-        tiles_per_reduce=1,
-    ):
-        """Prepare native TP resources through LCK's public configuration API.
-
-        Returns ``True`` when native resources are configured, ``False`` when
-        this device/dtype/installation uses the public fallback. Native setup
-        errors propagate. Every bootstrap rank must call collectively with
-        matching capacities, before execution or CUDA graph capture. The
-        bootstrap group defaults to torch WORLD, not the local TP group, so
-        future EP teams can share the same runtime.
-        """
-        device = torch.device(device if device is not None else "cuda")
-        if dtype != torch.bfloat16 or not _supports_native_tp_architecture(device):
-            return False
-        with torch.cuda.device(device):
-            try:
-                native_function = _load_native_tp_function()
-            except ImportError:
-                native_function = None
-        if native_function is None:
-            return False
-        from liger_cute_kernels import FusedLinearCrossEntropyConfig
-        from liger_cute_kernels import configure
-
-        configure(
-            bootstrap_group=bootstrap_group,
-            device=device,
-            flsce=FusedLinearCrossEntropyConfig(
-                max_tokens=max_tokens,
-                hidden_size=hidden_size,
-                local_vocab_size=local_vocab_size,
-                tp_group=tp_group,
-                tiles_per_reduce=tiles_per_reduce,
-            ),
-        )
-        return True
-
-    @staticmethod
     def apply(
         _input,
         weight,

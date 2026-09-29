@@ -36,13 +36,14 @@ from liger_cute_kernels import FusedLinearCrossEntropyConfig, MoEConfig, configu
 # Initialize torch.distributed and create tp_group/ep_group first.
 torch.cuda.set_device(local_rank)
 configure(
+    process_groups={"tp": tp_group, "ep": ep_group},
     bootstrap_group=dist.group.WORLD,
     device=torch.device("cuda", local_rank),
     flsce=FusedLinearCrossEntropyConfig(
         max_tokens=8192,
         hidden_size=4096,
         local_vocab_size=32000,
-        tp_group=tp_group,
+        group="tp",
     ),
     moe=MoEConfig(
         max_tokens=8192,
@@ -51,14 +52,25 @@ configure(
         top_k=8,
         num_hosts=1,  # This example assumes each EP group is within one host.
         gpus_per_host=dist.get_world_size(ep_group),
-        ep_group=ep_group,
+        group="ep",
     ),
 )
 ```
 
 The bootstrap group defines `NVSHMEM_TEAM_WORLD`; it is **not inferred from
 the first operator's TP or EP group**. TP and EP can use different partitions
-of this common domain. Every bootstrap rank must call `configure`, in the same
+of this common domain. `process_groups` accepts a `Mapping[str, ProcessGroup]`;
+names are arbitrary, and operator sections select them with `group="name"`.
+`group=None` selects the bootstrap group. Unknown names and `None` mapping
+values are rejected rather than silently selecting WORLD.
+
+Every declared group is prepared in sorted-name order, even if it is not yet
+used by an operator. Additional names can be registered in later calls; omitted
+names remain available until finalization. Reusing a name requires unchanged
+ordered membership. Merely registering more groups does not create additional
+operator workspaces.
+
+Every bootstrap rank must call `configure`, in the same
 order, with the same operator sections, capacities, and topology. Local operator
 groups must form consistent, equal-sized, arithmetic-stride partitions in
 bootstrap PE numbering. All ranks must use matching GPU architectures and SM
@@ -91,30 +103,49 @@ that share operator scratch buffers. MoE still allocates stack buffers during
 warm-up; all bootstrap PEs must warm up matching allocation sequences/depths
 before independent execution or graph capture.
 
-### Public Liger frontends
+### One API through either package
 
-Downstream integrations need not import NVSHMEM or TVM FFI directly:
+Downstream integrations can use the same API through Liger without importing
+NVSHMEM or TVM FFI. These are lazy aliases of the LCK function and configuration
+classes, not separate implementations or per-op methods. For Megatron, pass
+the relevant initialized entries of its `pg_collection` explicitly; LCK does
+not depend on Megatron's collection type:
 
 ```python
-from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyTPFunction
+from liger_kernel.ops.cute import FusedLinearCrossEntropyConfig, MoEConfig, configure
 
-native_configured = LigerFusedLinearScaledCrossEntropyTPFunction.configure(
-    max_tokens=8192,
-    hidden_size=4096,
-    local_vocab_size=32000,
-    tp_group=tp_group,
+configure(
+    process_groups={"tp": pg_collection.tp, "ep": pg_collection.ep},
     bootstrap_group=dist.group.WORLD,
     device=torch.device("cuda", local_rank),
-    dtype=torch.bfloat16,
+    flsce=FusedLinearCrossEntropyConfig(
+        max_tokens=8192,
+        hidden_size=4096,
+        local_vocab_size=32000,
+        group="tp",
+    ),
+    moe=MoEConfig(
+        max_tokens=8192,
+        hidden_size=4096,
+        num_experts=128,
+        top_k=8,
+        num_hosts=1,
+        gpus_per_host=dist.get_world_size(pg_collection.ep),
+        group="ep",
+    ),
 )
 ```
 
-This returns `False` without bootstrapping for device/dtype/installations using
-the public fallback. Native configuration errors propagate rather than silently
-switching backends. All bootstrap ranks must use a consistent backend.
-`LigerExpertParallelFusedMoEFunction.configure(...)`, imported from
-`liger_kernel.ops.cute.ops.moe`, delegates to the same runtime with MoE capacity
-and topology arguments. The operation's `.apply(...)` interface is unchanged.
+There is one signature: `configure(*, process_groups=None, bootstrap_group=None, device=None,
+flsce=None, moe=None)`. Operator-specific values belong to configuration data,
+not methods on the operator classes. Either section can be omitted.
+
+Accessing these aliases requires the optional LCK Python package; backend
+discovery does not import it, and accessing the aliases does not load the native
+core. Calling `configure` explicitly requests native setup and propagates missing
+dependencies or setup errors. Fallback-only deployments do not call it.
+The operations' existing `.apply(...)` interfaces and fallback dispatch remain
+unchanged.
 
 ### Ownership, offload, and teardown
 

@@ -93,18 +93,22 @@ def _reference(x, global_weight, target, grad_nll, grad_entropy):
 
 
 def _run_moe(rank: int, world_size: int):
-    from liger_kernel.ops.cute.ops.moe import LigerExpertParallelFusedMoEFunction
+    from liger_kernel.ops.cute import MoEConfig
+    from liger_kernel.ops.cute import configure
     from liger_kernel.ops.cute.ops.moe import moe_fused
 
-    LigerExpertParallelFusedMoEFunction.configure(
-        max_tokens=_MOE_TOKENS,
-        hidden_size=_MOE_HIDDEN,
-        num_experts=_MOE_EXPERTS,
-        top_k=_MOE_TOP_K,
-        num_hosts=1,
-        gpus_per_host=world_size,
-        ep_group=dist.group.WORLD,
+    configure(
+        process_groups={"ep": dist.group.WORLD},
         device=torch.device("cuda", rank),
+        moe=MoEConfig(
+            max_tokens=_MOE_TOKENS,
+            hidden_size=_MOE_HIDDEN,
+            num_experts=_MOE_EXPERTS,
+            top_k=_MOE_TOP_K,
+            num_hosts=1,
+            gpus_per_host=world_size,
+            group="ep",
+        ),
     )
     experts_per_rank = _MOE_EXPERTS // world_size
     generator = torch.Generator(device="cpu")
@@ -162,6 +166,9 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
     else:
         from liger_cute_kernels import nvshmem
 
+        from liger_kernel.ops.cute import FusedLinearCrossEntropyConfig
+        from liger_kernel.ops.cute import configure
+
     torch.cuda.set_device(rank)
     dist.init_process_group(
         backend="nccl",
@@ -179,21 +186,26 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         tp_size = len(tp_ranks)
         group_index = _group_layout(layout, world_size).index(tp_ranks)
         if implementation == "native":
-            assert LigerFusedLinearScaledCrossEntropyTPFunction.configure(
-                max_tokens=_TOKENS + 128,
-                hidden_size=_HIDDEN,
-                local_vocab_size=_LOCAL_VOCAB,
-                tp_group=tp_group,
+            configure(
+                process_groups={"tp": tp_group},
                 device=torch.device("cuda", rank),
+                flsce=FusedLinearCrossEntropyConfig(
+                    max_tokens=_TOKENS + 128,
+                    hidden_size=_HIDDEN,
+                    local_vocab_size=_LOCAL_VOCAB,
+                    group="tp",
+                ),
             )
             nvshmem_initialized = True
             team_handle = nvshmem.resolve_team(tp_group, create=False)
-            assert LigerFusedLinearScaledCrossEntropyTPFunction.configure(
-                max_tokens=_TOKENS,
-                hidden_size=_HIDDEN,
-                local_vocab_size=_LOCAL_VOCAB,
-                tp_group=tp_group,
+            configure(
                 device=torch.device("cuda", rank),
+                flsce=FusedLinearCrossEntropyConfig(
+                    max_tokens=_TOKENS,
+                    hidden_size=_HIDDEN,
+                    local_vocab_size=_LOCAL_VOCAB,
+                    group="tp",
+                ),
             )
             if run_moe:
                 _run_moe(rank, world_size)

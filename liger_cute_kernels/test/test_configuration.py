@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
+import types
 
 from contextlib import nullcontext
 from dataclasses import replace
@@ -51,6 +53,7 @@ def runtime(monkeypatch):
     monkeypatch.setattr(tvm_ffi, "_load_module", lambda: object())
     monkeypatch.setattr(nvshmem, "init_from_pg", lambda pg: calls.append(("init", pg)))
     monkeypatch.setattr(nvshmem, "team_from_pg", lambda pg: 19)
+    monkeypatch.setattr(nvshmem, "resolve_team", lambda pg, *, create: 19)
     monkeypatch.setattr(
         tvm_ffi, "fused_linear_scaled_cross_entropy_configure_backward", lambda *args: calls.append(("backward", args))
     )
@@ -124,7 +127,7 @@ def test_group_replacement_is_explicitly_unsupported(runtime):
     subgroup = object()
     runtime.members[subgroup] = (0,)
     with pytest.raises(RuntimeError, match="process-group replacement"):
-        runtime.configure(flsce=replace(FLSCE, tp_group=subgroup))
+        runtime.configure(process_groups={"other": subgroup}, flsce=replace(FLSCE, group="other"))
 
 
 def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
@@ -134,17 +137,98 @@ def test_distinct_tp_and_ep_partitions_share_bootstrap(runtime, monkeypatch):
     monkeypatch.setattr(nvshmem, "team_from_pg", lambda group: teams.append(group) or len(teams))
 
     def gather(output, value, group):
-        error, flsce, moe, hardware, state = value
+        error, flsce, moe, hardware, state, group_specs = value
         output[:] = [
-            (error, ((rank // 2 * 2, rank // 2 * 2 + 1), flsce[1]), ((rank % 2, rank % 2 + 2), moe[1]), hardware, state)
+            (
+                error,
+                ((rank // 2 * 2, rank // 2 * 2 + 1), flsce[1]),
+                ((rank % 2, rank % 2 + 2), moe[1]),
+                hardware,
+                state,
+                (("ep", (rank % 2, rank % 2 + 2)), ("tp", (rank // 2 * 2, rank // 2 * 2 + 1))),
+            )
             for rank in range(4)
         ]
 
     monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
-    runtime.configure(flsce=replace(FLSCE, tp_group=tp), moe=replace(MOE, ep_group=ep))
+    runtime.configure(
+        process_groups={"tp": tp, "ep": ep},
+        flsce=replace(FLSCE, group="tp"),
+        moe=replace(MOE, group="ep"),
+    )
     assert runtime.calls[0] == ("init", runtime.world)
-    assert teams == [tp, ep]
+    assert teams == [ep, tp]
     assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 2, 1, 2))
+
+
+def test_named_groups_are_prepared_in_sorted_order(runtime, monkeypatch):
+    first, second, third = object(), object(), object()
+    runtime.members.update({first: (0, 1), second: (0, 1), third: (0, 1)})
+    prepared = []
+    monkeypatch.setattr(nvshmem, "team_from_pg", lambda group: prepared.append(group) or 19)
+    runtime.configure(process_groups={"tensor": third, "data": first, "expert": second})
+    assert prepared == [first, second, third]
+    assert runtime.calls == [("init", runtime.world)]
+
+
+def test_registered_names_persist_when_adding_groups_and_operators(runtime, monkeypatch):
+    prepared = []
+    monkeypatch.setattr(nvshmem, "team_from_pg", lambda group: prepared.append(group) or 19)
+    runtime.configure(process_groups={"tensor": runtime.world})
+    runtime.configure(process_groups={"expert": runtime.world}, flsce=replace(FLSCE, group="tensor"))
+    runtime.configure(moe=replace(MOE, group="expert"))
+    runtime.configure(process_groups={"tensor": runtime.world}, flsce=replace(FLSCE, group="tensor"))
+    assert prepared == [runtime.world, runtime.world]
+    assert set(configuration._configuration.process_groups) == {"tensor", "expert"}
+    assert [name for name, _ in runtime.calls] == ["init", "backward", "forward", "moe"]
+
+
+def test_registered_name_cannot_change_membership(runtime):
+    runtime.configure(process_groups={"tp": runtime.world})
+    other = object()
+    runtime.members[other] = (0,)
+    with pytest.raises(RuntimeError, match="cannot change membership"):
+        runtime.configure(process_groups={"tp": other})
+    assert configuration._configuration.process_groups["tp"] is runtime.world
+
+
+@pytest.mark.parametrize("groups", [[], {"tp": None}, {"": object()}, {1: object()}])
+def test_invalid_process_group_mapping_fails_before_init(runtime, groups):
+    with pytest.raises(RuntimeError, match="LCK configure rejected"):
+        runtime.configure(process_groups=groups)
+    assert runtime.calls == []
+
+
+@pytest.mark.parametrize("section", ["flsce", "moe"])
+def test_unknown_group_name_fails_before_init(runtime, section):
+    config = FLSCE if section == "flsce" else MOE
+    with pytest.raises(RuntimeError, match="unknown process group"):
+        runtime.configure(**{section: replace(config, group="missing")})
+    assert runtime.calls == []
+
+
+def test_named_group_keys_must_match_on_all_ranks(runtime, monkeypatch):
+    def gather(output, value, group):
+        peer = list(value)
+        peer[5] = (("different", (0, 1)),)
+        output[:] = [value, tuple(peer)]
+
+    monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
+    with pytest.raises(ValueError, match="names must agree"):
+        runtime.configure(process_groups={"tp": runtime.world})
+    assert runtime.calls == []
+
+
+def test_unused_named_group_still_requires_a_consistent_partition(runtime, monkeypatch):
+    def gather(output, value, group):
+        peer = list(value)
+        peer[5] = (("unused", (1,)),)
+        output[:] = [value, tuple(peer)]
+
+    monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
+    with pytest.raises(ValueError, match="consistent partition|uniform size"):
+        runtime.configure(process_groups={"unused": runtime.world})
+    assert runtime.calls == []
 
 
 @pytest.mark.parametrize(
@@ -303,39 +387,61 @@ def test_pool_clear_requires_reconfiguration(runtime, monkeypatch):
 
 
 @pytest.fixture
-def frontend():
-    path = Path(__file__).resolve().parents[2] / "src/liger_kernel/ops/fused_linear_scaled_cross_entropy.py"
+def cute_frontend(monkeypatch):
+    registry = types.ModuleType("liger_kernel.ops.backends.registry")
+    registry.ImplInfo = SimpleNamespace
+    registry.register_impl = lambda info: None
+    monkeypatch.setitem(sys.modules, registry.__name__, registry)
+    path = Path(__file__).resolve().parents[2] / "src/liger_kernel/ops/cute/__init__.py"
     spec = importlib.util.spec_from_file_location("lck_config_frontend", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_public_flsce_configure_delegates_to_lck(runtime, frontend, monkeypatch):
-    monkeypatch.setattr(frontend, "_load_native_tp_function", lambda: object())
-    assert frontend.LigerFusedLinearScaledCrossEntropyTPFunction.configure(
-        max_tokens=FLSCE.max_tokens,
-        hidden_size=FLSCE.hidden_size,
-        local_vocab_size=FLSCE.local_vocab_size,
-        tp_group=runtime.world,
+def test_public_aliases_are_the_canonical_api(cute_frontend, monkeypatch):
+    monkeypatch.setattr(tvm_ffi, "_load_module", lambda: pytest.fail("aliases must not load the native core"))
+    assert cute_frontend.configure is configure
+    assert cute_frontend.FusedLinearCrossEntropyConfig is FusedLinearCrossEntropyConfig
+    assert cute_frontend.MoEConfig is MoEConfig
+
+
+def test_public_alias_configures_both_operators(runtime, cute_frontend):
+    cute_frontend.configure(
+        process_groups={"tp": runtime.world, "ep": runtime.world},
         bootstrap_group=runtime.world,
         device="cuda:0",
+        flsce=replace(FLSCE, group="tp"),
+        moe=replace(MOE, group="ep"),
     )
     assert runtime.calls[1] == ("backward", (2048, 512, 1024, 1, 19))
+    assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 2, 1, 2))
 
 
-@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-def test_public_flsce_fallback_does_not_initialize(runtime, frontend, monkeypatch, dtype):
-    monkeypatch.setattr(frontend, "_load_native_tp_function", lambda: pytest.fail("fallback must not load LCK"))
-    assert not frontend.LigerFusedLinearScaledCrossEntropyTPFunction.configure(
-        max_tokens=2048, hidden_size=512, local_vocab_size=1024, device="cuda:0", dtype=dtype
-    )
-    assert runtime.calls == []
+def test_backend_discovery_does_not_import_optional_lck(cute_frontend, monkeypatch):
+    def reject_import(name):
+        pytest.fail(f"backend discovery must not import {name}")
+
+    monkeypatch.setattr(cute_frontend.importlib, "import_module", reject_import)
+    spec = cute_frontend.__spec__
+    spec.loader.exec_module(cute_frontend)
+    assert "configure" in cute_frontend.__all__
 
 
-def test_public_flsce_without_native_package_does_not_initialize(runtime, frontend, monkeypatch):
-    monkeypatch.setattr(frontend, "_load_native_tp_function", lambda: None)
-    assert not frontend.LigerFusedLinearScaledCrossEntropyTPFunction.configure(
-        max_tokens=2048, hidden_size=512, local_vocab_size=1024, device="cuda:0"
-    )
-    assert runtime.calls == []
+def test_alias_access_reports_missing_lck(cute_frontend, monkeypatch):
+    def missing(name):
+        raise ModuleNotFoundError(f"No module named '{name}'", name=name)
+
+    monkeypatch.setattr(cute_frontend.importlib, "import_module", missing)
+    with pytest.raises(ModuleNotFoundError, match="liger_cute_kernels"):
+        _ = cute_frontend.configure
+    with pytest.raises(AttributeError, match="unknown"):
+        _ = cute_frontend.unknown
+
+
+def test_operator_class_has_no_configure_method():
+    path = Path(__file__).resolve().parents[2] / "src/liger_kernel/ops/fused_linear_scaled_cross_entropy.py"
+    spec = importlib.util.spec_from_file_location("lck_flsce_frontend", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert not hasattr(module.LigerFusedLinearScaledCrossEntropyTPFunction, "configure")
