@@ -26,13 +26,12 @@ Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import .
       are NOT affected by the replacement mechanism.
 """
 
-from typing import TYPE_CHECKING as _TYPE_CHECKING
-
 # =============================================================================
 # Import default implementations
 # Both Function classes and kernel functions are imported here.
 # All of these can be replaced by backend-specific implementations.
 # =============================================================================
+
 from liger_kernel.ops.attn_res import LigerAttnResFunction  # noqa: F401
 from liger_kernel.ops.attn_res import attn_res_backward  # noqa: F401
 from liger_kernel.ops.attn_res import attn_res_forward  # noqa: F401
@@ -109,26 +108,9 @@ from liger_kernel.ops.tiled_mlp import apply_tiled_mlp  # noqa: F401
 from liger_kernel.ops.tvd import LigerTVDLossFunction  # noqa: F401
 from liger_kernel.ops.vocab_parallel_cross_entropy import LigerVocabParallelCEFunction  # noqa: F401
 
-if _TYPE_CHECKING:
-    from liger_cute_kernels import FusedLinearCrossEntropyConfig as FusedLinearCrossEntropyConfig
-    from liger_cute_kernels import MoEConfig as MoEConfig
-    from liger_cute_kernels import configure as configure
-
 # NOTE: __all__ is intentionally NOT defined.
 # - Import from this package (liger_kernel.ops) -> subject to backend replacement
 # - Import from submodules (liger_kernel.ops.geglu) -> always use default implementation
-
-
-_CONFIGURATION_EXPORTS = ("configure", "FusedLinearCrossEntropyConfig", "MoEConfig")
-
-
-def __getattr__(name: str):
-    """Expose public native setup without importing optional LCK during discovery."""
-    if name in _CONFIGURATION_EXPORTS:
-        import importlib
-
-        return getattr(importlib.import_module("liger_cute_kernels"), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # =============================================================================

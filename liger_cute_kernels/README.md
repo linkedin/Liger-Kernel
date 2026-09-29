@@ -106,15 +106,17 @@ before independent execution or graph capture.
 ### One API through either package
 
 Downstream integrations can use the same API through Liger without importing
-NVSHMEM or TVM FFI. These are lazy aliases of the LCK function and configuration
-classes, not separate implementations or per-op methods. For Megatron, pass
+NVSHMEM or TVM FFI. The public `liger_kernel.ops.configure` module contains a
+thin entry point and dependency-free configuration data classes, not per-op
+setup methods. It converts the data to LCK's configuration objects only when
+LCK is installed. For Megatron, pass
 the relevant initialized entries of its `pg_collection` explicitly; LCK does
 not depend on Megatron's collection type:
 
 ```python
-from liger_kernel.ops import FusedLinearCrossEntropyConfig, MoEConfig, configure
+from liger_kernel.ops.configure import FusedLinearCrossEntropyConfig, MoEConfig, configure
 
-configure(
+native_configured = configure(
     process_groups={"tp": pg_collection.tp, "ep": pg_collection.ep},
     bootstrap_group=dist.group.WORLD,
     device=torch.device("cuda", local_rank),
@@ -142,10 +144,15 @@ not methods on the operator classes. Either section can be omitted. The
 `liger_kernel.ops.cute` implementation namespace remains private and does not
 export this configuration API.
 
-Accessing these aliases requires the optional LCK Python package; backend
-discovery does not import it, and accessing the aliases does not load the native
-core. Calling `configure` explicitly requests native setup and propagates missing
-dependencies or setup errors. Fallback-only deployments do not call it.
+Ordinary operator imports do not expose or load this optional setup API.
+Importing `liger_kernel.ops.configure`, importing its function or classes, and
+constructing configuration objects all work without LCK installed. LCK is
+loaded only when `configure` is called. If LCK is absent, the function emits a
+warning and returns `False` without changing the runtime; other Liger kernels
+remain usable. Successful native setup returns `True`. Failures inside an
+installed LCK package still propagate. All bootstrap ranks must use a consistent
+installation. Skipping setup does not enable an explicitly selected native-only
+operator or change backend selection.
 The operations' existing `.apply(...)` interfaces and fallback dispatch remain
 unchanged.
 

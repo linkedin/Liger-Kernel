@@ -93,11 +93,11 @@ def _reference(x, global_weight, target, grad_nll, grad_entropy):
 
 
 def _run_moe(rank: int, world_size: int):
-    from liger_kernel.ops import MoEConfig
-    from liger_kernel.ops import configure
+    from liger_kernel.ops.configure import MoEConfig
+    from liger_kernel.ops.configure import configure
     from liger_kernel.ops.cute.ops.moe import moe_fused
 
-    configure(
+    assert configure(
         process_groups={"ep": dist.group.WORLD},
         device=torch.device("cuda", rank),
         moe=MoEConfig(
@@ -166,8 +166,8 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
     else:
         from liger_cute_kernels import nvshmem
 
-        from liger_kernel.ops import FusedLinearCrossEntropyConfig
-        from liger_kernel.ops import configure
+        from liger_kernel.ops.configure import FusedLinearCrossEntropyConfig
+        from liger_kernel.ops.configure import configure
 
     torch.cuda.set_device(rank)
     dist.init_process_group(
@@ -186,7 +186,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         tp_size = len(tp_ranks)
         group_index = _group_layout(layout, world_size).index(tp_ranks)
         if implementation == "native":
-            configure(
+            assert configure(
                 process_groups={"tp": tp_group},
                 device=torch.device("cuda", rank),
                 flsce=FusedLinearCrossEntropyConfig(
@@ -198,7 +198,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
             )
             nvshmem_initialized = True
             team_handle = nvshmem.resolve_team(tp_group, create=False)
-            configure(
+            assert configure(
                 device=torch.device("cuda", rank),
                 flsce=FusedLinearCrossEntropyConfig(
                     max_tokens=_TOKENS,

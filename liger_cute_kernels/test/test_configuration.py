@@ -9,6 +9,8 @@ import sys
 import types
 
 from contextlib import nullcontext
+from dataclasses import asdict
+from dataclasses import fields
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -432,33 +434,50 @@ def public_ops(monkeypatch):
     with monkeypatch.context() as context:
         context.setattr(builtins, "__import__", import_dependencies)
         context.setattr(importlib, "import_module", import_module)
-        context.setattr(pkgutil, "iter_modules", lambda paths: ())
+        context.setattr(pkgutil, "iter_modules", lambda paths: ((None, "configure", False),))
         spec.loader.exec_module(module)
     return module
 
 
-def test_public_aliases_are_the_canonical_api(public_ops, monkeypatch):
-    monkeypatch.setattr(tvm_ffi, "_load_module", lambda: pytest.fail("aliases must not load the native core"))
-    assert public_ops.configure is configure
-    assert public_ops.FusedLinearCrossEntropyConfig is FusedLinearCrossEntropyConfig
-    assert public_ops.MoEConfig is MoEConfig
+@pytest.fixture
+def public_configuration(monkeypatch):
+    path = Path(__file__).resolve().parents[2] / "src/liger_kernel/ops/configure.py"
+    spec = importlib.util.spec_from_file_location("lck_public_configuration", path)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    return module
 
 
-def test_public_alias_configures_both_operators(runtime, public_ops):
-    public_ops.configure(
-        process_groups={"tp": runtime.world, "ep": runtime.world},
-        bootstrap_group=runtime.world,
-        device="cuda:0",
-        flsce=replace(FLSCE, group="tp"),
-        moe=replace(MOE, group="ep"),
+def test_public_configuration_data_matches_lck_schema(public_configuration):
+    for public_type, native_type in (
+        (public_configuration.FusedLinearCrossEntropyConfig, FusedLinearCrossEntropyConfig),
+        (public_configuration.MoEConfig, MoEConfig),
+    ):
+        public_fields = [(field.name, field.default, field.default_factory) for field in fields(public_type)]
+        native_fields = [(field.name, field.default, field.default_factory) for field in fields(native_type)]
+        assert public_fields == native_fields
+
+
+def test_public_module_configures_both_operators(runtime, public_configuration):
+    assert (
+        public_configuration.configure(
+            process_groups={"tp": runtime.world, "ep": runtime.world},
+            bootstrap_group=runtime.world,
+            device="cuda:0",
+            flsce=public_configuration.FusedLinearCrossEntropyConfig(**asdict(replace(FLSCE, group="tp"))),
+            moe=public_configuration.MoEConfig(**asdict(replace(MOE, group="ep"))),
+        )
+        is True
     )
     assert runtime.calls[1] == ("backward", (2048, 512, 1024, 1, 19))
     assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 2, 1, 2))
 
 
 def test_backend_discovery_does_not_import_optional_lck(public_ops):
-    assert "configure" not in vars(public_ops)
-    assert public_ops._CONFIGURATION_EXPORTS == ("configure", "FusedLinearCrossEntropyConfig", "MoEConfig")
+    for name in ("configure", "FusedLinearCrossEntropyConfig", "MoEConfig"):
+        assert not hasattr(public_ops, name)
+    assert not hasattr(public_ops, "_CONFIGURATION_EXPORTS")
 
 
 def test_private_implementation_has_no_configuration_exports(private_frontend):
@@ -467,15 +486,59 @@ def test_private_implementation_has_no_configuration_exports(private_frontend):
         assert name not in private_frontend.__all__
 
 
-def test_alias_access_reports_missing_lck(public_ops, monkeypatch):
+def test_configuration_function_is_importable_without_lck(public_configuration, monkeypatch):
     def missing(name):
         raise ModuleNotFoundError(f"No module named '{name}'", name=name)
 
+    original_import = builtins.__import__
+
+    def without_lck(name, *args, **kwargs):
+        if name.startswith("liger_cute_kernels"):
+            return missing(name)
+        return original_import(name, *args, **kwargs)
+
     monkeypatch.setattr(importlib, "import_module", missing)
-    with pytest.raises(ModuleNotFoundError, match="liger_cute_kernels"):
-        _ = public_ops.configure
+    monkeypatch.setattr(builtins, "__import__", without_lck)
+    public_configuration.__spec__.loader.exec_module(public_configuration)
+    assert callable(public_configuration.configure)
+    flsce = public_configuration.FusedLinearCrossEntropyConfig(2048, 512, 1024, group="tp")
+    moe = public_configuration.MoEConfig(2048, 512, 8, 2, 1, 2, group="ep")
+    with pytest.warns(UserWarning, match="configuration was skipped"):
+        assert (
+            public_configuration.configure(
+                process_groups={"tp": object(), "ep": object()},
+                flsce=flsce,
+                moe=moe,
+            )
+            is False
+        )
     with pytest.raises(AttributeError, match="unknown"):
-        _ = public_ops.unknown
+        _ = public_configuration.unknown
+
+
+@pytest.mark.parametrize("dependency", ["torch", "tvm_ffi"])
+def test_configuration_preserves_dependency_import_errors(public_configuration, monkeypatch, dependency):
+    error = ModuleNotFoundError(f"No module named '{dependency}'", name=dependency)
+
+    def fail(name):
+        raise error
+
+    monkeypatch.setattr(importlib, "import_module", fail)
+    with pytest.raises(ModuleNotFoundError) as caught:
+        public_configuration.configure()
+    assert caught.value is error
+
+
+def test_configuration_preserves_native_setup_errors(public_configuration, monkeypatch):
+    error = RuntimeError("native setup failed")
+
+    def fail(**kwargs):
+        raise error
+
+    monkeypatch.setattr(importlib, "import_module", lambda name: SimpleNamespace(configure=fail))
+    with pytest.raises(RuntimeError) as caught:
+        public_configuration.configure()
+    assert caught.value is error
 
 
 def test_operator_class_has_no_configure_method():
