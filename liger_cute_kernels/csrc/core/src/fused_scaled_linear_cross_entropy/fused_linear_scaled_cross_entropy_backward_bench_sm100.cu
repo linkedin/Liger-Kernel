@@ -43,9 +43,9 @@ using backward_sm100::HostConfig;
 using backward_sm100::HostLaunch;
 
 BackwardWaveWorkspaceSm100<100> reserve_bench_signals() {
-	auto& pool = tp_buffer_pool();
+	auto& pool = liger_cute::detail::global_buffer_pool();
 	auto* signals = static_cast<std::uint64_t*>(pool.get_device(
-		BackwardSymmetricNames::kBackwardSm100Signals,
+		tp_buffer_name(BackwardSymmetricNames::kBackwardSm100Signals),
 		static_cast<std::size_t>(kBackwardSignalEntries) *
 			sizeof(std::uint64_t)));
 	BackwardWaveWorkspaceSm100<100> workspace = {};
@@ -142,7 +142,7 @@ void launch_phase(
 		wave_workspace.dz_tile_ready_entries =
 			static_cast<std::size_t>(num_waves) *
 			static_cast<std::size_t>(dz_pairs);
-		auto& pool = tp_buffer_pool();
+		auto& pool = liger_cute::detail::global_buffer_pool();
 		wave_workspace.dz_tile_ready =
 			static_cast<std::uint32_t*>(pool.get_device(
 				BackwardSymmetricNames::kBackwardSm100DzTileReady,

@@ -41,9 +41,9 @@ using backward_sm100::HostTraits;
 // monotonic dX reduce-scatter completion counter and one inter-host ring
 // completion epoch. Fixed size, pooled, never per-launch allocated.
 BackwardWaveWorkspaceSm100<100> reserve_backward_signals_sm100() {
-	auto& pool = tp_buffer_pool();
+	auto& pool = liger_cute::detail::global_buffer_pool();
 	auto* signals = static_cast<std::uint64_t*>(pool.get_device(
-		BackwardSymmetricNames::kBackwardSm100Signals,
+		tp_buffer_name(BackwardSymmetricNames::kBackwardSm100Signals),
 		static_cast<std::size_t>(kBackwardSignalEntries) *
 			sizeof(std::uint64_t)));
 	BackwardWaveWorkspaceSm100<100> workspace = {};
@@ -57,7 +57,7 @@ BackwardWaveWorkspaceSm100<100> reserve_backward_signals_sm100() {
 	if constexpr (kBackwardDiagnosticTimestampsSm100) {
 		workspace.diagnostics =
 			static_cast<std::uint64_t*>(pool.get_device(
-				BackwardSymmetricNames::kBackwardSm100Diagnostics,
+				tp_buffer_name(BackwardSymmetricNames::kBackwardSm100Diagnostics),
 				static_cast<std::size_t>(
 					kBackwardDiagnosticEntries) *
 					sizeof(std::uint64_t)));
@@ -219,7 +219,7 @@ void launch_instance(
 		wave_workspace.dz_tile_ready_entries =
 			static_cast<std::size_t>(num_waves) *
 			static_cast<std::size_t>(dz_pairs);
-		auto& pool = tp_buffer_pool();
+		auto& pool = liger_cute::detail::global_buffer_pool();
 		wave_workspace.dz_tile_ready =
 			static_cast<std::uint32_t*>(pool.get_device(
 				BackwardSymmetricNames::kBackwardSm100DzTileReady,
@@ -328,7 +328,6 @@ void launch_instance(
 		static_cast<unsigned>(cluster_pairs));
 	if constexpr (RequiresRemote) {
 #if defined(LIGER_CUTE_FSLCE_SM100_BACKWARD_ENABLE_NVSHMEM)
-		liger_cute::detail::synchronize_tp_reduce(stream);
 		check_cuda(
 			ClusterLaunch::launch_cooperative(
 				kernel,
@@ -445,10 +444,10 @@ void fused_linear_scaled_cross_entropy_backward_diagnostics_sm100(
 		"SM100 backward diagnostic output must hold ",
 		kBackwardDiagnosticEntries,
 		" uint64 entries");
-	auto& pool = tp_buffer_pool();
+	auto& pool = liger_cute::detail::global_buffer_pool();
 	auto* diagnostics =
 		static_cast<std::uint64_t*>(pool.get_device(
-			BackwardSymmetricNames::kBackwardSm100Diagnostics,
+			tp_buffer_name(BackwardSymmetricNames::kBackwardSm100Diagnostics),
 			static_cast<std::size_t>(kBackwardDiagnosticEntries) *
 				sizeof(std::uint64_t)));
 	check_cuda(

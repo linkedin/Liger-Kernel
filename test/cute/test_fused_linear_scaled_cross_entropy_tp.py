@@ -379,6 +379,8 @@ def _multi_context_worker(rank, world_size, init_file, bootstrap_subgroups, part
                     local_groups.append((group, ranks))
 
     cases = []
+    first_workspace_bytes = None
+    previous_workspace_bytes = 0
     for index, (group, ranks) in enumerate(local_groups):
         name = f"tp{index}"
         assert configure(
@@ -387,6 +389,16 @@ def _multi_context_worker(rank, world_size, init_file, bootstrap_subgroups, part
             device=f"cuda:{rank}",
             flsce=FusedLinearCrossEntropyConfig(_TOKENS + 128, _HIDDEN, _LOCAL_VOCAB, group=name),
         )
+        workspace_bytes = tvm_ffi.fused_linear_scaled_cross_entropy_backward_workspace_bytes(
+            _TOKENS + 128, _HIDDEN, _LOCAL_VOCAB, 1
+        ) + tvm_ffi.fused_linear_scaled_cross_entropy_forward_workspace_bytes(_TOKENS + 128, _LOCAL_VOCAB)
+        if first_workspace_bytes is None:
+            first_workspace_bytes = workspace_bytes
+        else:
+            # Additional contexts must add only small signaling/mapping state,
+            # not another copy of the bulk scratch for this fixed test shape.
+            assert 0 <= workspace_bytes - previous_workspace_bytes < first_workspace_bytes // 16
+        previous_workspace_bytes = workspace_bytes
         generator = torch.Generator().manual_seed(8011 + ranks[0])
         tokens = _TOKENS - index * 16
         x = (

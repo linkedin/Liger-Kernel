@@ -95,7 +95,9 @@ top-k requests may be smaller than the reserved limits.
 
 FLSCE capacities remain process-wide, while native execution contexts are cached
 by NVSHMEM team handle. Each context has its own local/remote teams, peer mappings,
-scratch buffers, and launch epochs. Prepare additional actor/reference TP groups
+signals, and launch epochs. Bulk scratch is shared through the existing buffer
+pool, sized once for the maximum problem across supported TP topologies.
+Prepare additional actor/reference TP groups
 with another collective call; the groups can have different TP sizes:
 
 ```python
@@ -117,17 +119,24 @@ The Python fast path caches `ProcessGroup -> team_handle`, so repeated execution
 does not reconstruct rank lists or create teams. Native context lookup does not
 allocate or query topology.
 
-Additional contexts consume additional workspace. Symmetric allocations use
-collectively ordered slots, not local team-handle values. When only some teams in
+Additional contexts reserve only their signaling and mapping state, not another
+copy of the bulk scratch buffers. Symmetric signal allocations use collectively
+ordered slots, not local team-handle values. When only some teams in
 a new partition are already cached, every bootstrap PE still reserves that slot
 to preserve NVSHMEM heap ordering; cached teams continue using their original
-buffers and epochs. Slot storage is retained until pool clear or finalization.
+signals and epochs. Slot storage is retained until pool clear or finalization.
+
+The pool contains reusable internal buffers. Forward's saved LSE/entropy are
+ordinary PyTorch tensors, not pooled or symmetric-stack allocations. Symmetric
+tensors that must remain live across calls continue to use the symmetric stack;
+this change does not alter its ownership rules.
 
 This API supports one CUDA device and one MoE EP partition per process. Growing
 a live reservation or replacing the MoE partition remains unsupported. Call
-setup serially at a coordinated boundary, outside CUDA graph capture. Serialize
-launches sharing the same context's scratch buffers, and issue collectives in
-consistent order across participating ranks. Destroy teams or clear pools only
+setup serially at a coordinated boundary, outside CUDA graph capture. **Serialize
+all FLSCE launches and graph replays on each process, including across different
+TP groups:** use the same CUDA stream or explicit stream synchronization. Issue
+collectives in consistent order across participating ranks. Destroy teams or clear pools only
 after all dependent launches, backwards, and graphs have finished. MoE still
 allocates stack buffers during
 warm-up; all bootstrap PEs must warm up matching allocation sequences/depths

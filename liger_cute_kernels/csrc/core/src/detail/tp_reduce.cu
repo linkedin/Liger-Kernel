@@ -523,6 +523,9 @@ void begin_tp_reduce(
 	advance_launch_epoch<<<1, 1, 0, stream>>>(
 		const_cast<std::uint64_t*>(launch_epoch));
 	check_cuda(cudaGetLastError(), "advance_launch_epoch launch");
+	// A remote peer may still be using the shared inbox for another TP team.
+	// All members must finish their prior work before this team starts puts.
+	if (selected_context().plan.remote.enabled()) synchronize_tp_reduce(stream);
 }
 
 void synchronize_tp_reduce(cudaStream_t stream) {

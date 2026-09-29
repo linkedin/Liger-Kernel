@@ -227,6 +227,8 @@ def configure(
     additional TP partitions within the original process-wide capacity.
     MoE supports one EP partition.
     Configure at a coordinated setup boundary, never during graph capture.
+    FLSCE calls and graph replays share scratch across TP groups: serialize
+    them on each process with the same CUDA stream or explicit synchronization.
 
     This API owns initialization, not third-party NVSHMEM interoperability.
     An already initialized unmanaged runtime (including DeepEP V1 RDMA) is

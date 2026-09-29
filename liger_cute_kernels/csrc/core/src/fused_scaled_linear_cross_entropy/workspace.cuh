@@ -101,21 +101,10 @@ struct BackwardTpCapacity {
 	int max_stages;
 };
 
-// The shared allocator still owns all allocations. A context supplies a stable
-// collective slot prefix so unrelated teams never share signals or scratch.
-class TpBufferPool {
- public:
-	explicit TpBufferPool(std::int64_t slot = 0) : slot_(slot) {}
-	std::int64_t slot() const { return slot_; }
-	void* get_device(const char* name, std::size_t bytes);
-	void* get_symmetric(const char* name, std::size_t bytes);
-
- private:
-	std::string key(const char* name) const;
-	std::int64_t slot_;
-};
-
-TpBufferPool& tp_buffer_pool();
+// Only persistent signals and mappings are team-specific. Bulk scratch uses
+// the existing pool names and requires serialized FLSCE calls across teams.
+std::int64_t tp_context_slot();
+std::string tp_buffer_name(const char* name, std::int64_t slot = -1);
 
 // Collective. Must be called on every PE with the same values before the first
 // launch. CTA-owned NVLS staging is sized for full residency;

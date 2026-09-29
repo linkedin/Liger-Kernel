@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <limits>
 #include <map>
-#include <memory>
 
 #include "buffer_pool.cuh"
 #include "forward_reduce.cuh"
@@ -37,23 +36,19 @@ BackwardTpCapacity g_capacity = {};
 bool g_configured = false;
 std::size_t g_staging_bytes = 0;
 std::size_t g_durable_bytes = 0;
+std::size_t g_reduced_bytes = 0;
+std::size_t g_reduced_shard_bytes = 0;
+std::size_t g_remote_payload_bytes = 0;
+std::size_t g_sync_bytes = 0;
 struct BackwardTpContext {
-	explicit BackwardTpContext(std::int64_t slot) : pool(slot) {}
-	TpBufferPool pool;
+	std::int64_t slot = 0;
 	std::int64_t team_handle = -1;
 	int team_size = 0;
 	std::size_t packed_durable_bytes = 0;
-	std::size_t reduced_shard_bytes = 0;
-	std::size_t remote_payload_bytes = 0;
-	std::size_t reduced_bytes = 0;
-	std::size_t sync_bytes = 0;
-	std::size_t symmetric_bytes = 0;
 };
 
-std::map<std::int64_t, std::unique_ptr<BackwardTpContext>> g_slots;
+std::map<std::int64_t, BackwardTpContext> g_slots;
 std::map<std::int64_t, BackwardTpContext*> g_team_contexts;
-TpBufferPool g_legacy_pool;
-bool g_has_topology_scratch = false;
 
 BackwardTpContext& selected_context() {
 	auto found = g_team_contexts.find(liger_cute::detail::tp_reduce_team_handle());
@@ -227,22 +222,15 @@ void validate_configured_device_query(int max_local_vocab) {
 
 }  // namespace
 
-std::string TpBufferPool::key(const char* name) const {
-	if (slot_ == 0) return name;
-	return "fslce_context_" + std::to_string(slot_) + "/" + name;
+std::int64_t tp_context_slot() {
+	if (g_slots.empty()) return 0;
+	return selected_context().slot;
 }
 
-void* TpBufferPool::get_device(const char* name, std::size_t bytes) {
-	return global_buffer_pool().get_device(key(name), bytes);
-}
-
-void* TpBufferPool::get_symmetric(const char* name, std::size_t bytes) {
-	return global_buffer_pool().get_symmetric(key(name), bytes);
-}
-
-TpBufferPool& tp_buffer_pool() {
-	if (g_slots.empty()) return g_legacy_pool;
-	return selected_context().pool;
+std::string tp_buffer_name(const char* name, std::int64_t slot) {
+	if (slot < 0) slot = tp_context_slot();
+	if (slot == 0) return name;
+	return "fslce_context_" + std::to_string(slot) + "/" + name;
 }
 
 void configure_backward_tp_symmetric(
@@ -308,7 +296,7 @@ void configure_backward_tp_context(
 	auto existing_slot = g_slots.find(context_slot);
 	if (existing_slot != g_slots.end()) {
 		LIGER_CHECK(
-			existing_slot->second->team_handle == team_handle &&
+			existing_slot->second.team_handle == team_handle &&
 				g_team_contexts.count(team_handle),
 			"FLSCE context slot cannot be reassigned");
 		liger_cute::detail::TpReduceContextScope selected(team_handle);
@@ -327,45 +315,20 @@ void configure_backward_tp_context(
 	auto topology = liger_cute::detail::query_tp_reduce_topology(team_handle);
 	int team_size = topology.team_size;
 
-	// Allocation is collective on NVSHMEM WORLD, not on the selected TP team.
-	// Different partitions (or mixed cache hits) must still reserve identical
-	// slot layouts on all PEs.
-	auto* topology_scratch = static_cast<int*>(global_buffer_pool().get_symmetric(
-		"fused_scaled_linear_cross_entropy_context_topology", 5 * sizeof(int)));
-	g_has_topology_scratch = true;
-	int topology_values[2] = {team_size, topology.local_size};
-	check_cuda(cudaMemcpy(topology_scratch, topology_values, sizeof(topology_values),
-		cudaMemcpyHostToDevice), "cudaMemcpy(context topology)");
-	LIGER_CHECK(nvshmem_int_max_reduce(
-		NVSHMEM_TEAM_WORLD, topology_scratch + 2, topology_scratch, 2) == 0,
-		"FLSCE context topology maximum reduction failed");
-	LIGER_CHECK(nvshmem_int_min_reduce(
-		NVSHMEM_TEAM_WORLD, topology_scratch + 4, topology_scratch + 1, 1) == 0,
-		"FLSCE context topology minimum reduction failed");
-	int bounds[3];
-	check_cuda(cudaMemcpy(bounds, topology_scratch + 2, sizeof(bounds),
-		cudaMemcpyDeviceToHost), "cudaMemcpy(context topology bounds)");
-	int max_team_size = bounds[0];
-	int max_local_size = bounds[1];
-	int min_local_size = bounds[2];
-
-	auto reservation = std::make_unique<BackwardTpContext>(context_slot);
-	auto& context = *reservation;
+	BackwardTpContext context;
+	context.slot = context_slot;
 	context.team_handle = team_handle;
 	context.team_size = team_size;
 	using Names = BackwardSymmetricNames;
-	auto& pool = context.pool;
+	auto& pool = global_buffer_pool();
 
-	// One fixed order on every PE: symmetric first, then device private.
+	// Reserve bulk scratch once for any supported TP topology. Signals alone
+	// use collective slots; their allocation order must match on every PE.
 	context.packed_durable_bytes =
 		(g_durable_bytes + static_cast<std::size_t>(topology.local_size) - 1) /
 		static_cast<std::size_t>(topology.local_size);
-	std::size_t packed_capacity =
-		(g_durable_bytes + static_cast<std::size_t>(min_local_size) - 1) /
-		static_cast<std::size_t>(min_local_size);
 	std::size_t forward_wave_state_bytes =
-		forward_wave_state_bytes_at(
-			max_tokens, min_local_size);
+		forward_wave_state_bytes_at(max_tokens, 1);
 	std::size_t forward_wave_storage_bytes =
 		checked_multiply(
 			forward_wave_state_bytes,
@@ -376,28 +339,25 @@ void configure_backward_tp_context(
 			0u,
 #endif
 			"forward wave source and running state");
-	context.reduced_shard_bytes =
-		packed_capacity > forward_wave_storage_bytes
-		? packed_capacity
+	g_reduced_shard_bytes =
+		g_durable_bytes > forward_wave_storage_bytes
+		? g_durable_bytes
 		: forward_wave_storage_bytes;
-	context.remote_payload_bytes =
-		packed_capacity > forward_wave_state_bytes
-		? packed_capacity
+	g_remote_payload_bytes =
+		g_durable_bytes > forward_wave_state_bytes
+		? g_durable_bytes
 		: forward_wave_state_bytes;
-	context.reduced_bytes = max_local_size > 1
-		? (g_staging_bytes > g_durable_bytes
-			? g_staging_bytes
-			: g_durable_bytes)
-		: g_staging_bytes;
+	g_reduced_bytes = g_staging_bytes > g_durable_bytes
+		? g_staging_bytes : g_durable_bytes;
 	auto* partial = static_cast<float*>(
 		pool.get_symmetric(Names::kDxPartial, g_staging_bytes));
 	auto* reduced = static_cast<float*>(
-		pool.get_symmetric(Names::kDxReduced, context.reduced_bytes));
+		pool.get_symmetric(Names::kDxReduced, g_reduced_bytes));
 	auto* reduced_shard = static_cast<float*>(
 		pool.get_symmetric(
-			Names::kDxReducedShard, context.reduced_shard_bytes));
+			Names::kDxReducedShard, g_reduced_shard_bytes));
 	std::size_t remote_inbox_bytes = checked_multiply(
-		context.remote_payload_bytes,
+		g_remote_payload_bytes,
 		static_cast<std::size_t>(
 			liger_cute::detail::kRemoteRingInboxSlots),
 		"dX remote inbox");
@@ -406,30 +366,28 @@ void configure_backward_tp_context(
 			Names::kDxRemoteInbox, remote_inbox_bytes));
 	auto* remote_signals = static_cast<std::uint64_t*>(
 		pool.get_symmetric(
-			Names::kDxRemoteSignals,
+			tp_buffer_name(Names::kDxRemoteSignals, context_slot),
 			liger_cute::detail::remote_ring_signal_bytes()));
-	std::size_t sync_bytes = sync_bytes_at(max_resident_ctas, max_team_size);
-	context.sync_bytes = sync_bytes;
-	context.symmetric_bytes = g_staging_bytes + context.reduced_bytes +
-		context.reduced_shard_bytes + remote_inbox_bytes +
-		liger_cute::detail::remote_ring_signal_bytes() + sync_bytes;
+	int max_team_size = nvshmem_n_pes() < liger_cute::detail::kMaxTpReduceTeamSize
+		? nvshmem_n_pes() : liger_cute::detail::kMaxTpReduceTeamSize;
+	g_sync_bytes = sync_bytes_at(max_resident_ctas, max_team_size);
 	auto* sync = static_cast<std::uint64_t*>(
-		pool.get_symmetric(Names::kDxSync, sync_bytes));
+		pool.get_symmetric(tp_buffer_name(Names::kDxSync, context_slot), g_sync_bytes));
 	auto** peer_partial_storage = static_cast<float**>(
 		pool.get_device(
-			Names::kDxPeerPartialPointers,
+			tp_buffer_name(Names::kDxPeerPartialPointers, context_slot),
 			static_cast<std::size_t>(team_size) * sizeof(float*)));
 	auto** peer_sync_storage = static_cast<std::uint64_t**>(
 		pool.get_device(
-			Names::kDxPeerSyncPointers,
+			tp_buffer_name(Names::kDxPeerSyncPointers, context_slot),
 			static_cast<std::size_t>(team_size) *
 				sizeof(std::uint64_t*)));
 	pool.get_device(
 		Names::kDzWorkspace, Launch::dz_workspace_bytes(max_local_vocab));
 #if LIGER_CUTE_DISPATCH_COMPUTE == 100
-	pool.get_device(Names::kBackwardSm100Signals,
+	pool.get_device(tp_buffer_name(Names::kBackwardSm100Signals, context_slot),
 		static_cast<std::size_t>(kBackwardSignalEntries) * sizeof(std::uint64_t));
-	pool.get_device(Names::kBackwardSm100Diagnostics,
+	pool.get_device(tp_buffer_name(Names::kBackwardSm100Diagnostics, context_slot),
 		static_cast<std::size_t>(kBackwardDiagnosticEntries) * sizeof(std::uint64_t));
 	if constexpr (kBackwardSyncVariantSm100 == 2) {
 		pool.get_device(Names::kBackwardSm100DzTileReady,
@@ -439,15 +397,14 @@ void configure_backward_tp_context(
 	}
 #endif
 	auto* launch_epoch = static_cast<std::uint64_t*>(
-		pool.get_device(Names::kDxLaunchEpoch, sizeof(std::uint64_t)));
+		pool.get_device(tp_buffer_name(Names::kDxLaunchEpoch, context_slot), sizeof(std::uint64_t)));
 	check_cuda(
 		cudaMemset(launch_epoch, 0, sizeof(std::uint64_t)),
 		"cudaMemset(dX launch epoch)");
 
 	// Keep a reservation even on cache-hit PEs: skipping its allocations would
 	// desynchronize the symmetric heap from peers preparing a new subgroup.
-	auto* stored = reservation.get();
-	g_slots.emplace(context_slot, std::move(reservation));
+	auto* stored = &g_slots.emplace(context_slot, context).first->second;
 	if (g_team_contexts.count(team_handle)) return;
 	liger_cute::detail::configure_tp_reduce(
 		team_handle,
@@ -455,12 +412,12 @@ void configure_backward_tp_context(
 			partial,
 			reduced,
 			reduced_shard,
-			context.reduced_shard_bytes,
+			g_reduced_shard_bytes,
 			remote_inbox,
 			remote_signals,
-			context.remote_payload_bytes,
+			g_remote_payload_bytes,
 			sync,
-			sync_bytes,
+			g_sync_bytes,
 			peer_partial_storage,
 			peer_sync_storage,
 		});
@@ -492,12 +449,6 @@ std::size_t backward_tp_pool_symmetric_bytes(
 		max_comm_channels);
 	int max_ctas =
 		g_configured ? g_capacity.max_resident_ctas : resident_cta_capacity();
-	if (g_configured) {
-		std::size_t bytes = g_has_topology_scratch ? 5 * sizeof(int) : 0;
-		for (const auto& slot : g_slots) bytes += slot.second->symmetric_bytes;
-		return bytes;
-	}
-	int team_size = liger_cute::detail::kMaxTpReduceTeamSize;
 	std::size_t staging = staging_bytes_at(max_tiles_per_reduce, max_ctas);
 	std::size_t durable = durable_bytes_at(max_tokens, max_hidden);
 	std::size_t reduced = staging > durable ? staging : durable;
@@ -521,28 +472,30 @@ std::size_t backward_tp_pool_symmetric_bytes(
 		durable > forward_wave_state
 		? durable
 		: forward_wave_state;
-	return 5 * sizeof(int) + staging + reduced + reduced_shard +
+	std::size_t slots = g_configured ? g_slots.size() : 1;
+	std::size_t sync_bytes = g_configured ? g_sync_bytes
+		: sync_bytes_at(max_ctas, liger_cute::detail::kMaxTpReduceTeamSize);
+	return staging + reduced + reduced_shard +
 		checked_multiply(
 			remote_payload,
 			static_cast<std::size_t>(
 				liger_cute::detail::kRemoteRingInboxSlots),
 			"remote inbox buffers") +
-		sync_bytes_at(max_ctas, team_size) +
-		liger_cute::detail::remote_ring_signal_bytes();
+		slots * (sync_bytes + liger_cute::detail::remote_ring_signal_bytes());
 }
 
 std::size_t backward_tp_pool_device_bytes(int max_local_vocab, int max_tokens) {
 	LIGER_CHECK(max_local_vocab > 0, "max_local_vocab must be positive");
 	validate_configured_device_query(max_local_vocab);
-	std::size_t bytes_per_slot =
-		Launch::dz_workspace_bytes(max_local_vocab) + sizeof(std::uint64_t);
+	std::size_t shared_bytes = Launch::dz_workspace_bytes(max_local_vocab);
+	std::size_t bytes_per_slot = sizeof(std::uint64_t);
 #if LIGER_CUTE_DISPATCH_COMPUTE == 100
 	bytes_per_slot += static_cast<std::size_t>(
 		kBackwardSignalEntries + kBackwardDiagnosticEntries) * sizeof(std::uint64_t);
 	if constexpr (kBackwardSyncVariantSm100 == 2) {
 		int tokens = g_configured ? g_capacity.max_tokens : max_tokens;
 		int waves = tokens > 0 ? Launch::num_waves(tokens) : kBackwardMaxWavesSm100;
-		bytes_per_slot += static_cast<std::size_t>(waves) *
+		shared_bytes += static_cast<std::size_t>(waves) *
 			static_cast<std::size_t>(Launch::num_dz_cluster_pairs(max_local_vocab)) *
 			sizeof(std::uint32_t);
 	}
@@ -550,12 +503,12 @@ std::size_t backward_tp_pool_device_bytes(int max_local_vocab, int max_tokens) {
 	(void)max_tokens;
 #endif
 	if (!g_configured) {
-		return bytes_per_slot +
+		return shared_bytes + bytes_per_slot +
 			liger_cute::detail::kMaxTpReduceTeamSize * (2 * sizeof(void*));
 	}
-	std::size_t bytes = 0;
+	std::size_t bytes = shared_bytes;
 	for (const auto& slot : g_slots) {
-		bytes += bytes_per_slot + static_cast<std::size_t>(slot.second->team_size) *
+		bytes += bytes_per_slot + static_cast<std::size_t>(slot.second.team_size) *
 			(2 * sizeof(void*));
 	}
 	return bytes;
@@ -587,19 +540,17 @@ DxReduceWorkspace<float> reserve_dx_reduce_workspace(
 		" exceeds resident CTA capacity ",
 		g_capacity.max_resident_ctas);
 	using Names = BackwardSymmetricNames;
-	auto& context = selected_context();
-	auto& pool = context.pool;
+	auto& pool = global_buffer_pool();
 	// Always the configured capacity, never the per-call size.
-	std::size_t sync_bytes = context.sync_bytes;
 	DxReduceWorkspace<float> workspace = {};
 	workspace.partial = static_cast<float*>(
 		pool.get_symmetric(Names::kDxPartial, g_staging_bytes));
 	workspace.reduced = static_cast<float*>(
-		pool.get_symmetric(Names::kDxReduced, context.reduced_bytes));
+		pool.get_symmetric(Names::kDxReduced, g_reduced_bytes));
 	workspace.sync = static_cast<std::uint64_t*>(
-		pool.get_symmetric(Names::kDxSync, sync_bytes));
+		pool.get_symmetric(tp_buffer_name(Names::kDxSync), g_sync_bytes));
 	workspace.launch_epoch = static_cast<const std::uint64_t*>(
-		pool.get_device(Names::kDxLaunchEpoch, sizeof(std::uint64_t)));
+		pool.get_device(tp_buffer_name(Names::kDxLaunchEpoch), sizeof(std::uint64_t)));
 	return workspace;
 }
 
@@ -627,12 +578,12 @@ std::size_t backward_dx_configured_packed_durable_bytes() {
 
 std::size_t tp_reduced_shard_configured_bytes() {
 	ensure_configured();
-	return selected_context().reduced_shard_bytes;
+	return g_reduced_shard_bytes;
 }
 
 std::size_t tp_remote_inbox_slot_configured_bytes() {
 	ensure_configured();
-	return selected_context().remote_payload_bytes;
+	return g_remote_payload_bytes;
 }
 
 int backward_tp_max_local_vocab() {
@@ -688,9 +639,12 @@ void reset_fslce_tp_configuration() {
 	g_configured = false;
 	g_staging_bytes = 0;
 	g_durable_bytes = 0;
+	g_reduced_bytes = 0;
+	g_reduced_shard_bytes = 0;
+	g_remote_payload_bytes = 0;
+	g_sync_bytes = 0;
 	g_team_contexts.clear();
 	g_slots.clear();
-	g_has_topology_scratch = false;
 	reset_forward_tp_workspace_configuration();
 }
 
@@ -712,7 +666,7 @@ BackwardScratch reserve_backward_scratch(int local_vocab) {
 		g_capacity.max_local_vocab);
 
 	using Names = BackwardSymmetricNames;
-	auto& pool = tp_buffer_pool();
+	auto& pool = global_buffer_pool();
 	std::size_t dz_bytes =
 		Launch::dz_workspace_bytes(g_capacity.max_local_vocab);
 
