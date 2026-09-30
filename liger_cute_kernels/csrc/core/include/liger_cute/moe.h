@@ -32,7 +32,7 @@ typedef struct liger_cute_moe_symm_config_t {
 LIGER_CUTE_API liger_cute_status_t
 liger_cute_moe_get_symm_config(liger_cute_moe_symm_config_t* out);
 
-// Size symmetric buffers + populate the comm schedule. Call once per process
+// Size symmetric buffers and prepare the MoE module. Call once per process
 // after NVSHMEM init and before any forward. num_hosts*gpus_per_host must equal
 // num_pes.
 LIGER_CUTE_API liger_cute_status_t liger_cute_moe_configure_symmetric(
