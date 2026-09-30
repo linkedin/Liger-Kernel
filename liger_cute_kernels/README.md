@@ -75,7 +75,7 @@ Every bootstrap rank must call `configure`, in the same
 order, with the same operator sections, capacities, and topology. Local operator
 groups must form consistent, equal-sized, arithmetic-stride partitions in
 bootstrap PE numbering. All ranks must use matching GPU architectures and SM
-counts; TP groups must also have matching host topology. Multi-host TP/EP
+counts; TP groups must also have matching host topology. Multi-host TP
 membership must be uniform and host-major. MoE's `num_hosts` and
 `gpus_per_host` describe each EP team, not the full bootstrap domain.
 
@@ -134,8 +134,10 @@ this change does not alter its ownership rules.
 
 MoE uses the same group lifecycle: repeated `configure(moe=MoEConfig(...))`
 calls prepare additional EP partitions beneath the original process-wide
-capacities, including different EP sizes. Communication topology is passed by
-value to kernels rather than read from mutable device-global schedule tables.
+capacities, including different EP sizes. MoE visits peers in team-local
+round-robin order, `(rank + step) % team_size`, starting with the local PE.
+It needs neither device-global schedule tables nor host-topology fields in
+the kernel iterators, and does not assume a particular HCA layout.
 Each EP context owns its device workspace and symmetric-stack names. Fixed-size
 symmetric payload scratch stays shared. Pass the forward's team to low-level
 `moe_pop_fwd(team_handle)`; the autograd wrapper does this automatically.

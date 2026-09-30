@@ -10,7 +10,7 @@ then exercises the actual compiled bindings:
     contiguous and strided sub-groups, including the team-local PE numbering and
     cross-team PE translation,
   * the WORLD short-circuit,
-  * comm-schedule upload + pool clears (moe_configure_symmetric / pool_clear_all).
+  * MoE configuration + pool clears (moe_configure_symmetric / pool_clear_all).
 
 Each worker captures every result BEFORE the collective teardown
 (team_destroy / nvshmem_finalize / destroy_process_group) and only asserts

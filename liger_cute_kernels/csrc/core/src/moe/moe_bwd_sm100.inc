@@ -992,7 +992,6 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	p.comm.pe_sync.num_pes       = num_pes;
 	p.comm.pe_sync.my_pe         = my_pe;
 	p.comm.pe_sync.team          = team;
-	p.comm.num_hosts             = get_symm_config().num_hosts;
 	p.comm.hidden_dim       = hidden_dim;
 	p.comm.num_experts      = num_experts;
 	p.comm.experts_per_pe   = experts_per_pe;
@@ -1029,7 +1028,6 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	p.comm_bwd.my_pe         = my_pe;
 	p.comm_bwd.num_pes       = num_pes;
 	p.comm_bwd.team          = team;
-	p.comm_bwd.num_hosts     = get_symm_config().num_hosts;
 	p.comm_bwd.hidden_dim    = hidden_dim;
 	p.comm_bwd.num_experts   = num_experts;
 	p.comm_bwd.experts_per_pe = experts_per_pe;

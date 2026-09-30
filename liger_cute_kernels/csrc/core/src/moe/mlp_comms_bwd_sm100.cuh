@@ -163,7 +163,6 @@ struct CommBuffersBwd {
 
 	int my_pe;
 	int num_pes;
-	int num_hosts = 1;
 	nvshmem_team_t team;
 
 	int hidden_dim;
@@ -597,7 +596,6 @@ __device__ __forceinline__ void nvshmem_comm_prologue_bwd(
 	iter.experts_per_pe = experts_per_pe;
 	iter.num_pes = num_pes;
 	iter.my_pe = my_pe;
-	iter.num_hosts = bufs.num_hosts;
 
 	// Comm count: this CTA's per-(xc, yc) workload.
 	iter.init(xc, MC);
@@ -691,7 +689,6 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 	iter.experts_per_pe = bufs.experts_per_pe;
 	iter.num_pes = bufs.num_pes;
 	iter.my_pe = bufs.my_pe;
-	iter.num_hosts = bufs.num_hosts;
 	iter.init(xc, MC);
 
 	int my_total = iter.total_tiles;

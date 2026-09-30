@@ -54,10 +54,6 @@ namespace liger {
 #define LIGER_CUTE_DISPATCH_COMPUTE 0
 #endif
 
-// init_comm_schedule lives in liger_cute::detail (comm_schedule.cuh); the host
-// configure path below calls it through this alias.
-using liger_cute::detail::init_comm_schedule;
-
 // ============================================================================
 // MoeFusedConfig — bundles all tunable kernel parameters
 // ============================================================================
@@ -233,21 +229,17 @@ void moe_configure_symmetric(
 		int gpus_per_host) {
 	static constexpr int kTileM = kMaxMoeCommTileM;
 
-	// num_hosts × gpus_per_host must equal the team size so the comm
-	// schedule (g_dest_table / g_rank_table) addresses exactly the PEs
-	// in the team. Mismatch would silently map ranks to non-existent
-	// destinations (or skip some).
-	LIGER_CHECK(num_hosts * gpus_per_host == num_pes,
+	LIGER_CHECK(num_hosts > 0 && gpus_per_host > 0 && num_pes > 0,
+		"moe_configure_symmetric: num_hosts, gpus_per_host, and num_pes "
+		"must be positive");
+	LIGER_CHECK(static_cast<int64_t>(num_hosts) * gpus_per_host == num_pes,
 		"moe_configure_symmetric: num_hosts (", num_hosts, ") * gpus_per_host (",
-		gpus_per_host, ") = ", num_hosts * gpus_per_host,
+		gpus_per_host, ") = ", static_cast<int64_t>(num_hosts) * gpus_per_host,
 		" must equal num_pes (", num_pes, ")");
 
 	auto& cfg = get_symm_config();
 	LIGER_CHECK(cfg.slot < 0, "use configure to prepare additional MoE contexts");
-	// Populate g_dest_table / g_rank_table in device constant memory.
-	// Idempotent — safe to re-call with the same (N, M).
-	init_comm_schedule(num_hosts, gpus_per_host);
-	configure_sm90_nonrdc_moe(num_hosts, gpus_per_host);
+	configure_sm90_nonrdc_moe();
 
 	cfg.max_total_slots = max_tokens * max_top_k + max_num_experts * kTileM;
 	cfg.max_num_experts = max_num_experts;
@@ -772,7 +764,6 @@ moe_fused_kernel(
 				p.comm.dst_ready, p.comm.dst_consumed,
 				p.comm.experts_per_pe, p.comm.num_pes(), p.comm.my_pe(),
 				get_descs.gpus_per_node,
-				p.comm.num_hosts,
 				tma_load_x, tma_load_b, tma_load_c, tma_store_z,
 				tma_load_z, tma_load_a, tma_store_y,
 				tma_load_x_remote, tma_store_y_remote,
@@ -818,7 +809,6 @@ moe_fused_kernel(
 			p.comm.dst_ready, p.comm.dst_consumed,
 			p.comm.experts_per_pe, p.comm.num_pes(), p.comm.my_pe(),
 			get_descs.gpus_per_node,
-			p.comm.num_hosts,
 			tma_load_x, tma_load_b, tma_load_c, tma_store_z,
 			tma_load_z, tma_load_a, tma_store_y,
 			tma_load_x_remote, tma_store_y_remote,
@@ -963,7 +953,6 @@ moe_fused_kernel(
 				p.comm.dst_ready, p.comm.dst_consumed,
 				p.comm.experts_per_pe, p.comm.num_pes(), p.comm.my_pe(),
 				get_descs.gpus_per_node,
-				p.comm.num_hosts,
 				tma_load_x, tma_load_b, tma_load_c, tma_store_z,
 				tma_load_z, tma_load_a, tma_store_y,
 				tma_load_x_remote, tma_store_y_remote,
@@ -1224,7 +1213,6 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	p.comm.pe_sync.num_pes       = num_pes;
 	p.comm.pe_sync.my_pe         = my_pe;
 	p.comm.pe_sync.team          = team;
-	p.comm.num_hosts             = scfg.num_hosts;
 	p.comm.hidden_dim          = hidden_dim;
 	p.comm.num_experts         = num_experts;
 	p.comm.experts_per_pe      = experts_per_pe;

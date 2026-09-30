@@ -50,8 +50,21 @@ _CFG = dict(
 
 @pytest.fixture(scope="module")
 def tvm_ffi_module():
-    """The ``liger_cute_kernels.tvm_ffi`` facade module."""
-    return tvm_ffi
+    """Configure after NVSHMEM bootstrap, as required by the native API."""
+    if not _HAS_CUDA:
+        yield tvm_ffi
+        return
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("NVSHMEM_DISABLE_NCCL", "1")
+        env.setenv("NVSHMEM_REMOTE_TRANSPORT", "none")
+        torch.cuda.set_device(0)
+        uid = torch.empty(tvm_ffi.uniqueid_nbytes(), dtype=torch.uint8, device="cpu")
+        tvm_ffi.get_uniqueid(uid.data_ptr())
+        tvm_ffi.init_with_uniqueid(0, 1, uid.data_ptr())
+        try:
+            yield tvm_ffi
+        finally:
+            tvm_ffi.finalize()
 
 
 def test_tvm_ffi_exposes_moe_bindings(tvm_ffi_module):
@@ -64,15 +77,12 @@ def test_tvm_ffi_exposes_moe_bindings(tvm_ffi_module):
         assert hasattr(tvm_ffi_module, name), f"missing binding: {name}"
 
 
-@pytest.mark.skipif(not _HAS_CUDA, reason="configure uploads the comm schedule to device constant memory")
+@pytest.mark.skipif(not _HAS_CUDA, reason="native architecture selection requires CUDA")
 def test_configure_symmetric_valid(tvm_ffi_module):
-    # Returns None and does not raise for a consistent topology. Needs CUDA: the
-    # call now uploads the comm schedule (g_dest_table / g_rank_table) via
-    # cudaMemcpyToSymbol, which requires a CUDA context.
     assert tvm_ffi_module.moe_configure_symmetric(**_CFG) is None
 
 
-@pytest.mark.skipif(not _HAS_CUDA, reason="configure uploads the comm schedule to device constant memory")
+@pytest.mark.skipif(not _HAS_CUDA, reason="native architecture selection requires CUDA")
 def test_configure_symmetric_accepts_changed_topology(tvm_ffi_module):
     assert tvm_ffi_module.moe_configure_symmetric(**_CFG) is None
     changed = {**_CFG, "num_hosts": 2, "gpus_per_host": 1}
@@ -88,10 +98,23 @@ def test_configure_symmetric_topology_mismatch_raises(tvm_ffi_module):
         tvm_ffi_module.moe_configure_symmetric(**bad)
 
 
+@pytest.mark.parametrize("num_hosts,gpus_per_host,num_pes", [(0, 2, 0), (-1, -2, 2), (1, 0, 0), (1, 2, -2)])
+def test_configure_symmetric_nonpositive_topology_raises(tvm_ffi_module, num_hosts, gpus_per_host, num_pes):
+    bad = {**_CFG, "num_hosts": num_hosts, "gpus_per_host": gpus_per_host, "num_pes": num_pes}
+    with pytest.raises(RuntimeError, match="must be positive"):
+        tvm_ffi_module.moe_configure_symmetric(**bad)
+
+
+def test_configure_symmetric_topology_product_does_not_overflow(tvm_ffi_module):
+    bad = {**_CFG, "num_hosts": 65537, "gpus_per_host": 65537, "num_pes": 131073}
+    with pytest.raises(RuntimeError, match="4295098369.*must equal num_pes"):
+        tvm_ffi_module.moe_configure_symmetric(**bad)
+
+
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA tensors")
 def test_fwd_rejects_wrong_dtype(tvm_ffi_module):
     # Forward expects bf16 X; a float32 X must trip TVM FFI dtype validation,
-    # which runs before any symmetric allocation (so no NVSHMEM runtime is required).
+    # which runs before any symmetric allocation.
     tvm_ffi_module.moe_configure_symmetric(**_CFG)
     T, D, E, K = 16, _CFG["hidden_dim"], _CFG["max_num_experts"], _CFG["max_top_k"]
     X = torch.randn(T, D, dtype=torch.float32, device="cuda")  # wrong dtype on purpose

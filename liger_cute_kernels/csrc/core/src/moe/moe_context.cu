@@ -144,7 +144,7 @@ void moe_configure_context(int max_tokens, int hidden_dim, int max_num_experts,
 	stack.reserve(slot_name(kRetained[3], slot),
 		peers * max_num_experts * sizeof(int), max_inflight);
 #if LIGER_CUTE_DISPATCH_COMPUTE == 90
-	configure_sm90_nonrdc_moe(num_hosts, gpus_per_host);
+	configure_sm90_nonrdc_moe();
 #endif
 	g_capacity = cfg;
 	if (!g_contexts.count(team)) g_contexts.emplace(team, cfg);

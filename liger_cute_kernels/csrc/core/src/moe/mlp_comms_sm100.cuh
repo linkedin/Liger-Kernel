@@ -56,7 +56,7 @@
 #include <cuda_bf16.h>
 #include <nvshmem.h>
 #include <nvshmemx.h>
-#include "nvshmem_helpers.cuh"  // g_dest_table
+#include "nvshmem_helpers.cuh"
 
 #include "cta_barrier_sm100.cuh"  // SyncThreadsCtaCounterBarrier
 
@@ -348,7 +348,6 @@ struct CommBuffers {
 	PeSync pe_sync;
 
 	int hidden_dim;
-	int num_hosts;
 	int num_experts;          // total global experts
 	int experts_per_pe;       // num_experts / num_pes (evenly split)
 	int all_expert_offsets_stride;  // max_num_experts + 1 (fixed across configs)
@@ -398,7 +397,6 @@ struct TileIterator {
 	int my_pe;
 
 	int stride;         // distance between consecutive tiles
-	int num_hosts = 1;
 
 	// Current position in the iteration.
 	int le;             // local expert index
@@ -418,8 +416,7 @@ struct TileIterator {
 
 		// Count total tiles across all (expert, pe) pairs and
 		// compute this iterator's share.
-		// NOTE: p starts at 0 → the LOCAL PE (my_pe, via g_dest_table slot
-		// offset 0) is enumerated first for each expert, alongside the remote
+		// Offset 0 enumerates the LOCAL PE first for each expert, then the remote
 		// PEs (p=1..num_pes-1). Unified path: local experts are staged by the
 		// comm get warp from local symmetric memory just like remote tiles, so
 		// the separate local MLP pass is gone (see moe.cuh moe_fused_fwd).
@@ -429,7 +426,7 @@ struct TileIterator {
 		for (int idx = lane; idx < n_experts; idx += 32) {
 			int e = idx / num_pes;
 			int p = idx - e * num_pes;
-			int pe = liger_cute::detail::comm_peer(my_pe, p, num_pes, num_hosts);
+			int pe = liger_cute::detail::comm_peer(my_pe, p, num_pes);
 			int rs = remote_offsets[pe * offsets_stride + e];
 			int re = remote_offsets[pe * offsets_stride + e + 1];
 			local_total += (re - rs) / TileM;
@@ -447,7 +444,7 @@ struct TileIterator {
 		int skip = start;
 		for (int e = 0; e < experts_per_pe; ++e) {
 			for (int p = 0; p < num_pes; ++p) {
-				int pe = liger_cute::detail::comm_peer(my_pe, p, num_pes, num_hosts);
+				int pe = liger_cute::detail::comm_peer(my_pe, p, num_pes);
 				int rs = remote_offsets[pe * offsets_stride + e];
 				int re = remote_offsets[pe * offsets_stride + e + 1];
 				int ntiles = (re - rs) / TileM;
@@ -474,7 +471,7 @@ struct TileIterator {
 	}
 
 	__device__ TileInfo next() {
-		int pe = liger_cute::detail::comm_peer(my_pe, pe_idx, num_pes, num_hosts);
+		int pe = liger_cute::detail::comm_peer(my_pe, pe_idx, num_pes);
 		TileInfo info;
 		info.pe = pe;
 		info.token_offset = remote_start + tile * TileM;
@@ -494,7 +491,7 @@ struct TileIterator {
 				le++;
 			}
 			if (le >= experts_per_pe) break;
-			int next_pe = liger_cute::detail::comm_peer(my_pe, pe_idx, num_pes, num_hosts);
+			int next_pe = liger_cute::detail::comm_peer(my_pe, pe_idx, num_pes);
 			remote_start = remote_offsets[next_pe * offsets_stride + le];
 			int remote_end = remote_offsets[next_pe * offsets_stride + le + 1];
 			remote_tiles = (remote_end - remote_start) / TileM;
@@ -521,7 +518,6 @@ struct GemmTileIterator {
 	int num_pes;
 	int my_pe;
 	int stride;
-	int num_hosts = 1;
 
 	int le;
 	int pe_idx;
@@ -545,7 +541,7 @@ struct GemmTileIterator {
 		for (int idx = lane; idx < n_experts; idx += 32) {
 			int e = idx / num_pes;
 			int p = idx - e * num_pes;
-			int pe = liger_cute::detail::comm_peer(my_pe, p, num_pes, num_hosts);
+			int pe = liger_cute::detail::comm_peer(my_pe, p, num_pes);
 			int count = remote_counts[pe * counts_stride + e];
 			local_total += (count + GemmTileM - 1) / GemmTileM;
 		}
@@ -560,7 +556,7 @@ struct GemmTileIterator {
 		parent_prefix = 0;
 		for (int e = 0; e < experts_per_pe; ++e) {
 			for (int p = 0; p < num_pes; ++p) {
-				int pe = liger_cute::detail::comm_peer(my_pe, p, num_pes, num_hosts);
+				int pe = liger_cute::detail::comm_peer(my_pe, p, num_pes);
 				int rs = remote_offsets[pe * offsets_stride + e];
 				int re = remote_offsets[pe * offsets_stride + e + 1];
 				int count = remote_counts[pe * counts_stride + e];
@@ -596,7 +592,7 @@ struct GemmTileIterator {
 	}
 
 	__device__ TileInfo next() {
-		int pe = liger_cute::detail::comm_peer(my_pe, pe_idx, num_pes, num_hosts);
+		int pe = liger_cute::detail::comm_peer(my_pe, pe_idx, num_pes);
 		int parent_in_expert = tile / MSubTiles;
 		TileInfo info;
 		info.pe = pe;
@@ -618,7 +614,7 @@ struct GemmTileIterator {
 			}
 			if (le >= experts_per_pe)
 				break;
-			int next_pe = liger_cute::detail::comm_peer(my_pe, pe_idx, num_pes, num_hosts);
+			int next_pe = liger_cute::detail::comm_peer(my_pe, pe_idx, num_pes);
 			remote_start =
 				remote_offsets[next_pe * offsets_stride + le];
 			int remote_end =
@@ -1153,7 +1149,6 @@ __device__ __forceinline__ void nvshmem_comm_prologue(
 	iter.experts_per_pe = experts_per_pe;
 	iter.num_pes = num_pes;
 	iter.my_pe = my_pe;
-	iter.num_hosts = bufs.num_hosts;
 
 	// Comm count: this CTA's per-(xc, yc) workload.
 	iter.init(xc, MC);
@@ -1264,7 +1259,6 @@ __device__ __forceinline__ void nvshmem_comm_main(
 	iter.experts_per_pe = bufs.experts_per_pe;
 	iter.num_pes = bufs.num_pes();
 	iter.my_pe = bufs.my_pe();
-	iter.num_hosts = bufs.num_hosts;
 	iter.init(xc, MC);
 
 	int my_total = iter.total_tiles;

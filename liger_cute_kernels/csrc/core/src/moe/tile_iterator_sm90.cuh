@@ -374,7 +374,7 @@ struct RemoteMlpTileIterator {
 	                     int* src_ready_, int* src_consumed_,
 	                     int* dst_ready_, int* dst_consumed_,
 	                     bool is_leader_,
-	                     int runtime_nsplit_, int num_hosts = 1) {
+	                     int runtime_nsplit_) {
 		total_tiles = total_tiles_;
 		m_base = m_base_;
 		num_splits = runtime_nsplit_;
@@ -405,7 +405,6 @@ struct RemoteMlpTileIterator {
 			tit.experts_per_pe = experts_per_pe;
 			tit.num_pes        = num_pes;
 			tit.my_pe          = my_pe;
-			tit.num_hosts      = num_hosts;
 			tit.init(m_base_, col_stride);
 		}
 	}

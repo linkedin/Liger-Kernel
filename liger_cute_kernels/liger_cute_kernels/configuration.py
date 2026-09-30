@@ -31,8 +31,9 @@ class MoEConfig:
     """MoE capacity and EP-team topology, not the bootstrap-world topology.
 
     ``num_experts`` is the maximum total expert count in an EP group.
-    ``hidden_size`` bounds subsequent launches. Team ranks must be
-    host-major, with ``gpus_per_host`` consecutive members on each host.
+    ``hidden_size`` bounds subsequent launches. ``num_hosts`` and
+    ``gpus_per_host`` describe the EP group; peer scheduling uses team-local
+    round robin without assuming a host-major or HCA-specific ordering.
     ``group`` names a registered process group; ``None`` uses the bootstrap group.
     ``max_inflight`` bounds forwards retained for backward per EP context.
     """
