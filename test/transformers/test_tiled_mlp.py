@@ -195,3 +195,53 @@ def test_tiled_swiglu_correctness(
         )
 
     torch.testing.assert_close(x1.grad, x2.grad, atol=atol, rtol=rtol, msg="Input gradients don't match")
+
+
+@pytest.mark.parametrize("num_shards", [2, 4])
+def test_tiled_swiglu_ddp_safe_gradient_parity(num_shards):
+    """Test that ddp_safe=True produces the same gradients as ddp_safe=False."""
+    bsz, seq_len, hidden_size, intermediate_size = 2, 256, 128, 256
+    dtype = torch.float32
+    atol, rtol = 1e-5, 1e-4
+
+    config = LlamaConfig(
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        hidden_act="silu",
+    )
+
+    _input = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype) * 0.1
+    x1 = _input.detach().clone().requires_grad_(True)
+    x2 = _input.detach().clone().requires_grad_(True)
+
+    G = torch.randn(intermediate_size, hidden_size, device=device, dtype=dtype)
+    U = torch.randn(intermediate_size, hidden_size, device=device, dtype=dtype)
+    D = torch.randn(hidden_size, intermediate_size, device=device, dtype=dtype)
+
+    tiled_default = LigerTiledSwiGLUMLP(config=config, num_shards=num_shards, ddp_safe=False).to(device).to(dtype)
+    tiled_default.gate_proj.weight.data = G.clone()
+    tiled_default.up_proj.weight.data = U.clone()
+    tiled_default.down_proj.weight.data = D.clone()
+
+    tiled_ddp = LigerTiledSwiGLUMLP(config=config, num_shards=num_shards, ddp_safe=True).to(device).to(dtype)
+    tiled_ddp.gate_proj.weight.data = G.clone()
+    tiled_ddp.up_proj.weight.data = U.clone()
+    tiled_ddp.down_proj.weight.data = D.clone()
+
+    y1 = tiled_default(x1)
+    y2 = tiled_ddp(x2)
+    torch.testing.assert_close(y1, y2, atol=atol, rtol=rtol, msg="Forward outputs don't match")
+
+    dy = torch.randn_like(y1)
+    y1.backward(dy.clone())
+    y2.backward(dy.clone())
+
+    for p1, p2 in zip(tiled_default.parameters(), tiled_ddp.parameters()):
+        torch.testing.assert_close(
+            p1.grad,
+            p2.grad,
+            atol=atol,
+            rtol=rtol,
+            msg="DDP-safe and default gradients do not match",
+        )
+    torch.testing.assert_close(x1.grad, x2.grad, atol=atol, rtol=rtol, msg="Input gradients don't match")
