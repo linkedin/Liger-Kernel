@@ -1,8 +1,8 @@
 """Optional native runtime setup, separate from ordinary operator imports.
 
 Importing this module and constructing configuration data do not require LCK.
-When LCK is absent, ``configure`` warns and returns ``False`` without changing
-the runtime.
+When LCK is absent or the device is unsupported, ``configure`` warns and
+returns ``False`` without changing the runtime.
 """
 
 from __future__ import annotations
@@ -67,8 +67,9 @@ def configure(
 ) -> bool:
     """Collectively configure native resources using LCK's shared runtime API.
 
-    Returns ``False`` with a warning when optional LCK is absent, leaving
-    non-LCK kernels available. Returns ``True`` after native setup succeeds.
+    Returns ``False`` with a warning when optional LCK is absent or its native
+    kernels do not support the device, leaving non-LCK kernels available.
+    Returns ``True`` after native setup succeeds.
     Failures inside an installed LCK package propagate rather than silently
     disabling it. All bootstrap ranks must use a consistent installation.
     See ``liger_cute_kernels.configure`` for collective setup, named process
@@ -83,11 +84,12 @@ def configure(
             stacklevel=2,
         )
         return False
-    lck.configure(
+    configured = lck.configure(
         process_groups=process_groups,
         bootstrap_group=bootstrap_group,
         device=device,
         flsce=lck.FusedLinearCrossEntropyConfig(**asdict(flsce)) if flsce is not None else None,
         moe=lck.MoEConfig(**asdict(moe)) if moe is not None else None,
     )
-    return True
+    # Earlier native packages return None after successful setup.
+    return configured is not False

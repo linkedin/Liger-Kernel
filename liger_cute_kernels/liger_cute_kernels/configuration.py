@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
@@ -213,8 +215,13 @@ def configure(
     device: torch.device | str | None = None,
     flsce: FusedLinearCrossEntropyConfig | None = None,
     moe: MoEConfig | None = None,
-) -> None:
+) -> bool:
     """Configure the shared NVSHMEM runtime and optional FLSCE/MoE resources.
+
+    Returns ``True`` after native setup. Unsupported devices emit a warning
+    and return ``False`` without initializing native resources, leaving
+    dispatch and any available fallback to Liger's operator frontends.
+    Invalid configurations and native setup failures still raise.
 
     Collective on ``bootstrap_group`` (default: torch WORLD), including on
     repeated calls. All ranks must supply the same sections and capacities;
@@ -252,15 +259,19 @@ def configure(
     from . import tvm_ffi
 
     global _configuration
+    device = torch.device(device if device is not None else "cuda")
+    if device.type != "cuda" or not torch.cuda.is_available() or torch.version.hip is not None:
+        warnings.warn(
+            "LCK requires an NVIDIA CUDA device; native configuration was skipped. "
+            "Liger's non-LCK kernels remain available.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return False
     if not dist.is_initialized():
         raise RuntimeError("torch.distributed must be initialized before configure")
-    if not torch.cuda.is_available() or torch.version.hip is not None:
-        raise RuntimeError("LCK configure requires an NVIDIA CUDA device")
     bootstrap_group = bootstrap_group if bootstrap_group is not None else dist.group.WORLD
     bootstrap_ranks = _ranks(bootstrap_group)
-    device = torch.device(device if device is not None else "cuda")
-    if device.type != "cuda":
-        raise ValueError("LCK configure requires a CUDA device")
     if device.index is None:
         device = torch.device("cuda", torch.cuda.current_device())
 
@@ -277,19 +288,18 @@ def configure(
                 torch.cuda.get_device_capability(),
                 torch.cuda.get_device_properties(device).multi_processor_count,
             )
-            if hardware[0][0] not in (9, 10):
-                raise ValueError("LCK configure supports Hopper and Blackwell devices")
             groups, group_specs = _describe_process_groups(process_groups)
             flsce_spec = _describe_flsce(flsce, groups, bootstrap_group)
             moe_spec = _describe_moe(moe, groups, bootstrap_group)
-            if _configuration is None:
+            native_supported = hardware[0] == (9, 0) or hardware[0][0] == 10
+            if _configuration is None and native_supported:
                 if tvm_ffi.nvshmem_is_initialized():
                     raise RuntimeError(
                         "NVSHMEM is already initialized outside LCK configure; sharing with an unmanaged "
                         "runtime such as DeepEP V1 RDMA is unsupported"
                     )
                 tvm_ffi._load_module()
-            else:
+            elif _configuration is not None:
                 if _configuration.bootstrap_ranks != bootstrap_ranks or _configuration.device != device:
                     raise ValueError("LCK bootstrap group and device cannot change after configuration")
                 _check_existing("flsce", flsce_spec, _configuration.flsce)
@@ -342,6 +352,15 @@ def configure(
         for index in range(len(names)):
             _check_group_partition([plan[5][index][1] for plan in plans], bootstrap_ranks)
 
+        if not native_supported:
+            warnings.warn(
+                "LCK supports Hopper and Blackwell devices; native configuration was skipped. "
+                "Liger's non-LCK kernels remain available.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return False
+
         torch.cuda.synchronize(device)
         if _configuration is None:
             nvshmem.init_from_pg(bootstrap_group)
@@ -387,6 +406,7 @@ def configure(
                     _configuration.moe = moe_spec
                 _configuration.moe_teams[team] = moe_spec
                 _configuration.moe_context_slot += 1
+    return True
 
 
 def _validate_flsce_call(tokens, hidden, vocab, tiles, team) -> None:

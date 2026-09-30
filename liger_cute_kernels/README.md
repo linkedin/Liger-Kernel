@@ -26,6 +26,10 @@ Use `liger_cute_kernels.configure(...)` to initialize NVSHMEM once and prepare
 FLSCE and/or MoE through one public setup boundary. This API requires the LCK
 Python package containing this extension; older wheels do not expose it.
 Use a matching native build exposing the TP and EP context entry points.
+Successful setup returns `True`. Unsupported devices emit a warning and
+return `False` without loading or initializing native resources. Device
+eligibility belongs to Liger, not its callers; operator frontends continue
+to select their supported implementations or fallbacks.
 
 ```python
 import torch
@@ -211,11 +215,14 @@ export this configuration API.
 Ordinary operator imports do not expose or load this optional setup API.
 Importing `liger_kernel.ops.configure`, importing its function or classes, and
 constructing configuration objects all work without LCK installed. LCK is
-loaded only when `configure` is called. If LCK is absent, the function emits a
+loaded only when `configure` is called. If LCK is absent or does not support
+the device, the function emits a
 warning and returns `False` without changing the runtime; other Liger kernels
 remain usable. Successful native setup returns `True`. Failures inside an
-installed LCK package still propagate. All bootstrap ranks must use a consistent
-installation. Skipping setup does not enable an explicitly selected native-only
+installed LCK package still propagate, including invalid capacity, inconsistent
+collective plans, and conflicting NVSHMEM ownership. All bootstrap ranks must
+use a consistent installation and matching hardware. Skipping setup does not
+enable an explicitly selected native-only
 operator or change backend selection.
 The operations' existing `.apply(...)` interfaces and fallback dispatch remain
 unchanged.

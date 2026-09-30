@@ -620,7 +620,9 @@ def test_public_configuration_data_matches_lck_schema(public_configuration):
         assert public_fields == native_fields
 
 
-def test_public_module_configures_both_operators(runtime, public_configuration):
+@pytest.mark.parametrize("capability", [(9, 0), (10, 0), (10, 3)])
+def test_public_module_configures_both_operators(runtime, public_configuration, monkeypatch, capability):
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
     assert (
         public_configuration.configure(
             process_groups={"tp": runtime.world, "ep": runtime.world},
@@ -633,6 +635,67 @@ def test_public_module_configures_both_operators(runtime, public_configuration):
     )
     assert runtime.calls[1] == ("context", (2048, 512, 1024, 1, 19, 0))
     assert runtime.calls[-1] == ("moe", (2048, 512, 8, 2, 1, 2, 1, 19, 0))
+
+
+@pytest.mark.parametrize("capability", [(8, 0), (8, 9), (9, 1), (12, 0)])
+def test_public_configuration_skips_unsupported_architecture(runtime, public_configuration, monkeypatch, capability):
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
+    monkeypatch.setattr(tvm_ffi, "_load_module", lambda: pytest.fail("must not load native code"))
+    monkeypatch.setattr(tvm_ffi, "nvshmem_is_initialized", lambda: pytest.fail("must not inspect native runtime"))
+    with pytest.warns(UserWarning, match="native configuration was skipped"):
+        assert (
+            public_configuration.configure(
+                bootstrap_group=runtime.world,
+                device="cuda:0",
+                flsce=public_configuration.FusedLinearCrossEntropyConfig(**asdict(FLSCE)),
+                moe=public_configuration.MoEConfig(**asdict(MOE)),
+            )
+            is False
+        )
+    assert runtime.calls == []
+    assert configuration._configuration is None
+
+
+@pytest.mark.parametrize(
+    ("device", "cuda_available", "hip"),
+    [("cpu", True, None), ("xpu:0", True, None), ("cuda:0", False, None), ("cuda:0", True, "6.3")],
+)
+def test_public_configuration_skips_non_nvidia_devices(
+    runtime, public_configuration, monkeypatch, device, cuda_available, hip
+):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
+    monkeypatch.setattr(torch.version, "hip", hip)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: pytest.fail("must not enter a CUDA context"))
+    with pytest.warns(UserWarning, match="native configuration was skipped"):
+        assert public_configuration.configure(device=device) is False
+    assert runtime.calls == []
+    assert configuration._configuration is None
+
+
+def test_unsupported_architecture_still_rejects_invalid_capacity(runtime, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (8, 0))
+    with pytest.raises(RuntimeError, match="max_tokens must be a positive int32"):
+        runtime.configure(flsce=replace(FLSCE, max_tokens=0))
+    assert runtime.calls == []
+
+
+def test_mixed_architectures_reject_collectively_without_initialization(runtime, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (8, 0))
+
+    def gather(output, value, group):
+        peer = list(value)
+        peer[3] = ((9, 0), 132)
+        output[:] = [value, tuple(peer)]
+
+    monkeypatch.setattr(configuration.dist, "all_gather_object", gather)
+    with pytest.raises(RuntimeError, match="matching hardware"):
+        runtime.configure(flsce=FLSCE, moe=MOE)
+    assert runtime.calls == []
+
+
+def test_public_configuration_preserves_legacy_native_success(public_configuration, monkeypatch):
+    monkeypatch.setattr(importlib, "import_module", lambda name: SimpleNamespace(configure=lambda **kwargs: None))
+    assert public_configuration.configure() is True
 
 
 def test_backend_discovery_does_not_import_optional_lck(public_ops):
