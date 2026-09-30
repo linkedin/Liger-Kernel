@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from .configuration import FusedLinearCrossEntropyConfig
 from .configuration import MoEConfig
+from .configuration import UnsupportedDeviceError
 from .configuration import configure
 
-__all__ = ["FusedLinearCrossEntropyConfig", "MoEConfig", "configure"]
+__all__ = ["FusedLinearCrossEntropyConfig", "MoEConfig", "UnsupportedDeviceError", "configure"]

@@ -21,6 +21,7 @@ import torch
 
 from liger_cute_kernels import FusedLinearCrossEntropyConfig
 from liger_cute_kernels import MoEConfig
+from liger_cute_kernels import UnsupportedDeviceError
 from liger_cute_kernels import configuration
 from liger_cute_kernels import configure
 from liger_cute_kernels import nvshmem
@@ -75,7 +76,7 @@ def runtime(monkeypatch):
 
 
 def test_shared_runtime_configures_both_operators_once(runtime):
-    runtime.configure(flsce=FLSCE, moe=MOE)
+    assert runtime.configure(flsce=FLSCE, moe=MOE) is None
     runtime.configure(flsce=FLSCE, moe=MOE)
     assert runtime.calls == [
         ("init", runtime.world),
@@ -638,10 +639,15 @@ def test_public_module_configures_both_operators(runtime, public_configuration, 
 
 
 @pytest.mark.parametrize("capability", [(8, 0), (8, 9), (9, 1), (12, 0)])
-def test_public_configuration_skips_unsupported_architecture(runtime, public_configuration, monkeypatch, capability):
+def test_public_configuration_skips_unsupported_architecture(
+    runtime, public_configuration, monkeypatch, capability, recwarn
+):
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
     monkeypatch.setattr(tvm_ffi, "_load_module", lambda: pytest.fail("must not load native code"))
     monkeypatch.setattr(tvm_ffi, "nvshmem_is_initialized", lambda: pytest.fail("must not inspect native runtime"))
+    with pytest.raises(UnsupportedDeviceError, match="Hopper and Blackwell"):
+        runtime.configure(flsce=FLSCE, moe=MOE)
+    assert not recwarn
     with pytest.warns(UserWarning, match="native configuration was skipped"):
         assert (
             public_configuration.configure(
@@ -661,11 +667,14 @@ def test_public_configuration_skips_unsupported_architecture(runtime, public_con
     [("cpu", True, None), ("xpu:0", True, None), ("cuda:0", False, None), ("cuda:0", True, "6.3")],
 )
 def test_public_configuration_skips_non_nvidia_devices(
-    runtime, public_configuration, monkeypatch, device, cuda_available, hip
+    runtime, public_configuration, monkeypatch, device, cuda_available, hip, recwarn
 ):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
     monkeypatch.setattr(torch.version, "hip", hip)
     monkeypatch.setattr(torch.cuda, "device", lambda device: pytest.fail("must not enter a CUDA context"))
+    with pytest.raises(UnsupportedDeviceError, match="NVIDIA CUDA device"):
+        configure(device=device)
+    assert not recwarn
     with pytest.warns(UserWarning, match="native configuration was skipped"):
         assert public_configuration.configure(device=device) is False
     assert runtime.calls == []
@@ -753,14 +762,21 @@ def test_configuration_preserves_dependency_import_errors(public_configuration, 
     assert caught.value is error
 
 
-def test_configuration_preserves_native_setup_errors(public_configuration, monkeypatch):
-    error = RuntimeError("native setup failed")
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError, OSError])
+@pytest.mark.parametrize("typed_error_available", [False, True])
+def test_configuration_preserves_native_setup_errors(
+    public_configuration, monkeypatch, error_type, typed_error_available
+):
+    error = error_type("native setup failed")
 
     def fail(**kwargs):
         raise error
 
-    monkeypatch.setattr(importlib, "import_module", lambda name: SimpleNamespace(configure=fail))
-    with pytest.raises(RuntimeError) as caught:
+    lck = SimpleNamespace(configure=fail)
+    if typed_error_available:
+        lck.UnsupportedDeviceError = UnsupportedDeviceError
+    monkeypatch.setattr(importlib, "import_module", lambda name: lck)
+    with pytest.raises(error_type) as caught:
         public_configuration.configure()
     assert caught.value is error
 

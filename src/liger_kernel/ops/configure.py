@@ -69,9 +69,10 @@ def configure(
 
     Returns ``False`` with a warning when optional LCK is absent or its native
     kernels do not support the device, leaving non-LCK kernels available.
-    Returns ``True`` after native setup succeeds.
-    Failures inside an installed LCK package propagate rather than silently
-    disabling it. All bootstrap ranks must use a consistent installation.
+    Converts LCK's ``UnsupportedDeviceError`` into a warning and ``False``.
+    Returns ``True`` after native setup succeeds. Other failures inside an
+    installed LCK package propagate rather than silently disabling it.
+    All bootstrap ranks must use a consistent installation.
     See ``liger_cute_kernels.configure`` for collective setup, named process
     groups, capacity, and lifetime requirements.
     """
@@ -84,12 +85,21 @@ def configure(
             stacklevel=2,
         )
         return False
-    configured = lck.configure(
-        process_groups=process_groups,
-        bootstrap_group=bootstrap_group,
-        device=device,
-        flsce=lck.FusedLinearCrossEntropyConfig(**asdict(flsce)) if flsce is not None else None,
-        moe=lck.MoEConfig(**asdict(moe)) if moe is not None else None,
-    )
-    # Earlier native packages return None after successful setup.
-    return configured is not False
+    # Older native packages have no typed eligibility error; their errors still propagate.
+    unsupported_device_errors = (lck.UnsupportedDeviceError,) if hasattr(lck, "UnsupportedDeviceError") else ()
+    try:
+        lck.configure(
+            process_groups=process_groups,
+            bootstrap_group=bootstrap_group,
+            device=device,
+            flsce=lck.FusedLinearCrossEntropyConfig(**asdict(flsce)) if flsce is not None else None,
+            moe=lck.MoEConfig(**asdict(moe)) if moe is not None else None,
+        )
+    except unsupported_device_errors as exc:
+        warnings.warn(
+            f"{exc}; native configuration was skipped. Liger's non-LCK kernels remain available.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return False
+    return True

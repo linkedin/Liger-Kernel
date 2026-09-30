@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
-
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
@@ -12,6 +10,10 @@ import torch
 import torch.distributed as dist
 
 _OperatorSpec = tuple[tuple[int, ...], tuple[int, ...]]
+
+
+class UnsupportedDeviceError(RuntimeError):
+    """The requested device cannot use LCK's native runtime."""
 
 
 @dataclass(frozen=True)
@@ -215,12 +217,12 @@ def configure(
     device: torch.device | str | None = None,
     flsce: FusedLinearCrossEntropyConfig | None = None,
     moe: MoEConfig | None = None,
-) -> bool:
+) -> None:
     """Configure the shared NVSHMEM runtime and optional FLSCE/MoE resources.
 
-    Returns ``True`` after native setup. Unsupported devices emit a warning
-    and return ``False`` without initializing native resources, leaving
-    dispatch and any available fallback to Liger's operator frontends.
+    Unsupported devices raise ``UnsupportedDeviceError`` without initializing
+    native resources. Liger-Kernel's public configuration frontend converts
+    this error into a warning and leaves fallback selection to its operators.
     Invalid configurations and native setup failures still raise.
 
     Collective on ``bootstrap_group`` (default: torch WORLD), including on
@@ -261,13 +263,7 @@ def configure(
     global _configuration
     device = torch.device(device if device is not None else "cuda")
     if device.type != "cuda" or not torch.cuda.is_available() or torch.version.hip is not None:
-        warnings.warn(
-            "LCK requires an NVIDIA CUDA device; native configuration was skipped. "
-            "Liger's non-LCK kernels remain available.",
-            UserWarning,
-            stacklevel=2,
-        )
-        return False
+        raise UnsupportedDeviceError("LCK requires an NVIDIA CUDA device")
     if not dist.is_initialized():
         raise RuntimeError("torch.distributed must be initialized before configure")
     bootstrap_group = bootstrap_group if bootstrap_group is not None else dist.group.WORLD
@@ -353,13 +349,7 @@ def configure(
             _check_group_partition([plan[5][index][1] for plan in plans], bootstrap_ranks)
 
         if not native_supported:
-            warnings.warn(
-                "LCK supports Hopper and Blackwell devices; native configuration was skipped. "
-                "Liger's non-LCK kernels remain available.",
-                UserWarning,
-                stacklevel=2,
-            )
-            return False
+            raise UnsupportedDeviceError("LCK supports Hopper and Blackwell devices")
 
         torch.cuda.synchronize(device)
         if _configuration is None:
@@ -406,7 +396,6 @@ def configure(
                     _configuration.moe = moe_spec
                 _configuration.moe_teams[team] = moe_spec
                 _configuration.moe_context_slot += 1
-    return True
 
 
 def _validate_flsce_call(tokens, hidden, vocab, tiles, team) -> None:
