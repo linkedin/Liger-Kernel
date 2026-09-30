@@ -12,6 +12,10 @@ import torch.distributed as dist
 _OperatorSpec = tuple[tuple[int, ...], tuple[int, ...]]
 
 
+class UnsupportedDeviceError(RuntimeError):
+    """The requested device cannot use LCK's native runtime."""
+
+
 @dataclass(frozen=True)
 class FusedLinearCrossEntropyConfig:
     """Maximum local FLSCE problem; ``group`` names a registered process group.
@@ -216,6 +220,11 @@ def configure(
 ) -> None:
     """Configure the shared NVSHMEM runtime and optional FLSCE/MoE resources.
 
+    Unsupported devices raise ``UnsupportedDeviceError`` without initializing
+    native resources. Liger-Kernel's public configuration frontend converts
+    this error into a warning and leaves fallback selection to its operators.
+    Invalid configurations and native setup failures still raise.
+
     Collective on ``bootstrap_group`` (default: torch WORLD), including on
     repeated calls. All ranks must supply the same sections and capacities;
     their local TP/EP groups must form uniform strided partitions of that world.
@@ -252,15 +261,13 @@ def configure(
     from . import tvm_ffi
 
     global _configuration
+    device = torch.device(device if device is not None else "cuda")
+    if device.type != "cuda" or not torch.cuda.is_available() or torch.version.hip is not None:
+        raise UnsupportedDeviceError("LCK requires an NVIDIA CUDA device")
     if not dist.is_initialized():
         raise RuntimeError("torch.distributed must be initialized before configure")
-    if not torch.cuda.is_available() or torch.version.hip is not None:
-        raise RuntimeError("LCK configure requires an NVIDIA CUDA device")
     bootstrap_group = bootstrap_group if bootstrap_group is not None else dist.group.WORLD
     bootstrap_ranks = _ranks(bootstrap_group)
-    device = torch.device(device if device is not None else "cuda")
-    if device.type != "cuda":
-        raise ValueError("LCK configure requires a CUDA device")
     if device.index is None:
         device = torch.device("cuda", torch.cuda.current_device())
 
@@ -277,19 +284,18 @@ def configure(
                 torch.cuda.get_device_capability(),
                 torch.cuda.get_device_properties(device).multi_processor_count,
             )
-            if hardware[0][0] not in (9, 10):
-                raise ValueError("LCK configure supports Hopper and Blackwell devices")
             groups, group_specs = _describe_process_groups(process_groups)
             flsce_spec = _describe_flsce(flsce, groups, bootstrap_group)
             moe_spec = _describe_moe(moe, groups, bootstrap_group)
-            if _configuration is None:
+            native_supported = hardware[0] == (9, 0) or hardware[0][0] == 10
+            if _configuration is None and native_supported:
                 if tvm_ffi.nvshmem_is_initialized():
                     raise RuntimeError(
                         "NVSHMEM is already initialized outside LCK configure; sharing with an unmanaged "
                         "runtime such as DeepEP V1 RDMA is unsupported"
                     )
                 tvm_ffi._load_module()
-            else:
+            elif _configuration is not None:
                 if _configuration.bootstrap_ranks != bootstrap_ranks or _configuration.device != device:
                     raise ValueError("LCK bootstrap group and device cannot change after configuration")
                 _check_existing("flsce", flsce_spec, _configuration.flsce)
@@ -341,6 +347,9 @@ def configure(
             raise ValueError("process-group names must agree across the bootstrap group")
         for index in range(len(names)):
             _check_group_partition([plan[5][index][1] for plan in plans], bootstrap_ranks)
+
+        if not native_supported:
+            raise UnsupportedDeviceError("LCK supports Hopper and Blackwell devices")
 
         torch.cuda.synchronize(device)
         if _configuration is None:
