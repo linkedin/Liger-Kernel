@@ -536,12 +536,16 @@ src/liger_kernel/ops/cute/
 
 ## Prerequisites
 
-- **CUDA toolkit 12.9** with `nvcc` (release builds pin 12.9.1) and either SM 9.0a (Hopper / `sm_90a`) or
+- **CUDA toolkit 12.9 or 13.0** with `nvcc` (release builds pin 12.9.1) and either SM 9.0a (Hopper / `sm_90a`) or
   Blackwell family (`sm_100f`) support. The family target covers both B200
   (`sm_100`) and B300 (`sm_103`) while enabling TCGEN05 UMMA and TMEM.
-  CUDA 13.0 also builds the Hopper path, but currently rejects mixed
-  `.cta_group::1`/`.cta_group::2` instructions in the Blackwell MoE backward
-  kernel; the combined release wheel therefore remains on CUDA 12.9.
+  CUDA 13.0 is also supported for native source builds. Blackwell MoE uses
+  only `.cta_group::1` instructions: MLP3/MLP4 use M128xN128 tiles, CTA-local
+  TMEM and single-CTA TMA loads, matching the other fused backward phases.
+  The separate Blackwell cross-entropy kernels retain `.cta_group::2`.
+  This avoids mixing instruction groups within a kernel, which CUDA 13
+  rejects. Release wheels remain on CUDA 12.9; this does not change the
+  release toolchain or previously published artifacts.
 - **NVSHMEM** install (host `.so`, device `.a`, headers). Two layouts are
   supported:
   - Native/system install: point `NVSHMEM_HOME` at it, or use the default
