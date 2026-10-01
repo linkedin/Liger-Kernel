@@ -1,11 +1,6 @@
-// Standalone SM100 TP-FSLCE dW correctness and throughput probe.
-//
-// This intentionally exercises only dW = dZ^T @ X.  It reuses the proven
-// MoE MLP3 paired-CTA mainloop as the initial baseline: M256xN256xK64 joined
-// tile, 2x1 cluster, FP32 TMEM accumulation, BF16 shared-memory epilogue, and
-// TMA store/reduce-add.  The production dW pipeline is developed separately;
-// this probe keeps a stable cuBLAS-backed correctness/performance oracle.
 
+// Compare the single-CTA MoE dW reference with the unchanged 2SM FSLCE dW
+// implementation. The two instruction groups execute in separate kernels.
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -32,16 +27,16 @@ namespace fslce_dw_test {
 
 using namespace cute;
 using Element = cutlass::bfloat16_t;
-using Traits = liger::Mlp3Traits2Sm<
+using Traits = liger::Mlp3TraitsSm100<
 	Element,
-	256,
-	256,
+	128,
+	128,
 	64,
 	6,
 	64,
 	2,
-	2>;
-using Smem = liger::Mlp3Smem2Sm<Traits>;
+	1>;
+using Smem = liger::Mlp3SmemSm100<Traits>;
 
 #define CUDA_CHECK(expr)                                                     \
 	do {                                                                     \
@@ -77,7 +72,7 @@ using Smem = liger::Mlp3Smem2Sm<Traits>;
 	} while (0)
 
 template <class TmaA, class TmaB, class TmaOut>
-__global__ __launch_bounds__(Traits::NumThreads, 1) __cluster_dims__(2, 1, 1)
+__global__ __launch_bounds__(Traits::NumThreads, 1) __cluster_dims__(1, 1, 1)
 void dw_moe_baseline_kernel(
 		__grid_constant__ const TmaA tma_a,
 		__grid_constant__ const TmaB tma_b,
@@ -236,11 +231,11 @@ auto make_tma_a(const Problem& problem, const Element* a) {
 			static_cast<std::int64_t>(problem.k)),
 		make_stride(Int<1>{}, static_cast<std::int64_t>(problem.m)));
 	return make_tma_copy_A_sm100(
-		SM100_TMA_2SM_LOAD{},
+		SM90_TMA_LOAD{},
 		tensor,
 		typename Traits::SmemLayoutDYT_1{},
 		typename Traits::TileShape{},
-		typename Traits::TiledMma2Sm{});
+		typename Traits::TiledMmaSm100{});
 }
 
 auto make_tma_b(const Problem& problem, const Element* b) {
@@ -251,11 +246,11 @@ auto make_tma_b(const Problem& problem, const Element* b) {
 			static_cast<std::int64_t>(problem.k)),
 		make_stride(Int<1>{}, static_cast<std::int64_t>(problem.n)));
 	return make_tma_copy_B_sm100(
-		SM100_TMA_2SM_LOAD{},
+		SM90_TMA_LOAD{},
 		tensor,
 		typename Traits::SmemLayoutZ_1{},
 		typename Traits::TileShape{},
-		typename Traits::TiledMma2Sm{});
+		typename Traits::TiledMmaSm100{});
 }
 
 template <bool Add>
@@ -308,7 +303,7 @@ struct Launcher {
 		  m_tiles((problem.m + Traits::TileM - 1) / Traits::TileM),
 		  n_tiles((problem.n + Traits::TileN - 1) / Traits::TileN),
 		  grid_ctas(
-			  2 *
+			  Traits::ClusterM *
 			  (cluster_pairs > 0
 					  ? std::min(cluster_pairs, m_tiles * n_tiles)
 					  : m_tiles * n_tiles)) {}
@@ -329,7 +324,7 @@ struct Launcher {
 			decltype(tma_a), decltype(tma_b), decltype(tma_output)>;
 		cudaLaunchAttribute cluster_attribute = {};
 		cluster_attribute.id = cudaLaunchAttributeClusterDimension;
-		cluster_attribute.val.clusterDim.x = 2;
+		cluster_attribute.val.clusterDim.x = Traits::ClusterM;
 		cluster_attribute.val.clusterDim.y = 1;
 		cluster_attribute.val.clusterDim.z = 1;
 		cudaLaunchConfig_t config = {};
@@ -482,7 +477,7 @@ void run_case(
 		"max_rel=%.6g\n",
 		Add ? "add" : "store",
 		cluster_pairs > 0 ? "persistent" : "full",
-		launch.grid_ctas / 2,
+		launch.grid_ctas / Traits::ClusterM,
 		problem.m,
 		problem.n,
 		problem.k,

@@ -217,7 +217,7 @@ mlp1_act_test_kernel(
 			return liger::mlp1_make_pipe<Traits>(smem.pipe_storage);
 	}();
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
-	cute::TMEM::Allocator2Sm tmem_alloc{};
+	cute::TMEM::Allocator1Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
 		cute::cluster_sync();
