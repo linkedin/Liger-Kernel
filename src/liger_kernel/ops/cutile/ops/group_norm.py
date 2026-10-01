@@ -6,6 +6,8 @@
 Group Normalization kernel (CuTile backend).
 """
 
+import math
+
 import cuda.tile as ct
 import torch
 
@@ -174,7 +176,7 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     shape = X.shape
     batch_size = shape[0]
     channels_per_group = num_channels // num_groups
-    hidden_size = X.shape[-1]
+    hidden_size = math.prod(shape[2:])
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, _next_power_of_2(hidden_size))
 
@@ -212,7 +214,7 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
 def group_norm_backward(dY, X_2d, W, B, Mean, RSTD, num_channels, num_groups):
     shape = dY.shape
     batch_size = shape[0]
-    hidden_size = shape[-1]
+    hidden_size = X_2d.shape[-1]
     channels_per_group = num_channels // num_groups
     BLOCK_SIZE = min(MAX_FUSED_SIZE, _next_power_of_2(hidden_size))
 
