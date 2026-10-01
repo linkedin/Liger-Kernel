@@ -27,6 +27,7 @@ import torch
 
 from cuda.tile.tune import exhaustive_search
 
+from liger_kernel.ops.cutile.ops.utils import _launch
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.utils import ensure_contiguous
 
@@ -473,7 +474,6 @@ def _fused_add_rms_norm_forward_ct(X, R, W, eps, offset, casting_mode):
     FWD_BLOCK_SIZE = BLOCK_SIZE // 2 if BLOCK_SIZE > 4096 else BLOCK_SIZE
     base_kernel = _fused_add_rms_norm_fwd_small_ct if BLOCK_SIZE < 2048 else _fused_add_rms_norm_fwd_large_ct
 
-    stream = torch.cuda.current_stream()
     args = (
         Y,
         S,
@@ -488,9 +488,10 @@ def _fused_add_rms_norm_forward_ct(X, R, W, eps, offset, casting_mode):
         int(casting_mode),
     )
     cache_key = (n_cols, FWD_BLOCK_SIZE, casting_mode, X.dtype, str(X.device))
-    tuned_kernel = _autotune_fwd_kernel(base_kernel, args, n_rows, cache_key, stream)
-
-    ct.launch(stream, (n_rows, 1, 1), tuned_kernel, args)
+    with torch.cuda.device(X.device):
+        stream = torch.cuda.current_stream(X.device)
+        tuned_kernel = _autotune_fwd_kernel(base_kernel, args, n_rows, cache_key, stream)
+        ct.launch(stream, (n_rows, 1, 1), tuned_kernel, args)
 
     return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, casting_mode
 
@@ -520,8 +521,8 @@ def _fused_add_rms_norm_backward_ct(dY, dS_out, S, W, RSTD, offset, casting_mode
     # usage when BLOCK_SIZE > _BWD_MAX_CHUNK_SIZE (splits cols into lo/hi halves).
     if BLOCK_SIZE > _BWD_MAX_CHUNK_SIZE:
         CHUNK_SIZE = BLOCK_SIZE // 2
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            dY.device,
             grid,
             _fused_add_rms_norm_bwd_persistent_2c_ct_nww8,
             (
@@ -542,8 +543,8 @@ def _fused_add_rms_norm_backward_ct(dY, dS_out, S, W, RSTD, offset, casting_mode
             ),
         )
     else:
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            dY.device,
             grid,
             _fused_add_rms_norm_bwd_persistent_ct_nww8,
             (
