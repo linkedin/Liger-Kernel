@@ -529,6 +529,8 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     sm_count = 1
     if X.device.type == "cuda":
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+    elif X.device.type == "mps":
+        sm_count = torch.backends.mps.get_core_count()
     elif X.device.type == "xpu":
         sm_count = torch.xpu.get_device_properties(X.device).gpu_eu_count
     elif X.device.type == "npu":

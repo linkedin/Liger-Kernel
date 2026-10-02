@@ -134,6 +134,12 @@ def require_deterministic(test_case):
     return wrapper
 
 
+def as_float64(*tensors):
+    """The tensors in float64, on the CPU where the device has no such dtype."""
+    out = tuple(t.cpu().double() if t.device.type == "mps" else t.double() for t in tensors)
+    return out[0] if len(out) == 1 else out
+
+
 @torch.no_grad
 def get_logprobs(tensor):
     return torch.nn.functional.log_softmax(tensor, dim=-1, dtype=torch.float32)
@@ -314,9 +320,34 @@ def train_bpe_tokenizer(special_tokens: List[str], unk_token: str = "<|unk|>"):
     return tokenizer
 
 
+def gpu_total_memory_bytes(device_id: int = 0):
+    """Return device total memory in bytes, or None if unavailable."""
+    dev_mod = getattr(torch, infer_device(), None)
+    if dev_mod is None or not dev_mod.is_available():
+        return None
+    get_props = getattr(dev_mod, "get_device_properties", None)
+    if get_props is None:
+        return None
+    return get_props(device_id).total_memory
+
+
+def gpu_memory_below(min_bytes: float, device_id: int = 0) -> bool:
+    """True when device memory is unknown or below ``min_bytes``."""
+    total = gpu_total_memory_bytes(device_id)
+    if total is None:
+        return True
+    return total < min_bytes
+
+
 def supports_bfloat16():
     if device == "cuda":
         return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
+    elif device == "mps":
+        try:
+            torch.zeros(1, device=device, dtype=torch.bfloat16)
+            return True
+        except Exception:
+            return False
     elif device == "xpu":
         return True
     elif device == "npu":
