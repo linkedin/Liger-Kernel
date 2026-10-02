@@ -547,14 +547,13 @@ def apply_liger_kernel_to_llama4(
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
-        if vision_model:
+        if vision_model and layer_norm:
             _patch_layer_norm_module(vision_model.layernorm_pre)
             _patch_layer_norm_module(vision_model.layernorm_post)
 
             for layer in vision_model.model.layers:
-                if layer_norm:
-                    _patch_layer_norm_module(layer.input_layernorm)
-                    _patch_layer_norm_module(layer.post_attention_layernorm)
+                _patch_layer_norm_module(layer.input_layernorm)
+                _patch_layer_norm_module(layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_mllama(
@@ -644,19 +643,17 @@ def apply_liger_kernel_to_mllama(
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
-        if vision_model:
+        if vision_model and layer_norm:
             _patch_layer_norm_module(vision_model.layernorm_pre)
             _patch_layer_norm_module(vision_model.layernorm_post)
 
             for layer in vision_model.transformer.layers:
-                if layer_norm:
-                    _patch_layer_norm_module(layer.input_layernorm)
-                    _patch_layer_norm_module(layer.post_attention_layernorm)
+                _patch_layer_norm_module(layer.input_layernorm)
+                _patch_layer_norm_module(layer.post_attention_layernorm)
 
             for layer in vision_model.global_transformer.layers:
-                if layer_norm:
-                    _patch_layer_norm_module(layer.input_layernorm)
-                    _patch_layer_norm_module(layer.post_attention_layernorm)
+                _patch_layer_norm_module(layer.input_layernorm)
+                _patch_layer_norm_module(layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_ministral(
@@ -1368,11 +1365,11 @@ def apply_liger_kernel_to_gemma3(
                 vision_tower = model.model.vision_tower
                 siglip_vision_model = getattr(vision_tower, "vision_model", vision_tower)
 
-                _patch_layer_norm_module(siglip_vision_model.post_layernorm)
+                if layer_norm:
+                    _patch_layer_norm_module(siglip_vision_model.post_layernorm)
 
-                for layer in siglip_vision_model.encoder.layers:
-                    layer: SiglipEncoderLayer
-                    if layer_norm:
+                    for layer in siglip_vision_model.encoder.layers:
+                        layer: SiglipEncoderLayer
                         _patch_layer_norm_module(layer.layer_norm1)
                         _patch_layer_norm_module(layer.layer_norm2)
             else:
@@ -1714,11 +1711,11 @@ def apply_liger_kernel_to_paligemma(
         vision_tower: SiglipVisionModel = model.model.vision_tower
         siglip_vision_model = getattr(vision_tower, "vision_model", vision_tower)
 
-        _patch_layer_norm_module(siglip_vision_model.post_layernorm)
+        if layer_norm:
+            _patch_layer_norm_module(siglip_vision_model.post_layernorm)
 
-        for layer in siglip_vision_model.encoder.layers:
-            layer: SiglipEncoderLayer
-            if layer_norm:
+            for layer in siglip_vision_model.encoder.layers:
+                layer: SiglipEncoderLayer
                 _patch_layer_norm_module(layer.layer_norm1)
                 _patch_layer_norm_module(layer.layer_norm2)
 
@@ -2792,8 +2789,9 @@ def apply_liger_kernel_to_glm4v_moe(
             )
 
         if vision_model is not None:
-            _patch_rms_norm_module(vision_model.post_conv_layernorm)
-            _patch_rms_norm_module(vision_model.post_layernorm)
+            if rms_norm:
+                _patch_rms_norm_module(vision_model.post_conv_layernorm)
+                _patch_rms_norm_module(vision_model.post_layernorm)
             for vision_block in vision_model.blocks:
                 if rms_norm:
                     _patch_rms_norm_module(vision_block.norm1)
