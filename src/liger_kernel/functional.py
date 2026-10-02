@@ -37,6 +37,7 @@ declare_op_locations(
         "liger_kernel.ops.backends._triton.rms_norm",
         "liger_kernel.ops.backends._cutedsl.rms_norm",
         "liger_kernel.ops.backends._ascend.rms_norm",
+        "liger_kernel.ops.backends._cutile.rms_norm",
     ),
 )
 
@@ -45,6 +46,8 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.layer_norm",
         "liger_kernel.ops.backends._cutedsl.layer_norm",
+        "liger_kernel.ops.backends._cutile.layer_norm",
+        "liger_kernel.ops.backends._ascend.layer_norm",
     ),
 )
 
@@ -56,6 +59,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.jsd",
         "liger_kernel.ops.backends._cutedsl.jsd",
+        "liger_kernel.ops.backends._cutile.jsd",
     ),
 )
 declare_op_locations(
@@ -63,6 +67,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.jsd",
         "liger_kernel.ops.backends._cutedsl.jsd",
+        "liger_kernel.ops.backends._cutile.jsd",
     ),
 )
 
@@ -72,6 +77,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.softmax",
         "liger_kernel.ops.backends._cutedsl.softmax",
+        "liger_kernel.ops.backends._cutile.softmax",
     ),
 )
 
@@ -147,6 +153,13 @@ declare_op_locations(
     ),
 )
 
+# ``kl_loss_and_grad`` primitive is exposed so composed ops (fused_linear_kl_div)
+# route through the dispatcher and pick up new KL backends as they land.
+declare_op_locations(
+    "kl_loss_and_grad",
+    ("liger_kernel.ops.backends._triton.kl_div",),
+)
+
 # fused_linear_jsd: Triton (universal) + cuTile (Blackwell). The CuTe DSL
 # registration remains explicit-only because the composed op upcasts its inner
 # JSD inputs to fp32, which safely falls back to Triton.
@@ -155,6 +168,7 @@ declare_op_locations(
     (
         "liger_kernel.ops.backends._triton.fused_linear_jsd",
         "liger_kernel.ops.backends._cutedsl.fused_linear_jsd",
+        "liger_kernel.ops.backends._cutile.fused_linear_jsd",
     ),
 )
 

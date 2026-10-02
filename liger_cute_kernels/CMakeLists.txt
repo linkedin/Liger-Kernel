@@ -39,30 +39,86 @@ option(LIGER_CUTE_BUILD_BINDINGS
 set(LIGER_CUTE_CORE_IMPORTED_DIR "" CACHE PATH
     "Dir holding a prebuilt libliger_cute_kernels.so to link instead of building the core")
 
+option(LIGER_CUTE_ENABLE_SM90_NONRDC_MOE
+    "Build the opt-in whole-program SM90 MoE forward/backward cubin" OFF)
+option(LIGER_CUTE_SM90_NONRDC_ALL_CONFIGS
+    "Compile every SM90 MoE dispatch config into the non-RDC cubin" OFF)
+
 # Tests-only build: compile just the torch-free C++ unit tests (which include the
 # moe device-function headers directly) against CUTLASS + CUDA + gtest. Skips
 # NVSHMEM, TVM FFI, the core library, and the bindings entirely — none are needed
 # to compile/run the header-only mlp1 kernels. This is how the mlp1 SM100 rewrite
-# is built/tested in isolation (e.g. -DLIGER_CUTE_CUDA_ARCH=100a on Blackwell).
+# is built/tested in isolation (e.g. -DLIGER_CUTE_CUDA_ARCH=100f on Blackwell).
 option(LIGER_CUTE_TESTS_ONLY
     "Build ONLY the C++ unit tests (CUTLASS+CUDA+gtest); skip NVSHMEM/TVM-FFI/core/bindings" OFF)
 
 # ---------- Common CUDA / device dependencies (needed by core AND bindings) --
 find_package(CUDAToolkit REQUIRED)
 
-# The 'a' suffix enables architecture-accelerated features (WGMMA/TMA/multicast
-# on sm_90a; tcgen05/UMMA on sm_100a). Override with -DLIGER_CUTE_CUDA_ARCH=100a
-# for a Blackwell build. Strip any gencode flags a parent/toolchain may have
-# injected, then set the requested arch exclusively.
+# The suffix enables conditional architecture features: sm_90a provides Hopper
+# WGMMA/TMA/multicast, while sm_100f provides the TCGEN05/UMMA/TMEM feature set
+# shared by the Blackwell family, including B200 and B300. Strip any gencode
+# flags a parent/toolchain may have injected, then set the requested arch
+# exclusively.
 set(LIGER_CUTE_CUDA_ARCH "90a" CACHE STRING
-    "CUDA architecture for -gencode (e.g. 90a for Hopper, 100a for Blackwell)")
+    "CUDA architecture for -gencode (e.g. 90a for Hopper, 100f for Blackwell)")
+set(LIGER_CUTE_FSLCE_SM100_STAGES "5" CACHE STRING
+    "SM100 fused scaled linear cross-entropy forward TMA mainloop stages (3-6)")
+set(LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES "64" CACHE STRING
+    "SM100 forward communication wave width in N256 tiles")
+set(LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES "5" CACHE STRING
+    "SM100 fused backward dZ TMA mainloop stages (fixed at 5)")
+set(LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS "4096" CACHE STRING
+    "SM100 fused backward token-wave rows (1024, 2048, or 4096)")
+set(LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT "0" CACHE STRING
+    "SM100 fused backward synchronization variant (A=0, B=1, C=2, D=3)")
+option(LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_CHUNK_PIPELINE
+    "Diagnostic only: force the chunk-granular deferred dX schedule on a single host" OFF)
+option(LIGER_CUTE_FSLCE_SM100_BACKWARD_DIAGNOSTIC_TIMESTAMPS
+    "Diagnostic only: collect SM100 backward phase globaltimer timestamps" OFF)
+option(LIGER_CUTE_FSLCE_SM100_DIAGNOSTIC_DISABLE_REMOTE
+    "Diagnostic only: skip the SM100 inter-host ring while retaining wave scheduling" OFF)
+option(LIGER_CUTE_FSLCE_SM100_DIAGNOSTIC_TIMESTAMPS
+    "Diagnostic only: collect SM100 forward globaltimer timestamps" OFF)
+option(LIGER_CUTE_FSLCE_SM100_PIPELINED_RING_WAVES
+    "Pipeline remote-ring consumed acknowledgements across SM100 waves" ON)
+option(LIGER_CUTE_FSLCE_SM100_USE_WARP_TEAM_COLLECTIVES
+    "Use matching-rank warp MAX/SUM collectives instead of the SM100 QP ring" OFF)
+set_property(CACHE LIGER_CUTE_FSLCE_SM100_STAGES PROPERTY STRINGS 3 4 5 6)
+set_property(CACHE LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES PROPERTY STRINGS
+    16 32 64 128)
+if(NOT LIGER_CUTE_FSLCE_SM100_STAGES MATCHES "^[3-6]$")
+    message(FATAL_ERROR
+        "LIGER_CUTE_FSLCE_SM100_STAGES must be an integer from 3 through 6")
+endif()
+if(NOT LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES MATCHES "^(16|32|64|128)$")
+    message(FATAL_ERROR
+        "LIGER_CUTE_FSLCE_SM100_WAVE_N_TILES must be 16, 32, 64, or 128")
+endif()
+set_property(CACHE LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES PROPERTY STRINGS 5)
+if(NOT LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES MATCHES "^5$")
+    message(FATAL_ERROR
+        "LIGER_CUTE_FSLCE_SM100_BACKWARD_STAGES is fixed at 5")
+endif()
+set_property(CACHE LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS PROPERTY STRINGS
+    1024 2048 4096)
+if(NOT LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS MATCHES "^(1024|2048|4096)$")
+    message(FATAL_ERROR
+        "LIGER_CUTE_FSLCE_SM100_BACKWARD_WAVE_ROWS must be 1024, 2048, or 4096")
+endif()
+set_property(CACHE LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT PROPERTY STRINGS
+    0 1 2 3)
+if(NOT LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT MATCHES "^[0-3]$")
+    message(FATAL_ERROR
+        "LIGER_CUTE_FSLCE_SM100_BACKWARD_SYNC_VARIANT must be 0, 1, 2, or 3")
+endif()
 set(CMAKE_CUDA_ARCHITECTURES OFF)
 string(REGEX REPLACE "-gencode[= ]+arch=compute_[0-9a-z]+,code=sm_[0-9a-z]+" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 string(STRIP "${CMAKE_CUDA_FLAGS}" CMAKE_CUDA_FLAGS)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_${LIGER_CUTE_CUDA_ARCH},code=sm_${LIGER_CUTE_CUDA_ARCH} --use_fast_math --extra-device-vectorization --fmad=true --prec-div=false --prec-sqrt=false --ptxas-options=-O3,--allow-expensive-optimizations=true")
 if(LIGER_CUTE_CUDA_ARCH MATCHES "^90")
     add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=90)
-elseif(LIGER_CUTE_CUDA_ARCH MATCHES "^100")
+elseif(LIGER_CUTE_CUDA_ARCH MATCHES "^(100|103)")
     add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=100)
 else()
     add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=0)
@@ -73,7 +129,8 @@ endif()
 add_compile_definitions(NDEBUG)
 # NVSHMEM_ENABLE_ALL_DEVICE_INLINING is the default for non-RDC host-only TUs:
 # nvshmem.h device helpers otherwise reference state gated on __CUDACC_RDC__.
-# RDC collective TUs explicitly undefine it when they need library device code.
+# Standalone RDC collective TUs explicitly undefine it when they need library
+# device code; SM100 forward keeps it enabled while resolving device state.
 add_compile_definitions(NVSHMEM_ENABLE_ALL_DEVICE_INLINING=ON)
 
 # ── NVSHMEM ──────────────────────────────────────────────────────────────────
@@ -150,7 +207,7 @@ endif()  # NOT LIGER_CUTE_TESTS_ONLY
 # C++ unit tests are opt-in (require gtest). Torch-free; they include the moe
 # device headers directly and need only CUTLASS (found above), CUDA, and gtest —
 # not the core library or NVSHMEM. Combine with LIGER_CUTE_TESTS_ONLY for a
-# standalone test build (e.g. the mlp1 SM100 rewrite on -DLIGER_CUTE_CUDA_ARCH=100a).
+# standalone test build (e.g. the mlp1 SM100 rewrite on -DLIGER_CUTE_CUDA_ARCH=100f).
 option(LIGER_CUTE_BUILD_TESTS "Build the C++ (gtest) unit tests" OFF)
 if(LIGER_CUTE_BUILD_TESTS)
     if(LIGER_CUTE_CORE_IMPORTED_DIR)

@@ -57,8 +57,9 @@
 namespace liger {
 namespace fused_scaled_linear_cross_entropy {
 
-// Hopper has at most 132 resident SMs/CTAs for this 1-CTA/SM kernel.
-inline constexpr int kMaxDxResidentCtas = 132;
+// Covers the 1-CTA/SM workspace requirement on Hopper and current
+// data-center Blackwell GPUs, including 148-SM B300.
+inline constexpr int kMaxDxResidentCtas = 160;
 inline constexpr int kDxCommWarpsPerChannel = 2;
 inline constexpr int kDxSyncPhases = 2;
 inline constexpr int kDxReadyPhase = 0;
@@ -73,18 +74,39 @@ inline constexpr int kDxRingStages = 4;
 static_assert(kDxRingStages >= 2,
 	"the dX staging ring needs at least a double buffer");
 
+// Staging is always a *per-CTA* M tile: SM90's config already names it kTileM,
+// while the SM100 config's kTileM is the joined paired-CTA tile and the CTA's
+// share is kCtaTileM. Both resolve to 128 rows, so the pooled staging capacity
+// (workspace.cu) is byte-identical for either architecture.
+template <typename GemmConfig, int Compute>
+struct DxStagingTileM {
+	static constexpr int value = GemmConfig::kTileM;
+};
+
+template <typename GemmConfig>
+struct DxStagingTileM<GemmConfig, 100> {
+	static constexpr int value = GemmConfig::kCtaTileM;
+};
+
 // Compile-time shape of the staging ring.
 //
 //   NumStages       ring depth per CTA; >= 2 or the producer of a group
 //                   would wait on the very slot it is about to fill.
 //   TilesPerReduce  contiguous N tiles coalesced into one reduction message.
+//
+// Compute selects the warp plan the ring is consumed by, not the layout: both
+// architectures use the same CTA-owned staging arena, the same slot stride and
+// the same signal prefixes, so `dx_slot_offset` / `dx_sync_offset` are shared
+// verbatim. SM90 pairs warps 1..2 on one slot; the fused SM100 backward gives
+// the whole message to warp 0 and keeps warp 1 for inter-host traffic.
 template <
 	typename GemmConfig,
 	int NumStages = 4,
 	int TilesPerReduce = 2,
 	int Compute = GemmConfig::kCompute>
 struct DxCommConfig {
-	static_assert(Compute == 90, "DxCommConfig requires Compute=90");
+	static_assert(Compute == 90 || Compute == 100,
+		"DxCommConfig requires Compute=90 or Compute=100");
 	static_assert(NumStages >= 2,
 		"the dX staging ring needs at least a double buffer; with one stage "
 		"the producer of group j would wait on group j itself");
@@ -98,27 +120,35 @@ struct DxCommConfig {
 	// knob kCoalesceTiles; keep the alias so both names name one value.
 	static constexpr int kCoalesceTiles = TilesPerReduce;
 
-	static constexpr int kTileM = GemmConfig::kTileM;
+	static constexpr int kTileM = DxStagingTileM<GemmConfig, Compute>::value;
 	static constexpr int kTileN = GemmConfig::kDxTileN;
 	static constexpr int kTileElements = kTileM * kTileN;
 	static constexpr int kGroupElements = kTileElements * kTilesPerReduce;
+	static_assert(kTileM == 128,
+		"the CTA-owned dX staging tile is 128 rows on both architectures");
 
-	static constexpr int kProducerWarp = 0;
-	static constexpr int kFirstCommWarp = 1;
-	static constexpr int kNumCommWarps = kDxCommWarpsPerChannel;
+	// SM90: warp 0 produces, warps 1..2 cooperatively reduce, warp 3 idles.
+	// SM100: warp 0 alone owns the whole message, warp 1 is remote-only, warp
+	// 2 is the TMA producer and warp 3 issues UMMA.
+	static constexpr int kProducerWarp = Compute == 90 ? 0 : 2;
+	static constexpr int kFirstCommWarp = Compute == 90 ? 1 : 0;
+	static constexpr int kNumCommWarps =
+		Compute == 90 ? kDxCommWarpsPerChannel : 1;
 	static constexpr int kLastCommWarp = kFirstCommWarp + kNumCommWarps - 1;
-	static constexpr int kReservedWarp = 3;
+	static constexpr int kReservedWarp = Compute == 90 ? 3 : -1;
 
-	static_assert(kLastCommWarp + 1 == kReservedWarp,
+	static_assert(Compute != 90 || kLastCommWarp + 1 == kReservedWarp,
 		"warps 1..2 cooperatively communicate and warp 3 stays reserved");
-	static_assert(backward_warp_role(kProducerWarp) ==
-		BackwardWarpRole::kProducer);
-	static_assert(backward_warp_role(kFirstCommWarp) ==
-		BackwardWarpRole::kDxCommunication);
-	static_assert(backward_warp_role(kLastCommWarp) ==
-		BackwardWarpRole::kDxCommunication);
-	static_assert(backward_warp_role(kReservedWarp) ==
-		BackwardWarpRole::kReserved);
+	static_assert(Compute != 90 ||
+		backward_warp_role(kProducerWarp) == BackwardWarpRole::kProducer);
+	static_assert(Compute != 90 ||
+		backward_warp_role(kFirstCommWarp) ==
+			BackwardWarpRole::kDxCommunication);
+	static_assert(Compute != 90 ||
+		backward_warp_role(kLastCommWarp) ==
+			BackwardWarpRole::kDxCommunication);
+	static_assert(Compute != 90 ||
+		backward_warp_role(kReservedWarp) == BackwardWarpRole::kReserved);
 };
 
 // FSLCE-specific symmetric ring storage. Backend mappings are supplied through
