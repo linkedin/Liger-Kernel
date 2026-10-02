@@ -3,7 +3,11 @@ import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
-from trl import ORPOConfig  # noqa: F401
+
+try:
+    from trl.experimental.orpo import ORPOConfig  # noqa: F401
+except ImportError:
+    from trl import ORPOConfig  # noqa: F401
 
 from liger_kernel.transformers.trainer import LigerORPOTrainer  # noqa: F401
 
