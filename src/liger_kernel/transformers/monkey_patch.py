@@ -3,6 +3,7 @@ import logging
 
 from functools import partial
 from types import MethodType
+from types import ModuleType
 from typing import Callable
 from typing import Optional
 
@@ -168,6 +169,13 @@ def _patch_layer_norm_module(module, eps=1e-6):
         _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
         _bind_method_to_module(module, "_get_name", lambda self: LigerLayerNorm.__name__)
+
+
+def _patch_layer_norm_class(modeling_module):
+    nn_namespace = ModuleType(modeling_module.nn.__name__)
+    nn_namespace.__dict__.update(modeling_module.nn.__dict__)
+    nn_namespace.LayerNorm = LigerLayerNorm
+    modeling_module.nn = nn_namespace
 
 
 def _patch_swiglu_module(module, liger_module):
@@ -598,7 +606,7 @@ def apply_liger_kernel_to_mllama(
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
     if layer_norm and model is None:
-        modeling_mllama.nn.LayerNorm = LigerLayerNorm
+        _patch_layer_norm_class(modeling_mllama)
     if rms_norm:
         modeling_mllama.MllamaTextRMSNorm = LigerRMSNorm
     if swiglu:
@@ -1344,7 +1352,7 @@ def apply_liger_kernel_to_gemma3(
     )
 
     if layer_norm and model is None:
-        modeling_siglip.nn.LayerNorm = LigerLayerNorm
+        _patch_layer_norm_class(modeling_siglip)
 
     apply_liger_kernel_to_gemma3_text(
         rope=rope, cross_entropy=False, fused_linear_cross_entropy=False, rms_norm=rms_norm, geglu=geglu
@@ -1683,7 +1691,7 @@ def apply_liger_kernel_to_paligemma(
 
     # The vision_tower is a SiglipVisionModel
     if layer_norm and model is None:
-        modeling_siglip.nn.LayerNorm = LigerLayerNorm
+        _patch_layer_norm_class(modeling_siglip)
 
     # SiglipMLP is standard FFN so LigerGEGLUMLP is not compatible
     # The multi_modal_projector is Linear, nothing to do
@@ -2860,12 +2868,12 @@ def apply_liger_kernel_to_internvl(
     from transformers.models.internvl.modeling_internvl import InternVLVisionModel
     from transformers.models.internvl.modeling_internvl import InternVLVisionRMSNorm
 
-    from liger_kernel.transformers.layer_norm import LigerLayerNorm
     from liger_kernel.transformers.model.internvl import lce_forward as internvl_lce_forward
     from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
     if layer_norm and model is None:
-        modeling_internvl.nn.LayerNorm = LigerLayerNorm
+        _patch_layer_norm_class(modeling_internvl)
+        modeling_internvl.NORM2FN["layer_norm"] = LigerLayerNorm
 
     if cross_entropy:
         logger.info("Apply liger cross entropy")
@@ -2974,7 +2982,7 @@ def apply_liger_kernel_to_smolvlm(
 
     # Patch LayerNorm for vision model if model is not provided (pre-initialization)
     if layer_norm and model is None:
-        modeling_smolvlm.nn.LayerNorm = LigerLayerNorm
+        _patch_layer_norm_class(modeling_smolvlm)
 
     if cross_entropy:
         logger.info("Apply liger cross entropy")
