@@ -32,6 +32,7 @@ from liger_kernel.ops.fused_linear_kl_div import MAX_FUSED_SIZE
 from liger_kernel.ops.fused_linear_kl_div import _kl_div_kernel
 from liger_kernel.ops.fused_linear_kl_div import get_num_warps
 from liger_kernel.ops.kl_div import LigerKLDivLossFunction
+from liger_kernel.ops.utils import device_context
 
 _TRITON_KLDIV_TOLERANCES = {
     torch.float16: {"atol_fwd": 5e-3, "atol_bwd": 5e-2, "rtol_fwd": 1e-3, "rtol_bwd": 1e-2},
@@ -128,21 +129,22 @@ def kl_loss_and_grad_triton(
     loss_rows = torch.zeros((chunk_n_rows,), dtype=torch.float32, device=logits_chunk.device)
     label_arg = shift_labels if has_label else torch.empty(1, device=logits_chunk.device)
 
-    _kl_div_kernel[(chunk_n_rows,)](
-        X_ptr=logits_chunk,
-        X_stride=logits_chunk.stride(-2),
-        Q_ptr=target_chunk,
-        Q_stride=target_chunk.stride(-2),
-        loss_ptr=loss_rows,
-        loss_stride=loss_rows.stride(0),
-        label_ptr=label_arg,  # dummy ptr if no label
-        ignore_index=ignore_index,
-        n_cols=V,
-        temperature=temperature,
-        eps=eps,
-        scale=scale,
-        BLOCK_SIZE=BLOCK_SIZE,
-        HAS_LABEL=has_label,
-        num_warps=get_num_warps(BLOCK_SIZE),
-    )
+    with device_context(logits_chunk.device):
+        _kl_div_kernel[(chunk_n_rows,)](
+            X_ptr=logits_chunk,
+            X_stride=logits_chunk.stride(-2),
+            Q_ptr=target_chunk,
+            Q_stride=target_chunk.stride(-2),
+            loss_ptr=loss_rows,
+            loss_stride=loss_rows.stride(0),
+            label_ptr=label_arg,  # dummy ptr if no label
+            ignore_index=ignore_index,
+            n_cols=V,
+            temperature=temperature,
+            eps=eps,
+            scale=scale,
+            BLOCK_SIZE=BLOCK_SIZE,
+            HAS_LABEL=has_label,
+            num_warps=get_num_warps(BLOCK_SIZE),
+        )
     return loss_rows, logits_chunk
