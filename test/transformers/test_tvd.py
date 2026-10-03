@@ -237,3 +237,25 @@ def test_correctness_with_ignore_index(B, T, V, reduction, dtype, atol, rtol, ig
     liger_tvd = LigerTVDLoss(reduction=reduction, ignore_index=ignore_index)
     torch_tvd = TorchTVDLoss(reduction=reduction, ignore_index=ignore_index)
     _test_correctness_with_ignore_index_once(liger_tvd, torch_tvd, ignore_index, B, T, V, dtype, atol, rtol, reduction)
+
+
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
+def test_torch_compile_matches_eager(reduction):
+    # inductor re-emits the kernel source; a signature default that names a module global must
+    # still resolve there, and the compiled call must match eager bit for bit
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    device = infer_device()
+    liger_tvd = LigerTVDLoss(reduction=reduction)
+    compiled = torch.compile(liger_tvd)
+    p = torch.randn(64, 1271, device=device).softmax(dim=-1)
+    q = torch.randn(64, 1271, device=device).softmax(dim=-1)
+    x1 = p.detach().clone().requires_grad_(True)
+    x2 = p.detach().clone().requires_grad_(True)
+    out1 = liger_tvd(x1, q)
+    out2 = compiled(x2, q)
+    assert torch.equal(out1, out2)
+    if reduction != "none":
+        out1.backward()
+        out2.backward()
+        assert torch.equal(x1.grad, x2.grad)
