@@ -45,9 +45,14 @@ def _jsd_kernel(
     if HAS_LABEL:
         label = tl.load(label_ptr)
         if label == ignore_index:
+            # Write both outputs explicitly rather than relying on the caller having zeroed
+            # `loss_ptr`: under `torch.compile` the buffer handed to us is a functionalization
+            # clone, so caller-side initialization is not guaranteed to reach it.
             for i in range(0, n_cols, BLOCK_SIZE):
                 offsets = i + tl.arange(0, BLOCK_SIZE)
-                tl.store(dX_ptr + offsets, 0.0, mask=offsets < n_cols)
+                mask = offsets < n_cols
+                tl.store(loss_ptr + offsets, 0.0, mask=mask)
+                tl.store(dX_ptr + offsets, 0.0, mask=mask)
             return
 
     for i in range(0, n_cols, BLOCK_SIZE):
