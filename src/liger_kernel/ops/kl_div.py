@@ -54,10 +54,10 @@ def _kldiv_kernel_forward(
     n_cols,  # int, number of columns in the input tensor
     eps,
     BLOCK_SIZE: tl.constexpr,
+    # no default: torch.compile re-emits this kernel's source in a module without the
+    # _REDUCTION_MODE_* globals, so a default naming one raises NameError. Always pass it.
+    reduction: tl.constexpr,
     log_target: tl.constexpr = False,
-    # a literal, not _REDUCTION_MODE_BATCHMEAN: torch.compile re-emits this kernel's source in a
-    # module without that global, so a default naming it raises NameError
-    reduction: tl.constexpr = 3,
 ):
     pid = tl.program_id(0).to(tl.int64)
     y_ptr += pid * y_stride

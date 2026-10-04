@@ -52,9 +52,9 @@ def _tv_distance_kernel(
     scale,  # pre-computed reduction scale for gradients (fused into kernel)
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
-    # a literal, not _REDUCTION_MODE_BATCHMEAN: torch.compile re-emits this kernel's source in a
-    # module without that global, so a default naming it raises NameError
-    reduction: tl.constexpr = 3,
+    # no default: torch.compile re-emits this kernel's source in a module without the
+    # _REDUCTION_MODE_* globals, so a default naming one raises NameError. Always pass it.
+    reduction: tl.constexpr,
 ):
     pid = tl.program_id(0).to(tl.int64)
     p_ptr += pid * p_stride
