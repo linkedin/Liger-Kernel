@@ -9,6 +9,13 @@ from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_resu
 from liger_kernel.transformers.model.output_classes import LigerGlm4vMoeCausalLMOutputWithPast
 
 
+def _get_hidden_size(config) -> int:
+    """Get hidden_size from Glm4vMoeConfig in a version-aware manner."""
+    if hasattr(config, "text_config") and hasattr(config.text_config, "hidden_size"):
+        return config.text_config.hidden_size
+    return config.hidden_size
+
+
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -133,7 +140,7 @@ def lce_forward(
             lm_head_weight=self.lm_head.weight,
             labels=labels,
             shift_labels=shift_labels,
-            hidden_size=self.config.hidden_size,
+            hidden_size=_get_hidden_size(self.config),
             **kwargs,
         )
         loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
