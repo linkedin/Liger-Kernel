@@ -27,6 +27,14 @@
 namespace liger_cute {
 namespace detail {
 
+inline void synchronize_symmetric_allocation() {
+  // NVSHMEM heap collectives must not overlap an earlier device collective on
+  // the same team, including when ranks reach lazy allocations at different times.
+  if (cudaError_t error = cudaDeviceSynchronize(); error != cudaSuccess) {
+    LIGER_FAIL_CUDA("sync before symmetric allocation failed: ", cudaGetErrorString(error));
+  }
+}
+
 // Caches device (cudaMalloc) and symmetric (nvshmem_malloc) allocations by
 // name, growing the device buffers and pinning the symmetric ones.
 class BufferPool {
@@ -86,6 +94,7 @@ class BufferPool {
                 " bytes but was allocated with ",
                 it == symm_bufs_.end() ? size_t{0} : it->second.bytes,
                 ". Configure max sizes upfront.");
+    synchronize_symmetric_allocation();
     void* ptr = nvshmem_malloc(bytes);
     LIGER_CHECK(ptr != nullptr, "BufferPool: nvshmem_malloc failed for '", name,
                 "' (", bytes, " bytes)");
@@ -185,6 +194,7 @@ class SymmetricMemoryStack {
     LIGER_CHECK(it != symm_sizes_.end(),
                 "SymmetricMemoryStack::put() called before set_size() for name: ", name);
 
+    synchronize_symmetric_allocation();
     void* ptr = nvshmem_malloc(it->second);
     LIGER_CHECK(ptr != nullptr, "SymmetricMemoryStack: nvshmem_malloc failed for '",
                 name, "' (", it->second, " bytes)");
@@ -193,6 +203,35 @@ class SymmetricMemoryStack {
     cudaMemset(ptr, 0, it->second);
     symm_stack_[name].push(ptr);
     return ptr;
+  }
+
+  // Reserve retained tensors at a WORLD-collective setup boundary, so subgroup
+  // execution never needs to allocate collectively on unrelated PEs.
+  void reserve(const std::string& name, std::size_t size, int depth) {
+    set_size(name, size);
+    LIGER_CHECK(depth > 0, "SymmetricMemoryStack: depth must be positive");
+    auto& live = symm_stack_[name];
+    auto& free = symm_free_stack_[name];
+    while (live.size() + free.size() < static_cast<std::size_t>(depth)) {
+      synchronize_symmetric_allocation();
+      void* ptr = nvshmem_malloc(symm_sizes_.at(name));
+      LIGER_CHECK(ptr != nullptr, "SymmetricMemoryStack: reserve failed for '", name, "'");
+      free.push(ptr);
+      if (cudaError_t error = cudaMemset(ptr, 0, symm_sizes_.at(name)); error != cudaSuccess) {
+        LIGER_FAIL_CUDA("SymmetricMemoryStack: initialization failed for '", name,
+                       "': ", cudaGetErrorString(error));
+      }
+    }
+  }
+
+  bool available(const std::string& name) const {
+    auto it = symm_free_stack_.find(name);
+    return it != symm_free_stack_.end() && !it->second.empty();
+  }
+
+  bool active(const std::string& name) const {
+    auto it = symm_stack_.find(name);
+    return it != symm_stack_.end() && !it->second.empty();
   }
 
   // Returns the pointer at the top of the live stack for `name` without removing

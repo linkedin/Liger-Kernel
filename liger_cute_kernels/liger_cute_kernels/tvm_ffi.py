@@ -15,6 +15,7 @@ import torch
 
 _MOD = None
 _NVSHMEM_LIBS_LOADED = False
+_NVSHMEM_HOST = None
 _ARCH_CORE_NAMES = {
     9: "libliger_cute_kernels_sm90a.so",
     10: "libliger_cute_kernels_sm100f.so",
@@ -78,7 +79,7 @@ def _nvshmem_library_dirs(pkg_dir: Path) -> list[Path]:
 
 
 def _load_nvshmem_libraries(pkg_dir: Path) -> None:
-    global _NVSHMEM_LIBS_LOADED
+    global _NVSHMEM_LIBS_LOADED, _NVSHMEM_HOST
     if _NVSHMEM_LIBS_LOADED:
         return
     directories = _nvshmem_library_dirs(pkg_dir)
@@ -92,12 +93,36 @@ def _load_nvshmem_libraries(pkg_dir: Path) -> None:
         None,
     )
     if host is None:
-        raise ImportError("NVSHMEM runtime not found; install nvidia-nvshmem-cu12==3.6.5")
-    ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
+        raise ImportError(
+            "NVSHMEM runtime not found; install 'liger-cute-kernels[cu12]' or "
+            "'liger-cute-kernels[cu13]' to match the CUDA version used to build the native wheel"
+        )
+    _NVSHMEM_HOST = ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
     uid_bootstrap = host.parent / "nvshmem_bootstrap_uid.so.3"
     if uid_bootstrap.is_file():
         ctypes.CDLL(str(uid_bootstrap), mode=ctypes.RTLD_GLOBAL)
     _NVSHMEM_LIBS_LOADED = True
+
+
+def nvshmem_is_initialized() -> bool:
+    """Query host-runtime status without initializing NVSHMEM.
+
+    Inspect global symbols first to detect an already active third-party
+    runtime before loading LCK's selected NVSHMEM dependency.
+    """
+    status = getattr(ctypes.CDLL(None), "nvshmemx_init_status", None)
+    if status is not None:
+        status.argtypes = []
+        status.restype = ctypes.c_int
+        if status() != 0:  # NVSHMEM_STATUS_NOT_INITIALIZED
+            return True
+    _load_nvshmem_libraries(Path(__file__).resolve().parent)
+    status = getattr(_NVSHMEM_HOST, "nvshmemx_init_status", None)
+    if status is None:
+        raise RuntimeError("NVSHMEM host runtime does not expose nvshmemx_init_status")
+    status.argtypes = []
+    status.restype = ctypes.c_int
+    return status() != 0
 
 
 def _int64_out() -> torch.Tensor:
@@ -204,13 +229,37 @@ def moe_configure_symmetric(
     )
 
 
-def moe_pop_fwd() -> None:
-    _load_module().moe_pop_fwd()
+def moe_configure_context(
+    max_tokens: int,
+    hidden_dim: int,
+    max_num_experts: int,
+    max_top_k: int,
+    num_hosts: int,
+    gpus_per_host: int,
+    max_inflight: int,
+    team_handle: int,
+    context_slot: int,
+) -> None:
+    _load_module().moe_configure_context(
+        max_tokens,
+        hidden_dim,
+        max_num_experts,
+        max_top_k,
+        num_hosts,
+        gpus_per_host,
+        max_inflight,
+        team_handle,
+        context_slot,
+    )
 
 
-def _moe_symm_config() -> torch.Tensor:
+def moe_pop_fwd(team_handle: int = -1) -> None:
+    _load_module().moe_pop_fwd(int(team_handle))
+
+
+def _moe_symm_config(team_handle: int = -1) -> torch.Tensor:
     out = torch.empty(7, dtype=torch.int32, device="cpu")
-    _load_module().moe_get_symm_config(out)
+    _load_module().moe_get_symm_config(out, int(team_handle))
     if int(out[6].item()) == 0:
         raise RuntimeError("liger_cute: call moe_configure_symmetric before moe_fused_fwd_bf16")
     return out
@@ -227,10 +276,13 @@ def moe_fused_fwd_bf16(
     top_k: int,
     team_handle: int,
 ):
-    cfg = _moe_symm_config()
+    from .configuration import _validate_moe_call
+
+    _validate_moe_call(X.shape[0], X.shape[1], num_experts, top_k, team_handle, X.device)
+    cfg = _moe_symm_config(team_handle)
     num_tokens, hidden_dim = X.shape
     max_total_slots = int(cfg[0].item())
-    max_m_tiles = (max_total_slots + 127) // 128
+    max_m_tiles = (max_total_slots + 63) // 64
     Y = torch.empty((num_tokens, hidden_dim), dtype=torch.bfloat16, device=X.device)
     token_expert_slots = torch.empty((max_total_slots,), dtype=torch.int32, device=X.device)
     tile_expert_ids = torch.empty((max_m_tiles,), dtype=torch.int32, device=X.device)
@@ -272,6 +324,9 @@ def moe_fused_bwd_bf16(
     fwd_tile_m: int,
 ):
     del y_buf_meta, expert_offsets_meta, fwd_tile_m
+    from .configuration import _validate_moe_call
+
+    _validate_moe_call(dY.shape[0], dY.shape[1], num_experts, top_k, team_handle, dY.device)
     dX = torch.empty_like(dY)
     dB = torch.empty_like(all_B)
     dC = torch.empty_like(all_C)
@@ -302,16 +357,18 @@ def moe_fused_bwd_bf16(
 def fused_linear_scaled_cross_entropy_configure_forward(
     max_tokens: int,
     max_local_vocab: int,
+    team_handle: int = -1,
 ) -> None:
     """Reserve reusable forward workspace for the maximum local problem.
 
-    This is a collective configuration call across the NVSHMEM team used by
-    subsequent forward launches. Capacities are immutable until the shared
-    buffer pool is cleared, so every rank must pass identical values.
+    Pass ``team_handle`` when multiple contexts are prepared. The default is
+    only valid before context setup or when exactly one context is prepared.
+    Capacities are immutable until the shared buffer pool is cleared.
     """
     _load_module().fused_linear_scaled_cross_entropy_configure_forward(
         int(max_tokens),
         int(max_local_vocab),
+        int(team_handle),
     )
 
 
@@ -324,17 +381,47 @@ def fused_linear_scaled_cross_entropy_configure_backward(
 ) -> None:
     """Reserve backward/NVLS/remote-ring workspace for an NVSHMEM TP team.
 
-    All PEs in ``team_handle`` must call this with identical maxima before the
-    first forward or backward launch. ``max_tiles_per_reduce`` must cover every
-    later ``tiles_per_reduce`` request. Multi-host teams must have uniform
-    per-host membership and host-major team-rank ordering.
+    Initial setup is collective across NVSHMEM WORLD, with identical maxima.
+    Later calls only validate capacities for an already prepared team. Use
+    ``configure_context`` for additional teams at a coordinated setup boundary.
+    ``max_tiles_per_reduce`` must cover every later request. Multi-host teams
+    must have uniform per-host membership and host-major team-rank ordering.
     """
+    from .configuration import _validate_flsce_call
+
+    _validate_flsce_call(max_tokens, max_hidden, max_local_vocab, max_tiles_per_reduce, team_handle)
     _load_module().fused_linear_scaled_cross_entropy_configure_backward(
         int(max_tokens),
         int(max_hidden),
         int(max_local_vocab),
         int(max_tiles_per_reduce),
         int(team_handle),
+    )
+
+
+def fused_linear_scaled_cross_entropy_configure_context(
+    max_tokens: int,
+    max_hidden: int,
+    max_local_vocab: int,
+    max_tiles_per_reduce: int,
+    team_handle: int,
+    context_slot: int,
+) -> None:
+    """Collectively prepare a TP context; every bootstrap PE uses the same slot.
+
+    The first reservation fixes process-wide capacities. Cache-hit PEs must
+    still participate when other PEs prepare new groups in this slot.
+    """
+    from .configuration import _validate_flsce_call
+
+    _validate_flsce_call(max_tokens, max_hidden, max_local_vocab, max_tiles_per_reduce, team_handle)
+    _load_module().fused_linear_scaled_cross_entropy_configure_context(
+        int(max_tokens),
+        int(max_hidden),
+        int(max_local_vocab),
+        int(max_tiles_per_reduce),
+        int(team_handle),
+        int(context_slot),
     )
 
 
@@ -376,23 +463,25 @@ def fused_linear_scaled_cross_entropy_backward_workspace_bytes(
 
 def fused_linear_scaled_cross_entropy_forward_diagnostics(
     device: torch.device | str,
+    team_handle: int = -1,
 ) -> torch.Tensor:
-    """Return the device timestamp/counter block from the latest forward."""
+    """Return forward diagnostics for a team (implicit only with one context)."""
     module = _load_module()
     entries = int(module.fused_linear_scaled_cross_entropy_forward_diagnostic_entries())
     output = torch.empty(entries, dtype=torch.int64, device=device)
-    module.fused_linear_scaled_cross_entropy_forward_diagnostics(output)
+    module.fused_linear_scaled_cross_entropy_forward_diagnostics(output, int(team_handle))
     return output
 
 
 def fused_linear_scaled_cross_entropy_backward_diagnostics(
     device: torch.device | str,
+    team_handle: int = -1,
 ) -> torch.Tensor:
-    """Return the device timestamp/counter block from the latest backward."""
+    """Return backward diagnostics for a team (implicit only with one context)."""
     module = _load_module()
     entries = int(module.fused_linear_scaled_cross_entropy_backward_diagnostic_entries())
     output = torch.empty(entries, dtype=torch.int64, device=device)
-    module.fused_linear_scaled_cross_entropy_backward_diagnostics(output)
+    module.fused_linear_scaled_cross_entropy_backward_diagnostics(output, int(team_handle))
     return output
 
 

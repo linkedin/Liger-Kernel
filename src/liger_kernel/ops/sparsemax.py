@@ -20,7 +20,7 @@ def _sparsemax_forward_kernel(
     BLOCK_SIZE: tl.constexpr,
     num_warps: tl.constexpr,
 ):
-    pid_row = tl.program_id(0)
+    pid_row = tl.program_id(0).to(tl.int64)
     ptr_x_data_row = x_ptr + pid_row * x_stride_row
     ptr_sorted_x_data_row = sorted_x_ptr + pid_row * sorted_x_stride_row
     ptr_output_row = o_ptr + pid_row * o_stride_row
@@ -72,7 +72,7 @@ def _sparsemax_forward_kernel(
 def _sparsemax_backward_kernel(
     o_ptr, go_ptr, gi_ptr, stride, n_cols, BLOCK_SIZE: tl.constexpr, num_warps: tl.constexpr
 ):
-    row = tl.program_id(0)
+    row = tl.program_id(0).to(tl.int64)
     o_row = o_ptr + row * stride
     go_row = go_ptr + row * stride
     gi_row = gi_ptr + row * stride
