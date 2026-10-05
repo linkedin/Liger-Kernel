@@ -9,8 +9,6 @@
 #include <device_host_transport/nvshmem_common_ibgda.h>
 #include <non_abi/nvshmem_version.h>
 
-#include "liger_cute/detail/comm_schedule.cuh"
-
 #ifndef LIGER_CUTE_SM90_NONRDC_BUILD_FINGERPRINT
 #error "LIGER_CUTE_SM90_NONRDC_BUILD_FINGERPRINT must be defined"
 #endif
@@ -35,15 +33,6 @@ __device__ __constant__ int liger_cute_sm90_nonrdc_transport_mode =
 #include <device/nvshmemx_defines.h>
 #include <device/nvshmemx_coll_defines.cuh>
 #include <non_abi/device/pt-to-pt/transfer_device.cuh>
-
-namespace liger_cute {
-namespace detail {
-
-__device__ __constant__ int g_dest_table[kMaxPEs];
-__device__ __constant__ int g_rank_table[kMaxPEs];
-
-} // namespace detail
-} // namespace liger_cute
 
 extern "C" __global__ __launch_bounds__(384, 1)
 void liger_cute_sm90_nonrdc_setmaxnreg_probe() {

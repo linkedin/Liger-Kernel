@@ -255,6 +255,21 @@ void configure_tp_reduce(
 	const TpReduceBuffers& buffers);
 
 TpReduceTopology query_tp_reduce_topology(std::int64_t parent_team);
+
+// Host-side selection is scoped to one call. Device launches capture their
+// selected views, so a later call cannot change an already queued launch.
+class TpReduceContextScope {
+ public:
+	explicit TpReduceContextScope(std::int64_t parent_team);
+	~TpReduceContextScope();
+	TpReduceContextScope(const TpReduceContextScope&) = delete;
+	TpReduceContextScope& operator=(const TpReduceContextScope&) = delete;
+
+ private:
+	std::int64_t previous_;
+};
+
+std::int64_t tp_reduce_team_handle();
 TpReducePlan tp_reduce_plan();
 
 void begin_tp_reduce(
@@ -263,6 +278,7 @@ void begin_tp_reduce(
 void synchronize_tp_reduce(cudaStream_t stream);
 void end_tp_reduce(cudaStream_t stream);
 void reset_tp_reduce();
+void release_tp_reduce(std::int64_t parent_team);
 
 // Separate RDC follow-up stage for the packed shard produced by the local
 // reduction. This is intentionally outside the hot non-RDC WGMMA kernel.

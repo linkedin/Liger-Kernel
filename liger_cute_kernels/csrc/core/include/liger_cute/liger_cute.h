@@ -7,7 +7,7 @@
 // CUTLASS/CuTe usage lives entirely behind it in the .cu/.cpp translation units.
 //
 // NOTE: harness stage — the status type + shared error string live here; the
-// MoE entry points are in moe.h and the NVSHMEM bootstrap/team/comm-schedule
+// MoE entry points are in moe.h and the NVSHMEM bootstrap/team/pool
 // entry points in nvshmem.h, both behind this same boundary.
 #pragma once
 
