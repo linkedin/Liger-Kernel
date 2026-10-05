@@ -1558,6 +1558,41 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
 
 
 @pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
+def test_apply_liger_kernel_to_llama4_class_patch_with_dense_layers(monkeypatch):
+    # Llama4 checkpoints that interleave dense and MoE layers (e.g. Maverick, interleave_moe_layer_step=2)
+    # build their dense feed-forward as ``Llama4TextMLP(config, intermediate_size=config.intermediate_size_mlp)``.
+    # The class-level patch (used before model init, e.g. by AutoLigerKernelForCausalLM) must keep that working.
+    from transformers.models.llama4 import modeling_llama4
+    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+
+    # Restore the module-level symbols swapped by the class-level patch once the test is done
+    monkeypatch.setattr(modeling_llama4, "Llama4TextMLP", modeling_llama4.Llama4TextMLP)
+
+    monkey_patch.apply_liger_kernel_to_llama4(
+        rope=False, rms_norm=False, swiglu=True, fused_linear_cross_entropy=False, layer_norm=False
+    )
+
+    config = transformers.models.llama4.configuration_llama4.Llama4TextConfig(
+        hidden_size=32,
+        intermediate_size=64,
+        intermediate_size_mlp=128,
+        hidden_act="silu",
+        num_hidden_layers=2,
+        moe_layers=[1],
+    )
+    model = Llama4ForCausalLM._from_config(config)
+
+    dense_mlp = model.model.layers[0].feed_forward
+    assert isinstance(dense_mlp, LigerSwiGLUMLP)
+    assert dense_mlp.gate_proj.out_features == config.intermediate_size_mlp
+    assert dense_mlp.down_proj.in_features == config.intermediate_size_mlp
+
+    shared_expert = model.model.layers[1].feed_forward.shared_expert
+    assert isinstance(shared_expert, LigerSwiGLUMLP)
+    assert shared_expert.gate_proj.out_features == config.intermediate_size
+
+
+@pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
 def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.llama4.modeling_llama4"):
