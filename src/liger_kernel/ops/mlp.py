@@ -22,7 +22,11 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from triton.tools.tensor_descriptor import TensorDescriptor
+# Optional: not all Triton builds ship triton.tools.tensor_descriptor.
+try:
+    from triton.tools.tensor_descriptor import TensorDescriptor
+except ModuleNotFoundError:
+    TensorDescriptor = None
 
 
 @triton.jit
@@ -363,6 +367,15 @@ def _swiglu_kernel_backward_dI(
 
     # Compute dI = dG @ gate_weight + dU @ up_weight
     # [B, S, hidden_dim] @ [hidden_dim, dim] + ... @ ... = [B, S, dim]
+    #
+    # The two matmuls are accumulated in *separate* sequential K-loops rather
+    # than interleaved into one accumulator inside a single loop body. On
+    # Blackwell (SM100 / tcgen05) issuing two `tl.dot(..., acc=acc)` calls that
+    # target the same accumulator within one iteration miscompiles: it produces
+    # ~45% wrong results for bf16/fp16 and pipelines all four operands at once,
+    # which overflows shared memory (OOM) for fp32. Splitting into two loops
+    # keeps the result correct and pipelines only two operands at a time, so the
+    # BLOCK_K=64 configs fit inside the SM100 shared-memory budget.
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     for k in range(0, hidden_dim, BLOCK_K):
         dG_block = desc_dG.load([b, M_start, k])  # [1, BLOCK_M, BLOCK_K]
@@ -370,6 +383,7 @@ def _swiglu_kernel_backward_dI(
         gate_weight_block = desc_Wg.load([k, N_start])  # [BLOCK_K, BLOCK_N]
         acc = tl.dot(dG_block, gate_weight_block, acc=acc)
 
+    for k in range(0, hidden_dim, BLOCK_K):
         dU_block = desc_dU.load([b, M_start, k])  # [1, BLOCK_M, BLOCK_K]
         dU_block = tl.reshape(dU_block, [BLOCK_M, BLOCK_K])  # [BLOCK_M, BLOCK_K]
         up_weight_block = desc_Wu.load([k, N_start])  # [BLOCK_K, BLOCK_N]
@@ -631,6 +645,10 @@ class LigerMLPFunction(torch.autograd.Function):
         gate_multiplier=1.0,
         down_multiplier=1.0,
     ):
+        if TensorDescriptor is None:
+            raise RuntimeError(
+                "LigerMLP requires triton.tools.tensor_descriptor, which is not available in this Triton build."
+            )
         assert input.is_cuda and gate_weight.is_cuda and up_weight.is_cuda and down_weight.is_cuda
         input, gate_weight, up_weight, down_weight = _check_inputs(input, gate_weight, up_weight, down_weight)
         # Note:

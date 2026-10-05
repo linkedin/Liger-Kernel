@@ -1,9 +1,8 @@
 """Fused expert-parallel MoE autograd op for the ``cute`` backend.
 
 Thin autograd wrapper around the native fused MoE fwd/bwd kernels shipped by the
-separate ``liger_cute_kernels`` (lck) wheel. Ported from LigerCommKernels'
-``liger_comm_kernels/moe_ops.py``; the kernel ABI is identical, only the package
-plumbing differs:
+separate ``liger_cute_kernels`` package. Adapted from the LigerCuteKernels MoE
+frontend; the kernel ABI is identical, only the package plumbing differs:
 
   - the TVM FFI facade is reached through the parent package's
     ``_load_tvm_ffi()`` (``liger_cute_kernels.tvm_ffi``), and
@@ -26,7 +25,7 @@ if TYPE_CHECKING:
 __all__ = ["LigerExpertParallelFusedMoEFunction", "moe_fused"]
 
 # Resolve the TVM FFI facade once at import. cute/ops is imported only when the
-# "cute" implementation is actively selected, so a missing lck wheel surfaces as
+# "cute" implementation is actively selected, so a missing native package surfaces as
 # a clear ImportError to the user who asked for it (see _load_tvm_ffi).
 tvm_ffi = _load_tvm_ffi()
 
@@ -158,7 +157,7 @@ class LigerExpertParallelFusedMoEFunction(torch.autograd.Function):
             ctx.team_handle,
             ctx.fwd_tile_m,
         )
-        tvm_ffi.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd(ctx.team_handle)
 
         # Argument order matches forward: X, expert_indices, expert_weights,
         # all_B, all_C, all_A, num_experts, top_k, pg.
@@ -217,7 +216,7 @@ def moe_fused(
             top_k,
             team_handle,
         )
-        tvm_ffi.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd(team_handle)
         return Y
 
     return LigerExpertParallelFusedMoEFunction.apply(

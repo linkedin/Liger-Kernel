@@ -5,9 +5,9 @@ Two layers of coverage:
   * ``test_cute_registration`` — pure-Python, always runs. Asserts the ``cute``
     implementation self-registers as an *opt-in* CUDA backend (no
     ``default_devices``, selected only via ``LIGER_KERNEL_IMPL=cute``). This
-    needs neither a GPU nor the lck wheel, so it gives signal on plain CI too.
+    needs neither a GPU nor the native package, so it gives signal on plain CI too.
 
-  * ``test_moe_fused_autograd`` — the functional test, **skipped unless the lck
+  * ``test_moe_fused_autograd`` — the functional test, **skipped unless the native
     wheel is installed and >= 2 CUDA devices are present**. It drives the
     autograd wrapper ``liger_kernel.ops.cute.ops.moe_fused`` (not the raw TVM FFI
     bindings) through both paths: the no-grad fast path (which must pop the
@@ -43,7 +43,7 @@ def test_cute_registration():
 
     Importing ``liger_kernel.ops`` runs impl discovery, which imports every
     backend's ``__init__`` (registration is metadata-only and must not need the
-    lck wheel). ``cute`` declares no ``default_devices``, so it is never
+    native package). ``cute`` declares no ``default_devices``, so it is never
     auto-applied — only an explicit ``LIGER_KERNEL_IMPL=cute`` selects it.
     """
     import liger_kernel.ops  # noqa: F401  -- triggers _discover_impls()
@@ -59,7 +59,7 @@ def test_cute_registration():
     assert select_impl("cuda", explicit="cute") is info
 
 
-# ── functional autograd test (needs the lck wheel + GPUs) ─────────────────────
+# ── functional autograd test (needs the native package + GPUs) ────────────────
 
 try:
     import torch
@@ -69,14 +69,14 @@ try:
 
     from liger_kernel.ops import cute as _cute
 
-    _LCK_AVAILABLE = _cute.is_available()
+    _NATIVE_AVAILABLE = _cute.is_available()
 except ImportError:  # torch missing, or liger_kernel import failure
     torch = None
     dist = None
     mp = None
     Fnn = None
     _cute = None
-    _LCK_AVAILABLE = False
+    _NATIVE_AVAILABLE = False
 
 _NDEV = torch.cuda.device_count() if (torch is not None and torch.cuda.is_available()) else 0
 
@@ -278,7 +278,7 @@ def _autograd_worker(rank, world_size, init_file):
 
         # Backward sanity: every grad-requiring input gets a finite grad of the
         # right shape. Numerical bwd correctness is covered by the kernel-level
-        # CUDA-graph fwd+bwd test in the lck package.
+        # CUDA-graph fwd+bwd test in the native package.
         Y.float().sum().backward()
         for name, t in [("X", X), ("all_B", all_B), ("all_C", all_C), ("all_A", all_A)]:
             assert t.grad is not None, f"{name}.grad is None after backward"
@@ -296,7 +296,7 @@ def _autograd_worker(rank, world_size, init_file):
         raise
 
 
-@pytest.mark.skipif(not _LCK_AVAILABLE, reason="liger_cute_kernels (lck wheel) not installed")
+@pytest.mark.skipif(not _NATIVE_AVAILABLE, reason="liger_cute_kernels native package not installed")
 @pytest.mark.skipif(_NDEV < 2, reason="needs >=2 CUDA devices")
 def test_moe_fused_autograd():
     """``moe_fused`` runs its no-grad and grad paths and matches the reference.
@@ -309,7 +309,7 @@ def test_moe_fused_autograd():
     import shutil
 
     world_size = _world_size()
-    rdzv = tempfile.mkdtemp(prefix="lck_autograd_")
+    rdzv = tempfile.mkdtemp(prefix="liger_cute_autograd_")
     init_file = os.path.join(rdzv, "store")
     try:
         mp.spawn(_autograd_worker, args=(world_size, init_file), nprocs=world_size, join=True)

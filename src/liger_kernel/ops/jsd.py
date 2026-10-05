@@ -4,6 +4,11 @@ import torch
 import triton
 import triton.language as tl
 
+# Trigger declaration of the ``jsd_loss_and_grad`` op location so the
+# dispatcher knows where to discover the Triton + CuTe DSL impls.
+import liger_kernel.functional  # noqa: F401
+
+from liger_kernel.backends import dispatch
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.utils import infer_device
 
@@ -64,24 +69,21 @@ def _jsd_kernel(
             loss = X_prob * (X - Y)
             dX = loss + X_prob
         else:
-            max_val = tl.maximum(tl.max(X, axis=0), tl.max(Y, axis=0))
+            max_val = tl.maximum(X, Y)
             X_shifted = X - max_val
             Y_shifted = Y - max_val
 
-            # Pre-compute exp(max_val) since it's used twice
-            exp_max = tl.exp(max_val)
+            # Compute log(M) before rescaling to probability space. Computing M
+            # directly can underflow to zero for low-probability vocabulary blocks.
+            M_shifted = beta * tl.exp(Y_shifted) + (1 - beta) * tl.exp(X_shifted)
+            log_M = max_val + tl.log(M_shifted)
 
-            # Compute exp terms with compensation
-            Q = tl.exp(X_shifted) * exp_max  # = exp(X)
-            P = tl.exp(Y_shifted) * exp_max  # = exp(Y)
-
-            # Pre-compute common terms
+            Q = tl.exp(X)
+            P = tl.exp(Y)
             beta_P = beta * P
             one_minus_beta_Q = (1 - beta) * Q
-            M = beta_P + one_minus_beta_Q
-            log_M = tl.log(M)  # No need to compensate as M is already in original scale
 
-            loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
+            loss = beta_P * (Y - log_M) + one_minus_beta_Q * (X - log_M)
             dX = one_minus_beta_Q * (X - log_M)
 
         # Pre-compute scaling factor
@@ -96,38 +98,35 @@ def _jsd_kernel(
 MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536
 
 
-def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
+def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label, jsd_impl=None, jsd_mode=None):
     BT, V = _input.shape
-    n_rows = BT
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
-    # non reduction loss
-    loss = torch.zeros(_input.shape, dtype=torch.float32, device=_input.device)
-    dX = torch.empty_like(_input)
 
     if has_label:
         n_non_ignore = (shift_labels != ignore_index).sum().item()
     else:
         n_non_ignore = BT
 
-    _jsd_kernel[(n_rows,)](
-        X_ptr=_input,  # input in logspace, X = log Q
-        X_stride=_input.stride(-2),
-        Y_ptr=target,  # ground truth in logspace, Y = log P
-        Y_stride=target.stride(-2),
-        loss_ptr=loss,
-        loss_stride=loss.stride(-2),
-        dX_ptr=dX,
-        dX_stride=dX.stride(-2),
-        label_ptr=(shift_labels if has_label else torch.empty(1, device=_input.device)),  # dummy ptr if no label
-        beta=beta,
-        n_non_ignore=n_non_ignore,
-        ignore_index=ignore_index,
-        n_cols=V,
-        BLOCK_SIZE=BLOCK_SIZE,
-        HAS_LABEL=has_label,
+    # Compute per-element loss + dx through the dispatcher so CuTe DSL is
+    # picked up on Hopper+ (preference_rank=10 < Triton's 50). The primitive
+    # writes dx in-place into the first argument, so clone _input to preserve
+    # the original tensor for the autograd context.
+    dX = _input.clone()
+    jsd_args = (
+        dX,
+        target,
+        shift_labels,
+        float(beta),
+        int(ignore_index),
+        float(n_non_ignore),
+    )
+    loss_tile, dX = dispatch(
+        "jsd_loss_and_grad",
+        *jsd_args,
+        impl=jsd_impl,
+        mode=jsd_mode,
     )
 
-    loss = torch.sum(loss)
+    loss = torch.sum(loss_tile)
     return loss.to(_input.dtype), dX
 
 
@@ -163,6 +162,8 @@ class LigerJSDFunction(torch.autograd.Function):
         shift_labels: Optional[torch.Tensor] = None,
         beta: float = 0.5,
         ignore_index: int = -100,
+        jsd_impl=None,
+        jsd_mode=None,
     ) -> torch.Tensor:
         """
         Args:
@@ -183,7 +184,16 @@ class LigerJSDFunction(torch.autograd.Function):
             shift_labels = shift_labels.contiguous()
             has_label = True
 
-        loss, dX = jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label)
+        loss, dX = jsd_forward(
+            _input,
+            target,
+            shift_labels,
+            beta,
+            ignore_index,
+            has_label,
+            jsd_impl,
+            jsd_mode,
+        )
         ctx.save_for_backward(dX)
         return loss
 
@@ -194,6 +204,8 @@ class LigerJSDFunction(torch.autograd.Function):
         dX = jsd_backward(dX, grad_output)
         return (
             dX,
+            None,
+            None,
             None,
             None,
             None,

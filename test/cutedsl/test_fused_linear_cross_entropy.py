@@ -97,11 +97,30 @@ def _apply(
 
 
 def _run_or_skip(thunk):
-    """Run ``thunk``; if the cutedsl branch is still a Stage-1 stub, SKIP instead of fail."""
+    """Run ``thunk``; SKIP (don't fail) when the native cutedsl path can't run on this GPU.
+
+    Two conditions self-skip instead of failing:
+      * a Stage-1 ``NotImplementedError`` stub, and
+      * the SM100-only hardware gate — the native FLCE kernel raises a ``RuntimeError``
+        mentioning SM100 on non-SM100 GPUs (e.g. the H100/SM90 daily-CI half, which must
+        self-skip this SM100 suite per the nvi-ci.yml arch split).
+
+    Note: this file targets the SM100 *native* op ``LigerFusedLinearCrossEntropyFunction``,
+    whose full feature set (fp16, bias, label smoothing, z-loss, softcap, ce-weight, token
+    scaling, arbitrary shapes) the separate Hopper op
+    ``LigerFusedLinearCrossEntropySM90Function`` deliberately rejects — it is a narrow
+    BF16/mean-sum/aligned-shape MVP. SM90 FLCE has its own coverage in
+    ``test_fused_linear_cross_entropy_sm90.py`` (which runs on the H100/SM90 CI half), so
+    these skips do not leave SM90 FLCE untested.
+    """
     try:
         return thunk()
     except NotImplementedError as exc:
         pytest.skip(f"cutedsl FLCE branch not implemented yet: {exc}")
+    except RuntimeError as exc:
+        if "SM100" in str(exc):
+            pytest.skip(f"native cutedsl FLCE requires SM100 hardware: {exc}")
+        raise
 
 
 class _Masters:
@@ -656,13 +675,15 @@ def test_flce_native_z_loss_preserves_input_dtype(dtype):
     x = masters.input.to(dtype).requires_grad_(True)
     w = masters.weight.to(dtype).requires_grad_(True)
     target = _make_target(BT, V, ignore_frac=0.25)
-    _, z_loss, *_ = _apply(
-        _cutedsl_flce(),
-        x,
-        w,
-        target,
-        lse_square_scale=1e-4,
-        return_z_loss=True,
+    _, z_loss, *_ = _run_or_skip(
+        lambda: _apply(
+            _cutedsl_flce(),
+            x,
+            w,
+            target,
+            lse_square_scale=1e-4,
+            return_z_loss=True,
+        )
     )
     assert z_loss.dtype == dtype
 
@@ -1059,7 +1080,7 @@ def test_flce_independent_requires_grad_matches_torch(trainable):
         leaf = {"input": x, "weight": w, "bias": b}[trainable]
         return loss.detach().float(), leaf.grad.detach().float()
 
-    out = one_native()
+    out = _run_or_skip(one_native)
     ref = one_torch()
     _assert_close(out[0], ref[0], 5e-3, 5e-2, "independent requires_grad loss")
     _assert_close(out[1], ref[1], 5e-3, 5e-2, f"independent grad_{trainable}")
@@ -1069,7 +1090,7 @@ def test_flce_independent_requires_grad_matches_torch(trainable):
 def test_flce_all_ignored_targets_are_valid():
     _input, weight, target = _basic_args(BT=16, V=256, dtype=torch.bfloat16)
     target.fill_(-100)
-    out = _apply(_cutedsl_flce(), _input, weight, target, reduction="mean")[0]
+    out = _run_or_skip(lambda: _apply(_cutedsl_flce(), _input, weight, target, reduction="mean")[0])
     assert out.item() == 0.0
 
 
@@ -1101,7 +1122,7 @@ def test_flce_invalid_inputs_raise(mutation, error):
         _apply(_cutedsl_flce(), _input, weight, target)
 
 
-@cuda_required
+@sm100_required
 def test_flce_native_support_requires_exact_sm100(monkeypatch):
     import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
 
