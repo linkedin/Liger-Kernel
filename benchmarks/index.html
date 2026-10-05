@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+  <meta charset="UTF-8">
+  <title>Liger Benchmark Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-theme="light">
+  <div class="container">
+    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Theme">☀️</button>
+    <button class="theme-toggle" onclick="goToDetailedView()">Detailed View</button>
+    <h1>Liger Kernel Benchmark Comparison</h1>
+
+    <div class="selectors">
+      <label>
+        Show last N commits:
+        <select id="commitCount" onchange="loadData()">
+          <option value="5">5</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <label>
+        Metric type:
+        <select id="metricType" onchange="renderTables()">
+          <option value="full">full</option>
+          <option value="forward">forward</option>
+          <option value="backward">backward</option>
+        </select>
+      </label>
+      <label>
+        Category:
+        <select id="categoryFilter" onchange="renderTables()">
+          <option value="all">All Categories</option>
+          <option value="pretraining">Pretraining</option>
+          <option value="distillation">Distillation</option>
+          <option value="post_training">Post Training</option>
+        </select>
+      </label>
+
+      <label>
+        Show:
+        <select id="viewType" onchange="loadData()">
+          <option value="commits">Commits</option>
+          <option value="versions">Versions</option>
+        </select>
+      </label>
+
+      <input type="text" id="kernelSearch" placeholder="Search kernel name..." oninput="renderTables()">
+    </div>
+
+    <div class="legend">
+      <h3>Kernel Categories</h3>
+      <div class="legend-items">
+        <div class="legend-item">
+          <span class="legend-color pretraining"></span>
+          <span class="legend-label">Pretraining</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color distillation"></span>
+          <span class="legend-label">Distillation</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color post_training"></span>
+          <span class="legend-label">Post Training</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color other"></span>
+          <span class="legend-label">Other</span>
+        </div>
+      </div>
+    </div>
+
+    <h2>Memory</h2>
+    <div class="scroll-container">
+      <table id="memoryTable"></table>
+    </div>
+
+    <h2>Speed</h2>
+    <div class="scroll-container">
+      <table id="speedTable"></table>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
+

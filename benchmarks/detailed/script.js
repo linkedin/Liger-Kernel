@@ -1,0 +1,295 @@
+let chartSpeed;
+let chartMemory;
+let chart2Speed;
+let chart2Memory;
+
+const primaryBase = 'https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks';
+const fallbackBase = 'https://cdn.jsdelivr.net/gh/linkedin/Liger-Kernel@gh-pages/benchmarks';
+
+async function fetchWithFallback(path) {
+  const urls = [
+    `${primaryBase}/${path}`,
+    `${fallbackBase}/${path}`,
+  ];
+  let lastErr;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return res;
+      lastErr = new Error(`HTTP ${res.status} for ${url}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('Failed to fetch with fallback');
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  const commits = await fetchCommitHashes();
+  // const commits = ["a96bdc1", "bc105fd", "cbe66ed"]
+  populateCommitDropdown(commits, "commit");
+  populateCommitDropdown(commits, "commit2");
+
+  document.getElementById("commit").addEventListener("change", (e) => {
+    loadCSV(e.target.value, 1);
+  });
+
+  document.getElementById("commit2").addEventListener("change", (e) => {
+    loadCSV(e.target.value, 2);
+  });
+
+  if (commits.length > 0) {
+    loadCSV(commits[0], 1);
+    loadCSV(commits[0], 2);
+  }
+});
+
+async function fetchCommitHashes() {
+  try {
+    const response = await fetchWithFallback('commits.txt');
+    const text = await response.text();
+    // Split by newlines and filter out empty lines
+    return text.split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0);
+  } catch (err) {
+    console.error("Failed to fetch commit hashes:", err);
+    return [];
+  }
+}
+
+function populateCommitDropdown(commits, selectId) {
+  const select = document.getElementById(selectId);
+  select.innerHTML = "";
+  commits.forEach(commit => {
+    const opt = document.createElement("option");
+    opt.value = opt.textContent = commit;
+    select.appendChild(opt);
+  });
+}
+
+function loadCSV(commit, panel) {
+  Papa.parse(`${primaryBase}/${commit}/benchmark.csv`, {
+    download: true,
+    header: true,
+    dynamicTyping: true,
+    complete: async (result) => {
+      // If primary failed to load any data rows, try fallback
+      let data = result.data.filter(d => d.kernel_provider);
+      if (!data || data.length === 0) {
+        try {
+          const res = await fetchWithFallback(`${commit}/benchmark.csv`);
+          const text = await res.text();
+          const parsed = Papa.parse(text, { header: true, dynamicTyping: true });
+          data = parsed.data.filter(d => d.kernel_provider);
+        } catch (e) {
+          alert("Failed to load CSV for commit: " + commit);
+          console.error(e);
+          return;
+        }
+      }
+      if (panel === 1) {
+        setupControls(data, 1);
+        renderCharts(data, 1);
+      } else {
+        setupControls(data, 2);
+        renderCharts(data, 2);
+      }
+    },
+    error: async (err) => {
+      // Try fallback immediately
+      try {
+        const res = await fetchWithFallback(`${commit}/benchmark.csv`);
+        const text = await res.text();
+        const parsed = Papa.parse(text, { header: true, dynamicTyping: true });
+        const data = parsed.data.filter(d => d.kernel_provider);
+        if (panel === 1) {
+          setupControls(data, 1);
+          renderCharts(data, 1);
+        } else {
+          setupControls(data, 2);
+          renderCharts(data, 2);
+        }
+      } catch (e) {
+        alert("Failed to load CSV for commit: " + commit);
+        console.error(err);
+      }
+    }
+  });
+}
+
+function setupControls(data, panel) {
+  const kernelSet = new Set(data.map(d => d.kernel_name));
+  const modeSet = new Set(data.map(d => d.kernel_operation_mode));
+
+  const kernelSelect = document.getElementById(panel === 1 ? "kernel" : "kernel2");
+  const modeSelect = document.getElementById(panel === 1 ? "mode" : "mode2");
+
+  kernelSelect.innerHTML = "";
+  modeSelect.innerHTML = "";
+
+  kernelSet.forEach(k => {
+    const opt = document.createElement("option");
+    opt.value = opt.textContent = k;
+    kernelSelect.appendChild(opt);
+  });
+
+  modeSet.forEach(m => {
+    const opt = document.createElement("option");
+    opt.value = opt.textContent = m;
+    modeSelect.appendChild(opt);
+  });
+
+  kernelSelect.addEventListener("change", () => renderCharts(data, panel));
+  modeSelect.addEventListener("change", () => renderCharts(data, panel));
+}
+
+function renderCharts(data, panel) {
+  const kernel = document.getElementById(panel === 1 ? "kernel" : "kernel2").value;
+  const mode = document.getElementById(panel === 1 ? "mode" : "mode2").value;
+
+  // Render speed chart
+  renderChart(data, panel, "speed", kernel, mode);
+  // Render memory chart
+  renderChart(data, panel, "memory", kernel, mode);
+}
+
+function renderChart(data, panel, metric, kernel, mode) {
+  
+  const filtered = data.filter(
+    d =>
+      d.kernel_name === kernel &&
+      d.metric_name.toLowerCase() === metric.toLowerCase() &&
+      d.kernel_operation_mode === mode
+  );
+
+
+  const batchSizes = [...new Set(filtered.map(d => d.x_value))].sort((a, b) => a - b);
+  const providers = [...new Set(filtered.map(d => d.kernel_provider))];
+
+
+
+  const datasets = providers.map(provider => {
+    const values = batchSizes.map(bs => {
+      const row = filtered.find(d => d.kernel_provider === provider && d.x_value === bs);
+      return row ? row.y_value_50 : null;
+    });
+
+    let borderColor;
+    if (provider === "liger") {
+      borderColor = "#FF6B35";
+    } else if (provider === "huggingface") {
+      borderColor = "#4A90E2";
+    } else {
+      borderColor = "#2ECC71";  // For any third provider (like torch_compile)
+    }
+
+    return {
+      label: provider,
+      data: values,
+      borderColor: borderColor,
+      backgroundColor: "transparent",
+      tension: 0.2,
+      pointRadius: 4,
+      pointHoverRadius: 6,
+      borderWidth: 2,
+    };
+  });
+
+  const chartId = panel === 1 
+    ? (metric === "speed" ? "benchmarkChartSpeed" : "benchmarkChartMemory")
+    : (metric === "speed" ? "benchmarkChart2Speed" : "benchmarkChart2Memory");
+
+  const ctx = document.getElementById(chartId).getContext("2d");
+  
+  // Destroy existing chart if it exists
+  if (panel === 1) {
+    if (metric === "speed" && chartSpeed) chartSpeed.destroy();
+    if (metric === "memory" && chartMemory) chartMemory.destroy();
+  } else {
+    if (metric === "speed" && chart2Speed) chart2Speed.destroy();
+    if (metric === "memory" && chart2Memory) chart2Memory.destroy();
+  }
+
+  // Calculate smart Y-axis range for better visibility of differences
+  const allValues = datasets.flatMap(d => d.data.filter(v => v !== null));
+  let yAxisConfig = {
+    title: { 
+      display: true, 
+      text: `${metric} (${getMetricUnit(metric)})`
+    },
+    type: 'linear'
+  };
+
+  if (allValues.length > 0) {
+    const minVal = Math.min(...allValues);
+    const maxVal = Math.max(...allValues);
+    const range = maxVal - minVal;
+    
+    // If the range is small compared to the minimum value, focus on the data range
+    if (range < minVal * 0.1) {
+      yAxisConfig.min = minVal - (range * 0.2);
+      yAxisConfig.max = maxVal + (range * 0.2);
+    } else {
+      yAxisConfig.beginAtZero = true;
+    }
+  } else {
+    yAxisConfig.beginAtZero = true;
+  }
+
+  const newChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: batchSizes,
+      datasets: datasets,
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        title: {
+          display: true,
+          text: `${kernel} - ${metric} (${mode})`,
+          font: {
+            size: 14,
+            weight: 'bold'
+          }
+        },
+        legend: {
+          position: "top",
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const label = context.dataset.label || '';
+              const value = context.parsed.y;
+              return `${label}: ${value.toFixed(2)} ${getMetricUnit(metric)}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: "Batch Size (B)" },
+        },
+        y: yAxisConfig
+      },
+      interaction: {
+        intersect: false,
+        mode: 'index'
+      }
+    }
+  });
+
+  // Store the chart reference
+  if (panel === 1) {
+    if (metric === "speed") chartSpeed = newChart;
+    else chartMemory = newChart;
+  } else {
+    if (metric === "speed") chart2Speed = newChart;
+    else chart2Memory = newChart;
+  }
+}
+
+function getMetricUnit(metric) {
+  return metric === 'speed' ? 'ms' : 'MB';
+}
