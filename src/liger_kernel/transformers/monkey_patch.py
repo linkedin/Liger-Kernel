@@ -2056,7 +2056,9 @@ def apply_liger_kernel_to_qwen2_vl(
         modeling_qwen2_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
+        # transformers < 5.2 uses Qwen2RMSNorm, transformers >= 5.2 defines its own Qwen2VLRMSNorm
         modeling_qwen2_vl.Qwen2RMSNorm = LigerRMSNorm
+        modeling_qwen2_vl.Qwen2VLRMSNorm = LigerRMSNorm
     if layer_norm and model is None:
         modeling_qwen2_vl.LayerNorm = LigerLayerNorm
     if cross_entropy:
@@ -2148,7 +2150,9 @@ def apply_liger_kernel_to_qwen2_5_vl(
     if rope:
         modeling_qwen2_5_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
     if rms_norm:
+        # transformers < 5.2 uses Qwen2RMSNorm, transformers >= 5.2 defines its own Qwen2_5_VLRMSNorm
         modeling_qwen2_5_vl.Qwen2RMSNorm = LigerRMSNorm
+        modeling_qwen2_5_vl.Qwen2_5_VLRMSNorm = LigerRMSNorm
     if cross_entropy:
         modeling_qwen2_5_vl.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:

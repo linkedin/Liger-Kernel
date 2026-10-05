@@ -2961,6 +2961,54 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_text():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2-VL / Qwen2.5-VL support is only compatible with transformers >= 4.52.4",
+)
+@pytest.mark.parametrize(
+    "model_name, apply_fn_kwargs",
+    [
+        ("qwen2_vl", {"layer_norm": False}),
+        ("qwen2_5_vl", {}),
+    ],
+)
+def test_apply_liger_kernel_to_qwen2_vl_family_class_patch_rms_norm(monkeypatch, model_name, apply_fn_kwargs):
+    # The class-level patch (no model instance, applied before model init) must make the text model's
+    # RMSNorm layers Liger modules, i.e. it has to target the RMSNorm class that modeling_<model> actually uses.
+    import importlib
+
+    modeling = importlib.import_module(f"transformers.models.{model_name}.modeling_{model_name}")
+    configuration = importlib.import_module(f"transformers.models.{model_name}.configuration_{model_name}")
+    text_model_cls = {"qwen2_vl": "Qwen2VLTextModel", "qwen2_5_vl": "Qwen2_5_VLTextModel"}[model_name]
+    text_config_cls = {"qwen2_vl": "Qwen2VLTextConfig", "qwen2_5_vl": "Qwen2_5_VLTextConfig"}[model_name]
+
+    # Restore any module-level RMSNorm symbol swapped by the class-level patch once the test is done
+    for name in ("Qwen2RMSNorm", "Qwen2VLRMSNorm", "Qwen2_5_VLRMSNorm"):
+        monkeypatch.setattr(modeling, name, getattr(modeling, name, None), raising=False)
+
+    getattr(monkey_patch, f"apply_liger_kernel_to_{model_name}")(
+        rope=False, rms_norm=True, swiglu=False, fused_linear_cross_entropy=False, **apply_fn_kwargs
+    )
+
+    config = getattr(configuration, text_config_cls)(
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=48,
+        hidden_act="silu",
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        max_position_embeddings=128,
+        vocab_size=1000,
+    )
+    model = getattr(modeling, text_model_cls)._from_config(config)
+
+    assert isinstance(model.norm, LigerRMSNorm), type(model.norm).__name__
+    for layer in model.layers:
+        assert isinstance(layer.input_layernorm, LigerRMSNorm), type(layer.input_layernorm).__name__
+        assert isinstance(layer.post_attention_layernorm, LigerRMSNorm), type(layer.post_attention_layernorm).__name__
+
+
 @pytest.mark.skipif(not is_internvl_available(), reason="internvl module not available")
 def test_apply_liger_kernel_to_instance_for_internvl():
     # Ensure any monkey patching is cleaned up for subsequent tests
