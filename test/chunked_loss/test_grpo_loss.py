@@ -1322,3 +1322,21 @@ def test_selective_logprob_backward_skips_frozen_params(monkeypatch, bias):
         out.sum().backward()
         assert calls[-1] == (weight_requires_grad, bias and bias_requires_grad)
         assert (weight.grad is not None) == weight_requires_grad
+
+
+def test_ref_per_token_logps_preferred_over_ref_input():
+    """Passing both ref_per_token_logps and ref_input warns and uses ref_per_token_logps instead of raising."""
+    B, T, H, V = 2, 8, 16, 32
+    _input = torch.randn(B, T, H, device=device)
+    weight = torch.randn(V, H, device=device)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    advantages = torch.randn(B, device=device)
+    ref_per_token_logps = torch.randn(B, T, device=device) - 3.0
+    loss_fn = LigerFusedLinearGRPOLoss(beta=0.04, use_ref_model=True, compiled=False)
+    args = (_input, weight, selected_token_ids, attention_mask, advantages)
+
+    expected, _ = loss_fn(*args, ref_per_token_logps=ref_per_token_logps)
+    with pytest.warns(UserWarning, match="Using ref_per_token_logps"):
+        loss, _ = loss_fn(*args, ref_per_token_logps=ref_per_token_logps, ref_input=_input, ref_weight=weight)
+    assert_verbose_allclose(loss, expected)

@@ -1,67 +1,41 @@
+from typing import TYPE_CHECKING
+from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import Union
 
 import torch
 
-from packaging import version
-from transformers import PretrainedConfig
-from transformers import __version__ as transformers_version
-
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
-from liger_kernel.transformers.model.output_classes import LigerGlm4vMoeCausalLMOutputWithPast
+from liger_kernel.transformers.model.output_classes import LigerCausalLMOutputWithPast
 
-_TRANSFORMERS_V5_OR_LATER: bool = version.parse(transformers_version) >= version.parse("5.0.0")
-
-
-def _get_hidden_size(config: PretrainedConfig) -> int:
-    """Get hidden_size from Glm4vMoeConfig in a version-aware manner."""
-    if _TRANSFORMERS_V5_OR_LATER:
-        return config.text_config.hidden_size
-    return config.hidden_size
-
-
-def _get_vocab_size(config: PretrainedConfig) -> int:
-    """Get vocab_size from Glm4vMoeConfig in a version-aware manner."""
-    if _TRANSFORMERS_V5_OR_LATER:
-        return config.text_config.vocab_size
-    return config.vocab_size
+if TYPE_CHECKING:
+    from transformers.cache_utils import Cache
 
 
 def lce_forward(
     self,
-    input_ids: torch.LongTensor = None,
+    input_ids: Optional[torch.LongTensor] = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[list[torch.FloatTensor]] = None,
+    past_key_values: Optional[Union["Cache", List[torch.FloatTensor]]] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
-    pixel_values: Optional[torch.Tensor] = None,
-    pixel_values_videos: Optional[torch.FloatTensor] = None,
-    image_grid_thw: Optional[torch.LongTensor] = None,
-    video_grid_thw: Optional[torch.LongTensor] = None,
-    rope_deltas: Optional[torch.LongTensor] = None,
-    mm_token_type_ids: Optional[torch.IntTensor] = None,
+    use_cache: Optional[bool] = None,
+    output_attentions: Optional[bool] = None,
+    output_hidden_states: Optional[bool] = None,
+    return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
-    return_dict: Optional[bool] = None,
     **kwargs,
-) -> Union[Tuple, LigerGlm4vMoeCausalLMOutputWithPast]:
+) -> Union[Tuple, LigerCausalLMOutputWithPast]:
     r"""
-    Args:
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-        image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
-            The temporal, height and width of feature shape of each image in LLM.
-        video_grid_thw (`torch.LongTensor` of shape `(num_videos, 3)`, *optional*):
-            The temporal, height and width of feature shape of each video in LLM.
-        rope_deltas (`torch.LongTensor` of shape `(batch_size, )`, *optional*):
-            The rope index difference between sequence length and multimodal rope.
-
 
         logits_to_keep (`int` or `torch.Tensor`, *optional*):
             If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
@@ -70,70 +44,52 @@ def lce_forward(
             If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
             This is useful when using packed tensor format (single dimension for batch and sequence length).
 
+    Returns:
+
     Example:
 
     ```python
-    >>> from transformers import AutoProcessor, Glm4vMoeForConditionalGeneration
-    >>> import torch
+    >>> from transformers import AutoTokenizer, DeepseekV2ForCausalLM
 
-    >>> MODEL_PATH = "zai-org/GLM-4.5V"
-    >>> messages = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "url": "https://upload.wikimedia.org/wikipedia/commons/f/fa/Grayscale_8bits_palette_sample_image.png"
-                },
-                {
-                    "type": "text",
-                    "text": "describe this image"
-                }
-            ],
-        }
-    ]
-    >>> processor = AutoProcessor.from_pretrained(MODEL_PATH)
-    >>> model = Glm4vMoeForConditionalGeneration.from_pretrained(
-        pretrained_model_name_or_path=MODEL_PATH,
-        dtype="auto",
-        device_map="auto",
+    >>> model = DeepseekV2ForCausalLM.from_pretrained("deepseek-ai/DeepSeek-V2")
+    >>> tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-V2")
+
+    >>> prompt = "Hey, are you conscious? Can you talk to me?"
+    >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+    >>> # Generate
+    >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+    >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+    ```"""
+    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+    output_hidden_states = (
+        output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
-    >>> inputs = processor.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        return_dict=True,
-        return_tensors="pt"
-    ).to(model.device)
-    >>> inputs.pop("token_type_ids", None)
-    >>> generated_ids = model.generate(**inputs, max_new_tokens=8192)
-    >>> output_text = processor.decode(generated_ids[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False)
-    ```
-    """
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
         input_ids=input_ids,
-        pixel_values=pixel_values,
-        pixel_values_videos=pixel_values_videos,
-        image_grid_thw=image_grid_thw,
-        video_grid_thw=video_grid_thw,
-        position_ids=position_ids,
         attention_mask=attention_mask,
+        position_ids=position_ids,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
-        mm_token_type_ids=mm_token_type_ids,
+        use_cache=use_cache,
+        output_attentions=output_attentions,
+        output_hidden_states=output_hidden_states,
         cache_position=cache_position,
         **kwargs,
     )
 
-    hidden_states = outputs[0]
+    hidden_states = outputs.last_hidden_state
     # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
     kept_hidden_states = hidden_states[:, slice_indices, :]
 
     shift_labels = kwargs.pop("shift_labels", None)
+    # Remove output-control parameters that shouldn't be passed to loss functions
+    kwargs.pop("return_dict", None)
     logits = None
     loss = None
     token_accuracy = None
@@ -153,11 +109,10 @@ def lce_forward(
             lm_head_weight=self.lm_head.weight,
             labels=labels,
             shift_labels=shift_labels,
-            hidden_size=_get_hidden_size(self.config),
+            hidden_size=self.config.hidden_size,
             **kwargs,
         )
         loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
-
     else:
         logits = self.lm_head(kept_hidden_states)
         if labels is not None or shift_labels is not None:
@@ -165,7 +120,7 @@ def lce_forward(
                 logits=logits,
                 labels=labels,
                 shift_labels=shift_labels,
-                vocab_size=_get_vocab_size(self.config),
+                vocab_size=self.config.vocab_size,
                 **kwargs,
             )
 
@@ -176,19 +131,13 @@ def lce_forward(
         output = output + (predicted_tokens,) if predicted_tokens is not None else output
         return output
 
-    # Build output kwargs and include aux_loss only if present (depends on transformers version)
-    output_kwargs = dict(
+    # Return custom output class with token_accuracy field
+    return LigerCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
-        rope_deltas=outputs.rope_deltas,
         token_accuracy=token_accuracy,
         predicted_tokens=predicted_tokens,
     )
-    if hasattr(outputs, "aux_loss"):
-        output_kwargs["aux_loss"] = outputs.aux_loss
-
-    # Return GLM4V MoE output with accuracy
-    return LigerGlm4vMoeCausalLMOutputWithPast(**output_kwargs)
