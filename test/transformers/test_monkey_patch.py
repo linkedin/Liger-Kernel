@@ -241,6 +241,15 @@ def is_paligemma_available():
         return False
 
 
+def is_deepseek_v2_available():
+    try:
+        import transformers.models.deepseek_v2  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_deepseek_v3_available():
     try:
         import transformers.models.deepseek_v3  # noqa: F401
@@ -1808,6 +1817,87 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
+@pytest.mark.skipif(not is_deepseek_v2_available(), reason="deepseek_v2 module not available")
+def test_apply_liger_kernel_to_instance_for_deepseek_v2():
+    with patch("transformers.models.deepseek_v2.modeling_deepseek_v2"):
+        from liger_kernel.transformers.model.deepseek_v2 import lce_forward as deepseek_v2_lce_forward
+
+        config = transformers.models.deepseek_v2.configuration_deepseek_v2.DeepseekV2Config(
+            vocab_size=1024,
+            hidden_size=32,
+            intermediate_size=64,
+            moe_intermediate_size=64,
+            num_hidden_layers=4,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            q_lora_rank=8,
+            kv_lora_rank=8,
+            qk_rope_head_dim=8,
+            v_head_dim=8,
+            qk_nope_head_dim=8,
+            n_group=2,
+            topk_group=1,
+            n_routed_experts=4,
+            num_experts_per_tok=2,
+            n_shared_experts=1,
+            first_k_dense_replace=1,
+            norm_topk_prob=True,
+            routed_scaling_factor=1.0,
+            max_position_embeddings=128,
+            hidden_act="silu",
+            rms_norm_eps=1e-5,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(deepseek_v2_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            if hasattr(layer.mlp, "experts"):
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+                    assert inspect.getsource(layer.mlp.shared_experts.forward) != inspect.getsource(
+                        LigerQwen3MoeSwiGLUMLP.forward
+                    )
+                else:
+                    for expert in layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            else:
+                assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.kv_a_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.q_a_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(deepseek_v2_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            if hasattr(layer.mlp, "experts"):
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+                    assert inspect.getsource(layer.mlp.shared_experts.forward) == inspect.getsource(
+                        LigerQwen3MoeSwiGLUMLP.forward
+                    )
+                else:
+                    for expert in layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            else:
+                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.kv_a_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.q_a_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
 @pytest.mark.skipif(not is_deepseek_v3_available(), reason="deepseek_v3 module not available")
 def test_apply_liger_kernel_to_instance_for_deepseek_v3():
     with patch("transformers.models.deepseek_v3.modeling_deepseek_v3"):
@@ -2904,6 +2994,54 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_text():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2-VL / Qwen2.5-VL support is only compatible with transformers >= 4.52.4",
+)
+@pytest.mark.parametrize(
+    "model_name, apply_fn_kwargs",
+    [
+        ("qwen2_vl", {"layer_norm": False}),
+        ("qwen2_5_vl", {}),
+    ],
+)
+def test_apply_liger_kernel_to_qwen2_vl_family_class_patch_rms_norm(monkeypatch, model_name, apply_fn_kwargs):
+    # The class-level patch (no model instance, applied before model init) must make the text model's
+    # RMSNorm layers Liger modules, i.e. it has to target the RMSNorm class that modeling_<model> actually uses.
+    import importlib
+
+    modeling = importlib.import_module(f"transformers.models.{model_name}.modeling_{model_name}")
+    configuration = importlib.import_module(f"transformers.models.{model_name}.configuration_{model_name}")
+    text_model_cls = {"qwen2_vl": "Qwen2VLTextModel", "qwen2_5_vl": "Qwen2_5_VLTextModel"}[model_name]
+    text_config_cls = {"qwen2_vl": "Qwen2VLTextConfig", "qwen2_5_vl": "Qwen2_5_VLTextConfig"}[model_name]
+
+    # Restore any module-level RMSNorm symbol swapped by the class-level patch once the test is done
+    for name in ("Qwen2RMSNorm", "Qwen2VLRMSNorm", "Qwen2_5_VLRMSNorm"):
+        monkeypatch.setattr(modeling, name, getattr(modeling, name, None), raising=False)
+
+    getattr(monkey_patch, f"apply_liger_kernel_to_{model_name}")(
+        rope=False, rms_norm=True, swiglu=False, fused_linear_cross_entropy=False, **apply_fn_kwargs
+    )
+
+    config = getattr(configuration, text_config_cls)(
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=48,
+        hidden_act="silu",
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        max_position_embeddings=128,
+        vocab_size=1000,
+    )
+    model = getattr(modeling, text_model_cls)._from_config(config)
+
+    assert isinstance(model.norm, LigerRMSNorm), type(model.norm).__name__
+    for layer in model.layers:
+        assert isinstance(layer.input_layernorm, LigerRMSNorm), type(layer.input_layernorm).__name__
+        assert isinstance(layer.post_attention_layernorm, LigerRMSNorm), type(layer.post_attention_layernorm).__name__
 
 
 @pytest.mark.skipif(not is_internvl_available(), reason="internvl module not available")

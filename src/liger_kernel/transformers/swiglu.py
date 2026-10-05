@@ -81,10 +81,14 @@ class LigerExperts(nn.Module):
     def __init__(self, config):
         super().__init__()
         if hasattr(config, "num_experts"):
-            # qwen3_moe, qwen3_next uses num_experts
+            # qwen3_moe, qwen3_next, deepseek_v2 use num_experts
             self.num_experts = config.num_experts
-        else:
+        elif hasattr(config, "num_local_experts"):
+            # mixtral, deepseek_v3 use num_local_experts
             self.num_experts = config.num_local_experts
+        else:
+            # deepseek_v2 on early transformers v5 uses n_routed_experts
+            self.num_experts = config.n_routed_experts
         if hasattr(config, "moe_intermediate_size"):
             # qwen3_moe, qwen3_next uses moe_intermediate_size
             self.intermediate_dim = config.moe_intermediate_size
