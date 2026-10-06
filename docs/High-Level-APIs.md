@@ -115,7 +115,7 @@ patch raises a `RuntimeError` at patch time or call time if TP>1 is detected.
 ```python
 from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
-# Call before Megatron's forward pass reaches compute_language_model_loss.
+# Call before building the model; newer Megatron picks the CE function at construction.
 # Defaults match Megatron's native CE behavior; no CE-specific config needed.
 apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True)
 ```
