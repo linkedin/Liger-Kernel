@@ -64,3 +64,38 @@ def test_nvshmem_loader_uses_dependency_package(tmp_path, monkeypatch):
     tvm_ffi._load_nvshmem_libraries(tmp_path / "wheel-package")
 
     assert [path for path, _ in loaded] == [str(host), str(uid)]
+
+
+def test_nvshmem_loader_missing_runtime_recommends_cuda_extras(tmp_path, monkeypatch):
+    monkeypatch.setattr(tvm_ffi, "_nvshmem_library_dirs", lambda _: [tmp_path])
+    monkeypatch.setattr(tvm_ffi, "_NVSHMEM_LIBS_LOADED", False)
+
+    with pytest.raises(ImportError, match=r"liger-cute-kernels\[cu12\].*liger-cute-kernels\[cu13\].*build"):
+        tvm_ffi._load_nvshmem_libraries(tmp_path)
+
+
+@pytest.mark.parametrize("status_code", [1, 2, 3, 4])
+def test_nvshmem_status_detects_external_runtime_without_loading_another(monkeypatch, status_code):
+    status = lambda: status_code
+    monkeypatch.setattr(tvm_ffi.ctypes, "CDLL", lambda path: SimpleNamespace(nvshmemx_init_status=status))
+    monkeypatch.setattr(tvm_ffi, "_load_nvshmem_libraries", lambda path: pytest.fail("must not load another runtime"))
+    assert tvm_ffi.nvshmem_is_initialized()
+    assert status.argtypes == []
+    assert status.restype is tvm_ffi.ctypes.c_int
+
+
+@pytest.mark.parametrize("status_code", [0, 2])
+def test_nvshmem_status_queries_selected_host_library(monkeypatch, status_code):
+    status = lambda: status_code
+    monkeypatch.setattr(tvm_ffi.ctypes, "CDLL", lambda path: SimpleNamespace())
+    monkeypatch.setattr(tvm_ffi, "_load_nvshmem_libraries", lambda path: None)
+    monkeypatch.setattr(tvm_ffi, "_NVSHMEM_HOST", SimpleNamespace(nvshmemx_init_status=status))
+    assert tvm_ffi.nvshmem_is_initialized() is (status_code != 0)
+
+
+def test_nvshmem_status_requires_supported_query(monkeypatch):
+    monkeypatch.setattr(tvm_ffi.ctypes, "CDLL", lambda path: SimpleNamespace())
+    monkeypatch.setattr(tvm_ffi, "_load_nvshmem_libraries", lambda path: None)
+    monkeypatch.setattr(tvm_ffi, "_NVSHMEM_HOST", SimpleNamespace())
+    with pytest.raises(RuntimeError, match="does not expose nvshmemx_init_status"):
+        tvm_ffi.nvshmem_is_initialized()

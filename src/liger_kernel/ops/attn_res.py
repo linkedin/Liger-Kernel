@@ -211,11 +211,14 @@ def _next_pow2(n):
 
 
 def _get_max_blocks(n_blocks):
-    """Round up to constexpr-friendly value."""
-    for mb in [4, 8, 16, 32]:
-        if n_blocks <= mb:
-            return mb
-    return 32
+    """Round n_blocks up to a power-of-two constexpr.
+
+    MAX_BLOCKS is the static trip count of the `tl.static_range(0, MAX_BLOCKS)`
+    loops and the width of the register-held `scores`/`alpha` vectors, so it must
+    be >= n_blocks or the trailing blocks are silently skipped. It also has to be
+    a power of two for `tl.arange(0, MAX_BLOCKS)`.
+    """
+    return max(4, _next_pow2(n_blocks))
 
 
 def attn_res_forward(blocks, w_query, w_norm, eps=1e-6):

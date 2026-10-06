@@ -5,6 +5,7 @@ patch helpers can run entirely on CPU without a real megatron-core install. For 
 Liger patches into Megatron, this file verifies:
 
 - the patched Megatron symbol(s) are actually replaced
+- call sites that bound their own copy before patching (CE) still reach Liger
 - patching is idempotent (calling apply twice doesn't stack wrappers)
 - the patch is a no-op when the kernel flag is False
 - missing megatron-core / missing symbol path raise helpful ``ImportError``\\s
@@ -23,6 +24,7 @@ Liger learns to patch:
   6. SwiGLU patch tests
 """
 
+import logging
 import sys
 import types
 
@@ -101,6 +103,68 @@ def _install_fake_megatron_ce(
     tensor_parallel.cross_entropy = unfused_ce
 
     return fused_ce, unfused_ce
+
+
+def _install_fake_megatron_ce_call_sites(fused_ce, unfused_ce, layout: str):
+    """Install Megatron's CE call sites, bound the way real Megatron binds them.
+
+    Liger replaces the CE functions on their defining modules, but most Megatron call sites
+    take their own copy at import time. These stubs take that copy before any patching,
+    which is the usual order (model code is imported first).
+
+    - ``"released"`` (megatron-core 0.19 and earlier): ``language_module`` does
+      ``from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy``,
+      and the unfused branch calls the ``megatron.core.tensor_parallel`` package re-export.
+    - ``"main"`` (Megatron-LM main, NVIDIA/Megatron-LM#6766): ``backends`` imports the fused
+      function as ``_fused_ce``; ``unfused_cross_entropy`` looks the unfused one up on its
+      defining module at call time.
+
+    Returns ``compute_loss(logits, labels, cross_entropy_loss_fusion)``, a stand-in for
+    ``LanguageModule.compute_language_model_loss`` that resolves the CE function the way
+    that layout does.
+    """
+    _, megatron_core = _ensure_megatron_roots()
+    tensor_parallel = sys.modules["megatron.core.tensor_parallel"]
+    models = sys.modules.get("megatron.core.models") or types.ModuleType("megatron.core.models")
+    sys.modules["megatron.core.models"] = models
+    megatron_core.models = models
+
+    if layout == "released":
+        common = types.ModuleType("megatron.core.models.common")
+        language_module_pkg = types.ModuleType("megatron.core.models.common.language_module")
+        language_module = types.ModuleType("megatron.core.models.common.language_module.language_module")
+        language_module.fused_vocab_parallel_cross_entropy = fused_ce.fused_vocab_parallel_cross_entropy
+        tensor_parallel.vocab_parallel_cross_entropy = unfused_ce.vocab_parallel_cross_entropy
+
+        sys.modules["megatron.core.models.common"] = common
+        sys.modules["megatron.core.models.common.language_module"] = language_module_pkg
+        sys.modules["megatron.core.models.common.language_module.language_module"] = language_module
+        models.common = common
+        common.language_module = language_module_pkg
+        language_module_pkg.language_module = language_module
+
+        def compute_loss(logits, labels, cross_entropy_loss_fusion):
+            if cross_entropy_loss_fusion:
+                return language_module.fused_vocab_parallel_cross_entropy(logits, labels, None)
+            return tensor_parallel.vocab_parallel_cross_entropy(logits, labels)
+
+        return compute_loss
+
+    assert layout == "main", layout
+    backends = sys.modules.get("megatron.core.models.backends") or types.ModuleType("megatron.core.models.backends")
+    backends._fused_ce = fused_ce.fused_vocab_parallel_cross_entropy
+    sys.modules["megatron.core.models.backends"] = backends
+    models.backends = backends
+
+    def unfused_cross_entropy(logits, labels, tp_group=None):
+        return unfused_ce.vocab_parallel_cross_entropy(logits, labels, tp_group=tp_group)
+
+    def compute_loss(logits, labels, cross_entropy_loss_fusion):
+        # LanguageModule.__init__ runs select_cross_entropy once; the model is built after patching.
+        ce = backends._fused_ce if cross_entropy_loss_fusion else unfused_cross_entropy
+        return ce(logits, labels, None)
+
+    return compute_loss
 
 
 def _install_fake_megatron_rms_norm(
@@ -195,6 +259,9 @@ def _uninstall_fake_megatron():
         # CE side
         "megatron.core.parallel_state",
         "megatron.core.fusions.fused_cross_entropy",
+        "megatron.core.models.common.language_module.language_module",
+        "megatron.core.models.common.language_module",
+        "megatron.core.models.common",
         # RMSNorm side
         "megatron.core.models.backends",
         "megatron.core.models",
@@ -707,6 +774,62 @@ def test_unfused_wrapper_honors_explicit_zero_label_smoothing(fake_megatron_ce):
     assert constructed == [0.0], (
         f"explicit label_smoothing=0.0 at call time must be honored verbatim; got: {constructed}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 2.5 CE call sites that bound their own copy before the patch ran.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("layout", ["released", "main"])
+@pytest.mark.parametrize("cross_entropy_loss_fusion", [True, False])
+def test_patch_reaches_call_sites_bound_before_patching(fake_megatron_ce, caplog, layout, cross_entropy_loss_fusion):
+    """Megatron model code is normally imported before ``apply_liger_kernel_to_megatron``
+    runs, so every call site already holds the original function. The loss computation must
+    still land in Liger; the stub originals raise if it doesn't."""
+    import torch
+
+    fused_ce, unfused_ce = fake_megatron_ce
+    compute_loss = _install_fake_megatron_ce_call_sites(fused_ce, unfused_ce, layout)
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+    from liger_kernel.megatron import cross_entropy as ce_mod
+
+    calls = []
+
+    class _FakeCE:
+        def __init__(self, ignore_index=-100, label_smoothing=0.0, reduction="none"):
+            pass
+
+        def __call__(self, logits, target, tp_group=None):
+            calls.append(tuple(logits.shape))
+            return torch.zeros(logits.shape[:2])
+
+    with patch.object(ce_mod, "LigerMegatronCrossEntropy", _FakeCE):
+        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+        compute_loss(torch.zeros(2, 1, 4), torch.zeros(2, 1, dtype=torch.long), cross_entropy_loss_fusion)
+
+    assert calls == [(2, 1, 4)]
+    assert "Could not find where this Megatron version calls" not in caplog.text
+
+
+def test_patch_leaves_call_site_bound_to_another_function_alone(fake_megatron_ce, caplog):
+    """A call site that another framework already pointed at its own kernel is not Liger's to
+    take over. The patch leaves it in place and warns that the fused path was not reached."""
+    fused_ce, unfused_ce = fake_megatron_ce
+    _install_fake_megatron_ce_call_sites(fused_ce, unfused_ce, "released")
+    language_module = sys.modules["megatron.core.models.common.language_module.language_module"]
+
+    def framework_fused_ce(vocab_parallel_logits, target, tp_group=None):
+        raise AssertionError("not expected to be called")
+
+    language_module.fused_vocab_parallel_cross_entropy = framework_fused_ce
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    with caplog.at_level(logging.WARNING, logger="liger_kernel.megatron.monkey_patch"):
+        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+
+    assert language_module.fused_vocab_parallel_cross_entropy is framework_fused_ce
+    assert "Could not find where this Megatron version calls fused_vocab_parallel_cross_entropy" in caplog.text
 
 
 # ===========================================================================
