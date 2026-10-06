@@ -60,9 +60,10 @@ class RMSNorm(ReductionBase):
     sum-of-squares reduction.
     """
 
-    def __init__(self, dtype: Type[cutlass.Numeric], N: int, is_layernorm: bool = False):
+    def __init__(self, dtype: Type[cutlass.Numeric], N: int, is_layernorm: bool = False, weight_offset: float = 0.0):
         super().__init__(dtype, N, stage=2 if is_layernorm else 1)
         self.is_layernorm = is_layernorm
+        self.weight_offset = weight_offset
         self.reload_from = None if N <= (16384 if is_layernorm else 8192) else "smem"
         self.delay_w_load = False
 
@@ -327,7 +328,10 @@ class RMSNorm(ReductionBase):
         x_hat = (x - mean) * rstd if const_expr(self.is_layernorm) else x * rstd
         y = x_hat
         if const_expr(mW is not None):
-            y *= tXrW.load().to(cute.Float32)
+            w = tXrW.load().to(cute.Float32)
+            if const_expr(self.weight_offset != 0.0):
+                w += Float32(self.weight_offset)
+            y *= w
         if const_expr(mB is not None):
             y += tXrB.load().to(cute.Float32)
         tXrO.store(y.to(tXrO.element_type))
@@ -355,6 +359,7 @@ def _compile_fwd(
     has_mean,
     is_layernorm,
     per_head,
+    weight_offset=0.0,
 ):
     """Compile the RMSNorm/LayerNorm forward kernel for a given dtype mix.
 
@@ -374,6 +379,7 @@ def _compile_fwd(
         has_mean,
         is_layernorm,
         per_head,
+        weight_offset,
     )
     if key in _FWD_COMPILE_CACHE:
         return _FWD_COMPILE_CACHE[key]
@@ -391,7 +397,7 @@ def _compile_fwd(
     rstd_cute = fake_tensor(Float32, batch_shape) if has_rstd else None
     mean_cute = fake_tensor(Float32, batch_shape) if has_mean else None
     compiled = cute.compile(
-        RMSNorm(dtype, N, is_layernorm=is_layernorm),
+        RMSNorm(dtype, N, is_layernorm=is_layernorm, weight_offset=weight_offset),
         x_cute,
         weight_cute,
         bias_cute,
@@ -419,6 +425,7 @@ def _run_fwd(
     residual_out: Optional[Tensor],
     eps: float,
     is_layernorm: bool,
+    weight_offset: float = 0.0,
 ) -> None:
     """Run the compiled kernel. Mirrors ``quack.rmsnorm._rmsnorm_fwd`` but
     drops the ``torch.library.custom_op`` registration — we are always
@@ -448,6 +455,7 @@ def _run_fwd(
         mean is not None,
         is_layernorm,
         per_head,
+        weight_offset,
     )(x, weight, bias, residual, out, residual_out, rstd, mean, eps)
 
 
@@ -463,6 +471,7 @@ def rmsnorm_fwd(
     residual_dtype: Optional[torch.dtype] = None,
     eps: float = 1e-6,
     store_rstd: bool = False,
+    weight_offset: float = 0.0,
 ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
     """RMSNorm forward. Drop-in replacement for ``quack.rmsnorm.rmsnorm_fwd``.
 
@@ -479,7 +488,7 @@ def rmsnorm_fwd(
         residual_out = torch.empty_like(x, dtype=residual_dtype if residual_dtype is not None else x.dtype)
     else:
         residual_out = None
-    _run_fwd(x, weight, out, bias, rstd, None, residual, residual_out, eps, False)
+    _run_fwd(x, weight, out, bias, rstd, None, residual, residual_out, eps, False, weight_offset)
     # residual_out is None if residual is None and residual_dtype == input_dtype
     if residual_out is None:
         residual_out = x

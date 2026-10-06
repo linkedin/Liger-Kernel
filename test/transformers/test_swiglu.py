@@ -669,7 +669,19 @@ def test_correctness_falcon_h1_mlp(
     torch.testing.assert_close(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
-def _test_dtensor_liger_silumul(rank, world_size, bsz, seq_len, hidden_size, dtype, atol, rtol, file_name):
+def _test_dtensor_liger_silumul(
+    rank,
+    world_size,
+    bsz,
+    seq_len,
+    hidden_size,
+    dtype,
+    atol,
+    rtol,
+    gate_multiplier,
+    down_multiplier,
+    file_name,
+):
     torch.distributed.init_process_group(
         backend=infer_comm_backend(),
         init_method=f"file://{file_name}",
@@ -704,8 +716,8 @@ def _test_dtensor_liger_silumul(rank, world_size, bsz, seq_len, hidden_size, dty
     a2 = _a.clone().detach().requires_grad_(True)
     b2 = _b.clone().detach().requires_grad_(True)
 
-    c1 = LigerSiLUMulFunction.apply(da, db)
-    c2 = LigerSiLUMulFunction.apply(a2, b2)
+    c1 = LigerSiLUMulFunction.apply(da, db, gate_multiplier, down_multiplier)
+    c2 = LigerSiLUMulFunction.apply(a2, b2, gate_multiplier, down_multiplier)
 
     torch.testing.assert_close(c1.full_tensor(), c2, atol=atol, rtol=rtol)
 
@@ -722,10 +734,6 @@ def _test_dtensor_liger_silumul(rank, world_size, bsz, seq_len, hidden_size, dty
     torch.testing.assert_close(db.grad.full_tensor(), b2.grad, atol=atol, rtol=rtol)
 
 
-@pytest.mark.xfail(
-    torch.cuda.device_count() < 8,
-    reason="Pending multi-GPU host support. This test is expected to pass when run with multi-GPU host.",
-)
 @pytest.mark.parametrize(
     "world_size, bsz, seq_len, hidden_size",
     [
@@ -740,11 +748,31 @@ def _test_dtensor_liger_silumul(rank, world_size, bsz, seq_len, hidden_size, dty
         (torch.bfloat16, 2e-1, 2e-2),
     ],
 )
-def test_dtensor_liger_silumul(world_size, bsz, seq_len, hidden_size, dtype, atol, rtol):
+@pytest.mark.parametrize("gate_multiplier, down_multiplier", [(1.0, 1.0), (0.7, 1.3)])
+def test_dtensor_liger_silumul(
+    world_size, bsz, seq_len, hidden_size, dtype, atol, rtol, gate_multiplier, down_multiplier
+):
+    device_type = infer_device()
+    device_module = getattr(torch, device_type, None)
+    device_count = device_module.device_count() if hasattr(device_module, "device_count") else 0
+    if device_count < world_size:
+        pytest.xfail(f"Requires {world_size} {device_type.upper()} devices, but only {device_count} are available.")
+
     with tempfile.NamedTemporaryFile() as f:
         mp.spawn(
             _test_dtensor_liger_silumul,
-            args=(world_size, bsz, seq_len, hidden_size, dtype, atol, rtol, f.name),
+            args=(
+                world_size,
+                bsz,
+                seq_len,
+                hidden_size,
+                dtype,
+                atol,
+                rtol,
+                gate_multiplier,
+                down_multiplier,
+                f.name,
+            ),
             nprocs=world_size,
             join=True,
         )
