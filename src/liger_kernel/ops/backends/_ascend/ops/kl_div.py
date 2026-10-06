@@ -37,8 +37,8 @@ def _kldiv_kernel_forward(
     eps,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
+    reduction: tl.constexpr,  # no default: always pass explicitly
     log_target: tl.constexpr = False,
-    reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
 ):
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
@@ -89,8 +89,8 @@ def _kldiv_kernel_backward(
     n_cols,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
+    reduction: tl.constexpr,  # no default: always pass explicitly
     log_target: tl.constexpr = False,
-    reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
 ):
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)

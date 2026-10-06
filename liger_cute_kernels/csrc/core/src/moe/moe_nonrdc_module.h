@@ -34,7 +34,7 @@ inline bool sm90_nonrdc_moe_supports_benchmark_shape(
 #if defined(LIGER_CUTE_HAS_SM90_NONRDC_MOE)
 bool sm90_nonrdc_moe_requested();
 bool sm90_nonrdc_moe_team_uses_ib(nvshmem_team_t team);
-void configure_sm90_nonrdc_moe(int num_hosts, int gpus_per_host);
+void configure_sm90_nonrdc_moe();
 CUfunction resolve_sm90_nonrdc_moe(
 	const char* kernel_name,
 	const void* fallback_kernel,
@@ -50,7 +50,7 @@ inline bool sm90_nonrdc_moe_team_uses_ib(nvshmem_team_t) {
 	return true;
 }
 
-inline void configure_sm90_nonrdc_moe(int, int) {
+inline void configure_sm90_nonrdc_moe() {
 	const char* value = std::getenv("LIGER_MOE_SM90_NONRDC");
 	LIGER_CHECK(
 		value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0,

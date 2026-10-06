@@ -17,6 +17,8 @@ file(GLOB_RECURSE LIGER_CUTE_CORE_SOURCES
 # The recursive glob above would otherwise sweep it into the torch-free core and
 # break the build on its `#include <torch/torch.h>`. Keep it out.
 list(FILTER LIGER_CUTE_CORE_SOURCES EXCLUDE REGEX "/src/moe/tune/")
+# Standalone cuBLAS comparison executable, built separately with the tests.
+list(FILTER LIGER_CUTE_CORE_SOURCES EXCLUDE REGEX "/backward_dz_sm100_bench\\.cu$")
 # The legacy TensorView ABI is no longer part of libliger_cute_kernels.so.
 # Tensor-carrying entry points are exported through TVM FFI.
 list(FILTER LIGER_CUTE_CORE_SOURCES EXCLUDE REGEX "/src/tensor_view\\.cpp$")
@@ -104,9 +106,8 @@ if(LIGER_CUTE_ENABLE_SM90_NONRDC_MOE)
         "-I${CMAKE_CURRENT_SOURCE_DIR}/include"
         "-I${CMAKE_CURRENT_SOURCE_DIR}/src/moe"
         "-I${CMAKE_CURRENT_SOURCE_DIR}/src/fused_scaled_linear_cross_entropy"
-        "-I${NVSHMEM_INCLUDE_DIR}"
-        "-I${CUDAToolkit_INCLUDE_DIRS}")
-    foreach(_include_dir IN LISTS CUTLASS_INCLUDE_DIRS)
+        "-I${NVSHMEM_INCLUDE_DIR}")
+    foreach(_include_dir IN LISTS CUDAToolkit_INCLUDE_DIRS CUTLASS_INCLUDE_DIRS)
         list(APPEND _nonrdc_moe_include_args "-I${_include_dir}")
     endforeach()
     file(GLOB_RECURSE _nonrdc_moe_dependencies

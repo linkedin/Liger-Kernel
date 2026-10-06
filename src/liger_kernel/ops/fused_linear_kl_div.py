@@ -7,6 +7,7 @@ import triton.language as tl
 
 from packaging.version import Version
 
+from liger_kernel.backends import dispatch
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import element_mul_kernel
@@ -137,7 +138,6 @@ def fused_linear_kl_div_forward(
     # inc_factor = (V + _CHUNK_MEM_CONST*H - 1) // (_CHUNK_MEM_CONST*H), chunk_size = (BT + inc_factor - 1) // inc_factor
     BT, H = student_input.shape
     V = student_weight.shape[0]
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
     inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))
@@ -179,31 +179,28 @@ def fused_linear_kl_div_forward(
 
         # shape: chunk_size x V. The GEMM output keeps its native precision in
         # HBM; the FP32 upcast, temperature scaling, log-softmax and the
-        # log-softmax backward all happen inside _kl_div_kernel in registers,
-        # so this is the only chunk-sized transient and the kernel overwrites
-        # it in place with the gradient w.r.t. the logits.
+        # log-softmax backward all happen inside the kl_loss_and_grad primitive
+        # in registers, so this is the only chunk-sized transient and the
+        # primitive overwrites it in place with the gradient w.r.t. the logits.
         logits_chunk = input_chunk @ student_weight.t()
-        chunk_n_rows = logits_chunk.shape[0]
 
-        _kl_div_kernel[(chunk_n_rows,)](
-            X_ptr=logits_chunk,
-            X_stride=logits_chunk.stride(-2),
-            Q_ptr=target_chunk,
-            Q_stride=target_chunk.stride(-2),
-            loss_ptr=loss_1d[start_idx:end_idx],
-            loss_stride=loss_1d[start_idx:end_idx].stride(0),
-            label_ptr=(
-                shift_labels[start_idx:end_idx] if has_label else torch.empty(1, device=device)
-            ),  # dummy ptr if no label
-            ignore_index=ignore_index,
-            n_cols=V,
-            temperature=temperature,
-            eps=eps,
-            scale=scale,
-            BLOCK_SIZE=BLOCK_SIZE,
-            HAS_LABEL=has_label,
-            num_warps=get_num_warps(BLOCK_SIZE),
+        # Dispatch the per-chunk loss + dL/dlogits so new KL backends are picked
+        # up automatically. The Triton primitive writes dx in place into
+        # logits_chunk; other impls may return a fresh tensor, so rebind either
+        # way.
+        chunk_labels = shift_labels[start_idx:end_idx] if has_label else None
+        loss_rows, logits_chunk = dispatch(
+            "kl_loss_and_grad",
+            logits_chunk,
+            target_chunk,
+            chunk_labels,
+            ignore_index,
+            temperature,
+            eps,
+            scale,
         )
+        loss_1d[start_idx:end_idx] = loss_rows
+
         # logits_chunk now holds dL/dlogits, shape: chunk_size x V
         grad_input[start_idx:end_idx] = logits_chunk @ student_weight
 
