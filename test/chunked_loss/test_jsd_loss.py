@@ -439,3 +439,101 @@ def test_correctness_functional(
 
     if bias:
         assert_verbose_allclose(student_bias1.grad, student_bias2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("bias", [False, True])
+def test_jsd_frozen_student_weight(compiled, bias):
+    B, T, H, V = 2, 8, 32, 64
+    torch.manual_seed(42)
+    student_input = torch.randn(B * T, H, device=device, dtype=torch.float32)
+    teacher_input = torch.randn(B * T, H, device=device, dtype=torch.float32)
+    student_weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    teacher_weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    student_bias = torch.randn(V, device=device, dtype=torch.float32) if bias else None
+    teacher_bias = torch.randn(V, device=device, dtype=torch.float32) if bias else None
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    def run(weight_requires_grad, bias_requires_grad):
+        x = student_input.clone().requires_grad_(True)
+        w = student_weight.clone().requires_grad_(weight_requires_grad)
+        b = student_bias.clone().requires_grad_(bias_requires_grad) if bias else None
+        loss_fn = LigerFusedLinearJSDLoss(
+            weight_hard_loss=0.5, weight_soft_loss=0.5, beta=0.5, chunk_size=4, compiled=compiled
+        )
+        loss = loss_fn(x, w, teacher_input, teacher_weight, target, b, teacher_bias)
+        loss.backward()
+        return loss, x, w, b
+
+    loss_full, x_full, w_full, b_full = run(True, True)
+    loss_lora, x_lora, w_lora, b_lora = run(False, False)
+
+    assert w_full.grad is not None
+    assert w_lora.grad is None
+    if bias:
+        assert b_full.grad is not None
+        assert b_lora.grad is None
+    assert_verbose_allclose(loss_full, loss_lora, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(x_full.grad, x_lora.grad, atol=1e-5, rtol=1e-5)
+
+    if bias:
+        # trainable weight, frozen bias: the weight gradient is unchanged and the bias gets none
+        _, x_mixed, w_mixed, b_mixed = run(True, False)
+        assert b_mixed.grad is None
+        assert_verbose_allclose(w_full.grad, w_mixed.grad, atol=1e-5, rtol=1e-5)
+        assert_verbose_allclose(x_full.grad, x_mixed.grad, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_jsd_no_grad_required(compiled):
+    B, T, H, V = 2, 8, 32, 64
+    torch.manual_seed(42)
+    student_input = torch.randn(B * T, H, device=device, dtype=torch.float32)
+    teacher_input = torch.randn(B * T, H, device=device, dtype=torch.float32)
+    student_weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    teacher_weight = torch.randn(V, H, device=device, dtype=torch.float32)
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    loss_fn = LigerFusedLinearJSDLoss(
+        weight_hard_loss=0.5, weight_soft_loss=0.5, beta=0.5, chunk_size=4, compiled=compiled
+    )
+
+    loss_frozen = loss_fn(student_input, student_weight, teacher_input, teacher_weight, target)
+    assert not loss_frozen.requires_grad
+    loss_trainable = loss_fn(
+        student_input.clone().requires_grad_(True),
+        student_weight.clone().requires_grad_(True),
+        teacher_input,
+        teacher_weight,
+        target,
+    )
+    assert_verbose_allclose(loss_frozen, loss_trainable, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("weight_requires_grad", [False, True])
+def test_jsd_differentiates_only_params_that_require_grad(monkeypatch, weight_requires_grad):
+    """A frozen student weight is left out of the differentiated arguments, so its gradient GEMM and buffer
+    are skipped rather than computed and discarded."""
+    argnums_seen = []
+    real = torch.func.grad_and_value
+
+    def spy(func, argnums=0, has_aux=False):
+        argnums_seen.append(argnums)
+        return real(func, argnums=argnums, has_aux=has_aux)
+
+    monkeypatch.setattr(torch.func, "grad_and_value", spy)
+    B, T, H, V = 2, 8, 32, 64
+    torch.manual_seed(42)
+    student_input = torch.randn(B * T, H, device=device, requires_grad=True)
+    student_weight = torch.randn(V, H, device=device, requires_grad=weight_requires_grad)
+    loss_fn = LigerFusedLinearJSDLoss(
+        weight_hard_loss=0.5, weight_soft_loss=0.5, beta=0.5, chunk_size=4, compiled=False
+    )
+    loss = loss_fn(
+        student_input,
+        student_weight,
+        torch.randn(B * T, H, device=device),
+        torch.randn(V, H, device=device),
+        torch.randint(0, V, (B * T,), device=device),
+    )
+    loss.backward()
+    assert argnums_seen and all(a == ((0, 1) if weight_requires_grad else (0,)) for a in argnums_seen)
