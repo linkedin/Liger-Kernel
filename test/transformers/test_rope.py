@@ -110,7 +110,9 @@ def test_correctness(
         (1, 2, 2, 2, 8),
         (1, 2, 1, 2, 8),
         # weird shapes
-        (9, 7, 41, 41, 41),
+        # HuggingFace llama/mistral source code doesn't support odd head dimension
+        # so we don't test it here
+        (9, 7, 41, 41, 92),
     ],
 )
 @pytest.mark.parametrize(
