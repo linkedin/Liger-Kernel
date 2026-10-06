@@ -38,7 +38,7 @@ def calculate_tile_count_2d(batch_size, seq_len, num_cores):
 
 
 def ensure_two_real_vocab_trips(n, block_n):
-    """If vocab fits one tile, shrink BLOCK_N so two real tiles run (A5 1-trip UB / CISPO store)."""
+    """If vocab fits one tile, shrink BLOCK_N so two real tiles run (950 1-trip UB / CISPO store)."""
     if n <= 1 or block_n <= 0:
         return block_n
     if (n + block_n - 1) // block_n >= 2:
@@ -155,7 +155,7 @@ def _selective_log_softmax_kernel(
 
             m_i = float("-inf")
             l_i = 0.0
-            # tl.range: A5 static_range unrolls to UB overflow at large V.
+            # tl.range: 950 static_range unrolls to UB overflow at large V.
             for start in tl.range(0, N, BLOCK_N):
                 cols = start + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
@@ -234,7 +234,7 @@ def _grpo_loss_fwd_kernel(
 
             m_i = float("-inf")
             l_i = 0.0
-            # tl.range: A5 static_range unrolls to UB overflow at large V.
+            # tl.range: 950 static_range unrolls to UB overflow at large V.
             for start in tl.range(0, N, BLOCK_N):
                 cols = start + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
@@ -364,7 +364,7 @@ def _grpo_loss_fwd_kernel_seq(
 
             m_i = float("-inf")
             l_i = 0.0
-            # tl.range: A5 static_range unrolls to UB overflow at large V.
+            # tl.range: 950 static_range unrolls to UB overflow at large V.
             for start in tl.range(0, N, BLOCK_N):
                 cols = start + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N

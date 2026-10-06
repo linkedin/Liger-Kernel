@@ -102,3 +102,32 @@ def test_correctness_not_last(B, T, V, log_target, reduction, dtype, atol, rtol)
         log_target,
         is_last_layer=False,
     )
+
+
+@pytest.mark.parametrize("log_target", [True, False])
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
+def test_torch_compile_matches_eager(log_target, reduction):
+    # inductor re-emits the kernel source; a signature default that names a module global must
+    # still resolve there, and eps must stay fp32 (inductor passes Python floats as fp64). The
+    # unreduced loss matches eager bit for bit; a reduced loss may differ in the last bits
+    # because inductor fuses the wrapper's sum/division
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    liger_kldiv = LigerKLDIVLoss(reduction=reduction, log_target=log_target)
+    compiled = torch.compile(liger_kldiv)
+    input = torch.randn(64, 1271, device=device, dtype=torch.float32).log_softmax(dim=-1)
+    with torch.no_grad():
+        target = torch.randn(64, 1271, device=device).softmax(dim=-1)
+        if log_target:
+            target = target.log()
+    x1 = input.detach().clone().requires_grad_(True)
+    x2 = input.detach().clone().requires_grad_(True)
+    out1 = liger_kldiv(x1, target)
+    out2 = compiled(x2, target)
+    if reduction == "none":
+        assert torch.equal(out1, out2)
+        return
+    torch.testing.assert_close(out2, out1)
+    out1.backward()
+    out2.backward()
+    torch.testing.assert_close(x2.grad, x1.grad)

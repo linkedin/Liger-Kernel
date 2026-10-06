@@ -1,23 +1,11 @@
 #pragma once
 
 #include "moe_comm_config_sm90.cuh"
+#include "moe_context.h"
 
 // ============================================================================
-// MoeSymmConfig — fixed parameters for symmetric-memory sizing.
-//
-// Single source of truth for the MoE symmetric-session config, shared by
-// moe.cu (forward) and moe_bwd.cu (backward). BOTH translation units alias
-// the one object returned by get_symm_config(), so the layout MUST be defined
-// exactly once — here. Previously each .cu defined its own copy; when moe.cu
-// gained max_comm_stages / max_tile_m (2026-06-03, ca1b943) and moe_bwd.cu's
-// copy wasn't updated, the two TUs read members at different offsets and the
-// bwd path saw a stale `initialized` flag (spurious "Call
-// moe_configure_symmetric before moe_bwd_fwd_bf16"). A single definition makes
-// that drift impossible.
-//
-// Requires nvshmem_team_t — include <nvshmem.h> before this header.
-// Must be set once (via moe_configure_symmetric) before the first kernel call;
-// all PEs must agree.
+// Process-wide capacity and per-EP topology, shared by forward and backward.
+// Requires <nvshmem.h>. Configure collectively before launching either path.
 // ============================================================================
 
 namespace liger {
@@ -45,10 +33,11 @@ struct MoeSymmConfig {
 	int max_comm_stages = kMaxMoeCommStages;
 	int max_tile_m      = kMaxMoeCommTileM;
 	bool initialized = false;
+	std::int64_t slot = -1;
+	int max_inflight = 0;
 };
 
-// Single instance lives in moe.cu (a function-local static). moe_bwd.cu reuses
-// it through this same declaration.
+// Resolves the current host-call context; kernels receive its values by value.
 MoeSymmConfig& get_symm_config();
 
 } // namespace liger

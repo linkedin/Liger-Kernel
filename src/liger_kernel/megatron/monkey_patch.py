@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 
 logger = logging.getLogger(__name__)
 
 _PATCH_MARKER = "__liger_patched__"
+
+# Megatron modules that bind a cross-entropy function into their own namespace with
+# ``from ... import``. Replacing the function on its defining module does not reach a copy
+# that was bound before the patch ran, so these are rebound as well. Each entry exists
+# only on some Megatron versions; missing modules or attributes are skipped.
+_FUSED_CE_CALL_SITES = (
+    # Released megatron-core (0.19 and earlier): LanguageModule.compute_language_model_loss
+    # calls this module global.
+    ("megatron.core.models.common.language_module.language_module", "fused_vocab_parallel_cross_entropy"),
+    # Megatron-LM main (NVIDIA/Megatron-LM#6766): select_cross_entropy returns this module
+    # global, and LanguageModule caches the result when the model is built.
+    ("megatron.core.models.backends", "_fused_ce"),
+)
+_UNFUSED_CE_CALL_SITES = (
+    # Released megatron-core: compute_language_model_loss calls the package-level re-export
+    # ``tensor_parallel.vocab_parallel_cross_entropy``, which is bound when the package is
+    # imported, i.e. always before its ``cross_entropy`` submodule can be patched.
+    ("megatron.core.tensor_parallel", "vocab_parallel_cross_entropy"),
+)
 
 
 def apply_liger_kernel_to_megatron(
@@ -31,7 +51,8 @@ def apply_liger_kernel_to_megatron(
             ``megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy``
             (fused path) and
             ``megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``
-            (unfused path) with Liger's Triton cross-entropy. Default
+            (unfused path) with Liger's Triton cross-entropy, along with the
+            copies Megatron's call sites bound at import time. Default
             ``False`` so adopters opt in explicitly. All tensor-parallel sizes
             are supported (TP=1 and TP>1 share the same vocab-parallel
             kernel). The fused wrapper matches native's
@@ -158,6 +179,27 @@ def _patch_transformer_block_layernorm_impl() -> None:
 _LABEL_SMOOTHING_UNSET = object()
 
 
+def _rebind_call_sites(call_sites, original, replacement) -> bool:
+    """Point every call site still bound to ``original`` at ``replacement``.
+
+    Importing a call-site module here is harmless: the defining module is already patched,
+    so a first import binds ``replacement`` directly. A call site bound to some other
+    function (another framework's override) is left alone.
+
+    Returns whether any call site now holds ``replacement``.
+    """
+    reached = False
+    for module_name, attr in call_sites:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if getattr(module, attr, None) is original:
+            setattr(module, attr, replacement)
+        reached = reached or getattr(module, attr, None) is replacement
+    return reached
+
+
 def _patch_fused_vocab_parallel_cross_entropy() -> None:
     """Replace ``megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy``.
 
@@ -165,6 +207,11 @@ def _patch_fused_vocab_parallel_cross_entropy() -> None:
     that match Megatron's native fused-CE behavior) in a closure matching Megatron's fused-CE
     signature ``(logits, target, tp_group)``. Idempotent: a sentinel attribute on the
     replacement prevents wrappers from stacking.
+
+    Megatron never calls the function through this module attribute: each call site binds
+    its own copy with ``from ... import`` (see ``_FUSED_CE_CALL_SITES``). Those copies are
+    rebound too, so the patch works regardless of import order. Logs a warning when no
+    known call site ends up on Liger.
     """
     try:
         import megatron.core.fusions.fused_cross_entropy as fused_ce
@@ -197,10 +244,17 @@ def _patch_fused_vocab_parallel_cross_entropy() -> None:
     setattr(liger_fused_vocab_parallel_cross_entropy, _PATCH_MARKER, True)
     setattr(liger_fused_vocab_parallel_cross_entropy, "__wrapped__", original)
     fused_ce.fused_vocab_parallel_cross_entropy = liger_fused_vocab_parallel_cross_entropy
+    reached = _rebind_call_sites(_FUSED_CE_CALL_SITES, original, liger_fused_vocab_parallel_cross_entropy)
 
     logger.info(
         "Patched megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy with Liger cross-entropy."
     )
+    if not reached:
+        logger.warning(
+            "Could not find where this Megatron version calls fused_vocab_parallel_cross_entropy; "
+            "configs with cross_entropy_loss_fusion=True may keep using Megatron's kernel. Please file "
+            "an issue on https://github.com/linkedin/Liger-Kernel with your megatron-core version."
+        )
 
 
 def _patch_vocab_parallel_cross_entropy() -> None:
@@ -211,6 +265,10 @@ def _patch_vocab_parallel_cross_entropy() -> None:
     at call time, so the wrapper honors a runtime value when the caller actually passed
     one. A sentinel disambiguates "caller passed 0.0" (use 0.0) from "caller didn't pass"
     (use class default).
+
+    Released megatron-core calls the package-level re-export instead, which is rebound too
+    (see ``_UNFUSED_CE_CALL_SITES``). Megatron-LM main looks the function up on this module
+    at call time, so the module attribute alone reaches it.
     """
     try:
         import megatron.core.tensor_parallel.cross_entropy as unfused_ce
@@ -260,6 +318,7 @@ def _patch_vocab_parallel_cross_entropy() -> None:
     setattr(liger_vocab_parallel_cross_entropy, _PATCH_MARKER, True)
     setattr(liger_vocab_parallel_cross_entropy, "__wrapped__", original)
     unfused_ce.vocab_parallel_cross_entropy = liger_vocab_parallel_cross_entropy
+    _rebind_call_sites(_UNFUSED_CE_CALL_SITES, original, liger_vocab_parallel_cross_entropy)
 
     logger.info(
         "Patched megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy with Liger cross-entropy."

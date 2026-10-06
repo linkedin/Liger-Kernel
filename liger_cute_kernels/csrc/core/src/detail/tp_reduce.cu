@@ -4,8 +4,10 @@
 #include <nvshmem.h>
 #include <nvshmemx.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 #include "remote_all_reduce.cuh"
@@ -27,14 +29,27 @@ struct RawNvlsMapping {
 	int remote_size;
 };
 
-RawNvlsMapping g_raw = {};
-TpReducePlan g_plan = {};
-TpReduceBuffers g_buffers = {};
-bool g_configured = false;
-std::int64_t g_parent_team = 0;
-nvshmem_team_t g_local_team = NVSHMEM_TEAM_INVALID;
-nvshmem_team_t g_remote_team = NVSHMEM_TEAM_INVALID;
-bool g_owns_hierarchical_teams = false;
+struct TpReduceContext {
+	RawNvlsMapping raw = {};
+	TpReducePlan plan = {};
+	TpReduceBuffers buffers = {};
+	bool configured = false;
+	nvshmem_team_t local_team = NVSHMEM_TEAM_INVALID;
+	nvshmem_team_t remote_team = NVSHMEM_TEAM_INVALID;
+	bool owns_hierarchical_teams = false;
+};
+
+std::map<std::int64_t, TpReduceContext> g_contexts;
+std::vector<std::int64_t> g_creation_order;
+thread_local std::int64_t g_selected_team = -1;
+
+TpReduceContext& selected_context() {
+	auto found = g_contexts.find(tp_reduce_team_handle());
+	LIGER_CHECK(
+		found != g_contexts.end() && found->second.configured,
+		"tensor-parallel reduction context is not configured");
+	return found->second;
+}
 
 void check_cuda(cudaError_t error, const char* what) {
 	LIGER_CHECK(
@@ -208,10 +223,12 @@ void configure_tp_reduce(
 			buffers.peer_sync_storage != nullptr,
 		"tensor-parallel direct-peer mapping storage must be non-null");
 
-	if (g_configured) {
+	auto inserted = g_contexts.try_emplace(parent_team);
+	if (inserted.second) g_creation_order.push_back(parent_team);
+	auto& context = inserted.first->second;
+	if (context.configured) {
 		LIGER_CHECK(
-			parent_team == g_parent_team &&
-				same_buffers(buffers, g_buffers),
+			same_buffers(buffers, context.buffers),
 			"tensor-parallel reduction mapping is immutable once configured");
 		return;
 	}
@@ -255,9 +272,9 @@ void configure_tp_reduce(
 		local_size);
 
 	bool parent_spans_nodes = local_size < team_size;
-	g_local_team = team;
-	g_remote_team = NVSHMEM_TEAM_INVALID;
-	g_owns_hierarchical_teams = false;
+	context.local_team = team;
+	context.remote_team = NVSHMEM_TEAM_INVALID;
+	context.owns_hierarchical_teams = false;
 	if (parent_spans_nodes) {
 		int local_layout_valid =
 			parent_team_rows_are_node_local(team, local_size) ? 1 : 0;
@@ -282,19 +299,19 @@ void configure_tp_reduce(
 			local_size,
 			&local_config,
 			0,
-			&g_local_team,
+			&context.local_team,
 			&remote_config,
 			0,
-			&g_remote_team);
+			&context.remote_team);
 		LIGER_CHECK(
 			split_status == 0 &&
-				g_local_team != NVSHMEM_TEAM_INVALID &&
-				g_remote_team != NVSHMEM_TEAM_INVALID,
+				context.local_team != NVSHMEM_TEAM_INVALID &&
+				context.remote_team != NVSHMEM_TEAM_INVALID,
 			"failed to split tensor-parallel team into parent-relative "
 			"local and matching-rank remote teams (status ",
 			split_status,
 			")");
-		g_owns_hierarchical_teams = true;
+		context.owns_hierarchical_teams = true;
 	}
 
 	RawNvlsMapping* device_mapping = nullptr;
@@ -303,8 +320,8 @@ void configure_tp_reduce(
 		"cudaMalloc(reduction mapping)");
 	query_nvls_mapping<<<1, 1>>>(
 		team,
-		g_local_team,
-		g_remote_team,
+		context.local_team,
+		context.remote_team,
 		buffers.partial,
 		buffers.reduced,
 		buffers.sync,
@@ -312,7 +329,7 @@ void configure_tp_reduce(
 	check_cuda(cudaGetLastError(), "query_nvls_mapping launch");
 	check_cuda(
 		cudaMemcpy(
-			&g_raw,
+			&context.raw,
 			device_mapping,
 			sizeof(RawNvlsMapping),
 			cudaMemcpyDeviceToHost),
@@ -320,12 +337,12 @@ void configure_tp_reduce(
 	check_cuda(cudaFree(device_mapping), "cudaFree(reduction mapping)");
 
 	LIGER_CHECK(
-		g_raw.team_rank >= 0 &&
-			g_raw.team_rank < g_raw.team_size &&
-			g_raw.team_size == team_size &&
-			g_raw.local_rank >= 0 &&
-			g_raw.local_rank < g_raw.local_size &&
-			g_raw.local_size == local_size,
+		context.raw.team_rank >= 0 &&
+			context.raw.team_rank < context.raw.team_size &&
+			context.raw.team_size == team_size &&
+			context.raw.local_rank >= 0 &&
+			context.raw.local_rank < context.raw.local_size &&
+			context.raw.local_size == local_size,
 		"inconsistent tensor-parallel reduction team metadata");
 
 	std::vector<float*> peer_partial(team_size);
@@ -369,25 +386,25 @@ void configure_tp_reduce(
 		"cudaMemcpy(direct-peer signal pointers)");
 	bool local_nvls_available =
 		local_size == 1 ||
-		(g_raw.local_multicast_partial != nullptr &&
-			g_raw.local_multicast_reduced != nullptr &&
-			g_raw.local_multicast_sync != nullptr);
+		(context.raw.local_multicast_partial != nullptr &&
+			context.raw.local_multicast_reduced != nullptr &&
+			context.raw.local_multicast_sync != nullptr);
 	bool remote_topology_valid =
 		tp_reduce_uses_remote_ring(
 			team_size,
-			g_raw.local_size,
-			g_raw.remote_size) &&
-		g_raw.remote_rank >= 0 &&
-		g_raw.remote_rank < g_raw.remote_size;
+			context.raw.local_size,
+			context.raw.remote_size) &&
+		context.raw.remote_rank >= 0 &&
+		context.raw.remote_rank < context.raw.remote_size;
 	if (parent_spans_nodes) {
 		LIGER_CHECK(
 			local_nvls_available && remote_topology_valid,
 			"cross-host tensor-parallel reduction requires uniform, "
 			"parent-relative node rows with local NVLS mappings and "
 			"matching-rank remote teams (local size ",
-			g_raw.local_size,
+			context.raw.local_size,
 			", remote size ",
-			g_raw.remote_size,
+			context.raw.remote_size,
 			", TP size ",
 			team_size,
 			")");
@@ -397,65 +414,70 @@ void configure_tp_reduce(
 	bool nvls_available =
 		!parent_spans_nodes && local_nvls_available;
 
-	g_plan = {};
-	g_plan.remote.previous_world = -1;
-	g_plan.remote.next_world = -1;
-	g_plan.remote.team_handle = -1;
-	g_plan.team_size = g_raw.team_size;
-	g_plan.direct = {
+	context.plan = {};
+	context.plan.remote.previous_world = -1;
+	context.plan.remote.next_world = -1;
+	context.plan.remote.team_handle = -1;
+	context.plan.team_size = context.raw.team_size;
+	context.plan.direct = {
 		buffers.peer_partial_storage,
 		buffers.peer_sync_storage,
 		static_cast<int>(direct_available),
-		g_raw.team_rank,
-		g_raw.team_size};
+		context.raw.team_rank,
+		context.raw.team_size};
+	// Direct-peer all-reduce produces a full tile on each rank, so its
+	// downstream packed/scatter layout is the local-size-one layout.
+	context.plan.nvls = {
+		buffers.partial, buffers.reduced, buffers.sync,
+		buffers.reduced_shard, 0, 1};
 
 	if (nvls_available || remote_available) {
-		g_plan.backend = LocalReduceBackend::kNvls;
-		g_plan.nvls = {
+		context.plan.backend = LocalReduceBackend::kNvls;
+		context.plan.nvls = {
 			local_size == 1
 				? buffers.partial
-				: g_raw.local_multicast_partial,
+				: context.raw.local_multicast_partial,
 			local_size == 1
 				? buffers.reduced
-				: g_raw.local_multicast_reduced,
+				: context.raw.local_multicast_reduced,
 			local_size == 1
 				? buffers.sync
-				: g_raw.local_multicast_sync,
+				: context.raw.local_multicast_sync,
 			buffers.reduced_shard,
-			g_raw.local_rank,
-			g_raw.local_size};
+			context.raw.local_rank,
+			context.raw.local_size};
 	}
 	if (remote_available) {
 		int previous_rank = remote_ring_previous_rank(
-			g_raw.remote_rank, g_raw.remote_size);
+			context.raw.remote_rank, context.raw.remote_size);
 		int next_rank = remote_ring_next_rank(
-			g_raw.remote_rank, g_raw.remote_size);
+			context.raw.remote_rank, context.raw.remote_size);
 		int previous_world = nvshmem_team_translate_pe(
-			g_remote_team,
+			context.remote_team,
 			previous_rank,
 			NVSHMEM_TEAM_WORLD);
 		int next_world = nvshmem_team_translate_pe(
-			g_remote_team,
+			context.remote_team,
 			next_rank,
 			NVSHMEM_TEAM_WORLD);
 		LIGER_CHECK(
 			previous_world >= 0 && next_world >= 0,
 			"failed to translate remote ring neighbors to world ranks");
-		g_plan.remote = {
+		context.plan.remote = {
 			buffers.reduced_shard,
 			buffers.reduced_shard_bytes / sizeof(float),
 			buffers.remote_inbox,
 			buffers.remote_signals,
 			buffers.remote_signals + kRemoteRingSignalSlots,
 			buffers.remote_inbox_slot_bytes / sizeof(float),
-			g_raw.remote_rank,
-			g_raw.remote_size,
+			context.raw.remote_rank,
+			context.raw.remote_size,
 			previous_world,
 			next_world,
 			static_cast<int>(NVSHMEMX_QP_DEFAULT),
-			static_cast<int>(g_remote_team)};
+			static_cast<int>(context.remote_team)};
 	} else if (!nvls_available) {
-		g_plan.backend = LocalReduceBackend::kDirectPeer;
+		context.plan.backend = LocalReduceBackend::kDirectPeer;
 	}
 
 	check_cuda(
@@ -467,33 +489,54 @@ void configure_tp_reduce(
 		"tensor-parallel reduction setup barrier failed with status ",
 		barrier_status);
 
-	g_parent_team = parent_team;
-	g_buffers = buffers;
-	g_configured = true;
+	context.buffers = buffers;
+	context.configured = true;
+}
+
+std::int64_t tp_reduce_team_handle() {
+	if (g_selected_team >= 0) return g_selected_team;
+	LIGER_CHECK(
+		g_contexts.size() == 1 && g_contexts.begin()->second.configured,
+		"select a prepared tensor-parallel team for this call");
+	return g_contexts.begin()->first;
+}
+
+TpReduceContextScope::TpReduceContextScope(std::int64_t parent_team)
+		: previous_(g_selected_team) {
+	if (parent_team < 0) parent_team = tp_reduce_team_handle();
+	auto found = g_contexts.find(parent_team);
+	LIGER_CHECK(
+		found != g_contexts.end() && found->second.configured,
+		"tensor-parallel team ", parent_team,
+		" is not prepared; configure its context collectively before execution");
+	g_selected_team = parent_team;
+}
+
+TpReduceContextScope::~TpReduceContextScope() {
+	g_selected_team = previous_;
 }
 
 TpReducePlan tp_reduce_plan() {
-	LIGER_CHECK(
-		g_configured,
-		"configure_tp_reduce() must be called before requesting a plan");
-	return g_plan;
+	return selected_context().plan;
 }
 
 void begin_tp_reduce(
 		const std::uint64_t* launch_epoch,
 		cudaStream_t stream) {
-	LIGER_CHECK(g_configured, "tensor-parallel reduction is not configured");
+	(void)selected_context();
 	LIGER_CHECK(launch_epoch != nullptr, "launch epoch is null");
 	advance_launch_epoch<<<1, 1, 0, stream>>>(
 		const_cast<std::uint64_t*>(launch_epoch));
 	check_cuda(cudaGetLastError(), "advance_launch_epoch launch");
+	// A remote peer may still be using the shared inbox for another TP team.
+	// All members must finish their prior work before this team starts puts.
+	if (selected_context().plan.remote.enabled()) synchronize_tp_reduce(stream);
 }
 
 void synchronize_tp_reduce(cudaStream_t stream) {
-	LIGER_CHECK(g_configured, "tensor-parallel reduction is not configured");
-	if (g_plan.team_size > 1) {
+	if (selected_context().plan.team_size > 1) {
 		nvshmemx_barrier_on_stream(
-			static_cast<nvshmem_team_t>(g_parent_team), stream);
+			static_cast<nvshmem_team_t>(tp_reduce_team_handle()), stream);
 	}
 }
 
@@ -524,22 +567,23 @@ void launch_remote_reduce(
 		stream);
 }
 
-void reset_tp_reduce() {
-	if (g_owns_hierarchical_teams) {
-		nvshmem_team_destroy(g_remote_team);
-		nvshmem_team_destroy(g_local_team);
+void release_tp_reduce(std::int64_t parent_team) {
+	auto found = g_contexts.find(parent_team);
+	if (found == g_contexts.end()) return;
+	auto& context = found->second;
+	if (context.owns_hierarchical_teams) {
+		nvshmem_team_destroy(context.remote_team);
+		nvshmem_team_destroy(context.local_team);
 	}
-	g_raw = {};
-	g_plan = {};
-	g_plan.remote.previous_world = -1;
-	g_plan.remote.next_world = -1;
-	g_plan.remote.team_handle = -1;
-	g_buffers = {};
-	g_configured = false;
-	g_parent_team = 0;
-	g_local_team = NVSHMEM_TEAM_INVALID;
-	g_remote_team = NVSHMEM_TEAM_INVALID;
-	g_owns_hierarchical_teams = false;
+	g_contexts.erase(found);
+	g_creation_order.erase(
+		std::remove(g_creation_order.begin(), g_creation_order.end(), parent_team),
+		g_creation_order.end());
+}
+
+void reset_tp_reduce() {
+	while (!g_creation_order.empty()) release_tp_reduce(g_creation_order.front());
+	g_selected_team = -1;
 }
 
 }  // namespace detail

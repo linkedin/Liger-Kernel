@@ -1475,7 +1475,7 @@ void backward_gemm_tp_kernel_sm100(
 							cta,
 							stage,
 							chunk,
-							pass);
+							pass, &wave_workspace.direct);
 
 					__syncwarp();
 					if (lane == 0) {
@@ -1698,7 +1698,7 @@ void backward_gemm_tp_kernel_sm100(
 						wave_workspace.packed_shard +
 						durable_tile * packed_tile_elements;
 					const float* final_source = packed;
-					if (mapping.size == 1) {
+					if (mapping.size == 1 && !wave_workspace.direct.available) {
 						final_source =
 							comm.partial +
 							dx_slot_offset<CommConfig>(
@@ -1712,7 +1712,7 @@ void backward_gemm_tp_kernel_sm100(
 								cta,
 								stage,
 								wave,
-								pass);
+								pass, &wave_workspace.direct);
 					}
 					if (lane == 0) {
 						backward_diagnostic_max_sm100(
