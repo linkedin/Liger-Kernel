@@ -30,7 +30,7 @@ def _tv_distance_kernel(
     total_rows: tl.constexpr,  # BT
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
-    reduction: tl.constexpr = "batchmean",
+    reduction: tl.constexpr,  # no default: always pass explicitly
 ):
     thread_id = tl.program_id(0)
     num_threads = tl.num_programs(0)
