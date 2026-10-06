@@ -228,6 +228,7 @@ def _torch_reference_moe_backward(
     top_k,
     rank,
     experts_per_pe,
+    group=None,
 ):
     X_ref = X.float().detach().requires_grad_(True)
     weights_ref = expert_weights.float().detach().requires_grad_(True)
@@ -246,7 +247,7 @@ def _torch_reference_moe_backward(
     Y_ref.backward(dY.float())
 
     for grad in (B_ref.grad, C_ref.grad, A_ref.grad):
-        dist.all_reduce(grad)
+        dist.all_reduce(grad, group=group)
     expert_slice = slice(rank * experts_per_pe, (rank + 1) * experts_per_pe)
     return (
         Y_ref.detach().to(torch.bfloat16),
@@ -313,6 +314,214 @@ def _run(world_size: int, worker, *worker_args):
 
 
 # ── forward: capture + replay ─────────────────────────────────────────────────
+
+
+def _multiple_ep_contexts_worker(rank, world_size, init_file, split_bootstrap):
+    from liger_cute_kernels import MoEConfig
+    from liger_cute_kernels import configure
+
+    torch.cuda.set_device(rank)
+    dist.init_process_group(
+        "nccl",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=180),
+    )
+    domains = [list(range(world_size))]
+    if split_bootstrap:
+        domains = [list(range(0, 4)), list(range(4, 8))]
+    bootstrap = dist.group.WORLD
+    layouts = []
+    for domain in domains:
+        if split_bootstrap:
+            pg = dist.new_group(domain)
+            if rank in domain:
+                bootstrap = pg
+        pairs = [domain[i : i + 2] for i in range(0, len(domain), 2)]
+        if len(domain) == 6:
+            crossed = [domain[:2], [domain[2], domain[4]], [domain[3], domain[5]]]
+        else:
+            crossed = [domain[::2], domain[1::2]]
+        for index, partition in enumerate((pairs, crossed, [domain])):
+            for members in partition:
+                pg = dist.new_group(members)
+                if rank in members:
+                    layouts.append((index, pg, members))
+    layouts.sort(key=lambda item: item[0])
+    tokens, hidden, intermediate, experts, top_k = 64, 512, 512, 24, 2
+    configs, groups, teams = [], {}, []
+    for index, pg, members in layouts:
+        name = f"ep{index}"
+        groups[name] = pg
+        cfg = MoEConfig(
+            tokens * 2,
+            hidden * 2,
+            experts * 2,
+            top_k * 2,
+            1,
+            len(members),
+            group=name,
+            max_inflight=2,
+        )
+        configs.append(cfg)
+        configure(process_groups={name: pg}, bootstrap_group=bootstrap, moe=cfg)
+        teams.append(nvshmem.resolve_team(pg, create=False))
+
+    inputs, references = [], []
+    for index, pg, members in layouts:
+        torch.manual_seed(500 + index * 17 + rank)
+        x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda") * 0.1
+        gate = torch.randn(experts, hidden, dtype=torch.bfloat16, device="cuda")
+        ei, ew = _route(x, gate, top_k)
+        local_experts = experts // len(members)
+        b = torch.randn(local_experts, intermediate, hidden, dtype=torch.bfloat16, device="cuda") * 0.02
+        c = torch.randn_like(b) * 0.02
+        a = torch.randn(local_experts, hidden, intermediate, dtype=torch.bfloat16, device="cuda") * 0.02
+        dy = torch.randn_like(x) * 0.1
+        global_weights = [_gather_experts(w, pg) for w in (b, c, a)]
+        ref = _torch_reference_moe_backward(
+            x,
+            dy,
+            ei,
+            ew,
+            *global_weights,
+            top_k,
+            dist.get_rank(pg),
+            local_experts,
+            pg,
+        )
+        inputs.append((x, ei, ew, b, c, a, dy))
+        references.append(ref)
+
+    def forward(index):
+        return tvm_ffi.moe_fused_fwd_bf16(
+            *inputs[index][:6],
+            experts,
+            top_k,
+            teams[index],
+        )
+
+    def backward(index, output):
+        x, ei, ew, b, c, a, dy = inputs[index]
+        grads = tvm_ffi.moe_fused_bwd_bf16(
+            dy,
+            output[2],
+            output[1],
+            output[4],
+            output[5],
+            output[3],
+            ei,
+            ew,
+            b,
+            c,
+            a,
+            experts,
+            top_k,
+            teams[index],
+            output[6],
+        )
+        tvm_ffi.moe_pop_fwd(teams[index])
+        return grads
+
+    def check(index, output, grads=()):
+        torch.cuda.synchronize()
+        for actual, expected in zip((output[0], *grads), references[index]):
+            _check_close(actual, expected)
+
+    # Disjoint groups deliberately advance at different rates, without WORLD
+    # allocations. Reconfigure a partially cached partition afterwards.
+    for _ in range(1 + dist.get_rank(bootstrap) // 2):
+        out = forward(0)
+        check(0, out, backward(0, out))
+    configure(bootstrap_group=bootstrap, moe=configs[1])
+
+    first = forward(0)
+    with pytest.raises(RuntimeError, match="live forward intermediates"):
+        nvshmem.team_destroy(teams[0])
+    second = forward(1)
+    third = forward(2)
+    check(2, third, backward(2, third))
+    check(1, second, backward(1, second))
+    check(0, first, backward(0, first))
+
+    # Verify bounded retained storage rejects overflow before any collective
+    # work or partial stack mutation, and remains usable after rejection.
+    held = [forward(2), forward(2)]
+    with pytest.raises(RuntimeError, match="max_inflight"):
+        forward(2)
+    for out in reversed(held):
+        check(2, out, backward(2, out))
+
+    graphs = []
+    for index in (0, 2):
+        if index == 2:
+            # Grow another group's device workspace only after graph 0 has
+            # captured its pointers; this must not invalidate that graph.
+            x, ei, ew, b, c, a, dy = inputs[index]
+            b, c = (torch.cat((w, w), dim=1).contiguous() for w in (b, c))
+            a = torch.cat((a, a), dim=2).contiguous()
+            inputs[index] = (x, ei, ew, b, c, a, dy)
+            pg = layouts[index][1]
+            global_weights = [_gather_experts(w, pg) for w in (b, c, a)]
+            references[index] = _torch_reference_moe_backward(
+                x,
+                dy,
+                ei,
+                ew,
+                *global_weights,
+                top_k,
+                dist.get_rank(pg),
+                experts // dist.get_world_size(pg),
+                pg,
+            )
+        out = forward(index)
+        backward(index, out)
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            out = forward(index)
+            grads = backward(index, out)
+        graphs.append((index, graph, out, grads))
+    for _ in range(2):
+        for index, graph, out, grads in graphs:
+            other = forward(1)
+            check(1, other, backward(1, other))
+            graph.replay()
+            check(index, out, grads)
+    del graphs, graph
+    torch.cuda.synchronize()
+    dist.barrier(group=bootstrap)
+    old_team = teams[0]
+    nvshmem.team_destroy(old_team)
+    with pytest.raises(RuntimeError, match="not prepared"):
+        tvm_ffi._moe_symm_config(old_team)
+    configure(bootstrap_group=bootstrap, moe=configs[0])
+    for index, pg, _ in layouts:
+        teams[index] = nvshmem.resolve_team(pg, create=False)
+        # The partially cached layout may alias the destroyed first team.
+        configure(bootstrap_group=bootstrap, moe=configs[index])
+        teams[index] = nvshmem.resolve_team(pg, create=False)
+    out = forward(0)
+    check(0, out, backward(0, out))
+    nvshmem.pool_clear_all()
+    configure(bootstrap_group=bootstrap, moe=configs[2])
+    out = forward(2)
+    check(2, out, backward(2, out))
+    torch.cuda.synchronize()
+    dist.barrier(group=bootstrap)
+    nvshmem.finalize()
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize(("world_size", "split_bootstrap"), [(4, False), (6, False), (8, True)])
+def test_moe_multiple_ep_contexts(monkeypatch, world_size, split_bootstrap):
+    if _NDEV < world_size:
+        pytest.skip(f"requires {world_size} CUDA devices")
+    monkeypatch.setenv("NVSHMEM_DISABLE_NCCL", "1")
+    monkeypatch.setenv("NVSHMEM_REMOTE_TRANSPORT", "none")
+    monkeypatch.setenv("NVSHMEM_SYMMETRIC_SIZE", "6G")
+    _run(world_size, _multiple_ep_contexts_worker, split_bootstrap)
 
 
 def _fwd_graph_worker(rank: int, world_size: int, init_file: str):

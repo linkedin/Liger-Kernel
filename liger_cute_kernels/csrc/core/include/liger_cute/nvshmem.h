@@ -1,4 +1,4 @@
-// nvshmem.h — flat extern "C" ABI for NVSHMEM bootstrap, teams, and the comm schedule.
+// nvshmem.h — flat extern "C" ABI for NVSHMEM bootstrap, teams, and memory pools.
 //
 // Adapted from LigerCuteKernels' NVSHMEM helpers and the liger_cute
 // boundary contract (see liger_cute.h): every entry point returns a
@@ -86,22 +86,6 @@ liger_cute_nvshmem_team_n_pes(int64_t team_handle, int* out);
 // the PE is not a member of the destination team.
 LIGER_CUTE_API liger_cute_status_t liger_cute_nvshmem_team_translate_pe(
     int64_t src_team_handle, int src_pe, int64_t dst_team_handle, int* out);
-
-// ─── Communication schedule ──────────────────────────────────────────────────
-
-// Build the schedule for an (N hosts × M GPUs-per-host) layout and upload it to
-// device constant memory (g_dest_table / g_rank_table). Collective wrt host
-// setup — call once after nvshmem init with the same (N, M) on every PE.
-// (moe_configure_symmetric calls this internally; exposed for direct setup.)
-// Fails with LIGER_CUTE_ERR_INVALID_ARGUMENT if N*M exceeds the schedule
-// capacity, or LIGER_CUTE_ERR_CUDA on a failed upload.
-LIGER_CUTE_API liger_cute_status_t liger_cute_init_comm_schedule(int N, int M);
-
-// Pure (no-CUDA) computation of the comm schedule permutation, exposed for unit
-// testing. Fills host_dest[0..N*M) (position->rank) and host_rank[0..N*M)
-// (rank->position, the inverse). Caller-owned arrays of size >= N*M.
-LIGER_CUTE_API liger_cute_status_t
-liger_cute_build_comm_schedule(int N, int M, int* host_dest, int* host_rank);
 
 // ─── Symmetric / device memory pools ─────────────────────────────────────────
 //
