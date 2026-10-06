@@ -1558,6 +1558,41 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
 
 
 @pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
+def test_apply_liger_kernel_to_llama4_class_patch_with_dense_layers(monkeypatch):
+    # Llama4 checkpoints that interleave dense and MoE layers (e.g. Maverick, interleave_moe_layer_step=2)
+    # build their dense feed-forward as ``Llama4TextMLP(config, intermediate_size=config.intermediate_size_mlp)``.
+    # The class-level patch (used before model init, e.g. by AutoLigerKernelForCausalLM) must keep that working.
+    from transformers.models.llama4 import modeling_llama4
+    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+
+    # Restore the module-level symbols swapped by the class-level patch once the test is done
+    monkeypatch.setattr(modeling_llama4, "Llama4TextMLP", modeling_llama4.Llama4TextMLP)
+
+    monkey_patch.apply_liger_kernel_to_llama4(
+        rope=False, rms_norm=False, swiglu=True, fused_linear_cross_entropy=False, layer_norm=False
+    )
+
+    config = transformers.models.llama4.configuration_llama4.Llama4TextConfig(
+        hidden_size=32,
+        intermediate_size=64,
+        intermediate_size_mlp=128,
+        hidden_act="silu",
+        num_hidden_layers=2,
+        moe_layers=[1],
+    )
+    model = Llama4ForCausalLM._from_config(config)
+
+    dense_mlp = model.model.layers[0].feed_forward
+    assert isinstance(dense_mlp, LigerSwiGLUMLP)
+    assert dense_mlp.gate_proj.out_features == config.intermediate_size_mlp
+    assert dense_mlp.down_proj.in_features == config.intermediate_size_mlp
+
+    shared_expert = model.model.layers[1].feed_forward.shared_expert
+    assert isinstance(shared_expert, LigerSwiGLUMLP)
+    assert shared_expert.gate_proj.out_features == config.intermediate_size
+
+
+@pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
 def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.llama4.modeling_llama4"):
@@ -2959,6 +2994,54 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_text():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2-VL / Qwen2.5-VL support is only compatible with transformers >= 4.52.4",
+)
+@pytest.mark.parametrize(
+    "model_name, apply_fn_kwargs",
+    [
+        ("qwen2_vl", {"layer_norm": False}),
+        ("qwen2_5_vl", {}),
+    ],
+)
+def test_apply_liger_kernel_to_qwen2_vl_family_class_patch_rms_norm(monkeypatch, model_name, apply_fn_kwargs):
+    # The class-level patch (no model instance, applied before model init) must make the text model's
+    # RMSNorm layers Liger modules, i.e. it has to target the RMSNorm class that modeling_<model> actually uses.
+    import importlib
+
+    modeling = importlib.import_module(f"transformers.models.{model_name}.modeling_{model_name}")
+    configuration = importlib.import_module(f"transformers.models.{model_name}.configuration_{model_name}")
+    text_model_cls = {"qwen2_vl": "Qwen2VLTextModel", "qwen2_5_vl": "Qwen2_5_VLTextModel"}[model_name]
+    text_config_cls = {"qwen2_vl": "Qwen2VLTextConfig", "qwen2_5_vl": "Qwen2_5_VLTextConfig"}[model_name]
+
+    # Restore any module-level RMSNorm symbol swapped by the class-level patch once the test is done
+    for name in ("Qwen2RMSNorm", "Qwen2VLRMSNorm", "Qwen2_5_VLRMSNorm"):
+        monkeypatch.setattr(modeling, name, getattr(modeling, name, None), raising=False)
+
+    getattr(monkey_patch, f"apply_liger_kernel_to_{model_name}")(
+        rope=False, rms_norm=True, swiglu=False, fused_linear_cross_entropy=False, **apply_fn_kwargs
+    )
+
+    config = getattr(configuration, text_config_cls)(
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=48,
+        hidden_act="silu",
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        max_position_embeddings=128,
+        vocab_size=1000,
+    )
+    model = getattr(modeling, text_model_cls)._from_config(config)
+
+    assert isinstance(model.norm, LigerRMSNorm), type(model.norm).__name__
+    for layer in model.layers:
+        assert isinstance(layer.input_layernorm, LigerRMSNorm), type(layer.input_layernorm).__name__
+        assert isinstance(layer.post_attention_layernorm, LigerRMSNorm), type(layer.post_attention_layernorm).__name__
 
 
 @pytest.mark.skipif(not is_internvl_available(), reason="internvl module not available")
