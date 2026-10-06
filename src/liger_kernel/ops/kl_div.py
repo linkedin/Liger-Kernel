@@ -54,8 +54,10 @@ def _kldiv_kernel_forward(
     n_cols,  # int, number of columns in the input tensor
     eps,
     BLOCK_SIZE: tl.constexpr,
+    # no default: torch.compile re-emits this kernel's source in a module without the
+    # _REDUCTION_MODE_* globals, so a default naming one raises NameError. Always pass it.
+    reduction: tl.constexpr,
     log_target: tl.constexpr = False,
-    reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
 ):
     pid = tl.program_id(0).to(tl.int64)
     y_ptr += pid * y_stride
@@ -63,6 +65,12 @@ def _kldiv_kernel_forward(
     loss_ptr += pid * loss_stride
 
     base_offsets = tl.arange(0, BLOCK_SIZE)
+
+    # Pin the scalar to fp32. Eager Triton specializes a non-constexpr Python float to
+    # fp32, but Inductor specializes it to fp64; mixing an fp64 scalar into the loop body
+    # promotes the whole expression -- including tl.log -- to float64, and re-assigns the
+    # fp32 loop-carried `loss_sum` to fp64. This cast is a no-op on the eager path.
+    eps = eps.to(tl.float32)
 
     loss_sum = 0.0
     for i in range(0, n_cols, BLOCK_SIZE):

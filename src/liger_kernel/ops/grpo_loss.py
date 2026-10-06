@@ -316,6 +316,7 @@ def _grpo_loss_fwd_kernel_seq(
 def _grpo_loss_bwd_kernel_seq(
     DLOSS,
     DLOSS_SUM,
+    DKL_SUM,
     DLOGITS,
     LOGITS,
     OLD_LOGP,
@@ -391,10 +392,9 @@ def _grpo_loss_bwd_kernel_seq(
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
         if USE_BIAS_CORRECTION_KL:
-            # d(kl * coef_1)/d(logp) ≈ coef_1 * (logp - ref_logp), with coef_1 detached.
-            # Use the loaded sequence-level coef_1 (pre delta-clamp) to match TRL's
-            # ``per_token_kl * coef_1`` for importance_sampling_level == "sequence".
-            dlogp += BETA * coef_1 * (logp - ref_logp) * dloss
+            # The shared ratio contributes every token's upstream-weighted KL.
+            dkl_sum = tl.load(DKL_SUM + off_b).to(tl.float32)
+            dlogp += BETA * (coef_1 * (1 - tl.exp(ref_logp - logp)) * dloss + dkl_sum / seq_len)
         else:
             dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
@@ -756,6 +756,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 coef_1,
                 seq_lens,
                 vllm_is_ratio_ptr,
+                kl if use_bias_correction_kl else None,
             )
         else:
             # Token-level: use optimized Triton kernel with LOSS_TYPE branching
@@ -875,6 +876,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 coef_1,
                 seq_lens,
                 vllm_is_ratio,
+                kl,
             ) = saved_tensors
             phi_seq = None
         else:
@@ -917,6 +919,9 @@ class GrpoLossFunction(torch.autograd.Function):
         kwargs = {"BLOCK_N": 4096, "num_stages": 1, "num_warps": 16}
 
         if importance_sampling_level == "sequence":
+            # Mask before sequence reductions: zero-valued padding outputs can have nonzero upstream gradients.
+            dloss = dloss * mask
+            dkl_sum = (dloss * kl).sum(-1).contiguous() if beta != 0.0 and use_bias_correction_kl else None
             if vllm_is_ratio is None:
                 dloss_sum = dloss.sum(-1).contiguous()
             else:
@@ -929,6 +934,7 @@ class GrpoLossFunction(torch.autograd.Function):
             _grpo_loss_bwd_kernel_seq[(B, L)](
                 dloss,
                 dloss_sum,
+                dkl_sum,
                 dlogits,
                 logits,
                 old_logp,

@@ -45,22 +45,10 @@
 #include <cstdint>
 
 #include "config.cuh"
-#include "online_softmax.cuh"
+#include "forward_reduction.cuh"
 
 namespace liger {
 namespace fused_scaled_linear_cross_entropy {
-
-struct ForwardLocalStatsBuffers {
-	float* local_max;
-	float* local_sum;
-	float* local_target;
-	float* local_weighted_sum;
-};
-
-inline constexpr int kForwardReducedSumField = 0;
-inline constexpr int kForwardReducedTargetField = 1;
-inline constexpr int kForwardReducedWeightedField = 2;
-inline constexpr int kForwardReducedFields = 3;
 
 // _fused_scaled_cross_entropy_utils_sm90.py constants.
 inline constexpr float kForwardLog2E = 1.4426950408889634f;
