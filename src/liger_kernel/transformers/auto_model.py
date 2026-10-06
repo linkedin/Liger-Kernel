@@ -15,6 +15,21 @@ def _get_model_config(model_dir, **model_init_kwargs):
     return config
 
 
+def _filter_apply_liger_kernel_kwargs(model_type, kwargs):
+    """Drop the kwargs that were consumed by the apply_liger_kernel_to_* function.
+
+    Model types without a Liger patching function are skipped by
+    ``_apply_liger_kernel``, so none of the kwargs were consumed and all of them
+    belong to the underlying AutoModel call.
+    """
+    apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(model_type)
+    if apply_fn is None:
+        return dict(kwargs)
+
+    apply_fn_signature = inspect.signature(apply_fn)
+    return {key: value for key, value in kwargs.items() if key not in apply_fn_signature.parameters}
+
+
 class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
     """
     This class is a drop-in replacement for AutoModelForCausalLM that applies the Liger Kernel to the model
@@ -33,10 +48,7 @@ class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
 
         # Filter out kwargs that were passed to the apply_liger_* function, which will cause
         # model initialization errors otherwise
-        apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
-        apply_fn_signature = inspect.signature(apply_fn)
-
-        applicable_kwargs = {key: value for key, value in kwargs.items() if key not in apply_fn_signature.parameters}
+        applicable_kwargs = _filter_apply_liger_kernel_kwargs(model_type, kwargs)
 
         return super().from_pretrained(pretrained_model_name_or_path, *model_args, **applicable_kwargs)
 
@@ -45,15 +57,12 @@ class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
         model_type = getattr(config, "model_type", None)
         if not model_type:
             logger.info("Model type could not be determined from model config. No Liger kernels will be applied.")
-            return
-        model_type = config.model_type
+            return super().from_config(config, **kwargs)
 
         _apply_liger_kernel(model_type, **kwargs)
 
         # Filter out kwargs that were passed to the apply_liger_* function, which will cause
         # model initialization errors otherwise
-        apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
-        apply_fn_signature = inspect.signature(apply_fn)
-        applicable_kwargs = {key: value for key, value in kwargs.items() if key not in apply_fn_signature.parameters}
+        applicable_kwargs = _filter_apply_liger_kernel_kwargs(model_type, kwargs)
 
         return super().from_config(config, **applicable_kwargs)

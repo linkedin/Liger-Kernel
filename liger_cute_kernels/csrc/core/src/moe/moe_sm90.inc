@@ -31,9 +31,11 @@
 #include "moe_sm90.cuh"
 #include "moe_symm_config_sm90.cuh"
 #include "moe_launch.h"         // MoeFwdArgs / MoeBwdArgs (shared with the tuner)
+#include "moe_nonrdc_module.h"
 #include "moe_utils.cuh"
 #include "moe_fwd_bwd_tune_configs_sm90.hpp"
 #include "moe_dispatch_configs_sm90.cuh"
+#include "moe_reg_reconfig_sm90.cuh"
 #include "tma_copy_atom_sm90.cuh"
 #include "radix_sort.cuh"
 #include "dispatch.cuh"
@@ -51,32 +53,6 @@ namespace liger {
 #ifndef LIGER_CUTE_DISPATCH_COMPUTE
 #define LIGER_CUTE_DISPATCH_COMPUTE 0
 #endif
-
-// init_comm_schedule lives in liger_cute::detail (comm_schedule.cuh); the host
-// configure path below calls it through this alias.
-using liger_cute::detail::init_comm_schedule;
-
-// ============================================================================
-// Global iteration counter for PeSync
-// ============================================================================
-//
-// PeSync's dispatch_done / mlp_done symmetric arrays must increase
-// monotonically across calls (the wait-side uses NVSHMEM_CMP_GE). The
-// iteration value is what each call SETs the signal to via
-// nvshmemx_signal_op(SET).
-//
-// The counter lives in device memory (allocated by BufferPool as
-// "moe_fwd_iter_counter") and is atomicAdded at the end of every
-// kernel by CTA 0 thread 0 — see PeSync::advance_iteration_counter().
-// This is the form that survives CUDA graph capture: a host-side
-// atomic would be read once on the host before the kernel launch and
-// baked into the captured graph, so all replays would re-SET the same
-// already-met value and the cross-PE wait would race; a GPU-resident
-// counter incremented inside the captured kernel re-evaluates on
-// every replay, giving each launch a fresh monotonic target.
-//
-// Buffer pool keys "moe_fwd_iter_counter" (fwd) and
-// "moe_bwd_iter_counter" (bwd) name the two separate counters.
 
 // ============================================================================
 // MoeFusedConfig — bundles all tunable kernel parameters
@@ -243,14 +219,6 @@ struct MoeBuffers {
 	int* mlp_tile_expert_ids;
 };
 
-// MoeSymmConfig + get_symm_config() declaration live in the shared header so
-// moe.cu and moe_bwd.cu can't disagree on the layout (see header). This TU
-// owns the single instance.
-MoeSymmConfig& get_symm_config() {
-	static MoeSymmConfig cfg;
-	return cfg;
-}
-
 void moe_configure_symmetric(
 		int max_tokens,
 		int hidden_dim,
@@ -261,24 +229,24 @@ void moe_configure_symmetric(
 		int gpus_per_host) {
 	static constexpr int kTileM = kMaxMoeCommTileM;
 
-	// num_hosts × gpus_per_host must equal the team size so the comm
-	// schedule (g_dest_table / g_rank_table) addresses exactly the PEs
-	// in the team. Mismatch would silently map ranks to non-existent
-	// destinations (or skip some).
-	LIGER_CHECK(num_hosts * gpus_per_host == num_pes,
+	LIGER_CHECK(num_hosts > 0 && gpus_per_host > 0 && num_pes > 0,
+		"moe_configure_symmetric: num_hosts, gpus_per_host, and num_pes "
+		"must be positive");
+	LIGER_CHECK(static_cast<int64_t>(num_hosts) * gpus_per_host == num_pes,
 		"moe_configure_symmetric: num_hosts (", num_hosts, ") * gpus_per_host (",
-		gpus_per_host, ") = ", num_hosts * gpus_per_host,
+		gpus_per_host, ") = ", static_cast<int64_t>(num_hosts) * gpus_per_host,
 		" must equal num_pes (", num_pes, ")");
 
-	// Populate g_dest_table / g_rank_table in device constant memory.
-	// Idempotent — safe to re-call with the same (N, M).
-	init_comm_schedule(num_hosts, gpus_per_host);
-
 	auto& cfg = get_symm_config();
+	LIGER_CHECK(cfg.slot < 0, "use configure to prepare additional MoE contexts");
+	configure_sm90_nonrdc_moe();
+
 	cfg.max_total_slots = max_tokens * max_top_k + max_num_experts * kTileM;
 	cfg.max_num_experts = max_num_experts;
 	cfg.hidden_dim = hidden_dim;
 	cfg.num_pes = num_pes;
+	cfg.num_hosts = num_hosts;
+	cfg.gpus_per_host = gpus_per_host;
 	cfg.experts_per_pe = max_num_experts / num_pes;
 	cfg.max_top_k = max_top_k;
 	cfg.initialized = true;
@@ -312,10 +280,10 @@ void moe_pop_fwd() {
 	// LIFO order: bottom pushes first. Reverse the put order in
 	// allocate_moe_buffers (x_sorted, y_buf, all_expert_offsets,
 	// all_expert_counts).
-	stack.pop(kSymmKeyAllExpertCounts);
-	stack.pop(kSymmKeyAllExpertOffsets);
-	stack.pop(kSymmKeyYBuf);
-	stack.pop(kSymmKeyXSorted);
+	stack.pop(moe_buffer_name(kSymmKeyAllExpertCounts));
+	stack.pop(moe_buffer_name(kSymmKeyAllExpertOffsets));
+	stack.pop(moe_buffer_name(kSymmKeyYBuf));
+	stack.pop(moe_buffer_name(kSymmKeyXSorted));
 }
 
 template <typename Config>
@@ -385,18 +353,18 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	int z_m_tiles = max_runtime_grid_x * kZBufferSlots;
 	b.z_rows = z_m_tiles * kTileM;
 	size_t z_bytes = static_cast<size_t>(b.z_rows) * intermediate_dim * sizeof(Element);
-	b.z_buf = reinterpret_cast<Element*>(pool.get_device("moe_z_buf", z_bytes));
+	b.z_buf = reinterpret_cast<Element*>(pool.get_device(moe_buffer_name("moe_z_buf"), z_bytes));
 
 	// Sorted X -- symmetric, dispatch writes here, remote PEs get from here.
-	b.x_sorted = reinterpret_cast<Element*>(sym_stack.put(kSymmKeyXSorted));
+	b.x_sorted = reinterpret_cast<Element*>(sym_stack.put(moe_buffer_name(kSymmKeyXSorted)));
 
 	// Output Y -- symmetric, local MLP writes here, remote PEs put here.
-	b.y_buf = reinterpret_cast<Element*>(sym_stack.put(kSymmKeyYBuf));
+	b.y_buf = reinterpret_cast<Element*>(sym_stack.put(moe_buffer_name(kSymmKeyYBuf)));
 
 	// Phase counters.
 	size_t counter_bytes = max_runtime_grid_x * sizeof(int);
 	b.phase_counter = reinterpret_cast<int*>(
-		pool.get_device("moe_phase_counter", counter_bytes));
+		pool.get_device(moe_buffer_name("moe_phase_counter"), counter_bytes));
 	if (cudaError_t e = cudaMemsetAsync(b.phase_counter, 0, counter_bytes, stream); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(phase_counter) failed: ", cudaGetErrorString(e));
 
@@ -427,10 +395,10 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	size_t signal_l_ub =
 		static_cast<size_t>(sm_count) * scfg.max_comm_stages;
 	size_t sig_bytes = signal_l_ub * sizeof(int);
-	b.src_ready    = static_cast<int*>(pool.get_device("moe_src_ready",    sig_bytes));
-	b.src_consumed = static_cast<int*>(pool.get_device("moe_src_consumed", sig_bytes));
-	b.dst_ready    = static_cast<int*>(pool.get_device("moe_dst_ready",    sig_bytes));
-	b.dst_consumed = static_cast<int*>(pool.get_device("moe_dst_consumed", sig_bytes));
+	b.src_ready    = static_cast<int*>(pool.get_device(moe_buffer_name("moe_src_ready"),    sig_bytes));
+	b.src_consumed = static_cast<int*>(pool.get_device(moe_buffer_name("moe_src_consumed"), sig_bytes));
+	b.dst_ready    = static_cast<int*>(pool.get_device(moe_buffer_name("moe_dst_ready"),    sig_bytes));
+	b.dst_consumed = static_cast<int*>(pool.get_device(moe_buffer_name("moe_dst_consumed"), sig_bytes));
 	if (cudaError_t e = cudaMemsetAsync(b.src_ready, 0, sig_bytes, stream); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(src_ready) failed: ", cudaGetErrorString(e));
 	if (cudaError_t e = cudaMemsetAsync(b.src_consumed, 0, sig_bytes, stream); e != cudaSuccess)
@@ -442,15 +410,15 @@ static MoeBuffers<Config> allocate_moe_buffers(
 
 	// Per-parent-slot expert IDs use the same conservative upper bound.
 	size_t eid_bytes = signal_l_ub * sizeof(int);
-	b.tile_expert_ids = static_cast<int*>(pool.get_device("moe_tile_expert_ids", eid_bytes));
+	b.tile_expert_ids = static_cast<int*>(pool.get_device(moe_buffer_name("moe_tile_expert_ids"), eid_bytes));
 
 	// All PEs' expert offsets (symmetric). Use max experts for stable sizing.
-	b.all_expert_offsets = static_cast<int*>(sym_stack.put(kSymmKeyAllExpertOffsets));
-	b.all_expert_counts = static_cast<int*>(sym_stack.put(kSymmKeyAllExpertCounts));
+	b.all_expert_offsets = static_cast<int*>(sym_stack.put(moe_buffer_name(kSymmKeyAllExpertOffsets)));
+	b.all_expert_counts = static_cast<int*>(sym_stack.put(moe_buffer_name(kSymmKeyAllExpertCounts)));
 
 	// CTA counter for local all-CTA barriers around NVSHMEM collectives.
 	b.cta_counter = static_cast<int*>(
-		pool.get_device("moe_cta_counter", sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_cta_counter"), sizeof(int)));
 
 	// Sort buffers -- use scfg max sizes to avoid reallocation across configs.
 	int max_sorted_slots = scfg.max_total_slots;
@@ -460,9 +428,9 @@ static MoeBuffers<Config> allocate_moe_buffers(
 
 	(void)max_token_slots_ub;
 	b.tile_expert_counts = static_cast<int*>(
-		pool.get_device("moe_sort_tile_counts", max_tile_counts * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_sort_tile_counts"), max_tile_counts * sizeof(int)));
 	b.sorted_token_ids = static_cast<int*>(
-		pool.get_device("moe_sort_sorted_ids", max_sorted_slots * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_sort_sorted_ids"), max_sorted_slots * sizeof(int)));
 	// token_expert_slots: caller-owned torch tensor (passed in). Used by
 	// the bwd path after this call returns — must not alias a pool slot.
 	b.token_expert_slots = token_expert_slots_ptr;
@@ -471,9 +439,9 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	b.expert_counts = static_cast<int*>(
 		pool.get_symmetric("moe_sort_counts", scfg.max_num_experts * sizeof(int)));
 	b.cta_done = static_cast<int*>(
-		pool.get_device("moe_sort_cta_done", num_blocks * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_sort_cta_done"), num_blocks * sizeof(int)));
 	b.cta_sums = static_cast<int*>(
-		pool.get_device("moe_sort_cta_sums", num_blocks * scfg.max_num_experts * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_sort_cta_sums"), num_blocks * scfg.max_num_experts * sizeof(int)));
 
 	// Per-tile expert IDs for MLP — caller-owned torch tensor.
 	b.mlp_tile_expert_ids = mlp_tile_expert_ids_ptr;
@@ -512,11 +480,73 @@ static inline bool make_get_tma_map(CUtensorMap& m, void* base,
 // Fused kernel: sort → dispatch → MLP + combine
 // ============================================================================
 
-template <typename Config,
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+template <typename Config>
+__global__ void __launch_bounds__(Config::kNumThreads, 1)
+moe_fwd_pre_kernel(
+		__grid_constant__ MoeParams<Config> const p) {
+	using Element = typename Config::Element;
+	constexpr int kTileM = Config::kTileM;
+	constexpr int kNumThreads = Config::kNumThreads;
+
+	extern __shared__ int sort_smem[];
+	sort_tokens<kTileM, kNumThreads>(
+		sort_smem, p.expert_indices, p.sort,
+		p.num_tokens, p.comm.num_experts, p.top_k, p.num_m_tiles);
+	__threadfence_system();
+	__syncthreads();
+
+	SyncThreadsCtaCounterBarrier pe_barrier(
+		p.comm.pe_sync.cta_counter,
+		(int)gridDim.x * (int)gridDim.y);
+	p.comm.pe_sync.barrier(pe_barrier);
+
+	broadcast_expert_offsets(p.comm);
+	__syncthreads();
+	dispatch_tokens<Element, kTileM, kNumThreads>(
+		p.tokens, p.dispatch_dst,
+		p.sort.sorted_token_ids,
+		p.comm.hidden_dim, p.total_slots);
+	__syncthreads();
+	__threadfence_system();
+	p.comm.pe_sync.barrier_all(pe_barrier);
+}
+
+template <typename Config, typename TmaStoreYCombine>
+__global__ void __launch_bounds__(Config::kNumThreads, 1)
+moe_fwd_post_kernel(
+		__grid_constant__ TmaStoreYCombine const tma_store_y_combine,
+		__grid_constant__ MoeParams<Config> const p) {
+	using Element = typename Config::Element;
+	constexpr int kNumThreads = Config::kNumThreads;
+
+	SyncThreadsCtaCounterBarrier pe_barrier(
+		p.comm.pe_sync.cta_counter,
+		(int)gridDim.x * (int)gridDim.y);
+	p.comm.pe_sync.barrier_all(pe_barrier);
+
+	constexpr int kCombineNumWGs =
+		kNumThreads / (kCombineWarpsPerWG * kCombineWarpSize);
+	extern __shared__ char raw_smem[];
+	auto& combine_smem =
+		*reinterpret_cast<CombineSmem<Element, kCombineNumWGs>*>(raw_smem);
+	combine_tokens_tma<Element, kNumThreads, TmaStoreYCombine>(
+		reinterpret_cast<const Element*>(p.comm.local_output),
+		p.expert_weights,
+		p.sort.token_expert_slots,
+		tma_store_y_combine,
+		combine_smem,
+		p.comm.hidden_dim,
+		p.num_tokens,
+		p.top_k);
+}
+#endif
+
+template <typename Config, bool MayUseIb,
           typename TmaLoadX, typename TmaLoadW1, typename TmaStoreZ,
           typename TmaLoadZ, typename TmaLoadW2, typename TmaStoreY,
           typename TmaStoreYCombine>
-__global__ void __launch_bounds__(Config::kNumThreads)
+__global__ void __launch_bounds__(Config::kNumThreads, 1)
 moe_fused_kernel(
 		__grid_constant__ TmaLoadX  const tma_load_x,
 		__grid_constant__ TmaLoadW1 const tma_load_b,
@@ -545,6 +575,7 @@ moe_fused_kernel(
 	constexpr int kCommNumStages = Config::kCommNumStages;
 	constexpr int kNC            = Config::kNC;
 
+#if !defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
 	// -- Sort ----------------------------------------------------------------
 	{
 		extern __shared__ int sort_smem[];
@@ -588,8 +619,207 @@ moe_fused_kernel(
 	__threadfence_system();  // device-scope (NVLink-only build; IB needs system scope)
 
 	p.comm.pe_sync.barrier_all(pe_barrier);
+#endif
 
 	// -- MLP (local + remote) ------------------------------------------------
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	{
+		extern __shared__ char raw_smem[];
+		auto& smem =
+			*reinterpret_cast<MoeSmem<Traits1, Traits2, Config::kCompute>*>(
+				raw_smem);
+
+		size_t offsets_region =
+			sizeof(MoeSmem<Traits1, Traits2, Config::kCompute>);
+		offsets_region =
+			(offsets_region + sizeof(int) - 1) & ~(sizeof(int) - 1);
+		size_t offsets_count =
+			(size_t)p.comm.num_pes() * (p.comm.experts_per_pe + 1);
+		if (threadIdx.x == 0) {
+			smem.comm.remote_offsets =
+				reinterpret_cast<int*>(raw_smem + offsets_region);
+			smem.comm.remote_counts =
+				smem.comm.remote_offsets + offsets_count;
+		}
+		__syncthreads();
+
+		nvshmem_comm_prologue<kTileM, kNC>(
+			smem.comm, p.comm, static_nsplit);
+		__syncthreads();
+
+		if (threadIdx.x == 0) {
+			int total_m_tiles = smem.comm.global_total;
+			int mlp_tiles = total_m_tiles;
+			if constexpr (Config::kSubTiles > 1) {
+				mlp_tiles = 0;
+				for (int pe = 0; pe < p.comm.num_pes(); ++pe) {
+					for (int e = 0; e < p.comm.experts_per_pe; ++e) {
+						int count = smem.comm.remote_counts[
+							pe * p.comm.experts_per_pe + e];
+						mlp_tiles +=
+							(count + Config::kGemmTileM - 1) /
+							Config::kGemmTileM;
+					}
+				}
+			}
+			int runtime_nsplit = select_runtime_nsplit_from_tiles(
+				mlp_tiles,
+				mlp_dims.num_n_tiles_1,
+				mlp_dims.num_n_tiles_2,
+				mlp_dims.num_k_tiles_1,
+				mlp_dims.num_k_tiles_2,
+				(int)gridDim.x,
+				static_nsplit);
+			int n_gemm =
+				((int)gridDim.x / runtime_nsplit) * runtime_nsplit;
+			int grid_x = n_gemm / runtime_nsplit;
+			int col = (int)blockIdx.x / runtime_nsplit;
+			int mlp_count = 0;
+			if ((int)blockIdx.x < n_gemm && col < mlp_tiles)
+				mlp_count = (mlp_tiles - 1 - col) / grid_x + 1;
+			smem.comm.per_cta_tiles = mlp_count;
+			smem.comm.runtime_nsplit = runtime_nsplit;
+			smem.comm.runtime_n_gemm = n_gemm;
+			smem.comm.runtime_grid_x = grid_x;
+		}
+		__syncthreads();
+	}
+
+	extern __shared__ char raw_smem[];
+	auto& smem =
+		*reinterpret_cast<MoeSmem<Traits1, Traits2, Config::kCompute>*>(
+			raw_smem);
+	using Registers = MoeWarpSpecializedRegistersSm90<64, 216>;
+	const int warp_group = threadIdx.x / 128;
+	if (warp_group == 0) {
+		Registers::producer();
+		const int warp_id = threadIdx.x / 32;
+		if (warp_id == kCommGetWarp || warp_id == kCommPutWarp) {
+			if (smem.comm.total_tiles > 0) {
+				char* get_bounce = nullptr;
+				if (get_descs.enabled) {
+					size_t offsets_region =
+						sizeof(MoeSmem<Traits1, Traits2, Config::kCompute>);
+					offsets_region =
+						(offsets_region + sizeof(int) - 1) &
+						~(sizeof(int) - 1);
+					size_t offsets_count =
+						(size_t)p.comm.num_pes() *
+						(p.comm.experts_per_pe + 1);
+					size_t bounce_offset =
+						offsets_region +
+						(offsets_count +
+							(size_t)p.comm.num_pes() *
+								p.comm.experts_per_pe) *
+							sizeof(int);
+					bounce_offset =
+						(bounce_offset + 127) & ~((size_t)127);
+					get_bounce = raw_smem + bounce_offset;
+				}
+				if (warp_id == kCommGetWarp) {
+					nvshmem_comm_main<
+						Element, kTileM, kCommNumStages, kNC,
+						Config::kSubTiles, 1, MayUseIb>(
+						smem.comm, p.comm, &get_descs, get_bounce);
+				} else {
+					nvshmem_comm_main<
+						Element, kTileM, kCommNumStages, kNC,
+						Config::kSubTiles, 2, MayUseIb>(
+						smem.comm, p.comm, &get_descs, get_bounce);
+				}
+			}
+			return;
+		}
+
+		const int flat_id = (int)blockIdx.x;
+		const int runtime_nsplit = smem.comm.runtime_nsplit;
+		const int n_gemm = smem.comm.runtime_n_gemm;
+		if (flat_id < n_gemm) {
+			const int grid_x = smem.comm.runtime_grid_x;
+			const int col = flat_id / runtime_nsplit;
+			int local_e_start =
+				p.comm.my_pe() * p.comm.experts_per_pe;
+			int local_e_end =
+				local_e_start + p.comm.experts_per_pe;
+			int local_offset =
+				p.sort.expert_offsets[local_e_start];
+			int local_end = p.sort.expert_offsets[local_e_end];
+			int local_m_tiles =
+				(local_end - local_offset) / kTileM;
+			int local_tile_off = local_offset / kTileM;
+
+			LocalIter local_iter;
+			local_iter.init(
+				p.dispatch_dst + local_offset * p.comm.hidden_dim,
+				p.sort.tile_expert_ids + local_tile_off,
+				local_m_tiles, p.comm.hidden_dim,
+				/*col_stride=*/grid_x, /*start_col=*/col,
+				local_tile_off);
+
+			moe_fused_fwd<
+				Traits1, Traits2, kZBufferSlots, kCommNumStages, kNC,
+				Config::kSubTiles, Config::kCompute, 1, LocalIter, RemoteIter>(
+				smem, local_iter,
+				p.comm.src_ready, p.comm.src_consumed,
+				p.comm.dst_ready, p.comm.dst_consumed,
+				p.comm.experts_per_pe, p.comm.num_pes(), p.comm.my_pe(),
+				get_descs.gpus_per_node,
+				tma_load_x, tma_load_b, tma_load_c, tma_store_z,
+				tma_load_z, tma_load_a, tma_store_y,
+				tma_load_x_remote, tma_store_y_remote,
+				mlp_dims,
+				local_m_tiles * kTileM, local_m_tiles,
+				col, grid_x, flat_id % runtime_nsplit, runtime_nsplit,
+				local_e_start,
+				peer_y.enabled ? peer_y.desc : nullptr);
+		}
+		return;
+	}
+
+	Registers::consumer();
+	const int flat_id = (int)blockIdx.x;
+	const int runtime_nsplit = smem.comm.runtime_nsplit;
+	const int n_gemm = smem.comm.runtime_n_gemm;
+	if (flat_id < n_gemm) {
+		const int grid_x = smem.comm.runtime_grid_x;
+		const int col = flat_id / runtime_nsplit;
+		int local_e_start =
+			p.comm.my_pe() * p.comm.experts_per_pe;
+		int local_e_end =
+			local_e_start + p.comm.experts_per_pe;
+		int local_offset = p.sort.expert_offsets[local_e_start];
+		int local_end = p.sort.expert_offsets[local_e_end];
+		int local_m_tiles =
+			(local_end - local_offset) / kTileM;
+		int local_tile_off = local_offset / kTileM;
+
+		LocalIter local_iter;
+		local_iter.init(
+			p.dispatch_dst + local_offset * p.comm.hidden_dim,
+			p.sort.tile_expert_ids + local_tile_off,
+			local_m_tiles, p.comm.hidden_dim,
+			/*col_stride=*/grid_x, /*start_col=*/col,
+			local_tile_off);
+
+		moe_fused_fwd<
+			Traits1, Traits2, kZBufferSlots, kCommNumStages, kNC,
+			Config::kSubTiles, Config::kCompute, 2, LocalIter, RemoteIter>(
+			smem, local_iter,
+			p.comm.src_ready, p.comm.src_consumed,
+			p.comm.dst_ready, p.comm.dst_consumed,
+			p.comm.experts_per_pe, p.comm.num_pes(), p.comm.my_pe(),
+			get_descs.gpus_per_node,
+			tma_load_x, tma_load_b, tma_load_c, tma_store_z,
+			tma_load_z, tma_load_a, tma_store_y,
+			tma_load_x_remote, tma_store_y_remote,
+			mlp_dims,
+			local_m_tiles * kTileM, local_m_tiles,
+			col, grid_x, flat_id % runtime_nsplit, runtime_nsplit,
+			local_e_start,
+			peer_y.enabled ? peer_y.desc : nullptr);
+	}
+	return;
+#else
 	{
 		extern __shared__ char raw_smem[];
 		auto& smem = *reinterpret_cast<MoeSmem<Traits1, Traits2, Config::kCompute>*>(raw_smem);
@@ -695,7 +925,8 @@ moe_fused_kernel(
 			// comm-only CTA (no local GEMM work) still drives its comm tiles.
 			if (smem.comm.total_tiles > 0) {
 				nvshmem_comm_main<
-					Element, kTileM, kCommNumStages, kNC, Config::kSubTiles>(
+					Element, kTileM, kCommNumStages, kNC,
+					Config::kSubTiles, 0, MayUseIb>(
 					smem.comm, p.comm, &get_descs, get_bounce);
 			}
 		} else if (flat_id < n_gemm) {
@@ -716,7 +947,7 @@ moe_fused_kernel(
 				/*col_stride=*/grid_x, /*start_col=*/col, local_tile_off);
 
 			moe_fused_fwd<Traits1, Traits2, kZBufferSlots, kCommNumStages, kNC,
-				Config::kSubTiles, Config::kCompute, LocalIter, RemoteIter>(
+				Config::kSubTiles, Config::kCompute, 0, LocalIter, RemoteIter>(
 				smem, local_iter,
 				p.comm.src_ready, p.comm.src_consumed,
 				p.comm.dst_ready, p.comm.dst_consumed,
@@ -736,7 +967,9 @@ moe_fused_kernel(
 		__syncthreads();
 		p.comm.pe_sync.barrier_all(pe_barrier);
 	}
+#endif
 
+#if !defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
 	// -- Combine --------------------------------------------------------------
 	// Reuse the kernel's dynamic SMEM region as CombineSmem. wait_mlp above
 	// is a cross-CTA + cross-PE barrier that ends in its own __syncthreads, so
@@ -758,6 +991,7 @@ moe_fused_kernel(
 			p.num_tokens,
 			p.top_k);
 	}
+#endif
 
 }
 
@@ -791,7 +1025,11 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	const int num_experts = a.num_experts;
 	const int top_k       = a.top_k;
 	const nvshmem_team_t team = a.team;
+	MoeContextScope context_scope(team);
+	moe_check_forward_capacity();
 	cudaStream_t stream   = a.stream;
+	if (get_symm_config().slot >= 0 && nvshmem_team_n_pes(team) > 1)
+		nvshmemx_barrier_on_stream(team, stream);
 
 	// NC = number of cooperating comm CTAs per (xc, yc) tile. With the
 	// ticket-based GEMM-side iterator, runtime NS and NC no longer need to
@@ -836,9 +1074,6 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	constexpr int kTileM      = Config::kTileM;
 	constexpr int kNumThreads = Config::kNumThreads;
 
-	// Iteration counter lives on the device and is incremented at the
-	// end of the kernel — see PeSync::advance_iteration_counter() and
-	// the comment block at the top of this file.
 	int num_tokens       = a.num_tokens;
 	int hidden_dim       = a.hidden_dim;
 	int experts_per_pe   = a.experts_per_pe;      // local experts (from weight matrices)
@@ -1181,8 +1416,9 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 			if (!same_host) continue;
 			int gpe = nvshmem_team_translate_pe(team, tp, NVSHMEM_TEAM_WORLD);
 			void* pp = nvshmem_ptr(buf.x_sorted, gpe);  // self → own ptr (non-null)
-			if (pp == nullptr) { ok = false; break; }   // same-host but no P2P → disable TMA
-			ok = make_get_tma_map(get_descs.src_x_desc[tp % gpus_per_node], pp,
+			if (pp == nullptr) { ok = false; break; }
+			ok = make_get_tma_map(
+				get_descs.src_x_desc[tp % gpus_per_node], pp,
 				hidden_dim, max_total_slots, kGetBoxRows);
 		}
 		if (ok)
@@ -1230,8 +1466,8 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 		CombineSmemLayoutSlot<Element>{});
 
 	// ---- Dynamic smem --------------------------------------------------------
-	int sort_num_warps = kNumThreads / 32;
-	size_t smem_sort   = sort_num_warps * num_experts * sizeof(int);
+	size_t smem_sort =
+		sort_tokens_smem_ints(kNumThreads, num_experts) * sizeof(int);
 
 	size_t smem_mlp    = sizeof(MoeSmem<Traits1, Traits2, Config::kCompute>);
 	smem_mlp = (smem_mlp + sizeof(int) - 1) & ~(sizeof(int) - 1);
@@ -1255,15 +1491,197 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	size_t smem_size = std::max({smem_sort, smem_mlp, smem_combine});
 
 	// ---- Launch fused kernel -----------------------------------------------
-	auto kernel_fn = moe_fused_kernel<Config,
+#if defined(LIGER_CUTE_SM90_NONRDC_LOCAL_TRANSPORT)
+	constexpr bool use_ib_transport = false;
+	auto kernel_fn = moe_fused_kernel<Config, false,
 		decltype(tma_load_x), decltype(tma_load_b), decltype(tma_store_z),
 		decltype(tma_load_z), decltype(tma_load_a), decltype(tma_store_y),
 		decltype(tma_store_y_combine)>;
+#elif defined(LIGER_CUTE_SM90_NONRDC_IB_TRANSPORT)
+	constexpr bool use_ib_transport = true;
+	auto kernel_fn = moe_fused_kernel<Config, true,
+		decltype(tma_load_x), decltype(tma_load_b), decltype(tma_store_z),
+		decltype(tma_load_z), decltype(tma_load_a), decltype(tma_store_y),
+		decltype(tma_store_y_combine)>;
+#elif defined(LIGER_CUTE_SM90_NONRDC_DUAL_TRANSPORT)
+	constexpr bool use_ib_transport = true;
+	auto local_kernel_fn = moe_fused_kernel<Config, false,
+		decltype(tma_load_x), decltype(tma_load_b), decltype(tma_store_z),
+		decltype(tma_load_z), decltype(tma_load_a), decltype(tma_store_y),
+		decltype(tma_store_y_combine)>;
+	auto kernel_fn = moe_fused_kernel<Config, true,
+		decltype(tma_load_x), decltype(tma_load_b), decltype(tma_store_z),
+		decltype(tma_load_z), decltype(tma_load_a), decltype(tma_store_y),
+		decltype(tma_store_y_combine)>;
+	(void)local_kernel_fn;
+#elif defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	const bool use_ib_transport =
+		sm90_nonrdc_moe_team_uses_ib(team) ||
+		get_descs.enabled == 0 || peer_y.enabled == 0;
+	auto local_kernel_fn = moe_fused_kernel<Config, false,
+		decltype(tma_load_x), decltype(tma_load_b), decltype(tma_store_z),
+		decltype(tma_load_z), decltype(tma_load_a), decltype(tma_store_y),
+		decltype(tma_store_y_combine)>;
+	auto ib_kernel_fn = moe_fused_kernel<Config, true,
+		decltype(tma_load_x), decltype(tma_load_b), decltype(tma_store_z),
+		decltype(tma_load_z), decltype(tma_load_a), decltype(tma_store_y),
+		decltype(tma_store_y_combine)>;
+	auto kernel_fn =
+		use_ib_transport ? ib_kernel_fn : local_kernel_fn;
+#else
+	constexpr bool use_ib_transport = true;
+	auto kernel_fn = moe_fused_kernel<Config, true,
+		decltype(tma_load_x), decltype(tma_load_b), decltype(tma_store_z),
+		decltype(tma_load_z), decltype(tma_load_a), decltype(tma_store_y),
+		decltype(tma_store_y_combine)>;
+#endif
 
-	if (cudaError_t e = cudaFuncSetAttribute(kernel_fn,
-			cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size); e != cudaSuccess)
-		LIGER_FAIL_CUDA("moe_fwd: cudaFuncSetAttribute(MaxDynamicSharedMemorySize=", smem_size,
-			") failed: ", cudaGetErrorString(e));
+	CUfunction nonrdc_kernel = nullptr;
+#if defined(LIGER_CUTE_HAS_SM90_NONRDC_MOE)
+	const bool nonrdc_shape_supported =
+		sm90_nonrdc_moe_supports_benchmark_shape(
+		num_tokens, hidden_dim, intermediate_dim,
+		num_experts, top_k, num_pes);
+	if (nonrdc_shape_supported && sm90_nonrdc_moe_requested()) {
+		cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+		if (cudaError_t e = cudaStreamIsCapturing(stream, &capture_status);
+				e != cudaSuccess)
+			LIGER_FAIL_CUDA(
+				"moe_fwd: cudaStreamIsCapturing failed: ",
+				cudaGetErrorString(e));
+		const char* kernel_name = nullptr;
+		if (cudaError_t e = cudaFuncGetName(&kernel_name, kernel_fn);
+				e != cudaSuccess)
+			LIGER_FAIL_CUDA(
+				"moe_fwd: cudaFuncGetName failed: ", cudaGetErrorString(e));
+		nonrdc_kernel = resolve_sm90_nonrdc_moe(
+			kernel_name,
+			reinterpret_cast<const void*>(kernel_fn),
+			use_ib_transport,
+			capture_status == cudaStreamCaptureStatusNone);
+	}
+#endif
+
+#if defined(LIGER_CUTE_SM90_NONRDC_SPLIT)
+	auto pre_kernel_fn = moe_fwd_pre_kernel<Config>;
+	auto post_kernel_fn =
+		moe_fwd_post_kernel<Config, decltype(tma_store_y_combine)>;
+	if (cudaError_t e = cudaFuncSetAttribute(
+			kernel_fn, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_mlp);
+			e != cudaSuccess)
+		LIGER_FAIL_CUDA(
+			"moe_fwd: cudaFuncSetAttribute(main MaxDynamicSharedMemorySize=",
+			smem_mlp, ") failed: ", cudaGetErrorString(e));
+	if (cudaError_t e = cudaFuncSetAttribute(
+			post_kernel_fn, cudaFuncAttributeMaxDynamicSharedMemorySize,
+			smem_combine); e != cudaSuccess)
+		LIGER_FAIL_CUDA(
+			"moe_fwd: cudaFuncSetAttribute(post MaxDynamicSharedMemorySize=",
+			smem_combine, ") failed: ", cudaGetErrorString(e));
+	if (nonrdc_kernel != nullptr) {
+		CUresult result = cuFuncSetAttribute(
+			nonrdc_kernel,
+			CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+			static_cast<int>(smem_mlp));
+		if (result != CUDA_SUCCESS) {
+			const char* text = nullptr;
+			cuGetErrorString(result, &text);
+			LIGER_FAIL_CUDA(
+				"moe_fwd: cuFuncSetAttribute(main MAX_DYNAMIC_SHARED_SIZE_BYTES=",
+				smem_mlp, ") failed: ",
+				text != nullptr ? text : "unknown CUDA error");
+		}
+	}
+
+	{
+		auto& scfg = get_symm_config();
+		int mc_local = num_blocks / Config::kNC;
+		int comm_l = mc_local * Config::kCommNumStages;
+		size_t sig_bytes =
+			static_cast<size_t>(comm_l) * Config::kSubTiles * sizeof(int);
+		size_t eid_bytes = static_cast<size_t>(comm_l) * sizeof(int);
+		int max_m_tiles = scfg.max_total_slots / kTileM;
+		int max_tile_counts = max_m_tiles * scfg.max_num_experts;
+
+		FusedMemsetArgs ma{};
+		fused_memset_add(ma, buf.phase_counter,
+			((num_blocks + 1) / 2) * sizeof(int), 0x00);
+		fused_memset_add(ma, buf.cta_counter,
+			sizeof(int), 0x00);
+		fused_memset_add(ma, buf.cta_done,
+			num_blocks * sizeof(int), 0x00);
+		fused_memset_add(ma, buf.sorted_token_ids,
+			static_cast<size_t>(max_total_slots) * sizeof(int), 0xff);
+		fused_memset_add(ma, buf.src_ready, sig_bytes, 0x00);
+		fused_memset_add(ma, buf.src_consumed, sig_bytes, 0x00);
+		fused_memset_add(ma, buf.dst_ready, sig_bytes, 0x00);
+		fused_memset_add(ma, buf.dst_consumed, sig_bytes, 0x00);
+		fused_memset_add(ma, buf.tile_expert_ids, eid_bytes, 0xff);
+		fused_memset_add(ma, buf.tile_expert_counts,
+			static_cast<size_t>(max_tile_counts) * sizeof(int), 0x00);
+		fused_memset_add(ma, buf.cta_sums,
+			static_cast<size_t>(num_blocks) * scfg.max_num_experts *
+				sizeof(int),
+			0x00);
+		fused_memset_launch(ma, stream);
+	}
+
+	pre_kernel_fn<<<grid, kNumThreads, smem_sort, stream>>>(p);
+	cudaMemsetAsync(buf.cta_counter, 0, sizeof(int), stream);
+	if (nonrdc_kernel != nullptr) {
+		void* kernel_args[] = {
+			&tma_load_x, &tma_load_b, &tma_load_c, &tma_store_z,
+			&tma_load_z, &tma_load_a, &tma_store_y,
+			&tma_load_x_remote, &tma_store_y_remote,
+			&tma_store_y_combine, &mlp_dims, &p, &static_nsplit,
+			&get_descs, &peer_y};
+		CUresult result = cuLaunchKernel(
+			nonrdc_kernel,
+			grid.x, grid.y, grid.z,
+			kNumThreads, 1, 1,
+			static_cast<unsigned>(smem_mlp),
+			reinterpret_cast<CUstream>(stream),
+			kernel_args,
+			nullptr);
+		if (result != CUDA_SUCCESS) {
+			const char* text = nullptr;
+			cuGetErrorString(result, &text);
+			LIGER_FAIL_CUDA(
+				"moe_fwd: cuLaunchKernel(split non-RDC) failed: ",
+				text != nullptr ? text : "unknown CUDA error");
+		}
+	} else {
+		kernel_fn<<<grid, kNumThreads, smem_mlp, stream>>>(
+			tma_load_x, tma_load_b, tma_load_c, tma_store_z,
+			tma_load_z, tma_load_a, tma_store_y,
+			tma_load_x_remote, tma_store_y_remote,
+			tma_store_y_combine,
+			mlp_dims, p, static_nsplit, get_descs, peer_y);
+	}
+	post_kernel_fn<<<grid, kNumThreads, smem_combine, stream>>>(
+		tma_store_y_combine, p);
+#else
+	if (nonrdc_kernel != nullptr) {
+		CUresult result = cuFuncSetAttribute(
+			nonrdc_kernel,
+			CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+			static_cast<int>(smem_size));
+		if (result != CUDA_SUCCESS) {
+			const char* text = nullptr;
+			cuGetErrorString(result, &text);
+			LIGER_FAIL_CUDA(
+				"moe_fwd: cuFuncSetAttribute(MAX_DYNAMIC_SHARED_SIZE_BYTES=",
+				smem_size, ") failed: ",
+				text != nullptr ? text : "unknown CUDA error");
+		}
+	} else {
+		if (cudaError_t e = cudaFuncSetAttribute(kernel_fn,
+				cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+				e != cudaSuccess)
+			LIGER_FAIL_CUDA(
+				"moe_fwd: cudaFuncSetAttribute(MaxDynamicSharedMemorySize=",
+				smem_size, ") failed: ", cudaGetErrorString(e));
+	}
 
 	// Reset per-call buffers in a single fused-memset kernel — one CTA per
 	// region. Replaces 11 cudaMemsetAsync calls that would otherwise
@@ -1354,12 +1772,37 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	// The tile_expert_ids 0xff fill above is what makes this safe — keep
 	// that.
 
-	kernel_fn<<<grid, kNumThreads, smem_size, stream>>>(
-		tma_load_x, tma_load_b, tma_load_c, tma_store_z,
-		tma_load_z, tma_load_a, tma_store_y,
-		tma_load_x_remote, tma_store_y_remote,
-		tma_store_y_combine,
-		mlp_dims, p, static_nsplit, get_descs, peer_y);
+	if (nonrdc_kernel != nullptr) {
+		void* kernel_args[] = {
+			&tma_load_x, &tma_load_b, &tma_load_c, &tma_store_z,
+			&tma_load_z, &tma_load_a, &tma_store_y,
+			&tma_load_x_remote, &tma_store_y_remote,
+			&tma_store_y_combine, &mlp_dims, &p, &static_nsplit,
+			&get_descs, &peer_y};
+		CUresult result = cuLaunchKernel(
+			nonrdc_kernel,
+			grid.x, grid.y, grid.z,
+			kNumThreads, 1, 1,
+			static_cast<unsigned>(smem_size),
+			reinterpret_cast<CUstream>(stream),
+			kernel_args,
+			nullptr);
+		if (result != CUDA_SUCCESS) {
+			const char* text = nullptr;
+			cuGetErrorString(result, &text);
+			LIGER_FAIL_CUDA(
+				"moe_fwd: cuLaunchKernel(non-RDC) failed: ",
+				text != nullptr ? text : "unknown CUDA error");
+		}
+	} else {
+		kernel_fn<<<grid, kNumThreads, smem_size, stream>>>(
+			tma_load_x, tma_load_b, tma_load_c, tma_store_z,
+			tma_load_z, tma_load_a, tma_store_y,
+			tma_load_x_remote, tma_store_y_remote,
+			tma_store_y_combine,
+			mlp_dims, p, static_nsplit, get_descs, peer_y);
+	}
+#endif
 	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_fwd: kernel launch failed for grid=", grid.x,
 			" threads=", kNumThreads, " smem=", smem_size, ": ",
@@ -1373,9 +1816,9 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	// Stream-ordered variant — capturable into a CUDA graph. The host-side
 	// nvshmem_team_sync(team) would do an internal cudaStreamSynchronize and
 	// therefore fail with "operation not permitted when stream is capturing".
-	//if (num_pes > 1) {
-	//	nvshmemx_barrier_on_stream(team, stream);
-	//}
+	if (num_pes > 1) {
+		nvshmemx_barrier_on_stream(team, stream);
+	}
 
 	// Hand the persistent symmetric buffers back to the ABI wrapper so it can
 	// alias them as the *_out_symm views (shapes use the static MoeSymmConfig

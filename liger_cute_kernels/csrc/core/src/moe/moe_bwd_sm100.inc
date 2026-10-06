@@ -22,11 +22,6 @@
 
 #include <cute/tensor.hpp>
 #include <cute/atom/copy_traits_sm90_tma.hpp>
-// SM100 2SM (paired-CTA cluster) TMA descriptor factories (make_tma_copy_A_sm100
-// / make_tma_copy_B_sm100) and the SM100_TMA_2SM_LOAD copy atom used below to
-// build pair-aware Phase-2 mlp3/mlp4 descriptors. Already pulled in
-// transitively via moe_bwd.cuh -> mlp_bwd.cuh -> mlp3.cuh/mlp4.cuh; included
-// directly here too since this TU calls these factories itself.
 #include <cute/atom/copy_traits_sm100_tma.hpp>
 
 #include "liger_cute/moe.h"
@@ -63,15 +58,6 @@ namespace liger {
 // External symbol: moe_configure_symmetric (defined in moe.cu) is reused.
 // MoeSymmConfig + get_symm_config() now come from the shared header (included
 // below), so this TU can't drift from moe.cu's layout.
-
-// Global iteration counter — same role as the fwd counter in moe.cu.
-// Lives in device memory (allocated from BufferPool under the key
-// "moe_bwd_iter_counter"), atomicAdded at the end of each kernel by
-// CTA 0 thread 0. See PeSync::advance_iteration_counter() and the
-// detailed comment in mlp_comms.cuh for why the counter has to be
-// device-resident: a host-side atomic would be baked into a captured
-// CUDA graph as a constant, breaking the cross-PE wait-until-greater
-// protocol on every replay.
 
 // ============================================================================
 // MoeBwdConfig — bundles bwd-side traits + comm/grid constants
@@ -140,19 +126,17 @@ struct MoeBwdConfig {
 		Element, TileM1_, TileN1_, TileK1_, Stages1_, EpiChunkN1_,
 		kActStoreTileM>;                                                                       // Phase 1a
 	using Traits2T = Mlp2TTraits<Element, TileM2T_, TileN2_, TileK2_, Stages2_, EpiChunkN25_>;  // Phase 1b'
-	// Blackwell always uses the paired-CTA MLP3/MLP4 path. Hopper keeps the
-	// existing single-CTA traits and never instantiates SM100-only machinery.
-	// The existing TileK3_/Stages3_/EpiChunkN34_ fields remain the shared
-	// tuning surface for both weight-gradient kernels.
-	static constexpr bool kUsesTwoSm = Compute_ == 100;
-	static constexpr int  kClusterM  = kUsesTwoSm ? 2 : 1;
+	static constexpr bool kUsesUmma = Compute_ == 100;
+	static constexpr int  kClusterM  = 1;
+	// Keep the existing dispatch row IDs, but use CTA-local M128xN128 tiles.
+	// This preserves the operand budget and the selected K/stage depths.
 	using Traits3  = cute::conditional_t<
-		kUsesTwoSm,
-		Mlp3Traits2Sm<Element, 256, 256, TileK3_, Stages3_, EpiChunkN34_>,
+		kUsesUmma,
+		Mlp3TraitsSm100<Element, 128, 128, TileK3_, Stages3_, EpiChunkN34_>,
 		Mlp3Traits   <Element, TileM3_, TileN3_, TileK3_, Stages3_, EpiChunkN34_>>;  // Phase 2 mlp3
 	using Traits4  = cute::conditional_t<
-		kUsesTwoSm,
-		Mlp4Traits2Sm<Element, 256, 256, TileK4_, Stages4_, EpiChunkN34_>,
+		kUsesUmma,
+		Mlp4TraitsSm100<Element, 128, 128, TileK4_, Stages4_, EpiChunkN34_>,
 		Mlp4Traits   <Element, TileM4_, TileN4_, TileK4_, Stages4_, EpiChunkN34_>>;  // Phase 2 mlp4
 	using Traits5  = Mlp5Traits <Element, TileM5_, TileN5_, TileK5_, Stages5_, EpiChunkN25_>;  // Phase 1d
 
@@ -364,9 +348,9 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 			(scfg.max_num_experts + 1) * sizeof(int)));
 
 	// ── Device-only ──────────────────────────────────────
-	b.cta_counter     = static_cast<int*>(pool.get_device("moe_bwd_cta_counter",   sizeof(int)));
-	b.phase_counter   = static_cast<int*>(pool.get_device("moe_bwd_phase_counter", grid_x * sizeof(int)));
-	b.barrier_counter = static_cast<int*>(pool.get_device("moe_bwd_barrier",       sizeof(int)));
+	b.cta_counter     = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_cta_counter"),   sizeof(int)));
+	b.phase_counter   = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_phase_counter"), grid_x * sizeof(int)));
+	b.barrier_counter = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_barrier"),       sizeof(int)));
 	cudaMemsetAsync(b.cta_counter,     0, sizeof(int),                stream);
 	cudaMemsetAsync(b.phase_counter,   0, grid_x * sizeof(int),       stream);
 	cudaMemsetAsync(b.barrier_counter, 0, sizeof(int),                stream);
@@ -385,10 +369,10 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	b.scratch_rows = static_cast<int>(scratch_rows);
 	size_t intermediate_bytes =
 		scratch_rows * intermediate_dim * sizeof(Element);
-	b.z_buf  = static_cast<Element*>(pool.get_device("moe_bwd_z_buf",  intermediate_bytes));
-	b.du_buf = static_cast<Element*>(pool.get_device("moe_bwd_du_buf", intermediate_bytes));
-	b.dv_buf = static_cast<Element*>(pool.get_device("moe_bwd_dv_buf", intermediate_bytes));
-	b.dz_buf = static_cast<Element*>(pool.get_device("moe_bwd_dz_buf", intermediate_bytes));
+	b.z_buf  = static_cast<Element*>(pool.get_device(moe_buffer_name("moe_bwd_z_buf"),  intermediate_bytes));
+	b.du_buf = static_cast<Element*>(pool.get_device(moe_buffer_name("moe_bwd_du_buf"), intermediate_bytes));
+	b.dv_buf = static_cast<Element*>(pool.get_device(moe_buffer_name("moe_bwd_dv_buf"), intermediate_bytes));
+	b.dz_buf = static_cast<Element*>(pool.get_device(moe_buffer_name("moe_bwd_dz_buf"), intermediate_bytes));
 
 	// expert_for_k_block: one int per K-block. The K-block / m-tile size
 	// ratio depends on Traits3::TileK vs Traits1::TileM; see
@@ -399,7 +383,7 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	// larger config (e.g. E=64, K=8) reads OOB past the cached size.
 	int max_num_k_blocks = scfg.max_total_slots / Config::Traits3::TileK;
 	b.expert_for_k_block = static_cast<int*>(
-		pool.get_device("moe_bwd_expert_for_k_block", max_num_k_blocks * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_expert_for_k_block"), max_num_k_blocks * sizeof(int)));
 
 	// Phase 2 per-expert K-range scratch — sized by scfg.max_num_experts
 	// (the pool caches by name, so we have to size to the worst case
@@ -407,9 +391,9 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	// Shared between mlp3 and mlp4 (they share TileK).
 	size_t expert_range_bytes = scfg.max_num_experts * sizeof(int);
 	b.expert_k_starts = static_cast<int*>(
-		pool.get_device("moe_bwd_expert_k_starts", expert_range_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_expert_k_starts"), expert_range_bytes));
 	b.expert_k_ends   = static_cast<int*>(
-		pool.get_device("moe_bwd_expert_k_ends",   expert_range_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_expert_k_ends"),   expert_range_bytes));
 
 	// ── Comm staging ─────────────────────────────────────
 	// Flat staging list — L = MC · kCommNumStages slots, where
@@ -455,10 +439,10 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	// Allocate at the UB (comm_l_ub ≥ MC·kCommNumStages); the kernel only
 	// touches [0, MC·kCommNumStages). Per-call resets (below) zero the live prefix.
 	size_t tile_sig_bytes = (size_t)comm_l_ub * sizeof(int);
-	b.x_src_ready    = static_cast<int*>(pool.get_device("moe_bwd_x_src_ready",    tile_sig_bytes));
-	b.x_src_consumed = static_cast<int*>(pool.get_device("moe_bwd_x_src_consumed", tile_sig_bytes));
-	b.dy_src_ready   = static_cast<int*>(pool.get_device("moe_bwd_dy_src_ready",   tile_sig_bytes));
-	b.dy_src_consumed= static_cast<int*>(pool.get_device("moe_bwd_dy_src_consumed",tile_sig_bytes));
+	b.x_src_ready    = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_x_src_ready"),    tile_sig_bytes));
+	b.x_src_consumed = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_x_src_consumed"), tile_sig_bytes));
+	b.dy_src_ready   = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_dy_src_ready"),   tile_sig_bytes));
+	b.dy_src_consumed= static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_dy_src_consumed"),tile_sig_bytes));
 	cudaMemsetAsync(b.x_src_ready,    0, tile_sig_bytes, stream);
 	cudaMemsetAsync(b.x_src_consumed, 0, tile_sig_bytes, stream);
 	cudaMemsetAsync(b.dy_src_ready,   0, tile_sig_bytes, stream);
@@ -466,8 +450,8 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 
 	// dX pipe signals: per-slot, [L = MC * NumStages] ints. UB-sized (see above).
 	size_t tile_pipe_bytes = (size_t)comm_l_ub * sizeof(int);
-	b.dst_ready     = static_cast<int*>(pool.get_device("moe_bwd_dst_ready",    tile_pipe_bytes));
-	b.dst_consumed  = static_cast<int*>(pool.get_device("moe_bwd_dst_consumed", tile_pipe_bytes));
+	b.dst_ready     = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_dst_ready"),    tile_pipe_bytes));
+	b.dst_consumed  = static_cast<int*>(pool.get_device(moe_buffer_name("moe_bwd_dst_consumed"), tile_pipe_bytes));
 	cudaMemsetAsync(b.dst_ready,    0, tile_pipe_bytes, stream);
 	cudaMemsetAsync(b.dst_consumed, 0, tile_pipe_bytes, stream);
 
@@ -475,11 +459,11 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	// One array per get pipe (see MoeBwdBuffers / CommBuffersBwd docstrings).
 	// Same shape as the staging signal arrays.
 	b.tile_expert_ids_x = static_cast<int*>(
-		pool.get_device("moe_bwd_tile_expert_ids_x", eid_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_tile_expert_ids_x"), eid_bytes));
 	b.tile_expert_ids_dy = static_cast<int*>(
-		pool.get_device("moe_bwd_tile_expert_ids_dy", eid_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_tile_expert_ids_dy"), eid_bytes));
 	b.tile_valid_rows_x = static_cast<int*>(
-		pool.get_device("moe_bwd_tile_valid_rows_x", eid_bytes));
+		pool.get_device(moe_buffer_name("moe_bwd_tile_valid_rows_x"), eid_bytes));
 
 	// ── Sort scratch (sized to scfg max for stability across calls) ──
 	int max_sorted_slots = scfg.max_total_slots;
@@ -487,15 +471,15 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	int max_tile_counts  = max_m_tiles * scfg.max_num_experts;
 
 	b.tile_expert_counts = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_tile_counts", max_tile_counts * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_sort_tile_counts"), max_tile_counts * sizeof(int)));
 	b.sorted_token_ids = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_sorted_ids", max_sorted_slots * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_sort_sorted_ids"), max_sorted_slots * sizeof(int)));
 	b.token_expert_slots = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_token_slots", max_sorted_slots * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_sort_token_slots"), max_sorted_slots * sizeof(int)));
 	b.cta_done = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_cta_done", num_blocks * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_bwd_sort_cta_done"), num_blocks * sizeof(int)));
 	b.cta_sums = static_cast<int*>(
-		pool.get_device("moe_bwd_sort_cta_sums",
+		pool.get_device(moe_buffer_name("moe_bwd_sort_cta_sums"),
 			num_blocks * scfg.max_num_experts * sizeof(int)));
 
 	cudaMemsetAsync(b.cta_done, 0, num_blocks * sizeof(int), stream);
@@ -848,7 +832,10 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	const int num_experts = a.num_experts;
 	const int top_k       = a.top_k;
 	const nvshmem_team_t team = a.team;
+	MoeContextScope context_scope(team);
 	cudaStream_t stream   = a.stream;
+	if (get_symm_config().slot >= 0 && nvshmem_team_n_pes(team) > 1)
+		nvshmemx_barrier_on_stream(team, stream);
 	cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
 	if (cudaError_t e = cudaStreamIsCapturing(stream, &capture_status);
 			e != cudaSuccess)
@@ -873,8 +860,6 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	constexpr int kTileM      = Config::kTileM;
 	constexpr int kNumThreads = Config::kNumThreads;
 
-	// Iteration counter lives on the device; CTA 0 thread 0 atomicAdds it at
-	// the end of the kernel via PeSync::advance_iteration_counter().
 	int num_tokens       = a.num_tokens;
 	int hidden_dim       = a.hidden_dim;
 	int experts_per_pe   = a.experts_per_pe;
@@ -1305,21 +1290,15 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits5::SmemLayoutStore_1{});
 
-	// Phase 2 TMAs. mlp3's dY^T / Z operands and mlp4's X / dU^T / dV^T
-	// operands need pair-aware SM100_TMA_2SM_LOAD descriptors (built via
-	// make_tma_copy_A_sm100 / make_tma_copy_B_sm100, keyed off the joined
-	// TileShape + TiledMma2Sm) when Config::kUsesTwoSm (all SM100 configs);
-	// the dA/dB/dC TMA_REDUCE_ADD outputs are unchanged either way (each
-	// peer CTA still reduce-adds its own CtaTileM rows independently).
 	auto tma_load_dyt3 = [&] {
 		auto tensor = make_tensor(make_gmem_ptr(pDY),
 			make_shape(hidden_dim, max_total_slots),
 			make_stride(Int<1>{}, hidden_dim));
-		if constexpr (Config::kUsesTwoSm) {
-			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+		if constexpr (Config::kUsesUmma) {
+			return make_tma_copy_A_sm100(SM90_TMA_LOAD{}, tensor,
 				typename Traits3::SmemLayoutDYT_1{},
 				typename Traits3::TileShape{},
-				typename Traits3::TiledMma2Sm{});
+				typename Traits3::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(TmaLoadAtom{}, tensor,
 				typename Traits3::SmemLayoutDYT_1{});
@@ -1329,11 +1308,11 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.z_buf)),
 			make_shape(intermediate_dim, buf.scratch_rows),
 			make_stride(Int<1>{}, intermediate_dim));
-		if constexpr (Config::kUsesTwoSm) {
-			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+		if constexpr (Config::kUsesUmma) {
+			return make_tma_copy_B_sm100(SM90_TMA_LOAD{}, tensor,
 				typename Traits3::SmemLayoutZ_1{},
 				typename Traits3::TileShape{},
-				typename Traits3::TiledMma2Sm{});
+				typename Traits3::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(TmaLoadAtom{}, tensor,
 				typename Traits3::SmemLayoutZ_1{});
@@ -1364,11 +1343,11 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		auto tensor = make_tensor(make_gmem_ptr(pX),
 			make_shape(hidden_dim, max_total_slots),
 			make_stride(Int<1>{}, hidden_dim));
-		if constexpr (Config::kUsesTwoSm) {
-			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+		if constexpr (Config::kUsesUmma) {
+			return make_tma_copy_B_sm100(SM90_TMA_LOAD{}, tensor,
 				typename Traits4::SmemLayoutX_1{},
 				typename Traits4::TileShape{},
-				typename Traits4::TiledMma2Sm{});
+				typename Traits4::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(TmaLoadAtom{}, tensor,
 				typename Traits4::SmemLayoutX_1{});
@@ -1378,11 +1357,11 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.du_buf)),
 			make_shape(intermediate_dim, buf.scratch_rows),
 			make_stride(Int<1>{}, intermediate_dim));
-		if constexpr (Config::kUsesTwoSm) {
-			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+		if constexpr (Config::kUsesUmma) {
+			return make_tma_copy_A_sm100(SM90_TMA_LOAD{}, tensor,
 				typename Traits4::SmemLayoutA_1{},
 				typename Traits4::TileShape{},
-				typename Traits4::TiledMma2Sm{});
+				typename Traits4::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(TmaLoadAtom{}, tensor,
 				typename Traits4::SmemLayoutA_1{});
@@ -1392,11 +1371,11 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dv_buf)),
 			make_shape(intermediate_dim, buf.scratch_rows),
 			make_stride(Int<1>{}, intermediate_dim));
-		if constexpr (Config::kUsesTwoSm) {
-			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+		if constexpr (Config::kUsesUmma) {
+			return make_tma_copy_A_sm100(SM90_TMA_LOAD{}, tensor,
 				typename Traits4::SmemLayoutA_1{},
 				typename Traits4::TileShape{},
-				typename Traits4::TiledMma2Sm{});
+				typename Traits4::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(TmaLoadAtom{}, tensor,
 				typename Traits4::SmemLayoutA_1{});
@@ -1472,11 +1451,11 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dy_staging)),
 			make_shape(hidden_dim, remote_total_rows),
 			make_stride(Int<1>{}, hidden_dim));
-		if constexpr (Config::kUsesTwoSm) {
-			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+		if constexpr (Config::kUsesUmma) {
+			return make_tma_copy_A_sm100(SM90_TMA_LOAD{}, tensor,
 				typename Traits3::SmemLayoutDYT_1{},
 				typename Traits3::TileShape{},
-				typename Traits3::TiledMma2Sm{});
+				typename Traits3::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(TmaLoadAtom{}, tensor,
 				typename Traits3::SmemLayoutDYT_1{});
@@ -1486,11 +1465,11 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		auto tensor = make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.x_staging)),
 			make_shape(hidden_dim, remote_total_rows),
 			make_stride(Int<1>{}, hidden_dim));
-		if constexpr (Config::kUsesTwoSm) {
-			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tensor,
+		if constexpr (Config::kUsesUmma) {
+			return make_tma_copy_B_sm100(SM90_TMA_LOAD{}, tensor,
 				typename Traits4::SmemLayoutX_1{},
 				typename Traits4::TileShape{},
-				typename Traits4::TiledMma2Sm{});
+				typename Traits4::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(TmaLoadAtom{}, tensor,
 				typename Traits4::SmemLayoutX_1{});
@@ -1549,11 +1528,6 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	smem_mlp += num_pes * (experts_per_pe + 1) * sizeof(int);  // remote_offsets
 	smem_mlp += num_pes * experts_per_pe * sizeof(int);         // remote_counts
 
-	// Query the device's actual opt-in dynamic-smem cap rather than trust
-	// Config::kSmemBudget's compile-time 228 KiB constant: the 2SM paired-CTA
-	// path (Mlp3Traits2Sm / Mlp4Traits2Sm) pushes some candidates close to
-	// that ceiling, and the real per-SKU limit is what
-	// cudaFuncAttributeMaxDynamicSharedMemorySize is actually bounded by.
 	int device = 0;
 	int dynamic_smem_limit = 0;
 	if (cudaError_t e = cudaGetDevice(&device); e != cudaSuccess)
@@ -1600,17 +1574,6 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		LIGER_FAIL_CUDA("moe_bwd: cudaFuncSetAttribute(MaxDynamicSharedMemorySize=",
 			smem_size, ", device opt-in limit=", dynamic_smem_limit, ") failed: ",
 			cudaGetErrorString(e));
-	// The SM100 2SM paired-CTA cluster path launches with an explicit
-	// clusterDim; opt in to non-portable cluster sizes (the CUDA default
-	// portable max is 8, so ClusterM=2 is already portable in practice,
-	// but every 2SM launch enables this defensively, mirroring CUTLASS's
-	// own cluster-launch helpers).
-	if constexpr (Config::kUsesTwoSm) {
-		if (cudaError_t e = cudaFuncSetAttribute(kernel_fn,
-				cudaFuncAttributeNonPortableClusterSizeAllowed, 1); e != cudaSuccess)
-			LIGER_FAIL_CUDA("moe_bwd: enabling non-portable cluster size (ClusterM=",
-				Config::kClusterM, ") failed: ", cudaGetErrorString(e));
-	}
 
 	// Fresh per-call counter resets.
 	cudaMemsetAsync(buf.cta_counter,     0, sizeof(int),               stream);
@@ -1657,9 +1620,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_bwd: CUDA error before kernel launch: ", cudaGetErrorString(e));
 
-	// Compute=90 keeps the ordinary <<<>>> launch. Compute=100 always uses
-	// the explicit paired-CTA cluster launch below.
-	if constexpr (Config::kUsesTwoSm) {
+	if constexpr (Config::kUsesUmma) {
 		cudaLaunchConfig_t launch_config = {};
 		launch_config.gridDim = grid;
 		launch_config.blockDim = kNumThreads;
