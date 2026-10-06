@@ -70,7 +70,7 @@ def test_cutedsl_matches_triton_and_hf(
         LlamaRotaryEmbedding,
         LlamaRotaryEmbedding,
         before_kwargs={"dim": head_dim, "device": device},
-        after_kwargs={"config": LlamaConfig(num_kv_heads=num_kv_heads, head_dim=head_dim), "device": device},
+        after_kwargs={"config": LlamaConfig(num_kv_heads=num_kv_heads, head_dim=head_dim)},
     )
 
     _q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device).transpose(1, 2).to(dtype)
@@ -148,7 +148,7 @@ def test_cutedsl_backward_contiguous_grad(bsz, seq_len, num_q_heads, num_kv_head
         LlamaRotaryEmbedding,
         LlamaRotaryEmbedding,
         before_kwargs={"dim": head_dim, "device": device},
-        after_kwargs={"config": LlamaConfig(num_kv_heads=num_kv_heads, head_dim=head_dim), "device": device},
+        after_kwargs={"config": LlamaConfig(num_kv_heads=num_kv_heads, head_dim=head_dim)},
     )
 
     _q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device).transpose(1, 2).to(dtype)
@@ -211,7 +211,7 @@ def test_cutedsl_vision_2d_cos_sin(seq_len, num_heads, head_dim, dtype, atol, rt
         LlamaRotaryEmbedding,
         LlamaRotaryEmbedding,
         before_kwargs={"dim": head_dim, "device": device},
-        after_kwargs={"config": LlamaConfig(num_kv_heads=num_heads, head_dim=head_dim), "device": device},
+        after_kwargs={"config": LlamaConfig(num_kv_heads=num_heads, head_dim=head_dim)},
     )
 
     _q = torch.randn((seq_len, num_heads, head_dim), device=device).to(dtype)

@@ -183,7 +183,7 @@ def transformers_version_dispatch(
         ...     before_args=(head_dim,),
         ...     after_args=(LlamaConfig(head_dim=head_dim),),
         ...     before_kwargs={'device': device},
-        ...     after_kwargs={'device': device}
+        ...     after_kwargs={}  # config-based constructor derives device from input; newer transformers rejects `device`
         ... )
     """
     from packaging import version
