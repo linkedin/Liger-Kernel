@@ -13,6 +13,8 @@ the Triton kernel — so a Triton bug doesn't mask a cuTile bug (or vice versa).
 
 from __future__ import annotations
 
+import math
+
 from typing import List
 from typing import Optional
 
@@ -36,6 +38,40 @@ _REGISTERED_IMPLS: List[str] = available_impls("jsd")
 _SHAPES = [(8, 64), (32, 256), (64, 4099), (128, 32000)]
 _DTYPES = [torch.bfloat16, torch.float32]
 _BETAS = [0.0, 0.5, 1.0]
+
+
+@pytest.mark.parametrize("impl", _REGISTERED_IMPLS)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("beta", [0.0, 0.3, 0.5, 0.7, 1.0])
+@pytest.mark.parametrize("with_labels", [False, True])
+def test_jsd_underflow_matches_double_reference(impl, dtype, beta, with_labels):
+    # The second vocabulary entry underflows in both distributions in fp32.
+    log_q = torch.tensor([[0.0, -120.0, -1.0, -2.0, -90.0]], device="cuda", dtype=dtype)
+    log_p = torch.tensor([[0.5, -130.0, -2.0, -1.0, -95.0]], device="cuda", dtype=dtype)
+    log_q = log_q.log_softmax(-1).repeat(3, 1).detach().requires_grad_()
+    log_p = log_p.log_softmax(-1).repeat(3, 1)
+    labels = torch.tensor([0, -100, 1], device="cuda") if with_labels else None
+    ref_q = log_q.detach().double().requires_grad_()
+    ref_p = log_p.double()
+    if beta == 0.0:
+        terms = ref_p.exp() * (ref_p - ref_q)
+    elif beta == 1.0:
+        terms = ref_q.exp() * (ref_q - ref_p)
+    else:
+        log_m = torch.logaddexp(ref_p + math.log(beta), ref_q + math.log1p(-beta))
+        terms = beta * ref_p.exp() * (ref_p - log_m) + (1 - beta) * ref_q.exp() * (ref_q - log_m)
+    rows = terms.sum(-1)
+    expected = rows[labels != -100].mean() if with_labels else rows.mean()
+    actual = functional_jsd(log_q, log_p, labels, beta=beta, impl=impl)
+    (expected * 0.7).backward()
+    (actual * 0.7).backward()
+    assert torch.isfinite(actual)
+    assert torch.isfinite(log_q.grad).all()
+    tol = {torch.float32: 1e-6, torch.float16: 5e-4, torch.bfloat16: 4e-3}[dtype]
+    torch.testing.assert_close(actual.double(), expected, atol=tol, rtol=tol)
+    torch.testing.assert_close(log_q.grad.double(), ref_q.grad, atol=tol, rtol=tol)
+    if with_labels:
+        assert torch.count_nonzero(log_q.grad[1]) == 0
 
 
 def _pytorch_jsd_reference(

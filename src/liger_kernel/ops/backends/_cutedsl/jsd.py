@@ -20,9 +20,9 @@ Math (matching :mod:`liger_kernel.ops.jsd._jsd_kernel`)::
     P = exp(Y)                           # teacher probabilities
 
     # General JSD (0 < beta < 1):
-    M       = beta * P + (1 - beta) * Q
-    log_M   = log(M)
-    loss    = beta * P * Y + (1 - beta) * Q * X - M * log_M
+    max_val = max(X, Y)
+    log_M   = max_val + log(beta * exp(Y - max_val) + (1 - beta) * exp(X - max_val))
+    loss    = beta * P * (Y - log_M) + (1 - beta) * Q * (X - log_M)
     dX      = (1 - beta) * Q * (X - log_M)
 
     # Forward KL (beta == 0):
@@ -36,9 +36,9 @@ Math (matching :mod:`liger_kernel.ops.jsd._jsd_kernel`)::
     loss *= (1 / n_non_ignore)
     dX   *= (1 / n_non_ignore)
 
-The max-subtraction for numerical stability in the Triton kernel is omitted
-here — log-probabilities are typically in ``[-30, 0]`` so ``exp`` does not
-overflow.  For bf16/fp16 inputs ``exp``/``log`` are computed via native
+The mixture is formed in log space so entries whose probabilities both
+underflow still produce finite loss and gradients. For bf16/fp16 inputs
+``exp``/``log`` are computed via native
 ``exp2``/``log2`` (``exp(x) = exp2(x * log2(e))``); for fp32 inputs the kernel
 switches to libdevice-precise ``exp``/``log`` (no fastmath) to match
 ``torch.exp`` fp32 within the strict public JSD contract (1e-7 atol).
@@ -254,13 +254,14 @@ class _LigerJSDLossAndGradCuTeDSL:
             dx = loss + q
         else:
             # General JSD
+            max_val = cute.where(x > y, x, y)
+            m_shifted = beta * self._exp(y - max_val) + (1.0 - beta) * self._exp(x - max_val)
+            log_m = max_val + self._log(m_shifted)
             q = self._exp(x)
             p = self._exp(y)
             beta_p = beta * p
             one_minus_beta_q = (1.0 - beta) * q
-            m = beta_p + one_minus_beta_q
-            log_m = self._log(m)
-            loss = beta_p * y + one_minus_beta_q * x - m * log_m
+            loss = beta_p * (y - log_m) + one_minus_beta_q * (x - log_m)
             dx = one_minus_beta_q * (x - log_m)
 
         loss = loss * scale
