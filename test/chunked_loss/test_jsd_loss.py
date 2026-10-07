@@ -439,3 +439,48 @@ def test_correctness_functional(
 
     if bias:
         assert_verbose_allclose(student_bias1.grad, student_bias2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "weight_hard_loss, return_soft_hard_loss, ce_expected",
+    [
+        (0.0, False, False),  # multiplied by zero and not returned: skipped
+        (0.0, True, True),  # returned: computed even though it has no weight
+        (0.5, False, True),
+    ],
+)
+def test_jsd_hard_loss_computed_only_when_used(monkeypatch, weight_hard_loss, return_soft_hard_loss, ce_expected):
+    nll_calls = []
+    real_nll = torch.nn.functional.nll_loss
+
+    def spy(*args, **kwargs):
+        nll_calls.append(1)
+        return real_nll(*args, **kwargs)
+
+    B, T, H, V = 2, 8, 32, 64
+    torch.manual_seed(42)
+    student_input = torch.randn(B * T, H, device=device, requires_grad=True)
+    student_weight = torch.randn(V, H, device=device, requires_grad=True)
+    teacher_input = torch.randn(B * T, H, device=device)
+    teacher_weight = torch.randn(V, H, device=device)
+    target = torch.randint(0, V, (B * T,), device=device)
+    target[3] = -100
+    loss_fn = LigerFusedLinearJSDLoss(
+        weight_hard_loss=weight_hard_loss,
+        weight_soft_loss=1.0 - weight_hard_loss,
+        beta=0.5,
+        chunk_size=4,
+        compiled=False,
+        return_soft_hard_loss=return_soft_hard_loss,
+    )
+    monkeypatch.setattr(torch.nn.functional, "nll_loss", spy)
+    out = loss_fn(student_input, student_weight, teacher_input, teacher_weight, target)
+    monkeypatch.undo()
+    assert bool(nll_calls) == ce_expected
+    if return_soft_hard_loss:
+        _, _, hard_loss = out
+        # the hard loss is still reported when asked for, whatever its weight
+        reference = torch.nn.functional.cross_entropy(
+            (student_input @ student_weight.t()).float(), target, ignore_index=-100
+        )
+        assert_verbose_allclose(hard_loss, reference, atol=1e-5, rtol=1e-5)
