@@ -8,6 +8,7 @@ discovery, and resolution machinery using fake ops in a fresh namespace. The
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 
@@ -42,6 +43,14 @@ from liger_kernel.backends.registry import register_op
 # module object (needed by the isolated_registry fixture below to swap the
 # module-level _GLOBAL_IMPL/_GLOBAL_BACKEND globals).
 dispatch_mod = sys.modules["liger_kernel.backends.dispatch"]
+
+
+def test_cross_entropy_primitive_discovery_excludes_deferred_cutile_adapter():
+    importlib.import_module("liger_kernel.functional")
+
+    cutile_module = "liger_kernel.ops.backends._cutile.cross_entropy"
+    assert cutile_module in _DISCOVERY_MAP["cross_entropy"]
+    assert cutile_module not in _DISCOVERY_MAP["cross_entropy_loss_and_grad"]
 
 
 @pytest.fixture

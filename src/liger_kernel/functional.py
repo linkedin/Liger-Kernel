@@ -121,7 +121,6 @@ declare_op_locations(
     "cross_entropy_loss_and_grad",
     (
         "liger_kernel.ops.backends._triton.cross_entropy",
-        "liger_kernel.ops.backends._cutile.cross_entropy",
         "liger_kernel.ops.backends._cutedsl.cross_entropy",
     ),
 )
