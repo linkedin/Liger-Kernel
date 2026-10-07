@@ -1,3 +1,5 @@
+import warnings
+
 from abc import abstractmethod
 from functools import partial
 
@@ -228,7 +230,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 "If use_ref_model is True, ref_per_token_logps or ref_input must be provided"
             )
             if ref_per_token_logps is not None and ref_input is not None:
-                raise Warning("Both ref_per_token_logps and ref_input are provided. Using ref_per_token_logps.")
+                warnings.warn("Both ref_per_token_logps and ref_input are provided. Using ref_per_token_logps.")
         if loss_type == "dr_grpo":
             assert max_completion_length is not None, "max_completion_length must be provided for loss_type 'dr_grpo'"
         if vllm_is_ratio is not None:

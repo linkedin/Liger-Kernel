@@ -122,8 +122,8 @@ def _fused_add_rms_norm_cutedsl_forward(
 ) -> Tuple[Tensor, Tensor, Optional[Tensor], Tensor]:
     """Forward via the inlined ``_cute_lib.rmsnorm_fwd`` with ``residual=R``.
 
-    Returns ``(Y, S, W_eff, RSTD)`` where ``S = X + R`` is the summed residual
-    (saved for the backward), ``W_eff`` is ``weight + offset``, and ``RSTD``
+    Returns ``(Y, S, W_kernel, RSTD)`` where ``S = X + R`` is the summed residual
+    (saved for the backward), ``W_kernel`` is the kernel weight (raw for Gemma), and ``RSTD``
     is fp32.
     """
     shape = X.shape
@@ -163,25 +163,27 @@ def _fused_add_rms_norm_cutedsl_forward(
     X_flat = X_in.view(-1, N).contiguous()
     R_flat = R.view(-1, N).contiguous()
 
-    # Fold offset into the weight host-side.
-    if offset != 0.0:
-        w_eff = W + offset
+    # Gemma adds offset in FP32 inside the forward/backward kernels.
+    weight_offset = offset if casting_mode == _CASTING_MODE_GEMMA else 0.0
+    if offset != 0.0 and casting_mode != _CASTING_MODE_GEMMA:
+        w_kernel = W + offset
     else:
-        w_eff = W
-    # Only the mixed-dtype gemma route promotes w_eff host-side; the
+        w_kernel = W
+    # Only the mixed-dtype gemma route promotes w_kernel host-side; the
     # kernel up-casts in-register otherwise (bit-exact).
-    if _promote_gemma_fp32 and w_eff.dtype != torch.float32:
-        w_eff = w_eff.to(torch.float32)
-    w_eff = w_eff.contiguous()
+    if _promote_gemma_fp32 and w_kernel.dtype != torch.float32:
+        w_kernel = w_kernel.to(torch.float32)
+    w_kernel = w_kernel.contiguous()
 
     # rmsnorm_fwd with residual=R fuses the add into the kernel.
     # Returns (out, residual_out=S, rstd).
     out, S, rstd = _cutedsl_rmsnorm_fwd(
         X_flat,
-        weight=w_eff,
+        weight=w_kernel,
         residual=R_flat,
         eps=eps,
         store_rstd=True,
+        weight_offset=weight_offset,
     )
 
     # Back-cast if the promote route above widened the output (it is the
@@ -195,17 +197,18 @@ def _fused_add_rms_norm_cutedsl_forward(
     if S.dtype != X.dtype:
         S = S.to(X.dtype)
 
-    return out.view(shape), S.view(shape), w_eff, rstd
+    return out.view(shape), S.view(shape), w_kernel, rstd
 
 
 def _fused_add_rms_norm_cutedsl_backward(
     dY: Tensor,
     dS_out: Optional[Tensor],
     S: Tensor,
-    W_eff: Tensor,
+    W_kernel: Tensor,
     RSTD: Tensor,
     in_place: bool,
     casting_mode: int,
+    weight_offset: float = 0.0,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """Backward via the inline CuTe DSL rms_norm backward kernel.
 
@@ -213,7 +216,7 @@ def _fused_add_rms_norm_cutedsl_backward(
     residual-add makes ``dX = dR``; an optional ``dS_out`` (gradient flowing
     to the residual output) is added host-side after the kernel.
     """
-    # Reuse the rms_norm backward: it computes dX_rms from (dY, S, W_eff, RSTD).
+    # Reuse the rms_norm backward: it computes dX_rms from (dY, S, W_kernel, RSTD).
     # ``dS_out`` is folded into the kernel epilogue (dx += dS in fp32 before the
     # single store round — strictly closer to exact than a post-hoc two-tensor
     # bf16 add, and it removes the host pass's full (M,N) read+write trip: the
@@ -234,11 +237,12 @@ def _fused_add_rms_norm_cutedsl_backward(
     dX, dW = _rms_norm_cutedsl_backward(
         dY.view(-1, N).contiguous() if dY.dim() > 2 else dY,
         S.view(-1, N) if S.dim() > 2 else S,
-        W_eff,
+        W_kernel,
         RSTD,
         in_place,
         casting_mode,
         ds=(dS_out.view(-1, N) if (dS_out is not None and dS_out.dim() > 2) else dS_out),
+        weight_offset=weight_offset,
     )
     if dY.dim() > 2:
         dX = dX.view(shape)
@@ -251,7 +255,7 @@ def _fused_add_rms_norm_cutedsl_backward(
 class _LigerFusedAddRMSNormCuTeDSLFunction(torch.autograd.Function):
     """Autograd wrapper for fused_add_rms_norm via CuTe DSL.
 
-    Saves ``S`` (the summed residual), ``W_eff``, and ``RSTD`` for the backward.
+    Saves ``S`` (the summed residual), ``W_kernel``, and ``RSTD`` for the backward.
     """
 
     @staticmethod
@@ -272,12 +276,13 @@ class _LigerFusedAddRMSNormCuTeDSLFunction(torch.autograd.Function):
         else:
             casting_mode_int = casting_mode
 
-        Y, S, W_eff, RSTD = _fused_add_rms_norm_cutedsl_forward(X, R, W, eps, offset, casting_mode_int)
+        Y, S, W_kernel, RSTD = _fused_add_rms_norm_cutedsl_forward(X, R, W, eps, offset, casting_mode_int)
 
         ctx.in_place = in_place
         ctx.weight_dtype = W.dtype
         ctx.casting_mode = casting_mode_int
-        ctx.save_for_backward(S, W_eff, RSTD)
+        ctx.weight_offset = offset if casting_mode_int == _CASTING_MODE_GEMMA else 0.0
+        ctx.save_for_backward(S, W_kernel, RSTD)
         return Y, S
 
     @staticmethod
@@ -286,15 +291,16 @@ class _LigerFusedAddRMSNormCuTeDSLFunction(torch.autograd.Function):
         if dS_out is not None:
             dS_out = _to_local_if_dtensor(dS_out).contiguous()
 
-        S, W_eff, RSTD = ctx.saved_tensors
+        S, W_kernel, RSTD = ctx.saved_tensors
         dX, dR, dW = _fused_add_rms_norm_cutedsl_backward(
             dY,
             dS_out,
             S,
-            W_eff,
+            W_kernel,
             RSTD,
             ctx.in_place,
             ctx.casting_mode,
+            weight_offset=ctx.weight_offset,
         )
         dW = dW.to(ctx.weight_dtype)
 
