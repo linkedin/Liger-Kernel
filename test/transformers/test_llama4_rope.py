@@ -55,7 +55,7 @@ def test_correctness(bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, a
         rope_theta=10000.0,
         rope_scaling=None,
     )
-    rotary_emb = Llama4TextRotaryEmbedding(config=config, device=device)
+    rotary_emb = Llama4TextRotaryEmbedding(config=config)
 
     _tensor_q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device).to(dtype)
     _tensor_k = torch.randn((bsz, seq_len, num_kv_heads, head_dim), device=device).to(dtype)
@@ -109,7 +109,7 @@ def test_functional_correctness(bsz, seq_len, num_q_heads, num_kv_heads, head_di
         rope_theta=10000.0,
         rope_scaling=None,
     )
-    rotary_emb = Llama4TextRotaryEmbedding(config=config, device=device)
+    rotary_emb = Llama4TextRotaryEmbedding(config=config)
 
     _q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device, dtype=dtype)
     _k = torch.randn((bsz, seq_len, num_kv_heads, head_dim), device=device, dtype=dtype)
@@ -200,7 +200,7 @@ def test_row_offset_does_not_wrap_int32(bsz, seq_len, num_q_heads, num_kv_heads,
         rope_theta=10000.0,
         rope_scaling=None,
     )
-    rotary_emb = Llama4TextRotaryEmbedding(config=config, device=device)
+    rotary_emb = Llama4TextRotaryEmbedding(config=config)
     pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
     freqs_cis = rotary_emb(q, pos_ids)
 
