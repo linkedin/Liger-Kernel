@@ -40,25 +40,29 @@ def test_group_norm_spatial_rank(shape):
         torch.testing.assert_close(result, reference, atol=1e-4, rtol=1e-4)
 
 
-@pytest.mark.parametrize("kernel_size", [1, 3], ids=["pointwise", "spatial"])
-def test_attention_unpadded_convolution_backward(kernel_size, monkeypatch):
+@pytest.mark.parametrize(
+    "kernel_size,stride,padding,dilation,groups",
+    [(1, 1, 0, 1, 1), (3, 1, 0, 1, 1), (3, 2, 1, 1, 1), (3, 1, 2, 2, 2)],
+    ids=["pointwise", "spatial", "strided-padded", "dilated-grouped"],
+)
+def test_attention_convolution_backward(kernel_size, stride, padding, dilation, groups, monkeypatch):
     # Compare full-precision convolution and GEMM, not TF32 against IEEE FP32.
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
     torch.manual_seed(0)
     scores = torch.randn(2, 2, 8, 8, device="cuda", requires_grad=True)
-    weight = torch.randn(3, 2, kernel_size, kernel_size, device="cuda", requires_grad=True)
-    bias = torch.randn(3, device="cuda", requires_grad=True)
+    weight = torch.randn(3 * groups, 2 // groups, kernel_size, kernel_size, device="cuda", requires_grad=True)
+    bias = torch.randn(3 * groups, device="cuda", requires_grad=True)
     sr = scores.detach().clone().requires_grad_(True)
     wr = weight.detach().clone().requires_grad_(True)
     br = bias.detach().clone().requires_grad_(True)
     upper = torch.ones(8, 8, device="cuda", dtype=torch.bool).triu(1)
     probs = sr.masked_fill(upper, -torch.inf).softmax(-1)
-    conv = F.conv2d(probs, wr, br)
+    conv = F.conv2d(probs, wr, br, stride=stride, padding=padding, dilation=dilation, groups=groups)
     out_width = conv.shape[-1]
     out_upper = torch.ones(out_width, out_width, device="cuda", dtype=torch.bool).triu(1)
     expected = conv.masked_fill(out_upper, 0.0)
-    actual = LigerMultiTokenAttentionFunction.apply(scores, weight, bias)
+    actual = LigerMultiTokenAttentionFunction.apply(scores, weight, bias, stride, padding, dilation, groups)
     grad = torch.randn_like(expected)
     expected.backward(grad)
     actual.backward(grad)
@@ -75,19 +79,30 @@ def test_sparsemax_singleton_support_gradient():
     torch.testing.assert_close(x.grad, torch.zeros_like(x), atol=0.0, rtol=0.0)
 
 
-def test_tiled_mlp_non_contiguous_forward_backward():
+@pytest.mark.parametrize("input_requires_grad", [True, False], ids=["trainable-input", "frozen-input"])
+@pytest.mark.parametrize("explicit_params", [False, True], ids=["module-params", "compute-params"])
+def test_tiled_mlp_non_contiguous_forward_backward(input_requires_grad, explicit_params):
     torch.manual_seed(0)
-    x = torch.randn(2, 3, 7, device="cuda").transpose(0, 1).detach().requires_grad_(True)
+    x = torch.randn(2, 3, 7, device="cuda").transpose(0, 1).detach().requires_grad_(input_requires_grad)
     grad = torch.randn(2, 3, 7, device="cuda").transpose(0, 1)
     assert not x.is_contiguous() and not grad.is_contiguous()
-    xr = x.detach().clone().requires_grad_(True)
+    xr = x.detach().clone().requires_grad_(input_requires_grad)
     layer = torch.nn.Linear(7, 7, device="cuda")
     reference_layer = torch.nn.Linear(7, 7, device="cuda")
     reference_layer.load_state_dict(layer.state_dict())
     expected = reference_layer(xr)
-    actual = apply_tiled_mlp(lambda module, shard: module(shard), layer, x, num_shards=2)
+    actual = apply_tiled_mlp(
+        lambda module, shard: module(shard),
+        layer,
+        x,
+        num_shards=2,
+        compute_params=list(layer.parameters()) if explicit_params else None,
+    )
+    assert actual.requires_grad
     expected.backward(grad)
     actual.backward(grad)
+    assert x.requires_grad == input_requires_grad
+    assert layer.weight.grad is not None and layer.bias.grad is not None
     for result, reference in (
         (actual, expected),
         (x.grad, xr.grad),
