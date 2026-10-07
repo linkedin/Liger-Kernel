@@ -119,10 +119,12 @@ def test_cutile_matches_triton_and_hf(
 
 
 def _rotate_reference(x, cos, sin):
-    first, second = x.float().chunk(2, dim=-1)
+    rotary_dim = min(cos.shape[-1], x.shape[-1])
+    first, second = x[..., :rotary_dim].float().chunk(2, dim=-1)
     cos = cos.float().unsqueeze(1)[..., : first.shape[-1]]
     sin = sin.float().unsqueeze(1)[..., : first.shape[-1]]
-    return torch.cat((first * cos - second * sin, second * cos + first * sin), dim=-1).to(x.dtype)
+    rotated = torch.cat((first * cos - second * sin, second * cos + first * sin), dim=-1).to(x.dtype)
+    return torch.cat((rotated, x[..., rotary_dim:]), dim=-1)
 
 
 def _run_cutile_rope(entrypoint, q, k, cos, sin):
@@ -133,6 +135,32 @@ def _run_cutile_rope(entrypoint, q, k, cos, sin):
     if entrypoint == "native":
         return LigerRopeCuTileFunction.apply(q, k, cos, sin)
     return functional.rope(q, k, cos, sin, impl=impl, mode="default")
+
+
+@pytest.mark.parametrize("entrypoint", ["native", "dispatcher"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16], ids=["fp32", "fp16", "bf16"])
+@pytest.mark.parametrize("n_q_heads,head_dim,rotary_dim", [(4, 32, 8), (3, 40, 20)], ids=["aligned", "padded-half"])
+@pytest.mark.parametrize("broadcast", [False, True], ids=["dense", "broadcast-vision"])
+def test_cutile_partial_rope_preserves_tail(entrypoint, dtype, n_q_heads, head_dim, rotary_dim, broadcast):
+    torch.manual_seed(0)
+    q = torch.randn(2, n_q_heads, 1 if broadcast else 7, head_dim, device="cuda", dtype=dtype)
+    k = torch.randn(2, 2, 1 if broadcast else 7, head_dim, device="cuda", dtype=dtype)
+    if broadcast:
+        q, k = q.expand(-1, -1, 7, -1), k.expand(-1, -1, 7, -1)
+    q, k = q.detach().requires_grad_(True), k.detach().requires_grad_(True)
+    q_ref, k_ref = q.detach().clone().requires_grad_(True), k.detach().clone().requires_grad_(True)
+    angles = torch.randn(1 if broadcast else 2, 7, rotary_dim // 2, device="cuda", dtype=dtype)
+    cos, sin = angles.cos().repeat(1, 1, 2), angles.sin().repeat(1, 1, 2)
+    q_expected, k_expected = _rotate_reference(q_ref, cos, sin), _rotate_reference(k_ref, cos, sin)
+    if broadcast:
+        cos, sin = cos.squeeze(0), sin.squeeze(0)
+    q_out, k_out = _run_cutile_rope(entrypoint, q, k, cos, sin)
+    (q_out.sum() + 0.75 * k_out.sum()).backward()
+    (q_expected.sum() + 0.75 * k_expected.sum()).backward()
+    atol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 1e-1}[dtype]
+    for actual, expected in ((q_out, q_expected), (k_out, k_expected), (q.grad, q_ref.grad), (k.grad, k_ref.grad)):
+        torch.testing.assert_close(actual, expected, atol=atol, rtol=1e-5)
+        torch.testing.assert_close(actual[..., rotary_dim:], expected[..., rotary_dim:], atol=0, rtol=0)
 
 
 @pytest.mark.parametrize("entrypoint", ["native", "dispatcher"])
