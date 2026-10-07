@@ -4,6 +4,7 @@ import torch
 from test.utils import supports_bfloat16
 from transformers.models.llama.configuration_llama import LlamaConfig
 
+from liger_kernel.ops import apply_tiled_mlp
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP
@@ -11,6 +12,52 @@ from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP
 from liger_kernel.utils import infer_device
 
 device = infer_device()
+
+
+@pytest.mark.parametrize("input_requires_grad", [True, False], ids=["trainable-input", "frozen-input"])
+@pytest.mark.parametrize("non_contiguous", [False, True], ids=["contiguous", "strided"])
+@pytest.mark.parametrize("explicit_params", [False, True], ids=["module-params", "compute-params"])
+def test_tiled_function_backward_contract(input_requires_grad, non_contiguous, explicit_params):
+    torch.manual_seed(0)
+    x = torch.randn(2, 4, 7, device=device)
+    if non_contiguous:
+        x = x.transpose(0, 1)
+    x = x.detach().requires_grad_(input_requires_grad)
+    reference_x = x.detach().clone().requires_grad_(input_requires_grad)
+    layer = torch.nn.Linear(7, 7, device=device)
+    reference_layer = torch.nn.Linear(7, 7, device=device)
+    reference_layer.load_state_dict(layer.state_dict())
+    actual = apply_tiled_mlp(
+        lambda module, shard: module(shard),
+        layer,
+        x,
+        num_shards=2,
+        compute_params=list(layer.parameters()) if explicit_params else None,
+    )
+    expected = reference_layer(reference_x)
+    assert actual.requires_grad
+    grad = torch.randn_like(actual)
+    actual.backward(grad)
+    expected.backward(grad)
+    for result, reference in (
+        (actual, expected),
+        (x.grad, reference_x.grad),
+        (layer.weight.grad, reference_layer.weight.grad),
+        (layer.bias.grad, reference_layer.bias.grad),
+    ):
+        torch.testing.assert_close(result, reference, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("context", [torch.no_grad, torch.inference_mode], ids=["no-grad", "inference"])
+def test_tiled_function_inference_contract(context):
+    layer = torch.nn.Linear(7, 7, device=device)
+    x = torch.randn(2, 4, 7, device=device, requires_grad=True)
+    with context():
+        actual = apply_tiled_mlp(lambda module, shard: module(shard), layer, x, num_shards=2)
+        expected = layer(x)
+    assert not actual.requires_grad
+    torch.testing.assert_close(actual, expected)
+    assert x.grad is None and layer.weight.grad is None and layer.bias.grad is None
 
 
 @pytest.mark.parametrize(
