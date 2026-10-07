@@ -57,13 +57,20 @@ def test_layer_norm_correctness(backend, shape, dtype, with_bias):
     """
     if backend == "__none__":
         pytest.skip("No layer_norm backends registered in this environment")
-    assert_op_correctness(
-        "layer_norm",
-        backend,
-        shape,
-        dtype,
-        extra={"include_bias": with_bias},
-    )
+    try:
+        assert_op_correctness(
+            "layer_norm",
+            backend,
+            shape,
+            dtype,
+            extra={"include_bias": with_bias},
+        )
+    except RuntimeError as e:
+        # See test_rms_norm.py: honour a backend's documented hidden-dim range
+        # limit (cuTile caps forward and backward at 8192) as a clean skip.
+        if "only supports hidden dim" in str(e) or "out of range" in str(e).lower():
+            pytest.skip(f"backend {backend} documents range limit: {e}")
+        raise
 
 
 def test_layer_norm_explicit_backend_unavailable():

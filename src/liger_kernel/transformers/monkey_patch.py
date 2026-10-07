@@ -547,14 +547,13 @@ def apply_liger_kernel_to_llama4(
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
-        if vision_model:
+        if vision_model and layer_norm:
             _patch_layer_norm_module(vision_model.layernorm_pre)
             _patch_layer_norm_module(vision_model.layernorm_post)
 
             for layer in vision_model.model.layers:
-                if layer_norm:
-                    _patch_layer_norm_module(layer.input_layernorm)
-                    _patch_layer_norm_module(layer.post_attention_layernorm)
+                _patch_layer_norm_module(layer.input_layernorm)
+                _patch_layer_norm_module(layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_mllama(
@@ -644,19 +643,17 @@ def apply_liger_kernel_to_mllama(
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
-        if vision_model:
+        if vision_model and layer_norm:
             _patch_layer_norm_module(vision_model.layernorm_pre)
             _patch_layer_norm_module(vision_model.layernorm_post)
 
             for layer in vision_model.transformer.layers:
-                if layer_norm:
-                    _patch_layer_norm_module(layer.input_layernorm)
-                    _patch_layer_norm_module(layer.post_attention_layernorm)
+                _patch_layer_norm_module(layer.input_layernorm)
+                _patch_layer_norm_module(layer.post_attention_layernorm)
 
             for layer in vision_model.global_transformer.layers:
-                if layer_norm:
-                    _patch_layer_norm_module(layer.input_layernorm)
-                    _patch_layer_norm_module(layer.post_attention_layernorm)
+                _patch_layer_norm_module(layer.input_layernorm)
+                _patch_layer_norm_module(layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_ministral(
@@ -1368,11 +1365,11 @@ def apply_liger_kernel_to_gemma3(
                 vision_tower = model.model.vision_tower
                 siglip_vision_model = getattr(vision_tower, "vision_model", vision_tower)
 
-                _patch_layer_norm_module(siglip_vision_model.post_layernorm)
+                if layer_norm:
+                    _patch_layer_norm_module(siglip_vision_model.post_layernorm)
 
-                for layer in siglip_vision_model.encoder.layers:
-                    layer: SiglipEncoderLayer
-                    if layer_norm:
+                    for layer in siglip_vision_model.encoder.layers:
+                        layer: SiglipEncoderLayer
                         _patch_layer_norm_module(layer.layer_norm1)
                         _patch_layer_norm_module(layer.layer_norm2)
             else:
@@ -1714,11 +1711,11 @@ def apply_liger_kernel_to_paligemma(
         vision_tower: SiglipVisionModel = model.model.vision_tower
         siglip_vision_model = getattr(vision_tower, "vision_model", vision_tower)
 
-        _patch_layer_norm_module(siglip_vision_model.post_layernorm)
+        if layer_norm:
+            _patch_layer_norm_module(siglip_vision_model.post_layernorm)
 
-        for layer in siglip_vision_model.encoder.layers:
-            layer: SiglipEncoderLayer
-            if layer_norm:
+            for layer in siglip_vision_model.encoder.layers:
+                layer: SiglipEncoderLayer
                 _patch_layer_norm_module(layer.layer_norm1)
                 _patch_layer_norm_module(layer.layer_norm2)
 
@@ -1871,6 +1868,8 @@ def apply_liger_kernel_to_qwen3(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.q_norm)
+                _patch_rms_norm_module(decoder_layer.self_attn.k_norm)
 
 
 def apply_liger_kernel_to_qwen3_moe(
@@ -1936,6 +1935,8 @@ def apply_liger_kernel_to_qwen3_moe(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.q_norm)
+                _patch_rms_norm_module(decoder_layer.self_attn.k_norm)
 
 
 def apply_liger_kernel_to_gpt_oss(
@@ -2056,7 +2057,9 @@ def apply_liger_kernel_to_qwen2_vl(
         modeling_qwen2_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
+        # transformers < 5.2 uses Qwen2RMSNorm, transformers >= 5.2 defines its own Qwen2VLRMSNorm
         modeling_qwen2_vl.Qwen2RMSNorm = LigerRMSNorm
+        modeling_qwen2_vl.Qwen2VLRMSNorm = LigerRMSNorm
     if layer_norm and model is None:
         modeling_qwen2_vl.LayerNorm = LigerLayerNorm
     if cross_entropy:
@@ -2148,7 +2151,9 @@ def apply_liger_kernel_to_qwen2_5_vl(
     if rope:
         modeling_qwen2_5_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
     if rms_norm:
+        # transformers < 5.2 uses Qwen2RMSNorm, transformers >= 5.2 defines its own Qwen2_5_VLRMSNorm
         modeling_qwen2_5_vl.Qwen2RMSNorm = LigerRMSNorm
+        modeling_qwen2_5_vl.Qwen2_5_VLRMSNorm = LigerRMSNorm
     if cross_entropy:
         modeling_qwen2_5_vl.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
@@ -2792,8 +2797,9 @@ def apply_liger_kernel_to_glm4v_moe(
             )
 
         if vision_model is not None:
-            _patch_rms_norm_module(vision_model.post_conv_layernorm)
-            _patch_rms_norm_module(vision_model.post_layernorm)
+            if rms_norm:
+                _patch_rms_norm_module(vision_model.post_conv_layernorm)
+                _patch_rms_norm_module(vision_model.post_layernorm)
             for vision_block in vision_model.blocks:
                 if rms_norm:
                     _patch_rms_norm_module(vision_block.norm1)
@@ -3145,9 +3151,7 @@ def apply_liger_kernel_to_qwen3_next(
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
     if rope:
-        # It might enocunter nan issue
-        # modeling_qwen3_next.apply_rotary_pos_emb = liger_rotary_pos_emb
-        raise NotImplementedError("liger_rotary_pos_emb is not available for Qwen3Next models.")
+        modeling_qwen3_next.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_qwen3_next.Qwen3NextRMSNorm = LigerRMSNormForQwen3Next
     if cross_entropy:
@@ -3192,6 +3196,9 @@ def apply_liger_kernel_to_qwen3_next(
             if rms_norm:
                 _patch_rms_norm_module_for_qwen3_next(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_qwen3_next(decoder_layer.post_attention_layernorm)
+                if hasattr(decoder_layer, "self_attn"):
+                    _patch_rms_norm_module_for_qwen3_next(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_qwen3_next(decoder_layer.self_attn.k_norm)
 
             # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
             if swiglu:
@@ -3300,6 +3307,9 @@ def apply_liger_kernel_to_qwen3_5(
             if rms_norm:
                 _patch_rms_norm_module_for_qwen3_5(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_qwen3_5(decoder_layer.post_attention_layernorm)
+                if hasattr(decoder_layer, "self_attn"):
+                    _patch_rms_norm_module_for_qwen3_5(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_qwen3_5(decoder_layer.self_attn.k_norm)
 
             if swiglu:
                 _patch_swiglu_module(decoder_layer.mlp, LigerQwen3MoeSwiGLUMLP)
@@ -3400,6 +3410,9 @@ def apply_liger_kernel_to_qwen3_5_moe(
             if rms_norm:
                 _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.post_attention_layernorm)
+                if hasattr(decoder_layer, "self_attn"):
+                    _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.self_attn.k_norm)
 
             if swiglu:
                 _patch_swiglu_module(decoder_layer.mlp.shared_expert, LigerQwen3MoeSwiGLUMLP)
@@ -3529,6 +3542,208 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_deepseek_v2(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace DeepSeek-V2 models.
+
+    Requires transformers >= 4.54.0, where the ``deepseek_v2`` module was introduced.
+
+    NOTE: RoPE is not supported for DeepSeek-V2. DeepSeek-V2 uses interleaved partial RoPE
+    that is incompatible with ``liger_rotary_pos_emb``. Passing ``rope=True`` emits a warning
+    and skips the kernel swap.
+
+    NOTE: ``LigerQwen3MoeSwiGLUMLP`` assumes bias-free projections, which matches the default
+    ``mlp_bias=False`` of ``DeepseekV2Config``. Models configured with ``mlp_bias=True`` are
+    not supported by the SwiGLU patch.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+            Currently unsupported; emits a warning and is a no-op.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+            Dense MLPs and shared experts (``DeepseekV2MLP``) are replaced with
+            ``LigerQwen3MoeSwiGLUMLP``. On transformers v5 or later, routed experts use the
+            batched ``DeepseekV2Experts`` layout and are replaced with ``LigerExperts`` (fused MoE);
+            on transformers v4 (>= 4.54), each routed expert is a ``DeepseekV2MLP`` and is patched
+            individually.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if already loaded.
+            Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.deepseek_v2 import modeling_deepseek_v2
+    from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2Model
+
+    # Transformers v4 (>= 4.54) names the MoE block DeepseekV2MoE; v5 renamed it to DeepseekV2Moe.
+    try:
+        from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2Moe
+    except ImportError:
+        from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2MoE as DeepseekV2Moe
+
+    from liger_kernel.transformers.model.deepseek_v2 import lce_forward as deepseek_v2_lce_forward
+    from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
+
+    if rope:
+        logger.warning_once(
+            "rope=True is not supported for DeepSeek-V2: interleaved partial RoPE is "
+            "incompatible with liger_rotary_pos_emb. Skipping rope kernel swap."
+        )
+
+    if rms_norm:
+        modeling_deepseek_v2.DeepseekV2RMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(deepseek_v2_lce_forward, model)
+        else:
+            modeling_deepseek_v2.DeepseekV2ForCausalLM.forward = deepseek_v2_lce_forward
+
+    if swiglu:
+        # Dense MLPs and shared experts are DeepseekV2MLP instances in all supported versions.
+        modeling_deepseek_v2.DeepseekV2MLP = LigerQwen3MoeSwiGLUMLP
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            # Routed experts use the batched DeepseekV2Experts layout in transformers v5+.
+            modeling_deepseek_v2.DeepseekV2Experts = LigerExperts
+
+    if model is not None:
+        base_model: DeepseekV2Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                if isinstance(decoder_layer.mlp, DeepseekV2Moe):
+                    if IS_TRANSFORMERS_V5_OR_LATER:
+                        _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
+                    else:
+                        for mlp_expert in decoder_layer.mlp.experts:
+                            _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
+                    if decoder_layer.mlp.shared_experts is not None:
+                        _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerQwen3MoeSwiGLUMLP)
+                else:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerQwen3MoeSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                if decoder_layer.self_attn.q_a_layernorm is not None:
+                    _patch_rms_norm_module(decoder_layer.self_attn.q_a_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.kv_a_layernorm)
+
+
+def apply_liger_kernel_to_deepseek_v3(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace DeepSeek-V3 models.
+
+    NOTE: RoPE is not supported for DeepSeek-V3. DeepSeek-V3 uses interleaved partial RoPE
+    that is incompatible with ``liger_rotary_pos_emb``. Passing ``rope=True`` emits a warning
+    and skips the kernel swap.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+            Currently unsupported; emits a warning and is a no-op.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+            Dense MLPs and shared experts (``DeepseekV3MLP``) are replaced with
+            ``LigerQwen3MoeSwiGLUMLP``. On transformers v5 or later, routed experts use the
+            batched ``DeepseekV3Experts`` layout and are replaced with ``LigerExperts`` (fused MoE);
+            on transformers v4, each routed expert is a ``DeepseekV3MLP`` and is patched individually.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if already loaded.
+            Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.deepseek_v3 import modeling_deepseek_v3
+    from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3Model
+    from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3MoE
+
+    from liger_kernel.transformers.model.deepseek_v3 import lce_forward as deepseek_v3_lce_forward
+    from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
+
+    if rope:
+        logger.warning_once(
+            "rope=True is not supported for DeepSeek-V3: interleaved partial RoPE is "
+            "incompatible with liger_rotary_pos_emb. Skipping rope kernel swap."
+        )
+
+    if rms_norm:
+        modeling_deepseek_v3.DeepseekV3RMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(deepseek_v3_lce_forward, model)
+        else:
+            modeling_deepseek_v3.DeepseekV3ForCausalLM.forward = deepseek_v3_lce_forward
+
+    if swiglu:
+        # Dense MLPs and shared experts are DeepseekV3MLP instances in all supported versions.
+        modeling_deepseek_v3.DeepseekV3MLP = LigerQwen3MoeSwiGLUMLP
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            # Routed experts use the batched DeepseekV3Experts layout in transformers v5+.
+            modeling_deepseek_v3.DeepseekV3Experts = LigerExperts
+
+    if model is not None:
+        base_model: DeepseekV3Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                if isinstance(decoder_layer.mlp, DeepseekV3MoE):
+                    if IS_TRANSFORMERS_V5_OR_LATER:
+                        _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
+                    else:
+                        for mlp_expert in decoder_layer.mlp.experts:
+                            _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
+                    if decoder_layer.mlp.shared_experts is not None:
+                        _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerQwen3MoeSwiGLUMLP)
+                else:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerQwen3MoeSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                if decoder_layer.self_attn.q_a_layernorm is not None:
+                    _patch_rms_norm_module(decoder_layer.self_attn.q_a_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.kv_a_layernorm)
 
 
 def apply_liger_kernel_to_deepseek_v4(
@@ -3686,6 +3901,8 @@ def apply_liger_kernel_to_exaone4(
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
+    "deepseek_v2": apply_liger_kernel_to_deepseek_v2,
+    "deepseek_v3": apply_liger_kernel_to_deepseek_v3,
     "deepseek_v4": apply_liger_kernel_to_deepseek_v4,
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,

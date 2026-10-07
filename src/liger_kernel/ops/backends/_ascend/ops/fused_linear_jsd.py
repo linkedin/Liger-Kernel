@@ -79,6 +79,15 @@ def fused_linear_jsd_forward(
     else:
         n_non_ignore = BT
 
+    if n_non_ignore == 0:
+        return (
+            torch.tensor(0.0, device=device, dtype=dtype),
+            grad_input,
+            grad_weight.to(student_weight.dtype)
+            if grad_weight is not None and accum_dtype is not None
+            else grad_weight,
+        )
+
     num_cores = get_npu_core_count()
 
     for chunk_id in range(num_chunks):
@@ -215,6 +224,8 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         ignore_index: int = -100,
         temperature: float = 1.0,
         accum_dtype: Optional[torch.dtype] = None,
+        jsd_impl=None,
+        jsd_mode=None,
     ):
         """
         Args:
@@ -227,10 +238,12 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             jsd_beta (float): coefficient beta of generalized JSD in the interval [0, 1]. It implements forward/reverse KL when beta equals 0 and 1 respectively. Default: `0.5`
             ignore_index (int): the index to ignore. Default: -100
             temperature (float): temperature in softmax function to control the output probability distribution. Default: `1.0`
+            jsd_impl / jsd_mode: accepted for NVIDIA JSD signature parity; unused on Ascend.
 
         Returns:
             loss (torch.Tensor): generalized JSD
         """
+        _ = (jsd_impl, jsd_mode)
         has_label = False
         if shift_labels is not None:
             assert shift_labels.shape == (teacher_input.shape[0],), (
@@ -263,4 +276,4 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         (grad_input, grad_weight) = ctx.saved_tensors
         grad_input, grad_weight = fused_linear_jsd_backward(grad_output, grad_input, grad_weight)
-        return (grad_input, grad_weight, None, None, None, None, None, None, None)
+        return (grad_input, grad_weight, None, None, None, None, None, None, None, None, None)

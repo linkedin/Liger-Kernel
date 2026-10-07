@@ -204,6 +204,15 @@ struct RemoteMlpTileIteratorBwd {
 		return idx < total_tiles;
 	}
 
+	__device__ bool has_iteration(int iteration) const {
+		return iteration < total_tiles;
+	}
+
+	__device__ int slot_for_iteration(int iteration) const {
+		int T = m_base + iteration * col_stride;
+		return T % ring_len;
+	}
+
 	// Compute and cache (slot, ticket) for the current iteration.
 	// Called by acquire_src() — the rest of the per-tile API (next,
 	// acquire_dy, release_*, acquire_dst) reuses the cached values.
@@ -311,6 +320,120 @@ struct RemoteMlpTileIteratorBwd {
 	}
 };
 
+struct RemoteMlpTileIteratorBwdSharedState {
+	const int* tile_expert_ids;
+	const int* tile_valid_rows;
+	int total_tiles;
+	int m_base;
+	int col_stride;
+	int ring_len;
+	int num_splits;
+	int num_producers_src;
+	int num_consumers_dst;
+	int* x_src_ready;
+	int* x_src_consumed;
+	int* dy_src_ready;
+	int* dy_src_consumed;
+	int* dst_ready;
+	int* dst_consumed;
+};
+
+template <typename Element, int NumStages, int NC = 2, int TileM = 128>
+struct CompactRemoteMlpTileIteratorBwd {
+	const RemoteMlpTileIteratorBwdSharedState* state;
+	int idx;
+	int cur_slot;
+	int cur_ticket;
+	bool is_leader;
+
+	__device__ void init(
+			const RemoteMlpTileIteratorBwdSharedState* state_,
+			bool is_leader_) {
+		state = state_;
+		idx = 0;
+		cur_slot = 0;
+		cur_ticket = 0;
+		is_leader = is_leader_;
+	}
+
+	__device__ bool has_next() const {
+		return idx < state->total_tiles;
+	}
+
+	__device__ bool has_iteration(int iteration) const {
+		return iteration < state->total_tiles;
+	}
+
+	__device__ int slot_for_iteration(int iteration) const {
+		int T = state->m_base + iteration * state->col_stride;
+		return T % state->ring_len;
+	}
+
+	__device__ void compute_slot() {
+		int T = state->m_base + idx * state->col_stride;
+		cur_slot = T % state->ring_len;
+		cur_ticket = T / state->ring_len;
+	}
+
+	__device__ MlpTileInfo next() {
+		MlpTileInfo info;
+		info.x_ptr = nullptr;
+		info.expert = state->tile_expert_ids[cur_slot];
+		info.y_m = cur_slot;
+		info.valid_m64_subtiles =
+			(state->tile_valid_rows[cur_slot] + 63) / 64;
+		info.m_subtile = 0;
+		++idx;
+		return info;
+	}
+
+	__device__ void acquire_src() {
+		compute_slot();
+		int target = (cur_ticket + 1) * (kNumGetWarpsBwd * NC);
+		if (is_leader) {
+			while (atomicAdd(&state->x_src_ready[cur_slot], 0) < target) {}
+		}
+		__syncwarp();
+		__threadfence();
+	}
+
+	__device__ void release_src_slot(int slot, int lane) {
+		if (lane == 0)
+			atomicAdd(&state->x_src_consumed[slot], 1);
+	}
+
+	__device__ void acquire_dy() {
+		int target = (cur_ticket + 1) * (kNumGetWarpsBwd * NC);
+		if (is_leader) {
+			while (atomicAdd(&state->dy_src_ready[cur_slot], 0) < target) {}
+		}
+		__syncwarp();
+		__threadfence();
+	}
+
+	__device__ void release_dy_slot(int slot, int lane) {
+		if (lane == 0)
+			atomicAdd(&state->dy_src_consumed[slot], 1);
+	}
+
+	__device__ void acquire_dst() {
+		if (cur_ticket >= 1) {
+			int target = cur_ticket * (kNumPutWarpsBwd * NC);
+			if (is_leader) {
+				while (atomicAdd(&state->dst_consumed[cur_slot], 0) < target) {}
+			}
+			__syncwarp();
+			__threadfence();
+		}
+	}
+
+	__device__ void release_dst(int lane) {
+		__threadfence_system();
+		if (lane == 0)
+			atomicAdd(&state->dst_ready[cur_slot], 1);
+	}
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // FusedMlpTileIteratorBwd
 // ═══════════════════════════════════════════════════════════════════
@@ -345,6 +468,12 @@ struct FusedMlpTileIteratorBwd {
 
 	// All accessors forward to the remote sub-iterator (local pass removed).
 	__device__ bool has_next() const { return remote.has_next(); }
+	__device__ bool has_iteration(int iteration) const {
+		return remote.has_iteration(iteration);
+	}
+	__device__ int slot_for_iteration(int iteration) const {
+		return remote.slot_for_iteration(iteration);
+	}
 	__device__ MlpTileInfo next() { return remote.next(); }
 	__device__ void acquire_src() { remote.acquire_src(); }
 	__device__ void release_src(int lane) { remote.release_src(lane); }
@@ -352,6 +481,36 @@ struct FusedMlpTileIteratorBwd {
 	__device__ void acquire_dy() { remote.acquire_dy(); }
 	__device__ void release_dy(int lane) { remote.release_dy(lane); }
 	__device__ void release_dy_slot(int slot, int lane) { remote.release_dy_slot(slot, lane); }
+	__device__ void acquire_dst() { remote.acquire_dst(); }
+	__device__ void release_dst(int lane) { remote.release_dst(lane); }
+};
+
+template <typename Element, int NumStages, int NC = 2, int TileM = 128>
+struct CompactFusedMlpTileIteratorBwd {
+	CompactRemoteMlpTileIteratorBwd<Element, NumStages, NC, TileM> remote;
+
+	__device__ void init_remote(
+			const RemoteMlpTileIteratorBwdSharedState* state,
+			bool is_leader) {
+		remote.init(state, is_leader);
+	}
+
+	__device__ bool has_next() const { return remote.has_next(); }
+	__device__ bool has_iteration(int iteration) const {
+		return remote.has_iteration(iteration);
+	}
+	__device__ int slot_for_iteration(int iteration) const {
+		return remote.slot_for_iteration(iteration);
+	}
+	__device__ MlpTileInfo next() { return remote.next(); }
+	__device__ void acquire_src() { remote.acquire_src(); }
+	__device__ void release_src_slot(int slot, int lane) {
+		remote.release_src_slot(slot, lane);
+	}
+	__device__ void acquire_dy() { remote.acquire_dy(); }
+	__device__ void release_dy_slot(int slot, int lane) {
+		remote.release_dy_slot(slot, lane);
+	}
 	__device__ void acquire_dst() { remote.acquire_dst(); }
 	__device__ void release_dst(int lane) { remote.release_dst(lane); }
 };
