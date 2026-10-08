@@ -59,6 +59,106 @@ def _assert_close(x: torch.Tensor, y: torch.Tensor, threshold: float = DIFF_THRE
     assert calc_diff(x, y) < threshold
 
 
+def test_triton_backward_replay_preserves_preactivations():
+    from liger_kernel.ops.mlp import LigerMLPFunction
+
+    x = torch.randn(1, 32, 128, device=device, requires_grad=True)
+    weights = [torch.randn(*shape, device=device, requires_grad=True) for shape in [(256, 128), (256, 128), (128, 256)]]
+    actual = LigerMLPFunction.apply(x, *weights, 1.0, 1.0)
+    reference = [tensor.detach().clone().requires_grad_(True) for tensor in (x, *weights)]
+    ref_x, gate, up, down = reference
+    expected = torch.nn.functional.linear(
+        torch.nn.functional.silu(torch.nn.functional.linear(ref_x, gate)) * torch.nn.functional.linear(ref_x, up),
+        down,
+    )
+    _assert_close(actual, expected)
+    for scale in (0.5, -2.0):
+        upstream = torch.randn_like(actual) * scale
+        gradients = torch.autograd.grad(actual, (x, *weights), upstream, retain_graph=True)
+        reference_gradients = torch.autograd.grad(expected, reference, upstream, retain_graph=True)
+        for gradient, reference_gradient in zip(gradients, reference_gradients):
+            _assert_close(gradient, reference_gradient)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float32,
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        torch.float16,
+    ],
+)
+@pytest.mark.parametrize("gate_multiplier, down_multiplier", [(1.0, 1.0), (1.7, 0.85)])
+def test_triton_backward_dgu_buffer_ownership_and_replay(monkeypatch, dtype, gate_multiplier, down_multiplier):
+    import liger_kernel.ops.mlp as mlp_ops
+
+    bsz, seq_len, dim, hidden_dim = 2, 37, 96, 264
+    x = torch.randn(bsz, seq_len, dim, device=device, dtype=dtype, requires_grad=True)
+    weights = [
+        torch.randn(*shape, device=device, dtype=dtype, requires_grad=True)
+        for shape in [(hidden_dim, dim), (hidden_dim, dim), (dim, hidden_dim)]
+    ]
+    actual = mlp_ops.LigerMLPFunction.apply(x, *weights, gate_multiplier, down_multiplier)
+    saved_agu = actual.grad_fn.saved_tensors[-1]
+    original_agu = saved_agu.clone()
+    backward_dgu = mlp_ops.swiglu_backward_dGU
+    backward_di = mlp_ops.swiglu_backward_dI
+    dgu_buffers = []
+    di_buffers = []
+
+    # Observe real launches, not substitutes for the backward kernels.
+    def checked_backward_dgu(dO, down_weight, AGU, *args):
+        assert AGU.data_ptr() == saved_agu.data_ptr()
+        dgu = backward_dgu(dO, down_weight, AGU, *args)
+        assert dgu.shape == (bsz, seq_len, 2 * hidden_dim)
+        assert dgu.dtype == AGU.dtype
+        assert dgu.device == AGU.device
+        assert dgu.is_contiguous()
+        assert dgu.storage_offset() == 0
+        assert dgu.untyped_storage().nbytes() == bsz * seq_len * 2 * hidden_dim * dgu.element_size()
+        assert dgu.untyped_storage().data_ptr() != saved_agu.untyped_storage().data_ptr()
+        for previous in dgu_buffers:
+            assert dgu.untyped_storage().data_ptr() != previous.untyped_storage().data_ptr()
+        dgu_buffers.append(dgu)
+        return dgu
+
+    def checked_backward_di(gate_weight, up_weight, dGU):
+        assert dGU is dgu_buffers[-1]
+        di_buffers.append(dGU)
+        return backward_di(gate_weight, up_weight, dGU)
+
+    monkeypatch.setattr(mlp_ops, "swiglu_backward_dGU", checked_backward_dgu)
+    monkeypatch.setattr(mlp_ops, "swiglu_backward_dI", checked_backward_di)
+
+    reference = [tensor.detach().clone().requires_grad_(True) for tensor in (x, *weights)]
+    ref_x, gate, up, down = reference
+    expected = (
+        torch.nn.functional.linear(
+            torch.nn.functional.silu(torch.nn.functional.linear(ref_x, gate) * gate_multiplier)
+            * torch.nn.functional.linear(ref_x, up),
+            down,
+        )
+        * down_multiplier
+    )
+    threshold = falcon_h1_threshold(dtype)
+    _assert_close(actual, expected, threshold)
+    for scale in (0.5, -2.0):
+        upstream = torch.randn_like(actual) * scale
+        gradients = torch.autograd.grad(actual, (x, *weights), upstream, retain_graph=True)
+        reference_gradients = torch.autograd.grad(expected, reference, upstream, retain_graph=True)
+        torch.testing.assert_close(saved_agu, original_agu, rtol=0, atol=0)
+        for gradient, reference_gradient in zip(gradients, reference_gradients):
+            assert torch.isfinite(gradient).all()
+            assert torch.count_nonzero(gradient) > 0
+            _assert_close(gradient, reference_gradient, threshold)
+
+    assert len(dgu_buffers) == len(di_buffers) == 2
+    assert not torch.equal(dgu_buffers[0], dgu_buffers[1])
+
+
 @pytest.mark.parametrize(
     "bsz, seq_len, hidden_size, intermediate_size",
     [
