@@ -264,7 +264,13 @@ class LigerMultiTokenAttentionFunction(torch.autograd.Function):
         grad_conv = _mask_backward_ct(grad_out_c)
 
         # conv backward: mm-based 1x1 shortcut or cuDNN fallback
-        if stride == (1, 1) and padding == (0, 0) and dilation == (1, 1) and groups == 1:
+        if (
+            weight.shape[-2:] == (1, 1)
+            and stride == (1, 1)
+            and padding == (0, 0)
+            and dilation == (1, 1)
+            and groups == 1
+        ):
             grad_probs, grad_weight = _conv1x1_backward(grad_conv, probs, weight)
         else:
             # NOTE: we intentionally do NOT force torch.backends.cudnn.flags(benchmark=True)
