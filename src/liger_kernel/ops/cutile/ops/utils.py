@@ -3,11 +3,18 @@
 # SPDX-License-Identifier: MIT
 
 import cuda.tile as ct
+import torch
 
 ConstBool = ct.Constant[bool]
 ConstInt = ct.Constant[int]
 
 LOG2E = 1.4426950408889634
+
+
+def _launch(device: torch.device, grid, kernel, args) -> None:
+    """Tie compilation and launch to the tensor device, not the current device."""
+    with torch.cuda.device(device):
+        ct.launch(torch.cuda.current_stream(device), grid, kernel, args)
 
 
 def _next_power_of_2(n: int):

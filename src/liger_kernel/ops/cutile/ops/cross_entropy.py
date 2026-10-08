@@ -10,6 +10,7 @@ import cuda.tile as ct
 import torch
 
 from liger_kernel.ops.cutile.ops.utils import LOG2E
+from liger_kernel.ops.cutile.ops.utils import _launch
 from liger_kernel.ops.cutile.ops.utils import _select_cross_entropy_block_size
 
 ConstFloat = ct.Constant[float]
@@ -123,6 +124,8 @@ def liger_cross_entropy_kernel_ct(
         )
         if HAS_SOFTCAPPING:
             input_tile = ct.mul(softcap, ct.tanh(ct.mul(input_raw, 1.0 / softcap)))
+            # Softcapping maps padded -inf to a finite value; exclude those classes.
+            input_tile = ct.where(col_idx < n_cols, input_tile, -math.inf)
         else:
             input_tile = input_raw
 
@@ -197,6 +200,7 @@ def liger_cross_entropy_kernel_ct(
             if HAS_SOFTCAPPING:
                 intermediate = ct.tanh(ct.mul(input_raw, 1.0 / softcap))
                 input_tile = ct.mul(softcap, intermediate)
+                input_tile = ct.where(col_idx < n_cols, input_tile, -math.inf)
             else:
                 input_tile = input_raw
 
@@ -305,11 +309,12 @@ def cross_entropy_forward(
     )
 
     target_mask = target != ignore_index
-    n_non_ignore = target_mask.sum().item()
-    assert (target * target_mask).max() < _input.shape[-1], (
-        f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}"
-    )
-    assert (target * target_mask).min() >= 0, f"Target {target.min()} is out of bounds. Expected >= 0"
+    masked_target = target * target_mask
+    target_min, target_max = torch.aminmax(masked_target)
+    # Transfer validation statistics together instead of synchronizing three times.
+    n_non_ignore, min_target, max_target = torch.stack((target_mask.sum(), target_min, target_max)).cpu().tolist()
+    assert max_target < _input.shape[-1], f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}"
+    assert min_target >= 0, f"Target {target.min()} is out of bounds. Expected >= 0"
     inv_n_non_ignore = 1.0 / max(n_non_ignore, 1)
     reduction_mean = int(reduction == "mean")
 
@@ -343,8 +348,8 @@ def cross_entropy_forward(
     dummy_i64 = torch.zeros(1, dtype=torch.int64, device=_input.device)
     dummy_weight = torch.zeros(1, dtype=torch.float32, device=_input.device)
 
-    ct.launch(
-        torch.cuda.current_stream(),
+    _launch(
+        _input.device,
         (num_rows, 1, 1),
         liger_cross_entropy_kernel_ct,
         (

@@ -164,20 +164,29 @@ def test_swiglu_available_backends_includes_triton():
 
 
 @pytest.mark.parametrize("backend", _REGISTERED_BACKENDS or ["__none__"])
-def test_swiglu_global_set_backend(backend):
-    """``liger_kernel.set_backend(name)`` pins dispatch to ``name``."""
+def test_swiglu_global_set_backend(backend, monkeypatch):
+    """The global pin applies when higher-priority environment overrides are absent."""
     if backend == "__none__":
         pytest.skip("No swiglu backends registered")
+
+    for key in (
+        "LIGER_KERNEL_IMPL_SWIGLU",
+        "LIGER_KERNEL_BACKEND_SWIGLU",
+        "LIGER_KERNEL_IMPL",
+        "LIGER_KERNEL_BACKEND",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
     M, N = 32, 256
     a = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
     b = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
 
+    previous_backend = liger_kernel.get_backend()
     try:
         liger_kernel.set_backend(backend)
         y_pinned = dispatch("swiglu", a, b)
     finally:
-        liger_kernel.set_backend(None)
+        liger_kernel.set_backend(previous_backend)
 
     y_explicit = dispatch("swiglu", a, b, backend=backend)
     torch.testing.assert_close(y_pinned, y_explicit, atol=0, rtol=0)
