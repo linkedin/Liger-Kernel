@@ -1108,3 +1108,58 @@ def test_correctness_reduction_none_per_token_grad_output(B, T, H, V, bias, dtyp
     assert_verbose_allclose(lig_gw, ref_gw, atol=atol, rtol=rtol)
     if bias:
         assert_verbose_allclose(lig_gb, ref_gb, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (1, 256, 32, 4096),  # chunk_size == 2, so later chunks have large storage offsets
+        (2, 512, 64, 32000),
+    ],
+)
+@pytest.mark.parametrize("return_z_loss", [False, True])
+@torch.no_grad()
+def test_correctness_with_torch_compile(B, T, H, V, return_z_loss):
+    """`torch.compile` must not change the loss when some targets are `ignore_index`.
+
+    Regression test for silent numerical corruption (observed as `nan` losses): the per-chunk loss
+    buffers used to be `loss_1d[start_idx:end_idx]` views with non-zero storage offsets.
+    `torch.compile` functionalizes the kernel's mutation of them by cloning
+    `storage_offset + numel` elements out of a buffer Inductor may size to the view alone, i.e. an
+    out-of-bounds read. That garbage was normally overwritten by the kernel, but on an
+    `ignore_index` row `liger_cross_entropy_kernel` returns early without writing `loss_ptr`, so the
+    garbage survived into the reduced loss.
+
+    Forward-only: `fused_linear_cross_entropy_backward` branches on a tensor value, so the backward
+    pass cannot be captured with `fullgraph=True`.
+    """
+    ignore_index = -100
+    _input = torch.randn(B * T, H, device=device, dtype=torch.float32)
+    weight = torch.randn(V, H, device=device, dtype=torch.float32)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    # at least one ignored target, but not all of them
+    target[torch.randperm(B * T)[: max(1, B * T // 4)]] = ignore_index
+
+    def call(_input, weight, target):
+        return LigerFusedLinearCrossEntropyFunction.apply(
+            _input,
+            weight,
+            target,
+            None,  # bias
+            None,  # ce_weight
+            ignore_index,
+            0.0,  # lse_square_scale
+            0.0,  # label_smoothing
+            "mean",  # reduction
+            None,  # softcap
+            return_z_loss,
+        )[0]
+
+    expected = call(_input, weight, target)
+
+    torch._dynamo.reset()
+    actual = torch.compile(call, fullgraph=True)(_input, weight, target)
+
+    # Identical kernels on identical inputs: the only permitted difference is reduction ordering.
+    assert_verbose_allclose(actual, expected, atol=1e-5, rtol=1e-5)
