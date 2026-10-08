@@ -22,6 +22,7 @@ from liger_kernel.backends.dispatch import available_backends
 from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import get_registered
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 KLDIV_TEST_SHAPES = [
@@ -64,7 +65,6 @@ def test_kl_div_correctness(backend, shape, dtype, log_target):
         pytest.skip("No kl_div backends registered in this environment")
 
     M, N = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(0)
 
     # Generate probabilities for the target.
@@ -118,7 +118,7 @@ def test_kl_div_reduction_none_cutedsl_matches_triton():
     if "nvidia-cutedsl" not in _REGISTERED_BACKENDS:
         pytest.skip("CuTe DSL kl_div is unavailable")
 
-    y_pred = torch.randn(8, 256, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    y_pred = torch.randn(8, 256, device=device, dtype=torch.bfloat16, requires_grad=True)
     y_true = torch.softmax(torch.randn_like(y_pred), dim=-1)
     y_pred_ref = y_pred.detach().clone().requires_grad_(True)
 
@@ -156,7 +156,7 @@ def test_kl_div_cutedsl_honors_nondefault_eps(eps):
         pytest.skip("CuTe DSL kl_div is unavailable")
 
     y_pred = torch.log_softmax(
-        torch.randn(8, 256, device="cuda", dtype=torch.bfloat16),
+        torch.randn(8, 256, device=device, dtype=torch.bfloat16),
         dim=-1,
     ).requires_grad_(True)
     y_true = torch.full_like(y_pred, 1e-3)

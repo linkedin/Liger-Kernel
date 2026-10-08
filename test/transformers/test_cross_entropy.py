@@ -2,6 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from test.utils import as_float64
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
@@ -78,30 +79,40 @@ class CrossEntropyWithZLoss(torch.nn.Module):
             return total_loss
 
 
+def _mps_ref_dtype(dtype):
+    # MPS bf16 CrossEntropyLoss backward is less accurate than the kernel under test
+    # (~6e-5 vs ~1.5e-5 at V=32000), so use an fp32 reference to measure kernel error.
+    if device == "mps" and dtype == torch.bfloat16:
+        return torch.float32
+    return dtype
+
+
 def _test_correctness_once(target_ce, B, T, V, reduction, scalar, dtype, atol, rtol):
     torch.manual_seed(0)
     torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
-    _input = _tensor.detach().clone().requires_grad_(True)
+    ref_dtype = _mps_ref_dtype(dtype)
+    _input = _tensor.detach().clone().to(ref_dtype).requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
     output = torch_ce(_input, target)
     output2 = target_ce(_input2, target)
-    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
+    assert torch.allclose(output.to(dtype), output2, atol=atol, rtol=rtol)
 
     output.backward(gradient=torch.ones_like(output))
-    output2.backward(gradient=torch.ones_like(output))
-    assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
+    output2.backward(gradient=torch.ones_like(output2))
+    assert torch.allclose(_input.grad.to(dtype), _input2.grad, atol=atol, rtol=rtol)
 
 
 def _test_correctness_with_ignore_index_once(target_ce, B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol):
     torch_ce = CrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
-    _input = _tensor.detach().clone().requires_grad_(True)
+    ref_dtype = _mps_ref_dtype(dtype)
+    _input = _tensor.detach().clone().to(ref_dtype).requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
@@ -116,11 +127,11 @@ def _test_correctness_with_ignore_index_once(target_ce, B, T, V, ignore_index, r
     output = torch_ce(_input, target)
     output2 = target_ce(_input2, target)
 
-    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
+    assert torch.allclose(output.to(dtype), output2, atol=atol, rtol=rtol)
 
     output.backward(gradient=torch.ones_like(output))
-    output2.backward(gradient=torch.ones_like(output))
-    assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
+    output2.backward(gradient=torch.ones_like(output2))
+    assert torch.allclose(_input.grad.to(dtype), _input2.grad, atol=atol, rtol=rtol)
 
 
 def _test_correctness_with_label_smoothing_once(target_ce, B, T, V, label_smoothing, scalar, dtype, atol, rtol):
@@ -324,21 +335,22 @@ def _test_correctness_with_out_of_bounds_target_once(target_ce, B, T, V, ignore_
 
 def _test_correctness_with_weight_once(target_ce, B, T, V, reduction, weight, scalar, dtype, atol, rtol):
     torch.manual_seed(0)
-    torch_ce = CrossEntropyLoss(weight=weight, reduction=reduction)
+    ref_dtype = _mps_ref_dtype(dtype)
+    torch_ce = CrossEntropyLoss(weight=weight.to(ref_dtype), reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
-    _input = _tensor.detach().clone().requires_grad_(True)
+    _input = _tensor.detach().clone().to(ref_dtype).requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
     output = torch_ce(_input, target)
     output2 = target_ce(_input2, target)
-    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
+    assert torch.allclose(output.to(dtype), output2, atol=atol, rtol=rtol)
 
     output.backward(gradient=torch.ones_like(output))
-    output2.backward(gradient=torch.ones_like(output))
-    assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
+    output2.backward(gradient=torch.ones_like(output2))
+    assert torch.allclose(_input.grad.to(dtype), _input2.grad, atol=atol, rtol=rtol)
 
 
 def _test_correctness_with_weight_with_other_params_once(
@@ -394,22 +406,23 @@ def _test_correctness_not_last_layer_once(target_ce, B, T, V, reduction, scalar,
     torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
-    _input = _tensor.detach().clone().requires_grad_(True)
+    ref_dtype = _mps_ref_dtype(dtype)
+    _input = _tensor.detach().clone().to(ref_dtype).requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
     output = torch_ce(_input, target)
     output2 = target_ce(_input2, target)
-    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
+    assert torch.allclose(output.to(dtype), output2, atol=atol, rtol=rtol)
 
     loss1 = output * 3
     loss2 = output2 * 3
 
     grad_output = torch.rand_like(output)
     loss1.backward(gradient=grad_output)
-    loss2.backward(gradient=grad_output)
-    assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
+    loss2.backward(gradient=grad_output.to(dtype))
+    assert torch.allclose(_input.grad.to(dtype), _input2.grad, atol=atol, rtol=rtol)
 
 
 def _test_correctness_not_last_layer_with_other_params_once(
@@ -1312,9 +1325,13 @@ def test_correctness_true_class_grad_confident_predictions(dtype, label_smoothin
     torch_ce(_input_ref, target).backward()
 
     rows = torch.arange(B * T, device=device)
-    ref = _input_ref.grad[rows, target].double()
-    torch_err = (_input.grad[rows, target].double() - ref).abs().max().item()
-    liger_err = (_input2.grad[rows, target].double() - ref).abs().max().item()
+    ref, torch_grad, liger_grad = as_float64(
+        _input_ref.grad[rows, target],
+        _input.grad[rows, target],
+        _input2.grad[rows, target],
+    )
+    torch_err = (torch_grad - ref).abs().max().item()
+    liger_err = (liger_grad - ref).abs().max().item()
 
     # Rounding the softmax term before the subtraction inflates this error by ~1/(1 - softmax(x_y)),
     # i.e. orders of magnitude, so a small constant factor over torch is a wide margin.

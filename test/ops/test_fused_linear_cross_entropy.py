@@ -33,6 +33,7 @@ from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import get_registered
 from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 # (BT, V, H) — V must be a multiple of 8 for CuTe DSL 128-bit vectorized loads.
@@ -92,7 +93,6 @@ def test_fused_linear_cross_entropy_correctness(backend, shape, dtype):
         pytest.skip("No fused_linear_cross_entropy backends registered in this environment")
 
     BT, V, H = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(42)
 
     inp_cpu = torch.randn(BT, H, dtype=torch.float32, generator=g)
@@ -168,7 +168,6 @@ def test_fused_linear_cross_entropy_with_bias(backend, shape, dtype):
         pytest.skip("No fused_linear_cross_entropy backends registered in this environment")
 
     BT, V, H = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(42)
 
     inp_cpu = torch.randn(BT, H, dtype=torch.float32, generator=g)
@@ -239,9 +238,9 @@ def test_fused_linear_cross_entropy_propagates_backend_to_inner_ce(monkeypatch, 
 
     monkeypatch.setattr(flce_ops, "dispatch", tracking_dispatch)
 
-    inp = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    target = torch.randint(0, 256, (8,), device="cuda")
+    inp = torch.randn(8, 64, device=device, dtype=torch.bfloat16, requires_grad=True)
+    weight = torch.randn(256, 64, device=device, dtype=torch.bfloat16, requires_grad=True)
+    target = torch.randint(0, 256, (8,), device=device)
 
     loss, _, _, _ = dispatch(
         "fused_linear_cross_entropy",
@@ -268,9 +267,9 @@ def test_fused_linear_cross_entropy_propagates_backend_to_inner_ce(monkeypatch, 
 # parameter-sized bf16->fp32 temporary + cast every chunk.
 #
 # The tests assert on the actual aten dispatch (``TorchDispatchMode``) *and* on
-# numerical parity against a full-precision autograd reference. They are
-# GPU-gated by ``test/ops/conftest.py``'s autouse ``_require_cuda_for_ops_tests``
-# fixture, and the accumulation path itself requires a CUDA SM80+ device.
+# numerical parity against a full-precision autograd reference. The ops
+# directory also runs on MPS, so this CUDA-only class is gated by
+# ``requires_cuda`` below. The accumulation path itself requires SM80+.
 #
 # The production token-chunk loop sizes chunks from the ``_CHUNK_MEM_CONST``
 # memory budget (``inc_factor = cdiv(V, C * H)``). The public default is C=1,
@@ -281,7 +280,7 @@ def test_fused_linear_cross_entropy_propagates_backend_to_inner_ce(monkeypatch, 
 # Fast-path capability gates
 # ---------------------------------------------------------------------------
 #
-# The whole directory is CUDA-gated by ``conftest.py``'s autouse fixture, but
+# ``TestFusedLinearCrossEntropyAddmm`` is CUDA-gated by ``requires_cuda``, but
 # *being on CUDA* is not sufficient for the ``addmm(out=)`` / ``addmm.dtype_out``
 # fast paths. Production (``fused_linear_cross_entropy_forward``) gates them on:
 #
@@ -317,6 +316,12 @@ requires_addmm_out_dtype = pytest.mark.skipif(
 requires_nvidia_cuda = pytest.mark.skipif(
     not torch.cuda.is_available() or flce_ops.is_hip(),
     reason="reusable mm(out=) buffers require NVIDIA CUDA",
+)
+
+# Ops conftest allows MPS; this class still hardcodes CUDA tensors / SM / HIP.
+requires_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="addmm FLCE regression suite requires CUDA",
 )
 
 
@@ -596,6 +601,7 @@ def _mk_inputs(
     return _input, weight, b, cw, target
 
 
+@requires_cuda
 class TestFusedLinearCrossEntropyAddmm:
     """Regression suite for chunk buffers and dW accumulation."""
 
