@@ -6,96 +6,33 @@ from typing import Optional
 
 import torch
 
-from liger_kernel.ops.utils import ensure_contiguous
+from torch.utils.checkpoint import checkpoint
 
 
-class LigerTiledMLPFunction(torch.autograd.Function):
-    """
-    Based on DeepSpeed's TiledMLP:
-    https://github.com/deepspeedai/DeepSpeed/blob/v0.18.2/deepspeed/runtime/sequence_parallel/ulysses_sp.py#L838
+class LigerTiledMLPFunction:
+    """Compatibility entry point for checkpointed tiled MLP computation.
 
-    Perform a tiled MLP computation to massively reduce memory usage needed to compute MLP
-    when using very long sequence lengths.
-
-    This module re-computes `forward` in the `backward`. So the `forward` occurs twice each iteration.
-    And if you're using activation checkpointing it then occurs thrice.
-
-    Args:
-        fn: the function to call on sharded inputs (e.g., mlp.forward)
-        mlp_module: the MLP nn.Module object
-        x: the input to MLP.forward (hidden_states)
-        shards: how many shards to use
-        compute_params: a list of weights engaged in the compute
-
-    Returns:
-        the computed hidden_states
+    Each shard is recomputed during backward to reduce activation memory.
+    Non-reentrant checkpointing records the parameter dependencies even when
+    the input does not require gradients, and supports ``torch.autograd.grad``.
     """
 
     @staticmethod
-    @ensure_contiguous
-    def forward(
-        ctx,
+    def apply(
         fn: Callable,
         mlp_module: torch.nn.Module,
         x: torch.Tensor,
         shards: int,
         compute_params: Optional[List[torch.nn.Parameter]] = None,
     ) -> torch.Tensor:
-        ctx.fn = fn
-        ctx.mlp_module = mlp_module
-        ctx.shards = shards
-        ctx.save_for_backward(x)
-
-        # x.shape could be [bs, seqlen, hidden_size] or [seqlen, hidden_size] (moe experts)
-        x_shards = list(torch.chunk(x, chunks=shards, dim=-2))
-        with torch.no_grad():
-            output_shards = [fn(mlp_module, x_shard) for x_shard in x_shards]
-        output_unsharded = torch.cat(output_shards, dim=-2)
-
-        return output_unsharded
-
-    @staticmethod
-    @ensure_contiguous
-    def backward(ctx, *grads) -> tuple:
-        fn = ctx.fn
-        (x,) = ctx.saved_tensors
-        mlp_module = ctx.mlp_module
-        shards = ctx.shards
-
-        x_requires_grad = x.requires_grad
-        x = x.detach()
-        # detach() unsets x.requires_grad, so restore it
-        x.requires_grad_(x_requires_grad)
-
-        # x.shape could be [bs, seqlen, hidden_size] or [seqlen, hidden_size] (moe experts)
-        hidden_size = x.shape[-1]
-        x_shape_orig = x.shape
-
-        # flatten bs+seqlen to avoid having stride issues when narrowing into seqlen w/ bs>1
-        x = x.view(-1, hidden_size)
-        incoming_grad = grads[0].view(-1, hidden_size)
-        x_grad = torch.zeros_like(x)
-
-        x_shards = list(torch.chunk(x, chunks=shards, dim=0))
-
-        for i, x_shard in enumerate(x_shards):
-            x_shard.requires_grad_(x_requires_grad)
-
-            # if seqlen is not exactly divisible by shards the last step will be shorter than shard_step
-            shard_step = x_shards[i].shape[0]
-            shard_offset = i * x_shards[0].shape[0]
-
-            x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
-            incoming_grad_shard = incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
-
-            with torch.enable_grad():
-                output = fn(mlp_module, x_shard)
-            torch.autograd.backward(output, incoming_grad_shard)
-
-        # unflatten
-        x_grad = x_grad.view(x_shape_orig)
-
-        return (None, None, x_grad, None, None)
+        # Keep compute_params in the public API; autograd discovers the weights
+        # used by fn without registering them through a separate parameter list.
+        x = x.contiguous()
+        output_shards = [
+            checkpoint(fn, mlp_module, x_shard, use_reentrant=False)
+            for x_shard in torch.chunk(x, chunks=shards, dim=-2)
+        ]
+        return torch.cat(output_shards, dim=-2)
 
 
 def apply_tiled_mlp(
@@ -113,7 +50,7 @@ def apply_tiled_mlp(
         mlp_module: the MLP nn.Module object
         x: the input tensor with shape [bs, seqlen, hidden_size] or [seqlen, hidden_size]
         num_shards: number of shards to use. If None, automatically calculated as ceil(seqlen / hidden_size)
-        compute_params: list of parameters for DeepSpeed ZeRO optimization
+        compute_params: optional parameter list retained for API compatibility
 
     Returns:
         output tensor with the same shape as input
