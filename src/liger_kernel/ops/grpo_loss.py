@@ -665,6 +665,11 @@ class GrpoLossFunction(torch.autograd.Function):
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
 
+        if advantages.ndim != 1 or advantages.shape[0] != B:
+            raise ValueError("advantages must have shape (B,)")
+        # Forward and backward kernels read one contiguous advantage per sequence.
+        advantages = advantages.contiguous()
+
         # VESPO requires phi_seq pre-computed by the caller (uses get_gamma_weights).
         if loss_type == "vespo":
             if phi_seq is None:
