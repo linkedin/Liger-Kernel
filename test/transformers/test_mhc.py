@@ -20,6 +20,12 @@ MHC_SHAPES = [
     (1, 8, 4, 64),
 ]
 
+MHC_UNUSED_OUTPUT_SHAPES = [
+    (1, 5, 2, 33, 1),
+    (1, 7, 4, 65, 4),
+    (1, 9, 8, 31, 20),
+]
+
 MHC_DTYPE_TOLS = [
     (torch.float16, 8e-3, 1.5e-2, 2e-2),
     pytest.param(
@@ -164,7 +170,7 @@ def test_mhc_coeffs_disallow_fp32():
         _ = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res)
 
 
-@pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
+@pytest.mark.parametrize("B, T, HC, C, tmax", MHC_UNUSED_OUTPUT_SHAPES)
 @pytest.mark.parametrize(
     "use_pre,use_post,use_res",
     [
@@ -173,33 +179,58 @@ def test_mhc_coeffs_disallow_fp32():
         (False, False, True),
     ],
 )
-def test_mhc_coeffs_backward_allows_unused_outputs(B, T, HC, C, use_pre, use_post, use_res):
+@pytest.mark.parametrize("dtype, _pre_post_tol, _res_tol, grad_tol", MHC_COEFFS_DTYPE_TOLS)
+def test_mhc_coeffs_backward_allows_unused_outputs(
+    B, T, HC, C, tmax, use_pre, use_post, use_res, dtype, _pre_post_tol, _res_tol, grad_tol
+):
     set_seed(42)
     K = HC * C
     M = HC * HC + 2 * HC
 
-    x = torch.randn(B, T, HC, C, device=device, dtype=torch.float16, requires_grad=True)
-    phi = (torch.randn(K, M, device=device, dtype=torch.float16) * 0.02).requires_grad_(True)
+    x = torch.randn(B, T, HC, C, device=device, dtype=dtype, requires_grad=True)
+    phi = (torch.randn(K, M, device=device, dtype=dtype) * 0.02).requires_grad_(True)
     b = torch.zeros(M, device=device, dtype=torch.float32, requires_grad=True)
     alpha_pre = torch.tensor(1.0, device=device, dtype=torch.float32, requires_grad=True)
     alpha_post = torch.tensor(1.0, device=device, dtype=torch.float32, requires_grad=True)
     alpha_res = torch.tensor(1.0, device=device, dtype=torch.float32, requires_grad=True)
 
-    cfg = dict(tmax=4, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0)
+    reference_inputs = [
+        tensor.detach().clone().requires_grad_(True) for tensor in (x, phi, b, alpha_pre, alpha_post, alpha_res)
+    ]
+    cfg = dict(tmax=tmax, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0)
 
-    h_pre, h_post, h_res = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, **cfg)
+    outputs = liger_mhc_coeffs(
+        x,
+        phi,
+        b,
+        alpha_pre,
+        alpha_post,
+        alpha_res,
+        allow_fp32=dtype == torch.float32,
+        **cfg,
+    )
+    reference_outputs = mhc_coeffs_ref(*reference_inputs, **cfg)
+    output_mask = (use_pre, use_post, use_res)
+    upstream_grads = [torch.randn_like(output) * 0.7 + 0.1 for output in outputs]
 
-    loss = torch.zeros((), device=device)
-    if use_pre:
-        loss = loss + h_pre.square().mean()
-    if use_post:
-        loss = loss + h_post.square().mean()
-    if use_res:
-        loss = loss + h_res.square().mean()
-    loss.backward()
+    torch.autograd.backward(
+        [output for output, use_output in zip(outputs, output_mask) if use_output],
+        [grad for grad, use_output in zip(upstream_grads, output_mask) if use_output],
+    )
+    torch.autograd.backward(
+        [output for output, use_output in zip(reference_outputs, output_mask) if use_output],
+        [grad.clone() for grad, use_output in zip(upstream_grads, output_mask) if use_output],
+    )
 
-    for tensor in (x, phi, b, alpha_pre, alpha_post, alpha_res):
+    for tensor, reference in zip((x, phi, b, alpha_pre, alpha_post, alpha_res), reference_inputs):
         assert tensor.grad is not None
+        reference_grad = reference.grad if reference.grad is not None else torch.zeros_like(reference)
+        assert_verbose_allclose(
+            tensor.grad.float(),
+            reference_grad.float(),
+            rtol=grad_tol,
+            atol=grad_tol,
+        )
 
 
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
