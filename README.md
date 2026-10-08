@@ -572,7 +572,7 @@ loss.backward()
 
 - For issues, create a Github ticket in this repository
 - For open discussion, join [our discord channel on GPUMode](https://discord.com/channels/1189498204333543425/1275130785933951039)
-- For formal collaboration, send an email to Yanning Chen(yannchen@linkedin.com) and Zhipeng Wang(zhipwang@linkedin.com)
+- For formal collaboration, send an email to Vaibhav Jindal(vjindal@linkedin.com), Arup De(arde@linkedin.com), Yiming Yue(yyue@linkedin.com), Michael (Chun-Mao) Lai(chulai@linkedin.com).
 
 ## Cite this work
 
