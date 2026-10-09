@@ -42,12 +42,21 @@ _BETAS = [0.0, 0.5, 1.0]
 
 @pytest.mark.parametrize("impl", _REGISTERED_IMPLS)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("beta", [0.0, 0.3, 0.5, 0.7, 1.0])
+@pytest.mark.parametrize("beta", [0.0, 0.001, 0.3, 0.5, 0.7, 0.999, 1.0])
 @pytest.mark.parametrize("with_labels", [False, True])
 def test_jsd_underflow_matches_double_reference(impl, dtype, beta, with_labels):
-    # The second vocabulary entry underflows in both distributions in fp32.
-    log_q = torch.tensor([[0.0, -120.0, -1.0, -2.0, -90.0]], device="cuda", dtype=dtype)
-    log_p = torch.tensor([[0.5, -130.0, -2.0, -1.0, -95.0]], device="cuda", dtype=dtype)
+    # Cover normal, subnormal and fully underflowed probabilities. A guard
+    # for exactly zero misses subnormal inputs to native log2.
+    log_q = torch.tensor(
+        [[0.0, -120.0, -1.0, -2.0, -86.0, -87.0, -88.0, -90.0, -104.0, -105.0, -200.0]],
+        device="cuda",
+        dtype=dtype,
+    )
+    log_p = torch.tensor(
+        [[0.5, -130.0, -2.0, -1.0, -87.0, -88.0, -89.0, -95.0, -105.0, -104.0, -210.0]],
+        device="cuda",
+        dtype=dtype,
+    )
     log_q = log_q.log_softmax(-1).repeat(3, 1).detach().requires_grad_()
     log_p = log_p.log_softmax(-1).repeat(3, 1)
     labels = torch.tensor([0, -100, 1], device="cuda") if with_labels else None
@@ -72,6 +81,40 @@ def test_jsd_underflow_matches_double_reference(impl, dtype, beta, with_labels):
     torch.testing.assert_close(log_q.grad.double(), ref_q.grad, atol=tol, rtol=tol)
     if with_labels:
         assert torch.count_nonzero(log_q.grad[1]) == 0
+
+
+@pytest.mark.parametrize("impl", _REGISTERED_IMPLS)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("beta", [0.001, 0.5, 0.999])
+def test_jsd_underflow_terms_match_double_reference(impl, dtype, beta):
+    # Check tiny terms directly so a large epsilon cannot hide behind the
+    # tolerance on the reduced scalar loss.
+    values = torch.tensor(
+        [-80.0, -86.0, -87.0, -88.0, -90.0, -100.0, -103.0, -104.0, -105.0, -120.0],
+        device="cuda",
+    )
+    x, y = torch.meshgrid(values, values, indexing="ij")
+    log_q = torch.stack((torch.zeros_like(x.flatten()), x.flatten()), -1).log_softmax(-1).to(dtype)
+    log_p = torch.stack((torch.zeros_like(y.flatten()), y.flatten()), -1).log_softmax(-1).to(dtype)
+    ref_q = log_q.double().requires_grad_()
+    ref_p = log_p.double()
+    log_m = torch.logaddexp(ref_p + math.log(beta), ref_q + math.log1p(-beta))
+    terms = (beta * ref_p.exp() * (ref_p - log_m) + (1 - beta) * ref_q.exp() * (ref_q - log_m)) / log_q.shape[0]
+    ref_grad = torch.autograd.grad(terms.sum(), ref_q)[0]
+    loss, grad = dispatch(
+        "jsd_loss_and_grad",
+        log_q.clone(),
+        log_p,
+        None,
+        beta,
+        -100,
+        float(log_q.shape[0]),
+        impl=impl,
+    )
+    assert torch.isfinite(loss).all()
+    assert torch.isfinite(grad).all()
+    torch.testing.assert_close(loss[:, 1].double(), terms[:, 1], atol=1e-38, rtol=0)
+    torch.testing.assert_close(grad[:, 1].double(), ref_grad[:, 1].to(dtype).double(), atol=1e-38, rtol=0)
 
 
 def _pytorch_jsd_reference(
