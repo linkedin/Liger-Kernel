@@ -21,7 +21,7 @@ Math (matching :mod:`liger_kernel.ops.jsd._jsd_kernel`)::
 
     # General JSD (0 < beta < 1):
     M       = beta * P + (1 - beta) * Q
-    log_M   = log(M)
+    log_M   = log(max(M, fp32_min_normal))
     loss    = beta * P * Y + (1 - beta) * Q * X - M * log_M
     dX      = (1 - beta) * Q * (X - log_M)
 
@@ -36,9 +36,10 @@ Math (matching :mod:`liger_kernel.ops.jsd._jsd_kernel`)::
     loss *= (1 / n_non_ignore)
     dX   *= (1 / n_non_ignore)
 
-The max-subtraction for numerical stability in the Triton kernel is omitted
-here — log-probabilities are typically in ``[-30, 0]`` so ``exp`` does not
-overflow.  For bf16/fp16 inputs ``exp``/``log`` are computed via native
+The log input is bounded below by the smallest normal fp32 value, keeping
+it finite for zero/subnormal mixtures while preserving normal-range math.
+For bf16/fp16 inputs
+``exp``/``log`` are computed via native
 ``exp2``/``log2`` (``exp(x) = exp2(x * log2(e))``); for fp32 inputs the kernel
 switches to libdevice-precise ``exp``/``log`` (no fastmath) to match
 ``torch.exp`` fp32 within the strict public JSD contract (1e-7 atol).
@@ -259,7 +260,10 @@ class _LigerJSDLossAndGradCuTeDSL:
             beta_p = beta * p
             one_minus_beta_q = (1.0 - beta) * q
             m = beta_p + one_minus_beta_q
-            log_m = self._log(m)
+            # Protect subnormal mixtures too: native log2 can flush them to
+            # zero. Keep the original arithmetic above the fp32 normal limit.
+            min_normal = 1.1754943508222875e-38  # 2**-126
+            log_m = self._log(cute.where(m > min_normal, m, min_normal))
             loss = beta_p * y + one_minus_beta_q * x - m * log_m
             dx = one_minus_beta_q * (x - log_m)
 
