@@ -5,6 +5,7 @@ from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
+from liger_kernel.ops.softmax import MAX_FUSED_SIZE
 from liger_kernel.transformers.functional import liger_softmax
 from liger_kernel.transformers.softmax import LigerSoftmax
 from liger_kernel.utils import infer_device
@@ -25,8 +26,11 @@ _SOFTMAX_MIN_FREE_BYTES = 4 * _SOFTMAX_OVERFLOW_ROWS * _SOFTMAX_OVERFLOW_COLS * 
         (4, 16),
         (1, 1023),  # Large single row single-block dispatch
         (3, 7, 256),  # 3D input
-        (1, 4096),  # test multi-block dispatch
-        (1, 2, 4096),  # test multi-block dispatch on 3D input
+        (1, 4096),  # single-block dispatch (4096 <= MAX_FUSED_SIZE)
+        (1, 2, 4096),  # single-block dispatch on 3D input
+        (2, 70000),  # multi-block dispatch (> MAX_FUSED_SIZE), partial last block
+        (1, 3, 70000),  # multi-block dispatch on 3D input
+        (1, 2 * MAX_FUSED_SIZE),  # multi-block dispatch, whole blocks only
     ],
 )
 @pytest.mark.parametrize(
@@ -73,6 +77,9 @@ def test_liger_softmax(shape, dtype, atol, rtol):
         (3, 7, 256),
         (1, 4096),
         (1, 2, 4096),
+        (2, 70000),
+        (1, 3, 70000),
+        (1, 2 * MAX_FUSED_SIZE),
     ],
 )
 @pytest.mark.parametrize(
@@ -106,6 +113,32 @@ def test_liger_softmax_functional(shape, dtype, atol, rtol):
     liger_out.backward(grad_output, retain_graph=True)
 
     assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("n_cols", [100, 70000, 3 * MAX_FUSED_SIZE + 5])
+def test_liger_softmax_masked_leading_blocks(n_cols):
+    """Rows whose leading entries are all -inf (e.g. sliding-window or left-padding masks) have a
+    well-defined softmax as long as some entry is finite. In the multi-block path a leading block
+    that is entirely -inf must not turn the row into NaN."""
+    torch.manual_seed(0)
+    x = torch.randn(4, n_cols, dtype=torch.float32, device=device)
+    x[1, : min(MAX_FUSED_SIZE, n_cols - 1)] = float("-inf")  # first block masked
+    x[2, :-10] = float("-inf")  # all but the last 10 entries masked
+    x[3, ::2] = float("-inf")  # every other entry masked
+    x1 = x.clone().requires_grad_(True)
+    x2 = x.clone().requires_grad_(True)
+
+    ref_out = torch.softmax(x1, dim=-1)
+    liger_out = liger_softmax(x2)
+
+    assert not torch.isnan(liger_out).any()
+    assert_verbose_allclose(ref_out, liger_out, atol=1e-5, rtol=1e-5)
+
+    grad_output = torch.randn_like(ref_out)
+    ref_out.backward(grad_output)
+    liger_out.backward(grad_output)
+
+    assert_verbose_allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)
 
 
 def test_softmax_int32_row_offset_wraps():
