@@ -116,6 +116,21 @@ def _triton_rope(
         tl.store(k_ptr + second_half_k_offsets, new_k_tile_2, mask=second_k_mask)
 
 
+def _token_row(x):
+    """Return [B, S, H, D] storage and the element stride between tokens.
+
+    A size-1 sequence is still reported contiguous when that dimension keeps a
+    shorter stride, so Tensor.contiguous() returns the same view and stride(1)
+    stays head_dim. Contiguity does constrain stride(0) to H * D, which is the
+    token pitch, so pass that. Any other layout is copied. Sequences longer
+    than one keep the existing contiguous() path.
+    """
+    if x.size(1) == 1 and x.is_contiguous():
+        return x, x.stride(0)
+    x = x.contiguous()
+    return x, x.stride(1)
+
+
 def rope_forward(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     # Support 2D, 3D, and 4D cos/sin shapes
     if cos.ndim == 4:
@@ -132,10 +147,10 @@ def rope_forward(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         cos = cos.unsqueeze(0)
         sin = sin.unsqueeze(0)
 
-    # transpose it back to the physical shape because Triton looks at the physical storage
-    # note: q and k are incontiguous before the transformation and will become contiguous after transpose
-    q = q.transpose(1, 2)
-    k = k.transpose(1, 2)
+    # Kernel indexes [B, S, H, D]. A size-1 sequence needs its token stride
+    # rebuilt; contiguous() alone leaves stride(1) == head_dim.
+    q, q_row_stride = _token_row(q.transpose(1, 2))
+    k, k_row_stride = _token_row(k.transpose(1, 2))
 
     batch_size, seq_len, n_q_head, head_dim = q.shape
     n_kv_head = k.shape[2]
@@ -149,18 +164,15 @@ def rope_forward(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
     n_row = batch_size * seq_len
 
-    # ensure tensors passed into the kernel are contiguous. It will be no-op if they are already contiguous
-    q = q.contiguous()
-    k = k.contiguous()
     cos = cos.contiguous()
     sin = sin.contiguous()
     cos_batch_size = cos.shape[0]
 
     _triton_rope[(n_row,)](
         q,
-        q.stride(1),
+        q_row_stride,
         k,
-        k.stride(1),
+        k_row_stride,
         cos,
         cos.stride(-2),
         sin,
@@ -197,8 +209,8 @@ def rope_backward(dq, dk, cos, sin, position_ids=None, unsqueeze_dim=1):
         cos = cos.unsqueeze(0)
         sin = sin.unsqueeze(0)
 
-    dq = dq.transpose(1, 2)
-    dk = dk.transpose(1, 2)
+    dq, dq_row_stride = _token_row(dq.transpose(1, 2))
+    dk, dk_row_stride = _token_row(dk.transpose(1, 2))
 
     batch_size, seq_len, n_q_head, head_dim = dq.shape
     cos_batch_size = cos.shape[0]
@@ -213,18 +225,15 @@ def rope_backward(dq, dk, cos, sin, position_ids=None, unsqueeze_dim=1):
 
     n_row = batch_size * seq_len
 
-    # ensure dq and dk are contiguous
-    dq = dq.contiguous()
-    dk = dk.contiguous()
     cos = cos.contiguous()
     sin = sin.contiguous()
 
     # backward is similar to forward except swapping few ops
     _triton_rope[(n_row,)](
         dq,
-        dq.stride(1),
+        dq_row_stride,
         dk,
-        dk.stride(1),
+        dk_row_stride,
         cos,
         cos.stride(-2),
         sin,
