@@ -233,7 +233,11 @@ You can run the example locally on a GPU machine and FSDP.
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from trl import ORPOConfig  # noqa: F401
+
+try:
+    from trl.experimental.orpo import ORPOConfig  # noqa: F401
+except ImportError:
+    from trl import ORPOConfig  # noqa: F401
 
 from liger_kernel.transformers.trainer import LigerORPOTrainer  # noqa: F401
 
