@@ -847,6 +847,179 @@ def mhc_sinkhorn_bwd(
 
 
 # -------------------------------------------------------------------------------------------------
+# Coefficient backward epilogue: sigmoid derivatives + mix/b/alpha gradients
+# -------------------------------------------------------------------------------------------------
+
+
+@triton.jit
+def _mhc_coeffs_bwd_epilogue_producer_kernel(
+    mix_ptr,
+    b_ptr,
+    alpha_pre_ptr,
+    alpha_post_ptr,
+    alpha_res_ptr,
+    grad_hpre_ptr,
+    grad_hpost_ptr,
+    grad_res_logits_ptr,
+    grad_mix_ptr,
+    partial_b_ptr,
+    partial_alpha_ptr,
+    N,
+    HC: tl.constexpr,
+    M: tl.constexpr,
+    POST_MULT: tl.constexpr,
+    NEED_PRE: tl.constexpr,
+    NEED_POST: tl.constexpr,
+    NEED_RES: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    rows = pid * BLOCK_N + tl.arange(0, BLOCK_N)[:, None]
+    cols = tl.arange(0, BLOCK_M)[None, :]
+    mask = (rows < N) & (cols < M)
+
+    mix = tl.load(mix_ptr + rows * M + cols, mask=mask, other=0.0).to(tl.float32)
+    b = tl.load(b_ptr + cols, mask=cols < M, other=0.0).to(tl.float32)
+    alpha_pre = tl.load(alpha_pre_ptr).to(tl.float32)
+    alpha_post = tl.load(alpha_post_ptr).to(tl.float32)
+    alpha_res = tl.load(alpha_res_ptr).to(tl.float32)
+
+    is_pre = cols < HC
+    is_post = (cols >= HC) & (cols < 2 * HC)
+    is_res = (cols >= 2 * HC) & (cols < M)
+
+    grad_pre = tl.zeros((BLOCK_N, BLOCK_M), dtype=tl.float32)
+    if NEED_PRE:
+        grad_hpre = tl.load(
+            grad_hpre_ptr + rows * HC + cols,
+            mask=(rows < N) & is_pre,
+            other=0.0,
+        ).to(tl.float32)
+        pre_sig = tl.sigmoid(mix * alpha_pre + b)
+        grad_pre = grad_hpre * pre_sig * (1.0 - pre_sig)
+
+    grad_post = tl.zeros((BLOCK_N, BLOCK_M), dtype=tl.float32)
+    if NEED_POST:
+        grad_hpost = tl.load(
+            grad_hpost_ptr + rows * HC + (cols - HC),
+            mask=(rows < N) & is_post,
+            other=0.0,
+        ).to(tl.float32)
+        post_sig = tl.sigmoid(mix * alpha_post + b)
+        grad_post = grad_hpost * POST_MULT * post_sig * (1.0 - post_sig)
+
+    grad_res = tl.zeros((BLOCK_N, BLOCK_M), dtype=tl.float32)
+    if NEED_RES:
+        grad_res = tl.load(
+            grad_res_logits_ptr + rows * (HC * HC) + (cols - 2 * HC),
+            mask=(rows < N) & is_res,
+            other=0.0,
+        ).to(tl.float32)
+
+    grad_logits = tl.where(is_pre, grad_pre, tl.where(is_post, grad_post, grad_res))
+    alpha = tl.where(is_pre, alpha_pre, tl.where(is_post, alpha_post, alpha_res))
+    tl.store(grad_mix_ptr + rows * M + cols, grad_logits * alpha, mask=mask)
+
+    partial_b = tl.sum(tl.where(mask, grad_logits, 0.0), axis=0)
+    tl.store(partial_b_ptr + pid * M + cols, partial_b[None, :], mask=cols < M)
+
+    pre_product = tl.where(mask & is_pre, grad_logits * mix, 0.0)
+    post_product = tl.where(mask & is_post, grad_logits * mix, 0.0)
+    res_product = tl.where(mask & is_res, grad_logits * mix, 0.0)
+    tl.store(partial_alpha_ptr + pid * 3, tl.sum(tl.sum(pre_product, axis=0), axis=0))
+    tl.store(partial_alpha_ptr + pid * 3 + 1, tl.sum(tl.sum(post_product, axis=0), axis=0))
+    tl.store(partial_alpha_ptr + pid * 3 + 2, tl.sum(tl.sum(res_product, axis=0), axis=0))
+
+
+@triton.jit
+def _mhc_coeffs_bwd_epilogue_reduce_kernel(
+    partial_b_ptr,
+    partial_alpha_ptr,
+    grad_b_ptr,
+    grad_alpha_ptr,
+    N_BLOCKS,
+    M: tl.constexpr,
+    BLOCK_REDUCE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    block_offsets = tl.arange(0, BLOCK_REDUCE)
+    block_mask = block_offsets < N_BLOCKS
+    if pid < M:
+        values = tl.load(partial_b_ptr + block_offsets * M + pid, mask=block_mask, other=0.0)
+        tl.store(grad_b_ptr + pid, tl.sum(values, axis=0))
+    else:
+        alpha_index = pid - M
+        values = tl.load(partial_alpha_ptr + block_offsets * 3 + alpha_index, mask=block_mask, other=0.0)
+        tl.store(grad_alpha_ptr + alpha_index, tl.sum(values, axis=0))
+
+
+def _mhc_coeffs_bwd_epilogue(
+    mix: torch.Tensor,
+    b: torch.Tensor,
+    alpha_pre: torch.Tensor,
+    alpha_post: torch.Tensor,
+    alpha_res: torch.Tensor,
+    grad_hpre: torch.Tensor,
+    grad_hpost: torch.Tensor,
+    grad_res_logits: torch.Tensor,
+    *,
+    need_pre: bool,
+    need_post: bool,
+    need_res: bool,
+    post_mult: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    N, M = mix.shape
+    HC = grad_hpre.shape[1]
+    assert M == HC * HC + 2 * HC
+
+    block_m = triton.next_power_of_2(M)
+    block_n = 32 if block_m <= 32 else 16
+    num_blocks = triton.cdiv(N, block_n)
+
+    grad_mix = torch.empty_like(mix)
+    partial_b = torch.empty((num_blocks, M), device=mix.device, dtype=torch.float32)
+    partial_alpha = torch.empty((num_blocks, 3), device=mix.device, dtype=torch.float32)
+    grad_b = torch.empty_like(b, dtype=torch.float32)
+    grad_alpha = torch.empty((3,), device=mix.device, dtype=torch.float32)
+
+    _mhc_coeffs_bwd_epilogue_producer_kernel[(num_blocks,)](
+        mix,
+        b,
+        alpha_pre,
+        alpha_post,
+        alpha_res,
+        grad_hpre,
+        grad_hpost,
+        grad_res_logits,
+        grad_mix,
+        partial_b,
+        partial_alpha,
+        N,
+        HC=HC,
+        M=M,
+        POST_MULT=post_mult,
+        NEED_PRE=need_pre,
+        NEED_POST=need_post,
+        NEED_RES=need_res,
+        BLOCK_N=block_n,
+        BLOCK_M=block_m,
+        num_warps=4,
+    )
+    _mhc_coeffs_bwd_epilogue_reduce_kernel[(M + 3,)](
+        partial_b,
+        partial_alpha,
+        grad_b,
+        grad_alpha,
+        num_blocks,
+        M=M,
+        BLOCK_REDUCE=triton.next_power_of_2(num_blocks),
+        num_warps=4,
+    )
+    return grad_mix, grad_b, grad_alpha[0], grad_alpha[1], grad_alpha[2]
+
+
+# -------------------------------------------------------------------------------------------------
 # Apply kernels: mhc_pre and mhc_post_res (forward + backward)
 # -------------------------------------------------------------------------------------------------
 
@@ -1531,57 +1704,20 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         else:
             grad_res_logits = gh_res
 
-        # --- Pre/post derivatives (sigmoid)
-        mix_pre = mix[:, :HC]
-        mix_post = mix[:, HC : 2 * HC]
-        mix_res = mix[:, 2 * HC :]
-
-        b_pre = b[:HC]
-        b_post = b[HC : 2 * HC]
-        if need_pre:
-            pre_logits = mix_pre * alpha_pre + b_pre
-            pre_sig = torch.sigmoid(pre_logits)
-            grad_pre_logits = gh_pre * (pre_sig * (1.0 - pre_sig))  # [N,HC]
-        else:
-            grad_pre_logits = gh_pre
-
-        if need_post:
-            post_logits = mix_post * alpha_post + b_post
-            post_sig = torch.sigmoid(post_logits)
-            grad_post_logits = gh_post * (post_mult * post_sig * (1.0 - post_sig))  # [N,HC]
-        else:
-            grad_post_logits = gh_post
-
-        grad_res_logits_flat = grad_res_logits.reshape(N, HC * HC)
-
-        # --- Grad w.r.t mix
-        grad_mix = torch.empty_like(mix)
-        grad_mix[:, :HC] = grad_pre_logits * alpha_pre
-        grad_mix[:, HC : 2 * HC] = grad_post_logits * alpha_post
-        grad_mix[:, 2 * HC :] = grad_res_logits_flat * alpha_res
-
-        # --- Grad w.r.t b
-        grad_b = torch.zeros_like(b, dtype=torch.float32)
-        if need_pre:
-            grad_b[:HC] = grad_pre_logits.sum(dim=0)
-        if need_post:
-            grad_b[HC : 2 * HC] = grad_post_logits.sum(dim=0)
-        if need_res:
-            grad_b[2 * HC :] = grad_res_logits_flat.sum(dim=0)
-
-        # --- Grad w.r.t alphas
-        if need_pre:
-            grad_alpha_pre = (grad_pre_logits * mix_pre).sum()
-        else:
-            grad_alpha_pre = torch.zeros((), device=mix.device, dtype=torch.float32)
-        if need_post:
-            grad_alpha_post = (grad_post_logits * mix_post).sum()
-        else:
-            grad_alpha_post = torch.zeros((), device=mix.device, dtype=torch.float32)
-        if need_res:
-            grad_alpha_res = (grad_res_logits_flat * mix_res).sum()
-        else:
-            grad_alpha_res = torch.zeros((), device=mix.device, dtype=torch.float32)
+        grad_mix, grad_b, grad_alpha_pre, grad_alpha_post, grad_alpha_res = _mhc_coeffs_bwd_epilogue(
+            mix,
+            b,
+            alpha_pre,
+            alpha_post,
+            alpha_res,
+            gh_pre,
+            gh_post,
+            grad_res_logits,
+            need_pre=need_pre,
+            need_post=need_post,
+            need_res=need_res,
+            post_mult=post_mult,
+        )
 
         # --- Grad w.r.t x and phi via fused mm+norm backward
         grad_x_mat, grad_phi = mhc_mm_norm_bwd(
