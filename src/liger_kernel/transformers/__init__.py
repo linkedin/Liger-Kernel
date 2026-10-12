@@ -3,6 +3,7 @@ import importlib
 from typing import TYPE_CHECKING
 
 # Always-safe imports (independent of 'transformers')
+from liger_kernel.transformers.cce import LigerCCELoss  # noqa: F401
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.dyt import LigerDyT  # noqa: F401
 from liger_kernel.transformers.fused_add_rms_norm import LigerFusedAddRMSNorm  # noqa: F401
