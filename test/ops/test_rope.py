@@ -172,3 +172,61 @@ def test_partial_rope_correctness(backend, dtype, bsz, n_qh, n_kh, sl, hd, rd):
     torch.autograd.backward((q_expected, k_expected), (dq_ref, dk_ref))
     torch.testing.assert_close(q.grad, q_ref.grad, atol=atol_bwd, rtol=rtol_bwd)
     torch.testing.assert_close(k.grad, k_ref.grad, atol=atol_bwd, rtol=rtol_bwd)
+
+
+@pytest.mark.parametrize("backend", _REGISTERED_BACKENDS or ["__none__"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize(
+    "bsz, n_qh, n_kh, sl, hd, rd",
+    [
+        (2, 8, 8, 64, 64, 64),  # GPT-OSS style: whole head rotated, cos/sin of width hd / 2
+        (2, 8, 2, 64, 64, 64),  # same, with GQA
+        (2, 16, 4, 64, 128, 64),  # partial RoPE with non-duplicated cos/sin
+    ],
+)
+def test_rope_explicit_rotary_dim_with_half_width_cos(backend, dtype, bsz, n_qh, n_kh, sl, hd, rd):
+    if backend == "__none__":
+        pytest.skip("No rope backends registered")
+    if backend.startswith("ascend") and rd != hd:
+        pytest.skip("Ascend rope rotates the whole head")
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("bf16 not supported on this GPU")
+
+    torch.manual_seed(0)
+    q = torch.randn(bsz, n_qh, sl, hd, device="cuda", dtype=dtype, requires_grad=True)
+    k = torch.randn(bsz, n_kh, sl, hd, device="cuda", dtype=dtype, requires_grad=True)
+    # cos/sin hold one entry per rotated pair instead of the duplicated cat(freqs, freqs)
+    cos = torch.randn(bsz, sl, rd // 2, device="cuda", dtype=dtype)
+    sin = torch.randn(bsz, sl, rd // 2, device="cuda", dtype=dtype)
+    q_ref = q.detach().clone().requires_grad_()
+    k_ref = k.detach().clone().requires_grad_()
+
+    q_out, k_out = dispatch("rope", q, k, cos, sin, None, 1, backend=backend, rotary_dim=rd)
+    q_expected, k_expected = _reference(q_ref, k_ref, torch.cat((cos, cos), dim=-1), torch.cat((sin, sin), dim=-1))
+
+    atol_fwd = atol_bwd = 1e-5 if dtype == torch.float32 else 2e-2
+    rtol_fwd = rtol_bwd = 1e-5 if dtype == torch.float32 else 1e-2
+    if dtype == torch.bfloat16:
+        atol_bwd = 1e-1
+        rtol_bwd = 2e-2
+    torch.testing.assert_close(q_out, q_expected, atol=atol_fwd, rtol=rtol_fwd)
+    torch.testing.assert_close(k_out, k_expected, atol=atol_fwd, rtol=rtol_fwd)
+
+    dq = torch.randn_like(q_out)
+    dk = torch.randn_like(k_out)
+    torch.autograd.backward((q_out, k_out), (dq, dk))
+    torch.autograd.backward((q_expected, k_expected), (dq.clone(), dk.clone()))
+    torch.testing.assert_close(q.grad, q_ref.grad, atol=atol_bwd, rtol=rtol_bwd)
+    torch.testing.assert_close(k.grad, k_ref.grad, atol=atol_bwd, rtol=rtol_bwd)
+
+
+@pytest.mark.parametrize("rotary_dim, match", [(63, "even"), (128, "even"), (64, "rotary_dim / 2")])
+def test_rope_rejects_inconsistent_rotary_dim(rotary_dim, match):
+    from liger_kernel.ops.rope import rope_forward
+
+    q = torch.randn(1, 2, 4, 64)
+    k = torch.randn(1, 2, 4, 64)
+    cos = torch.randn(1, 4, 16)
+    sin = torch.randn(1, 4, 16)
+    with pytest.raises(ValueError, match=match):
+        rope_forward(q, k, cos, sin, rotary_dim=rotary_dim)

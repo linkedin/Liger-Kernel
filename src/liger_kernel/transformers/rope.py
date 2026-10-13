@@ -5,7 +5,7 @@ import torch
 from liger_kernel.backends import dispatch
 
 
-def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1, rotary_dim=None):
     """
     Applies Rotary Positional Embedding (RoPE) operation to query and key states.
 
@@ -16,12 +16,29 @@ def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         sin (torch.Tensor): The sine tensor of shape (1, seq_len, head_dim) or (bsz, seq_len, head_dim).
         position_ids (torch.Tensor, optional): The position ids tensor. Defaults to None.
         unsqueeze_dim (int, optional): The dimension to unsqueeze. Defaults to 1.
+        rotary_dim (int, optional): How many leading entries of each head are rotated. Defaults to None, which
+            infers it from the width of cos/sin. Pass it when cos/sin are not duplicated, i.e. have width
+            rotary_dim / 2 as in GPT-OSS.
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: The query and key tensors after applying the RoPE operation.
     """
 
-    return dispatch("rope", q, k, cos, sin, position_ids, unsqueeze_dim)
+    if rotary_dim is None:
+        return dispatch("rope", q, k, cos, sin, position_ids, unsqueeze_dim)
+    return dispatch("rope", q, k, cos, sin, position_ids, unsqueeze_dim, rotary_dim=rotary_dim)
+
+
+def liger_rotary_pos_emb_gpt_oss(q, k, cos, sin):
+    """
+    liger_rotary_pos_emb for GPT-OSS's apply_rotary_pos_emb.
+
+    GPT-OSS rotates the whole head, but its rotary embedding returns cos/sin of width head_dim / 2
+    (`emb = freqs`, not `cat(freqs, freqs)`), so the rotary width cannot be inferred from cos/sin
+    and is passed explicitly.
+    Reference: https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/models/gpt_oss/modeling_gpt_oss.py
+    """
+    return liger_rotary_pos_emb(q, k, cos, sin, rotary_dim=q.shape[-1])
 
 
 def liger_rotary_pos_emb_vision(

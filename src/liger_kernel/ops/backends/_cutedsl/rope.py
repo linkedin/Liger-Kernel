@@ -164,6 +164,7 @@ def rope_cutedsl(
     unsqueeze_dim: int = 1,
     *,
     mode: Optional[str] = None,
+    rotary_dim: Optional[int] = None,
 ):
     """CuTe DSL RoPE dispatch entry point.
 
@@ -177,11 +178,12 @@ def rope_cutedsl(
         raise ValueError(f"CuTe DSL rope has only mode='default'; got mode={mode!r}.")
     if q.shape[-1] % 2 != 0 or k.shape[-1] % 2 != 0:
         raise ValueError(f"CuTe DSL RoPE requires even q/k head dimensions; got q={q.shape[-1]}, k={k.shape[-1]}")
-    if not _rope_auto_select_ok(q) or cos.shape[-1] < q.shape[-1]:
+    if not _rope_auto_select_ok(q) or cos.shape[-1] < q.shape[-1] or rotary_dim not in (None, q.shape[-1]):
         # Outside the measured win zone (small shapes / no-grad fwd-only /
-        # fp32) or partial RoPE (rotary_dim < head_dim): Triton handles it -- keep it, silently
+        # fp32), partial RoPE (rotary_dim < head_dim) or cos/sin narrower than head_dim (an
+        # explicit rotary_dim with non-duplicated cos/sin): Triton handles it -- keep it, silently
         # (neither backend was ever selected here, so this is plain routing).
         from liger_kernel.ops.backends._triton.rope import rope_triton
 
-        return rope_triton(q, k, cos, sin, position_ids, unsqueeze_dim, mode=mode)
+        return rope_triton(q, k, cos, sin, position_ids, unsqueeze_dim, mode=mode, rotary_dim=rotary_dim)
     return _LigerRopeCuTeDSLFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)

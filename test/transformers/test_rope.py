@@ -9,6 +9,7 @@ from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 from liger_kernel.ops import LigerRopeFunction
 from liger_kernel.transformers.functional import liger_rope
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
+from liger_kernel.transformers.rope import liger_rotary_pos_emb_gpt_oss
 from liger_kernel.utils import infer_device
 from liger_kernel.utils import transformers_version_dispatch
 
@@ -335,3 +336,61 @@ def test_partial_rope_transformers_correctness(
 
     assert torch.allclose(q1_grad, q2_grad, atol=atol, rtol=rtol)
     assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, num_q_heads, num_kv_heads, head_dim",
+    [
+        (1, 128, 8, 8, 64),
+        (2, 128, 8, 2, 64),
+        (2, 64, 16, 4, 128),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_gpt_oss_rope_matches_hf(bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol):
+    # GPT-OSS's rotary embedding returns cos/sin of width head_dim / 2 while its
+    # apply_rotary_pos_emb rotates the whole head. Inferring the rotary width from
+    # cos/sin would read that as partial RoPE over the first half of each head.
+    modeling_gpt_oss = pytest.importorskip("transformers.models.gpt_oss.modeling_gpt_oss")
+    from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
+
+    config = GptOssConfig(
+        hidden_size=num_q_heads * head_dim,
+        head_dim=head_dim,
+        num_attention_heads=num_q_heads,
+        num_key_value_heads=num_kv_heads,
+    )
+    rotary_emb = modeling_gpt_oss.GptOssRotaryEmbedding(config).to(device)
+
+    q = torch.randn((bsz, num_q_heads, seq_len, head_dim), device=device, dtype=dtype)
+    k = torch.randn((bsz, num_kv_heads, seq_len, head_dim), device=device, dtype=dtype)
+    q1, k1 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
+    q2, k2 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
+
+    pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0).expand(bsz, -1)
+    cos, sin = rotary_emb(k1, pos_ids)
+    assert cos.shape[-1] == head_dim // 2
+
+    hf_q, hf_k = modeling_gpt_oss.apply_rotary_pos_emb(q1, k1, cos, sin)
+    tt_q, tt_k = liger_rotary_pos_emb_gpt_oss(q2, k2, cos, sin)
+    assert torch.allclose(hf_q, tt_q, atol=atol, rtol=rtol)
+    assert torch.allclose(hf_k, tt_k, atol=atol, rtol=rtol)
+
+    dq, dk = torch.randn_like(hf_q, dtype=dtype), torch.randn_like(hf_k, dtype=dtype)
+    hf_q.backward(dq.clone())
+    hf_k.backward(dk.clone())
+    tt_q.backward(dq.clone())
+    tt_k.backward(dk.clone())
+    assert torch.allclose(q1.grad, q2.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(k1.grad, k2.grad, atol=atol, rtol=rtol)

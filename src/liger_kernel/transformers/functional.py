@@ -376,8 +376,8 @@ def liger_fused_add_rms_norm(X, R, W, eps, offset: float = 0.0, casting_mode: st
     return LigerFusedAddRMSNormFunction.apply(X, R, W, eps, offset, casting_mode, in_place)
 
 
-def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1, rotary_dim=None):
+    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim, rotary_dim)
 
 
 def liger_swiglu(a, b):
