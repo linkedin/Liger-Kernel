@@ -388,9 +388,10 @@ def test_gpt_oss_rope_matches_hf(bsz, seq_len, num_q_heads, num_kv_heads, head_d
     assert torch.allclose(hf_k, tt_k, atol=atol, rtol=rtol)
 
     dq, dk = torch.randn_like(hf_q, dtype=dtype), torch.randn_like(hf_k, dtype=dtype)
-    hf_q.backward(dq.clone())
-    hf_k.backward(dk.clone())
-    tt_q.backward(dq.clone())
-    tt_k.backward(dk.clone())
+    dq_clone, dk_clone = dq.clone(), dk.clone()
+    torch.autograd.backward((hf_q, hf_k), (dq, dk))
+    torch.autograd.backward((tt_q, tt_k), (dq_clone, dk_clone))
     assert torch.allclose(q1.grad, q2.grad, atol=atol, rtol=rtol)
     assert torch.allclose(k1.grad, k2.grad, atol=atol, rtol=rtol)
+
+

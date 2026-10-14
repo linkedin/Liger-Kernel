@@ -214,8 +214,10 @@ def test_rope_explicit_rotary_dim_with_half_width_cos(backend, dtype, bsz, n_qh,
 
     dq = torch.randn_like(q_out)
     dk = torch.randn_like(k_out)
+    dq_ref = dq.clone()
+    dk_ref = dk.clone()
     torch.autograd.backward((q_out, k_out), (dq, dk))
-    torch.autograd.backward((q_expected, k_expected), (dq.clone(), dk.clone()))
+    torch.autograd.backward((q_expected, k_expected), (dq_ref, dk_ref))
     torch.testing.assert_close(q.grad, q_ref.grad, atol=atol_bwd, rtol=rtol_bwd)
     torch.testing.assert_close(k.grad, k_ref.grad, atol=atol_bwd, rtol=rtol_bwd)
 
