@@ -1279,6 +1279,36 @@ def test_qwen3_vl_moe_rope_hooks_applied():
         assert modeling_mod.apply_rotary_pos_emb_vision is liger_rotary_pos_emb_vision
 
 
+@pytest.mark.skipif(not is_qwen3_5_available(), reason="qwen3_5 module not available")
+def test_qwen3_5_rope_hooks_applied():
+    with patch("transformers.models.qwen3_5.modeling_qwen3_5") as modeling_mod:
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb_vision
+
+        setattr(modeling_mod, "apply_rotary_pos_emb", object())
+        setattr(modeling_mod, "apply_rotary_pos_emb_vision", object())
+
+        _apply_liger_kernel("qwen3_5")
+
+        assert modeling_mod.apply_rotary_pos_emb is liger_rotary_pos_emb
+        assert modeling_mod.apply_rotary_pos_emb_vision is liger_rotary_pos_emb_vision
+
+
+@pytest.mark.skipif(not is_qwen3_5_moe_available(), reason="qwen3_5_moe module not available")
+def test_qwen3_5_moe_rope_hooks_applied():
+    with patch("transformers.models.qwen3_5_moe.modeling_qwen3_5_moe") as modeling_mod:
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb_vision
+
+        setattr(modeling_mod, "apply_rotary_pos_emb", object())
+        setattr(modeling_mod, "apply_rotary_pos_emb_vision", object())
+
+        _apply_liger_kernel("qwen3_5_moe")
+
+        assert modeling_mod.apply_rotary_pos_emb is liger_rotary_pos_emb
+        assert modeling_mod.apply_rotary_pos_emb_vision is liger_rotary_pos_emb_vision
+
+
 @pytest.mark.skipif(not is_falcon_h1_available(), reason="falcon_h1 module not available")
 def test_apply_liger_kernel_to_falcon_h1_for_causal_lm():
     with patch("transformers.models.falcon_h1.modeling_falcon_h1"):
