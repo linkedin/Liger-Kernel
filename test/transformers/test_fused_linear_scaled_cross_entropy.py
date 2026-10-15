@@ -459,11 +459,36 @@ def test_native_call_uses_prepared_group_without_global_state(monkeypatch):
     assert calls == [
         ("team", process_group, False),
         ("backward_config", (128, 2048, 320, 2, 17)),
-        ("forward_config", (128, 320)),
+        ("forward_config", (128, 320, 17)),
         ("team", process_group, False),
         ("backward_config", (64, 1024, 160, 1, 17)),
-        ("forward_config", (64, 160)),
+        ("forward_config", (64, 160, 17)),
     ]
+
+
+@pytest.mark.parametrize("supports_contexts", [False, True])
+def test_native_availability_requires_context_aware_bindings(monkeypatch, supports_contexts):
+    class NativeModule:
+        fused_linear_scaled_cross_entropy_configure_backward = object()
+        fused_linear_scaled_cross_entropy_configure_forward = object()
+        fused_linear_scaled_cross_entropy_backward = object()
+        fused_linear_scaled_cross_entropy_forward = object()
+
+    class Bindings:
+        @staticmethod
+        def _load_module():
+            return NativeModule()
+
+    class Teams:
+        @staticmethod
+        def resolve_team(*args, **kwargs):
+            raise AssertionError("availability must not resolve teams")
+
+    if supports_contexts:
+        NativeModule.fused_linear_scaled_cross_entropy_configure_context = object()
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_get_tvm_ffi", lambda: Bindings)
+    monkeypatch.setattr(_NATIVE_FRONTEND, "_get_nvshmem", lambda: Teams)
+    assert _NATIVE_FRONTEND.is_available() is supports_contexts
 
 
 def test_frontend_is_exported_from_ops_root():

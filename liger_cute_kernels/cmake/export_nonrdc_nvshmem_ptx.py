@@ -14,8 +14,6 @@ REQUIRED_SYMBOLS = (
     "nvshmemi_device_lib_version_d",
     "liger_cute_sm90_nonrdc_build_fingerprint",
     "liger_cute_sm90_nonrdc_transport_mode",
-    "_ZN10liger_cute6detail12g_dest_tableE",
-    "_ZN10liger_cute6detail12g_rank_tableE",
 )
 
 

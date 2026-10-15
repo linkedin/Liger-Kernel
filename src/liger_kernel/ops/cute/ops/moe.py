@@ -157,7 +157,7 @@ class LigerExpertParallelFusedMoEFunction(torch.autograd.Function):
             ctx.team_handle,
             ctx.fwd_tile_m,
         )
-        tvm_ffi.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd(ctx.team_handle)
 
         # Argument order matches forward: X, expert_indices, expert_weights,
         # all_B, all_C, all_A, num_experts, top_k, pg.
@@ -216,7 +216,7 @@ def moe_fused(
             top_k,
             team_handle,
         )
-        tvm_ffi.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd(team_handle)
         return Y
 
     return LigerExpertParallelFusedMoEFunction.apply(

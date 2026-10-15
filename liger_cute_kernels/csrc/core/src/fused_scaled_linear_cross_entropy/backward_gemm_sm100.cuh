@@ -513,6 +513,7 @@ struct BackwardWaveWorkspaceSm100 {
 	std::uint64_t* dx_remote_merge_arrived = nullptr;
 	const std::uint64_t* launch_epoch = nullptr;
 	float* packed_shard = nullptr;
+	liger_cute::detail::DirectPeerReduceView direct{};
 	std::size_t packed_shard_elements = 0;
 	std::uint32_t* dz_tile_ready = nullptr;
 	std::size_t dz_tile_ready_entries = 0;
@@ -772,7 +773,7 @@ struct BackwardTpParamsSm100 {
 	int num_comm_channels = 4;
 	// NVSHMEM team used by the matching forward. The SM100 IB path supports two
 	// uniform hosts with 1, 2, 4, or 8 selected GPUs per host.
-	std::int64_t team_handle = 0;
+	std::int64_t team_handle = -1;
 };
 
 // Collective over params.team_handle. Produces globally reduced BF16 dX and

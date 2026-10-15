@@ -58,9 +58,6 @@
 #include <cute/atom/copy_traits_sm100.hpp>
 #include <cutlass/pipeline/sm100_pipeline.hpp>  // PipelineTmaUmmaAsync, PipelineUmmaAsync
 
-// ── SM100 2-SM (paired-CTA cluster) headers ─────────────────────────
-// Needed by the paired MLP4 path below: cluster synchronization/rank queries
-// for the (2,1,1) cluster and the 2SM TMA copy traits used by tma_partition().
 #include <cute/arch/cluster_sm90.hpp>
 #include <cute/atom/copy_traits_sm100_tma.hpp>
 
@@ -849,98 +846,34 @@ __device__ __forceinline__ void mlp4_consumer(
 		int cell_stride,
 		int batch_kb_start,
 		int batch_kb_end,
-		int k_split,
-		const cutlass::arch::ClusterBarrier* pair_init_barrier = nullptr,
-		uint32_t* pair_init_phase = nullptr) {
-	if constexpr (Compute == 100) {
-		Mlp4ConsumerImpl<Compute>::template run<Traits, Expert3D>(
-			pipe, state, smem, tma_reduce_db, tma_reduce_dc,
-			expert_k_starts, expert_k_ends, num_experts,
-			intermediate_dim, hidden_dim, total_m_rows,
-			num_m_tiles, num_n_tiles, outer_split,
-			cell_start, cell_stride, batch_kb_start, batch_kb_end, k_split,
-			pair_init_barrier, pair_init_phase);
-	} else {
-		Mlp4ConsumerImpl<Compute>::template run<Traits, Expert3D>(
-			pipe, state, smem, tma_reduce_db, tma_reduce_dc,
-			expert_k_starts, expert_k_ends, num_experts,
-			intermediate_dim, hidden_dim, total_m_rows,
-			num_m_tiles, num_n_tiles, outer_split,
-			cell_start, cell_stride, batch_kb_start, batch_kb_end, k_split);
-	}
+		int k_split) {
+	Mlp4ConsumerImpl<Compute>::template run<Traits, Expert3D>(
+		pipe, state, smem, tma_reduce_db, tma_reduce_dc,
+		expert_k_starts, expert_k_ends, num_experts,
+		intermediate_dim, hidden_dim, total_m_rows,
+		num_m_tiles, num_n_tiles, outer_split,
+		cell_start, cell_stride, batch_kb_start, batch_kb_end, k_split);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// SM100 2-SM (paired-CTA) MLP4 — Mlp4Traits2Sm, pipe/producer/consumer
+// SM100 single-CTA MLP4
 // ═══════════════════════════════════════════════════════════════════
 //
-// A cluster-(2,1,1) SM100 UMMA path: two CTAs jointly compute one
-// (TileM=256, TileN=256) tile via SM100_MMA_F16BF16_2x1SM_SS, each CTA
-// owning CtaTileM=128 M-rows (kAtomsPerCta=2 wgmma-style 64-row atoms).
-// Reuses the generic Mlp4Smem<Traits> / Mlp4FusedSmem<Traits> above —
-// Mlp4Traits2Sm supplies the same nested type names (SmemLayoutA,
-// SmemLayoutX, SmemLayoutStoreSlot, MainloopPipeline, AccumulatorPipeline)
-// so no separate 2SM smem struct is needed.
-//
-// Scope: only the BASIC ClusterM=2 (single paired-CTA) configuration
-// required by the fused backward kernel is ported here. Intentionally
-// EXCLUDED (upstream "topology experiment" scope, not ported): the
-// multi-pair (ClusterM=4) path, shared-operand multicast
-// (MulticastShared_), N-split, the compact-epilogue variant, and early
-// TMEM release — the latter three never existed for MLP4 in the donor
-// tree (MLP3-only experiments) and are noted here only for the audit
-// record. Stages and EpiChunkN remain free template parameters (no
-// S5/E64 production hardcoding); callers pick tuned values at the
-// trait-instantiation site (e.g. moe_bwd.cu).
-//
-// Cross-file invariants a caller/launcher MUST uphold (none of this is
-// enforceable from inside this header-only file; documented for the
-// next integrator of mlp_bwd.cuh / moe_bwd.cu / mlp4.cu):
-//   * grid.x must be a MULTIPLE OF ClusterM (=2) before launch; the runtime
-//     `__trap()` check in mlp4_fwd is only a defensive backstop.
-//   * Compute != 100 must stay on the 1SM traits/path. Mlp4Traits2Sm's
-//     TiledMma2Sm / ClusterShape / MainloopPipelineUmma2Sm /
-//     AccumulatorPipeline2Sm members do not exist on Mlp4Traits, so mixing
-//     an architecture with the wrong trait remains a compile-time error.
-//   * Launch must use cudaLaunchKernelEx with a cluster dimension of
-//     (ClusterM,1,1), and cudaFuncSetAttribute(...,
-//     cudaFuncAttributeNonPortableClusterSizeAllowed, 1) must be set on
-//     the kernel beforehand.
-//   * The dynamic shared-memory allocation for Mlp4Smem<Mlp4Traits2Sm<...>>
-//     must be sized/capped against the device's *dynamic* opt-in limit
-//     (cudaDeviceGetAttribute(..., cudaDevAttrMaxSharedMemoryPerBlockOptin,
-//     ...)), not the static 48 KiB default, via
-//     cudaFuncAttributeMaxDynamicSharedMemorySize.
-//   * X / dU^T / dV^T TMA descriptors must be built with
-//     make_tma_copy_A_sm100 / make_tma_copy_B_sm100 (SM100_TMA_2SM_LOAD
-//     copy op) — the plain SM90 TMA copy-atom builders are not
-//     pair-aware and would not multicast/replicate operands across the
-//     two peer CTAs. dB / dC stay TMA REDUCE_ADD outputs.
-//   * The producer/consumer specializations assume TMEM is already allocated
-//     and smem.tmem_base populated. The standalone mlp4_fwd driver owns that
-//     allocation and rendezvouses peer CTAs with cute::cluster_sync() (safe
-//     because both CTAs run symmetric control flow). A fused caller sharing
-//     one TMEM region across warp groups with asymmetric control flow must not
-//     reuse a bare cluster_sync() for that rendezvous; it must pair
-//     cute::TMEM::Allocator2Sm's
-//     allocate()/free() with its own dedicated
-//     cutlass::arch::ClusterBarrier rendezvous scoped to just the
-//     participating warps, the way donor's mlp_bwd.cuh
-//     MlpFusedBwdSmem::tmem_pair_barrier does. That smem field and its
-//     init/arrive/wait call sites live in mlp_bwd.cuh, outside this
-//     file's scope, and are not present in this target repo yet.
+// Like MLP3, M128xN128 preserves the per-CTA operand budget. All phases in
+// fused MoE backward use cta_group::1, including allocation and completion.
+// Operand descriptors use SM90_TMA_LOAD; dB/dC retain TMA_REDUCE_ADD.
 
 template <
 	typename Element_,
-	int TileM_     = 256,
-	int TileN_     = 256,
+	int TileM_     = 128,
+	int TileN_     = 128,
 	int TileK_     = 64,
 	int Stages_    = 3,
-	int EpiChunkN_ = 128,
+	int EpiChunkN_ = 64,
 	int AccStages_ = 2,
-	int ClusterM_  = 2
+	int ClusterM_  = 1
 >
-struct Mlp4Traits2Sm {
+struct Mlp4TraitsSm100 {
 	using Element      = Element_;
 	using ElementAccum = float;
 
@@ -951,47 +884,45 @@ struct Mlp4Traits2Sm {
 	static constexpr int EpiChunkN = EpiChunkN_;
 	static constexpr int AccStages = AccStages_;
 	static constexpr int ClusterM  = ClusterM_;
-	static constexpr int NumPairs  = ClusterM / 2;
-	static constexpr int CtaTileM     = TileM / 2;
+	static constexpr int NumPairs  = 1;
+	static constexpr int CtaTileM     = TileM;
 	static constexpr int AtomTileM    = 64;
 	static constexpr int WgTileN      = TileN / 2;
 	static constexpr int NumEpiRounds = WgTileN / EpiChunkN;
 	static constexpr int kAtomsPerCta = CtaTileM / AtomTileM;
 
-	static_assert(TileM == 256, "MLP4 2SM requires joined TileM=256");
-	static_assert(TileN == 256, "MLP4 2SM requires joined TileN=256");
+	static_assert(TileM == 128, "MLP4 1SM requires TileM=128");
+	static_assert(TileN == 128 || TileN == 256, "MLP4 supports TileN=128 or 256");
 	static_assert(TileK == 32 || TileK == 64,
-		"MLP4 2SM supports TileK=32 or 64");
+		"MLP4 SM100 supports TileK=32 or 64");
 	static_assert(Stages >= 2 && Stages <= 12,
-		"MLP4 2SM supports two to twelve mainloop stages");
+		"MLP4 SM100 supports two to twelve mainloop stages");
 	static_assert(CtaTileM == 128, "each peer CTA must own 128 M rows");
 	static_assert(WgTileN % EpiChunkN == 0,
 		"EpiChunkN must divide each warpgroup's N half");
 	static_assert(kAtomsPerCta == 2,
 		"each CTA must reduce-add two 64-row atoms");
 	static_assert(AccStages == 2,
-		"MLP4 2SM fixes accumulator double buffering");
+		"MLP4 SM100 fixes accumulator double buffering");
 	static_assert(AccStages * TileN <= 512,
-		"MLP4 2SM accumulator stages must fit in 512 TMEM columns");
-	static_assert(ClusterM == 2,
-		"MLP4 2SM ports only the basic single paired-CTA cluster; "
-		"ClusterM=4 pair-of-pairs multicast is an excluded experiment");
+		"MLP4 SM100 accumulator stages must fit in 512 TMEM columns");
+	static_assert(ClusterM == 1, "MLP4 uses one CTA per UMMA instruction");
 
 	using TileShape    = Shape<Int<TileM>, Int<TileN>, Int<TileK>>;
 	using ClusterShape = Shape<Int<ClusterM>, _1, _1>;
-	using AtomThrShape = Shape<_2, _1, _1>;
+	using AtomThrShape = Shape<_1, _1, _1>;
 
-	using TiledMma2Sm = decltype(make_tiled_mma(
-		SM100_MMA_F16BF16_2x1SM_SS<
+	using TiledMmaSm100 = decltype(make_tiled_mma(
+		SM100_MMA_F16BF16_SS<
 			Element, Element, ElementAccum, TileM, TileN,
 			UMMA::Major::MN, UMMA::Major::MN>{}));
-	static_assert(size(typename TiledMma2Sm::AtomThrID{}) == 2,
-		"MLP4 2SM requires a two-CTA MMA atom");
+	static_assert(size(typename TiledMmaSm100::AtomThrID{}) == 1,
+		"MLP4 requires a single-CTA MMA atom");
 
 	using MmaShapeA_MK = decltype(partition_shape_A(
-		TiledMma2Sm{}, make_shape(Int<TileM>{}, Int<TileK>{})));
+		TiledMmaSm100{}, make_shape(Int<TileM>{}, Int<TileK>{})));
 	using MmaShapeB_NK = decltype(partition_shape_B(
-		TiledMma2Sm{}, make_shape(Int<TileN>{}, Int<TileK>{})));
+		TiledMmaSm100{}, make_shape(Int<TileN>{}, Int<TileK>{})));
 
 	using SmemLayoutAtom = UMMA::Layout_MN_SW128_Atom<Element>;
 	using SmemLayoutA = decltype(UMMA::tile_to_mma_shape(
@@ -1007,21 +938,19 @@ struct Mlp4Traits2Sm {
 		static_cast<int>(cosize_v<SmemLayoutA_1> * sizeof(Element));
 	static constexpr int TmaTransBytesX =
 		static_cast<int>(cosize_v<SmemLayoutX_1> * sizeof(Element));
-	// Both peer CTAs issue each 2SM load, and both contributions arrive on
-	// the cluster-scoped full barrier.
 	static constexpr int TmaTransBytes =
-		2 * (TmaTransBytesA + TmaTransBytesX);
+		TmaTransBytesA + TmaTransBytesX;
 
-	using MainloopPipelineUmma2Sm = cutlass::PipelineTmaUmmaAsync<
+	using MainloopPipelineUmmaSm100 = cutlass::PipelineTmaUmmaAsync<
 		Stages, ClusterShape, AtomThrShape>;
 	// Aliased to the names the generic Mlp4Smem<Traits>/Mlp4FusedSmem<Traits>
 	// (and Mlp4MainloopPipelineFor<Traits, Compute>) look up.
-	using MainloopPipelineUmma = MainloopPipelineUmma2Sm;
-	using MainloopPipeline     = MainloopPipelineUmma2Sm;
-	using PipelineState = typename MainloopPipelineUmma2Sm::PipelineState;
-	using AccumulatorPipeline2Sm = cutlass::PipelineUmmaAsync<
+	using MainloopPipelineUmma = MainloopPipelineUmmaSm100;
+	using MainloopPipeline     = MainloopPipelineUmmaSm100;
+	using PipelineState = typename MainloopPipelineUmmaSm100::PipelineState;
+	using AccumulatorPipelineSm100 = cutlass::PipelineUmmaAsync<
 		AccStages, AtomThrShape>;
-	using AccumulatorPipeline = AccumulatorPipeline2Sm;
+	using AccumulatorPipeline = AccumulatorPipelineSm100;
 
 	static constexpr int WarpSize        = 32;
 	static constexpr int WarpGroupSize   = 128;
@@ -1037,25 +966,14 @@ struct Mlp4Traits2Sm {
 		Stride<Int<EpiChunkN>, _1>>;
 };
 
-// Compatibility alias: Mlp4Traits2Sm's nested type names line up
-// field-for-field with the generic Mlp4Smem<Traits> above (see the
-// comment atop this section), so no bespoke 2SM smem struct is defined —
-// this alias just lets callers/tooling written against the name
-// "Mlp4Smem2Sm<Traits>" (e.g. bench_opt/bench_mlp4_2sm.cu) resolve to the
-// same generic struct without any source changes on their end.
 template <typename Traits>
-using Mlp4Smem2Sm = Mlp4Smem<Traits>;
+using Mlp4SmemSm100 = Mlp4Smem<Traits>;
 
-// SM100 2SM mainloop pipe. Mirrors mlp4_make_pipe_umma; num_consumers=1
-// (one umma_arrive per stage releases the buffer). is_leader restricts the
-// TMA-issuing thread to lane 0 of the pair's rank-0 CTA — both peer CTAs'
-// smem buffers arrive on the shared cluster barrier via the 2SM TMA
-// multicast, so only one CTA needs to issue the copy.
 template <typename Traits>
-__device__ __forceinline__ typename Traits::MainloopPipelineUmma2Sm
-mlp4_make_pipe_umma_2sm(
-		typename Traits::MainloopPipelineUmma2Sm::SharedStorage& storage) {
-	using Pipeline = typename Traits::MainloopPipelineUmma2Sm;
+__device__ __forceinline__ typename Traits::MainloopPipelineUmmaSm100
+mlp4_make_pipe_umma_sm100(
+		typename Traits::MainloopPipelineUmmaSm100::SharedStorage& storage) {
+	using Pipeline = typename Traits::MainloopPipelineUmmaSm100;
 	using Category = typename Pipeline::ThreadCategory;
 
 	int warp_id = threadIdx.x / Traits::WarpSize;
@@ -1070,7 +988,7 @@ mlp4_make_pipe_umma_2sm(
 	if (is_producer) {
 		params.role = Category::Producer;
 		params.is_leader =
-			threadIdx.x == 0 && cute::block_rank_in_cluster() % 2 == 0;
+			threadIdx.x == 0;
 	} else if (is_consumer) {
 		params.role = Category::Consumer;
 	} else {
@@ -1081,12 +999,6 @@ mlp4_make_pipe_umma_2sm(
 		cute::true_type{}, cute::true_type{});
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// 2SM producer/consumer — chunk-fixed, sequential dB/dC (same cell
-// decode as mlp4_producer/mlp4_consumer above), ClusterM=2 only: the
-// walk axis (num_m_tiles) is partitioned by `lane` alone (no cluster/pair
-// multicast fan-out across multiple pairs).
-// ═══════════════════════════════════════════════════════════════════
 
 template <>
 struct Mlp4ProducerImpl<100> {
@@ -1134,14 +1046,13 @@ static __device__ __forceinline__ void run(
 		static_cast<int64_t>(intermediate_dim),
 		static_cast<int64_t>(num_tokens)));
 
-	typename Traits::TiledMma2Sm tiled_mma;
+	typename Traits::TiledMmaSm100 tiled_mma;
 	int cta_rank  = static_cast<int>(cute::block_rank_in_cluster());
-	int pair_rank = cta_rank % 2;
+	int pair_rank = 0;
 	auto cta_mma  = tiled_mma.get_slice(pair_rank);
-	// ClusterM=2 → the pair IS the whole cluster.
 	auto pair_layout_vmnk = tiled_divide(
 		make_layout(typename Traits::ClusterShape{}),
-		make_tile(typename Traits::TiledMma2Sm::AtomThrID{}));
+		make_tile(typename Traits::TiledMmaSm100::AtomThrID{}));
 	auto pair_coord_vmnk = pair_layout_vmnk.get_flat_coord(pair_rank);
 	uint16_t mcast_mask_a =
 		create_tma_multicast_mask<2>(pair_layout_vmnk, pair_coord_vmnk);
@@ -1161,15 +1072,6 @@ static __device__ __forceinline__ void run(
 
 		int e = chunk_idx / num_n_tiles;
 		int n_tile = chunk_idx - e * num_n_tiles;
-		// Balanced split: multiply BEFORE dividing so any remainder
-		// (num_m_tiles % outer_split != 0) is distributed across the
-		// trailing lanes instead of being silently dropped — e.g.
-		// num_m_tiles=3, outer_split=2 gives lane0=[0,1), lane1=[1,3),
-		// covering all 3 tiles. `lane * (num_m_tiles/outer_split)` (a
-		// naive floor-then-multiply) would leave the tail tile
-		// unvisited by any lane. ClusterM=2 needs no further
-		// valid_m_tile guard: walk_end for the last lane is always
-		// exactly num_m_tiles.
 		int walk_begin = lane * num_m_tiles / outer_split;
 		int walk_end = (lane + 1) * num_m_tiles / outer_split;
 
@@ -1273,9 +1175,7 @@ static __device__ __forceinline__ void run(
 		int cell_stride,
 		int batch_kb_start,
 		int batch_kb_end,
-		int k_split,
-		const cutlass::arch::ClusterBarrier* pair_init_barrier,
-		uint32_t* pair_init_phase) {
+		int k_split) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	(void)intermediate_dim;
 	using Element = typename Traits::Element;
@@ -1287,8 +1187,7 @@ static __device__ __forceinline__ void run(
 	constexpr int kMmaEpiThreads =
 		Traits::ConsumerThreads + Traits::WarpSize;
 
-	int cta_rank = static_cast<int>(cute::block_rank_in_cluster());
-	int pair_rank = cta_rank % 2;
+	int pair_rank = 0;
 	bool is_leader_cta = pair_rank == 0;
 	int warp_id = threadIdx.x / Traits::WarpSize;
 	bool is_mma_warp = warp_id == 3;
@@ -1301,7 +1200,7 @@ static __device__ __forceinline__ void run(
 	int wg_barrier_id = 1 + wg;
 	bool is_wg_leader = is_epilogue && tid_in_wg == 0;
 
-	typename Traits::TiledMma2Sm tiled_mma;
+	typename Traits::TiledMmaSm100 tiled_mma;
 	auto cta_mma = tiled_mma.get_slice(pair_rank);
 	auto sA = make_tensor(
 		make_smem_ptr(smem.A_data()), typename Traits::SmemLayoutA{});
@@ -1315,30 +1214,15 @@ static __device__ __forceinline__ void run(
 	auto tCgC = cta_mma.partition_C(cAccFull);
 	auto tCtAcc = cta_mma.make_fragment_C(tCgC);
 
-	if (pair_init_barrier != nullptr) {
-		cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, 3);
-		if (warp_id == 3) {
-			if (cute::elect_one_sync()) {
-				uint32_t rank = cute::block_rank_in_cluster();
-				uint32_t peer = rank ^ 1;
-				bool leader = (rank % 2) == 0;
-				pair_init_barrier->arrive(peer, !leader);
-				pair_init_barrier->wait(*pair_init_phase);
-				pair_init_barrier->arrive(peer, leader);
-				*pair_init_phase ^= 1;
-			}
-			__syncwarp();
-		}
-		cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, 3);
-	}
+	cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, 3);
 
-	using AccPipe = typename Traits::AccumulatorPipeline2Sm;
+	using AccPipe = typename Traits::AccumulatorPipelineSm100;
 	typename AccPipe::Params acc_params;
 	acc_params.role = is_mma_warp && is_leader_cta
 		? AccPipe::ThreadCategory::Producer
 		: AccPipe::ThreadCategory::Consumer;
 	acc_params.producer_arv_count = 1;
-	acc_params.consumer_arv_count = 2;
+	acc_params.consumer_arv_count = 1;
 	acc_params.initializing_warp = 4;
 	AccPipe acc_pipe(
 		smem.acc_pipe, acc_params, typename Traits::ClusterShape{});
@@ -1347,20 +1231,6 @@ static __device__ __forceinline__ void run(
 	typename AccPipe::PipelineState acc_cons_state;
 
 	cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, 3);
-	if (pair_init_barrier != nullptr && warp_id == 3) {
-		if (cute::elect_one_sync()) {
-			uint32_t rank = cute::block_rank_in_cluster();
-			uint32_t peer = rank ^ 1;
-			bool leader = (rank % 2) == 0;
-			pair_init_barrier->arrive(peer, !leader);
-			pair_init_barrier->wait(*pair_init_phase);
-			pair_init_barrier->arrive(peer, leader);
-			*pair_init_phase ^= 1;
-		}
-		__syncwarp();
-	}
-	if (pair_init_barrier != nullptr)
-		cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, 3);
 	uint32_t tmem_base = smem.tmem_base;
 	tCtAcc.data() = tmem_base;
 
@@ -1618,13 +1488,6 @@ static __device__ __forceinline__ void run(
 }
 };  // Mlp4ConsumerImpl<100>
 
-// ═══════════════════════════════════════════════════════════════════
-// Single-launch driver, chunk-fixed and architecture-dispatched
-// ═══════════════════════════════════════════════════════════════════
-//
-// Compute=90 uses the original per-CTA Hopper pipeline and cell mapping.
-// Compute=100 uses a paired-CTA pipeline, pair-granular cell mapping, a
-// shared Allocator2Sm allocation, and cluster synchronization.
 template <
 	typename Traits,
 	int Compute = 90,
@@ -1677,7 +1540,7 @@ __device__ __forceinline__ void mlp4_fwd(
 
 	auto pipe = [&]() {
 		if constexpr (Compute == 100)
-			return mlp4_make_pipe_umma_2sm<Traits>(
+			return mlp4_make_pipe_umma_sm100<Traits>(
 				smem.pipe_storage);
 		else
 			return mlp4_make_pipe<Traits>(smem.pipe_storage);
@@ -1686,7 +1549,7 @@ __device__ __forceinline__ void mlp4_fwd(
 
 	if constexpr (Compute == 100) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
-		cute::TMEM::Allocator2Sm tmem_allocator;
+		cute::TMEM::Allocator1Sm tmem_allocator;
 		if (gridDim.x % Traits::ClusterM != 0)
 			__trap();
 		cute::cluster_sync();
@@ -1796,7 +1659,7 @@ __device__ __forceinline__ void mlp4_fwd(
 
 	if constexpr (Compute == 100) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
-		cute::TMEM::Allocator2Sm tmem_allocator;
+		cute::TMEM::Allocator1Sm tmem_allocator;
 		__syncthreads();
 		cute::cluster_sync();
 		constexpr int kTmemColumns =

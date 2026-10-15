@@ -1,3 +1,5 @@
+import math
+
 from typing import Optional
 
 import pytest
@@ -75,10 +77,8 @@ class JSD(torch.nn.Module):
                 log_p.view(-1, log_p.size(-1)),
                 log_q.view(-1, log_q.size(-1)),
             )
-            m = torch.lerp(torch.exp(log_q), torch.exp(log_p), self.beta)
-            loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (1 - self.beta) * self.kl(
-                torch.log(m), log_q
-            ).sum(dim=-1)
+            log_m = torch.logaddexp(log_p + math.log(self.beta), log_q + math.log1p(-self.beta))
+            loss = self.beta * self.kl(log_m, log_p).sum(dim=-1) + (1 - self.beta) * self.kl(log_m, log_q).sum(dim=-1)
 
         if label is not None:
             loss = torch.where(label != self.ignore_index, loss, 0.0)
@@ -350,3 +350,24 @@ def test_correctness_with_all_indices_ignored(
 
     output2.backward()
     assert_verbose_allclose(torch.zeros_like(x2.grad), x2.grad, atol=atol, rtol=rtol)
+
+
+def test_low_probability_vocab_block_is_finite():
+    vocab_size = 65537
+    logits = torch.full((1, vocab_size), -120.0, device=device)
+    logits[:, 0] = 0.0
+
+    input = logits.log_softmax(dim=-1)
+    target = logits.sub(1.0).log_softmax(dim=-1)
+    torch_input = input.detach().clone().requires_grad_(True)
+    liger_input = input.detach().clone().requires_grad_(True)
+
+    torch_output = JSD()(torch_input, target)
+    liger_output = LigerJSD()(liger_input, target)
+    torch_output.backward()
+    liger_output.backward()
+
+    assert torch.isfinite(liger_output)
+    assert torch.isfinite(liger_input.grad).all()
+    assert_verbose_allclose(torch_output, liger_output, atol=1e-7, rtol=1e-6)
+    assert_verbose_allclose(torch_input.grad, liger_input.grad, atol=1e-7, rtol=1e-6)

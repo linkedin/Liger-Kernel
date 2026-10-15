@@ -22,6 +22,8 @@ def _triton_rope(
     pad_n_qh: tl.constexpr,
     pad_n_kh: tl.constexpr,
     pad_hd: tl.constexpr,
+    pad_rd: tl.constexpr,
+    rd: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     BACKWARD_PASS: tl.constexpr = False,
 ):
@@ -30,8 +32,8 @@ def _triton_rope(
     # k size: (bsz, seq_len, num_kv_heads, head_dim)
     # k stride: (seq_len * num_kv_heads * head_dim, num_kv_heads * head_dim, head_dim, 1)
 
-    # cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
-    # stride: (seq_len * head_dim, head_dim, 1)
+    # cos size: (1, seq_len, rotary_dim) or (bsz, seq_len, rotary_dim)
+    # stride: (seq_len * rotary_dim, rotary_dim, 1)
     pid = tl.program_id(0).to(tl.int64)
 
     # locate start address
@@ -62,26 +64,28 @@ def _triton_rope(
         batch_idx * (sl * sin_row_stride) + cos_row_idx * sin_row_stride,
     )
 
-    cos_offsets = tl.arange(0, pad_hd // 2)
-    cos_mask = cos_offsets < hd // 2
+    cos_offsets = tl.arange(0, pad_rd // 2)
+    cos_mask = cos_offsets < rd // 2
     cos_row = tl.load(cos + cos_offsets, mask=cos_mask, other=0)
     sin_row = tl.load(sin + cos_offsets, mask=cos_mask, other=0)
 
     # ####################################################################
-    # Load the left and right half of q and k for the current
-    # program instance (i.e. for the current token) separately
+    # Load the left and right half of the rotary portion of q and k for
+    # the current program instance (i.e. for the current token) separately.
+    # For partial RoPE (rd < hd), the non-rotary portion [rd:hd] remains
+    # untouched in-place.
     # ####################################################################
-    # left half of the head
-    first_half_q_offsets = tl.arange(0, pad_n_qh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
-    first_half_k_offsets = tl.arange(0, pad_n_kh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
-    first_q_mask = (tl.arange(0, pad_n_qh)[:, None] < n_qh) & (tl.arange(0, pad_hd // 2)[None, :] < hd // 2)
-    first_k_mask = (tl.arange(0, pad_n_kh)[:, None] < n_kh) & (tl.arange(0, pad_hd // 2)[None, :] < hd // 2)
+    # left half of the rotary portion
+    first_half_q_offsets = tl.arange(0, pad_n_qh)[:, None] * hd + tl.arange(0, pad_rd // 2)[None, :]
+    first_half_k_offsets = tl.arange(0, pad_n_kh)[:, None] * hd + tl.arange(0, pad_rd // 2)[None, :]
+    first_q_mask = (tl.arange(0, pad_n_qh)[:, None] < n_qh) & (tl.arange(0, pad_rd // 2)[None, :] < rd // 2)
+    first_k_mask = (tl.arange(0, pad_n_kh)[:, None] < n_kh) & (tl.arange(0, pad_rd // 2)[None, :] < rd // 2)
     q_tile_1 = tl.load(q_ptr + first_half_q_offsets, mask=first_q_mask, other=0).to(sin_row.dtype)
     k_tile_1 = tl.load(k_ptr + first_half_k_offsets, mask=first_k_mask, other=0).to(sin_row.dtype)
 
-    # right half of the head
-    second_half_q_offsets = first_half_q_offsets + (hd // 2)
-    second_half_k_offsets = first_half_k_offsets + (hd // 2)
+    # right half of the rotary portion
+    second_half_q_offsets = first_half_q_offsets + (rd // 2)
+    second_half_k_offsets = first_half_k_offsets + (rd // 2)
     second_q_mask = first_q_mask
     second_k_mask = first_k_mask
     q_tile_2 = tl.load(q_ptr + second_half_q_offsets, mask=second_q_mask, other=0).to(sin_row.dtype)
@@ -112,7 +116,22 @@ def _triton_rope(
         tl.store(k_ptr + second_half_k_offsets, new_k_tile_2, mask=second_k_mask)
 
 
-def rope_forward(q, k, cos, sin):
+def rope_forward(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    # Support 2D, 3D, and 4D cos/sin shapes
+    if cos.ndim == 4:
+        if cos.shape[unsqueeze_dim] == 1:
+            cos = cos.squeeze(unsqueeze_dim)
+            sin = sin.squeeze(unsqueeze_dim)
+        elif cos.shape[1] == 1:
+            cos = cos.squeeze(1)
+            sin = sin.squeeze(1)
+        else:
+            cos = cos.squeeze()
+            sin = sin.squeeze()
+    if cos.ndim == 2:
+        cos = cos.unsqueeze(0)
+        sin = sin.unsqueeze(0)
+
     # transpose it back to the physical shape because Triton looks at the physical storage
     # note: q and k are incontiguous before the transformation and will become contiguous after transpose
     q = q.transpose(1, 2)
@@ -120,7 +139,10 @@ def rope_forward(q, k, cos, sin):
 
     batch_size, seq_len, n_q_head, head_dim = q.shape
     n_kv_head = k.shape[2]
+    rotary_dim = min(cos.shape[-1], head_dim)
+
     pad_hd = triton.next_power_of_2(head_dim)
+    pad_rd = triton.next_power_of_2(rotary_dim)
     pad_n_q_head = triton.next_power_of_2(n_q_head)
     pad_n_kv_head = triton.next_power_of_2(n_kv_head)
     BLOCK_SIZE = max(pad_n_q_head, pad_n_kv_head)
@@ -152,20 +174,39 @@ def rope_forward(q, k, cos, sin):
         pad_n_q_head,
         pad_n_kv_head,
         pad_hd,
+        pad_rd,
+        rotary_dim,
         BLOCK_SIZE=BLOCK_SIZE,
         BACKWARD_PASS=False,
     )
     return q.transpose(1, 2), k.transpose(1, 2), cos, sin
 
 
-def rope_backward(dq, dk, cos, sin):
+def rope_backward(dq, dk, cos, sin, position_ids=None, unsqueeze_dim=1):
+    if cos.ndim == 4:
+        if cos.shape[unsqueeze_dim] == 1:
+            cos = cos.squeeze(unsqueeze_dim)
+            sin = sin.squeeze(unsqueeze_dim)
+        elif cos.shape[1] == 1:
+            cos = cos.squeeze(1)
+            sin = sin.squeeze(1)
+        else:
+            cos = cos.squeeze()
+            sin = sin.squeeze()
+    if cos.ndim == 2:
+        cos = cos.unsqueeze(0)
+        sin = sin.unsqueeze(0)
+
     dq = dq.transpose(1, 2)
     dk = dk.transpose(1, 2)
 
     batch_size, seq_len, n_q_head, head_dim = dq.shape
     cos_batch_size = cos.shape[0]
     n_kv_head = dk.shape[2]
+    rotary_dim = min(cos.shape[-1], head_dim)
+
     pad_hd = triton.next_power_of_2(head_dim)
+    pad_rd = triton.next_power_of_2(rotary_dim)
     pad_n_q_head = triton.next_power_of_2(n_q_head)
     pad_n_kv_head = triton.next_power_of_2(n_kv_head)
     BLOCK_SIZE = max(pad_n_q_head, pad_n_kv_head)
@@ -175,6 +216,8 @@ def rope_backward(dq, dk, cos, sin):
     # ensure dq and dk are contiguous
     dq = dq.contiguous()
     dk = dk.contiguous()
+    cos = cos.contiguous()
+    sin = sin.contiguous()
 
     # backward is similar to forward except swapping few ops
     _triton_rope[(n_row,)](
@@ -195,6 +238,8 @@ def rope_backward(dq, dk, cos, sin):
         pad_n_q_head,
         pad_n_kv_head,
         pad_hd,
+        pad_rd,
+        rotary_dim,
         BLOCK_SIZE=BLOCK_SIZE,
         BACKWARD_PASS=True,
     )
@@ -205,7 +250,7 @@ class LigerRopeFunction(torch.autograd.Function):
     """
     Triton implementation of the Rotary Positional Embedding (RoPE) operation. Please note that
     this implements the HuggingFace Llama & Mistral version, whose rotation matrix is slightly different
-    than the original RoPE paper.
+    than the original RoPE paper. Supports both full RoPE and partial RoPE (rotary_dim <= head_dim).
 
     Please find the corresponding HuggingFace implementation here:
     https://github.com/huggingface/transformers/blob/v4.40.2/src/transformers/models/llama/modeling_llama.py#L184
@@ -219,19 +264,20 @@ class LigerRopeFunction(torch.autograd.Function):
         """
         q size: (bsz, n_q_head, seq_len, head_dim)
         k size: (bsz, n_kv_head, seq_len, head_dim)
-        cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
-        sin size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
+        cos size: (1, seq_len, rotary_dim), (bsz, seq_len, rotary_dim), or (seq_len, rotary_dim)
+        sin size: (1, seq_len, rotary_dim), (bsz, seq_len, rotary_dim), or (seq_len, rotary_dim)
         """
-        q, k, cos, sin = rope_forward(q, k, cos, sin)
+        q, k, cos, sin = rope_forward(q, k, cos, sin, position_ids, unsqueeze_dim)
         ctx.save_for_backward(cos, sin)
         return q, k
 
+    @staticmethod
     def backward(ctx, dq, dk):
         """
         dq size: (bsz, n_q_head, seq_len, head_dim)
         dk size: (bsz, n_kv_head, seq_len, head_dim)
-        cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
-        sin size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
+        cos size: (1, seq_len, rotary_dim), (bsz, seq_len, rotary_dim), or (seq_len, rotary_dim)
+        sin size: (1, seq_len, rotary_dim), (bsz, seq_len, rotary_dim), or (seq_len, rotary_dim)
         """
 
         cos, sin = ctx.saved_tensors

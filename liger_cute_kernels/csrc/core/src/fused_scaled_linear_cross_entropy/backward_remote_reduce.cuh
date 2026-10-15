@@ -1,4 +1,5 @@
 #pragma once
+#include "liger_cute/detail/local_reduce.cuh"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // dX communication primitives for the fused SM100 backward.
@@ -137,10 +138,29 @@ __device__ __forceinline__ void backward_dx_reduce_scatter_warp_sm100(
 		int cta,
 		int stage,
 		int wave,
-		int pass) {
+		int pass,
+		const liger_cute::detail::DirectPeerReduceView* direct = nullptr) {
 	constexpr std::size_t kTileElements = CommConfig::kTileElements;
 	std::size_t base = dx_slot_offset<CommConfig>(cta, 0, stage);
 	unsigned int lane = liger_cute::detail::nvls_lane_id();
+
+	if (direct != nullptr && direct->available) {
+		using namespace liger_cute::detail;
+		std::size_t ready = dx_sync_offset<CommConfig>(
+			cta, 0, stage, kDxReadyPhase, direct->size);
+		std::size_t complete = dx_sync_offset<CommConfig>(
+			cta, 0, stage, kDxCompletePhase, direct->size);
+		std::uint64_t epoch = backward_wave_epoch_sm100(
+			dx_epoch_base(comm), kBackwardDxScatterEpochSuffixSm100, wave) |
+			static_cast<std::uint64_t>(pass + 1);
+		LocalReduceContext<LocalReduceBackend::kDirectPeer, float> context{
+			direct->peer_partial, base, comm.sync + ready,
+			direct->peer_sync, ready, comm.sync + complete, complete,
+			direct->rank, direct->size};
+		local_all_reduce<LocalReduceBackend::kDirectPeer, ReduceOp::kSum>(
+			context, packed_destination, comm.partial + base, kTileElements, epoch);
+		return;
+	}
 
 	if (mapping.size == 1) {
 		constexpr std::size_t kVectors = kTileElements / 4;

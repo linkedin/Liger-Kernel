@@ -13,9 +13,9 @@
 // moe_bwd_fwd_bf16_tuned kernel template):
 //   X(NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
 //
-// SM100 always selects the paired-CTA MLP3/MLP4 path. TM3/TN3 are kept at
-// the canonical joined 256x256 shape, while the existing S3, EN34, and TK3
-// fields tune both kernels together.
+// Keep the existing TM3/TN3 dispatch row IDs for compatibility with the
+// tuning tables. MoeBwdConfig maps them to single-CTA M128xN128 UMMA tiles;
+// S3, EN34, and TK3 still select both weight-gradient pipelines.
 #define LIGER_MOE_BWD_TUNE_CONFIGS_SM100(X) \
 	X(2, 128, 64, 3, 256, 256, 64, 4, 32, 64, 64, 2, 128) \
 	X(2, 128, 64, 3, 256, 256, 64, 5, 32, 64, 64, 2, 128) \

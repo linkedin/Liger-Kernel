@@ -1,4 +1,4 @@
-// nvshmem.cu — NVSHMEM bootstrap / team / comm-schedule entry points.
+// nvshmem.cu — NVSHMEM bootstrap / team / pool entry points.
 //
 // Implements the flat extern "C" boundary declared in nvshmem.h. This is the
 // ONLY core TU (besides the eventual kernels) that includes <nvshmem.h>; the
@@ -21,56 +21,14 @@
 #include <cstring>
 
 #include "liger_cute/check.h"
-#include "liger_cute/detail/comm_schedule.cuh"
 #include "liger_cute/detail/status.h"
 #include "liger_cute/detail/symmetric_memory.h"
 #include "fused_scaled_linear_cross_entropy/state.h"
 #include "moe_nonrdc_module.h"
+#include "moe_context.h"
 
 namespace liger_cute {
 namespace detail {
-
-// ─── Comm schedule constant-memory storage ───────────────────────────────────
-// Definitions for the symbols declared `extern __constant__` in
-// comm_schedule.cuh. The device-side accessor lives in the .cuh so any kernel
-// can include it; storage must sit in a single TU.
-__constant__ int g_dest_table[kMaxPEs];
-__constant__ int g_rank_table[kMaxPEs];
-
-void build_comm_schedule(int N, int M, int* host_dest, int* host_rank) {
-  LIGER_CHECK(N > 0 && M > 0, "build_comm_schedule: N (", N, ") and M (", M,
-              ") must be positive");
-  const int NM = N * M;
-  // Canonical permutation: position i carries host (i mod N), intra (i / N).
-  // Inverse: rank r = h*M + intra sits at position intra*N + h.
-  for (int i = 0; i < NM; ++i) {
-    const int h = i % N;
-    const int intra = i / N;
-    host_dest[i] = h * M + intra;
-    host_rank[h * M + intra] = i;
-  }
-}
-
-void init_comm_schedule(int N, int M) {
-  LIGER_CHECK(N > 0 && M > 0, "init_comm_schedule: N (", N, ") and M (", M,
-              ") must be positive");
-  const int NM = N * M;
-  LIGER_CHECK(NM <= kMaxPEs, "init_comm_schedule: N*M (", NM,
-              ") exceeds kMaxPEs (", kMaxPEs, ") — bump kMaxPEs");
-
-  int host_dest[kMaxPEs];
-  int host_rank[kMaxPEs];
-  build_comm_schedule(N, M, host_dest, host_rank);
-
-  cudaError_t err = cudaMemcpyToSymbol(g_dest_table, host_dest, sizeof(int) * NM);
-  if (err != cudaSuccess) {
-    LIGER_FAIL_CUDA("cudaMemcpyToSymbol(g_dest_table) failed: ", cudaGetErrorString(err));
-  }
-  err = cudaMemcpyToSymbol(g_rank_table, host_rank, sizeof(int) * NM);
-  if (err != cudaSuccess) {
-    LIGER_FAIL_CUDA("cudaMemcpyToSymbol(g_rank_table) failed: ", cudaGetErrorString(err));
-  }
-}
 
 // Drain the caches that own NVSHMEM allocations. Must run BEFORE
 // nvshmem_finalize(): otherwise the singleton destructors run at program exit,
@@ -79,6 +37,7 @@ void init_comm_schedule(int N, int M) {
 // deterministic across PEs so the collective nvshmem_free calls stay in
 // lockstep.
 void clear_global_pools() {
+  liger::reset_moe_configuration();
   liger::fused_scaled_linear_cross_entropy::reset_fslce_tp_configuration();
   global_symmetric_stack().clear();
   global_buffer_pool().clear();
@@ -210,6 +169,8 @@ liger_cute_status_t liger_cute_nvshmem_team_destroy(int64_t team_handle) {
     if (team == NVSHMEM_TEAM_WORLD || team == NVSHMEM_TEAM_INVALID) {
       return LIGER_CUTE_OK;
     }
+    liger::release_moe_team(team_handle);
+    liger::fused_scaled_linear_cross_entropy::release_fslce_tp_team(team_handle);
     nvshmem_team_destroy(team);
     return LIGER_CUTE_OK;
   });
@@ -241,25 +202,6 @@ liger_cute_status_t liger_cute_nvshmem_team_translate_pe(int64_t src_team_handle
   });
 }
 
-// ─── Communication schedule ──────────────────────────────────────────────────
-
-liger_cute_status_t liger_cute_init_comm_schedule(int N, int M) {
-  return liger_cute::detail::guarded([&]() -> liger_cute_status_t {
-    liger_cute::detail::init_comm_schedule(N, M);
-    return LIGER_CUTE_OK;
-  });
-}
-
-liger_cute_status_t liger_cute_build_comm_schedule(int N, int M, int* host_dest,
-                                                   int* host_rank) {
-  return liger_cute::detail::guarded([&]() -> liger_cute_status_t {
-    LIGER_CHECK(host_dest != nullptr && host_rank != nullptr,
-                "build_comm_schedule: host_dest / host_rank must be non-null");
-    liger_cute::detail::build_comm_schedule(N, M, host_dest, host_rank);
-    return LIGER_CUTE_OK;
-  });
-}
-
 // ─── Symmetric / device memory pools ─────────────────────────────────────────
 
 liger_cute_status_t liger_cute_pool_clear_all(void) {
@@ -272,6 +214,7 @@ liger_cute_status_t liger_cute_pool_clear_all(void) {
 liger_cute_status_t liger_cute_pool_clear_buffers(void) {
   return liger_cute::detail::guarded([&]() -> liger_cute_status_t {
     liger::fused_scaled_linear_cross_entropy::reset_fslce_tp_configuration();
+    liger::reset_moe_configuration(false);
     liger_cute::detail::global_buffer_pool().clear();
     return LIGER_CUTE_OK;
   });

@@ -35,6 +35,7 @@ def is_available() -> bool:
     except ImportError:
         return False
     required_native = (
+        "fused_linear_scaled_cross_entropy_configure_context",
         "fused_linear_scaled_cross_entropy_configure_backward",
         "fused_linear_scaled_cross_entropy_configure_forward",
         "fused_linear_scaled_cross_entropy_backward",
@@ -116,6 +117,7 @@ def _prepare_native_call(process_group: "ProcessGroup", device, tokens, hidden, 
         tvm_ffi.fused_linear_scaled_cross_entropy_configure_forward(
             tokens,
             local_vocab,
+            team_handle,
         )
     return team_handle
 

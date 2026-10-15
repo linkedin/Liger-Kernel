@@ -39,7 +39,7 @@ def _llama4_rope_kernel(
     Grid: (batch*seq, head)
     """
     # 2D grid
-    pid_bs = tl.program_id(0)  # over batch*seq
+    pid_bs = tl.program_id(0).to(tl.int64)  # over batch*seq
     pid_h = tl.program_id(1)  # over heads
 
     batch_idx = pid_bs // seq_len

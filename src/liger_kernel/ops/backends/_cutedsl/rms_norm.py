@@ -22,7 +22,6 @@ Math (matches the Triton kernel in :mod:`liger_kernel.ops.rms_norm`)::
 
     rstd   = 1 / sqrt(mean(x^2) + eps)
     y      = (x * rstd) * (offset + w)
-    w_eff  = w + offset                     (host-side, cheap)
     wdy    = (offset + w) * dy              (fp32)
     c      = mean(wdy * (x * rstd))
     dx     = rstd * (wdy - (x * rstd) * c)
@@ -43,12 +42,10 @@ does not directly expose; we adapt them as follows:
   for API parity, but the math runs through the same code path as
   ``"llama"`` — slightly more precise than the Triton ``none`` mode.
 
-``offset`` is folded into the weight host-side (``weight + offset``)
-before the kernel call — the inline forward has no offset argument, but
-this single fused pre-add is far cheaper than the launch itself.
-
-The backward uses the **effective** weight ``w + offset`` (we save it in
-ctx). This matches Triton's ``W_row + offset`` line inside the bwd kernel.
+For Gemma, the forward and backward add ``offset`` to the loaded FP32
+weight in-register. Other casting modes keep their host-side pre-add.
+The saved weight and compile-keyed offset reproduce the same effective
+weight in the backward without a separate Gemma weight buffer.
 
 Capability
 ----------
@@ -154,10 +151,12 @@ class _LigerRMSNormCuTeDSLBackward(ReductionBase):
         N: int,
         has_weight: bool = True,
         casting_mode: int = _CASTING_MODE_LLAMA,
+        weight_offset: float = 0.0,
     ):
         super().__init__(dtype, N, stage=2, reduction_dtype=Float32)
         self.has_weight = has_weight
         self.casting_mode = casting_mode
+        self.weight_offset = weight_offset
         # Beyond 16K we reload wdy from smem instead of holding the
         # fragment live — matches Quack's ``RMSNormBackward.reload_wdy``.
         self.reload_wdy = None if N <= 16 * 1024 else "smem"
@@ -188,7 +187,7 @@ class _LigerRMSNormCuTeDSLBackward(ReductionBase):
     def __call__(
         self,
         mX: cute.Tensor,  # Input [M, N]
-        mW: Optional[cute.Tensor],  # Effective weight (w + offset) [N,] or None
+        mW: Optional[cute.Tensor],  # Kernel weight [N,] or None; Gemma offset is added in-register
         mdO: cute.Tensor,  # dY [M, N]
         mRstd: cute.Tensor,  # RSTD [M,] (fp32)
         mdX: cute.Tensor,  # dX [M, N]
@@ -382,8 +381,10 @@ class _LigerRMSNormCuTeDSLBackward(ReductionBase):
 
             wdy = dout
             if const_expr(mW is not None):
-                # mW already contains (offset + weight) — folded host-side.
-                wdy = wdy * tXrW.load().to(Float32)
+                w = tXrW.load().to(Float32)
+                if const_expr(self.weight_offset != 0.0):
+                    w += Float32(self.weight_offset)
+                wdy = wdy * w
 
             if const_expr(self.cluster_n > 1):
                 cute.arch.mbarrier_wait(mbar_empty_ptr + stage, producer_phase)
@@ -418,7 +419,10 @@ class _LigerRMSNormCuTeDSLBackward(ReductionBase):
                 dout = tXrdO.load().to(cute.Float32)
                 wdy = dout
                 if const_expr(mW is not None):
-                    wdy = wdy * tXrW.load().to(Float32)
+                    w = tXrW.load().to(Float32)
+                    if const_expr(self.weight_offset != 0.0):
+                        w += Float32(self.weight_offset)
+                    wdy = wdy * w
 
             # dx = rstd * (wdy - x_hat * c)
             dx = (wdy - x_hat * mean_xhat_wdy) * rstd_val
@@ -518,9 +522,10 @@ def _get_bwd_kernel(
     has_weight: bool,
     casting_mode: int,
     has_ds: bool = False,
+    weight_offset: float = 0.0,
 ):
     """Return a compiled backward kernel, building it on first miss."""
-    key = (x_dtype, weight_dtype, dx_dtype, N, has_weight, casting_mode, has_ds)
+    key = (x_dtype, weight_dtype, dx_dtype, N, has_weight, casting_mode, has_ds, weight_offset)
     if key in _BWD_COMPILE_CACHE:
         return _BWD_COMPILE_CACHE[key]
 
@@ -547,6 +552,7 @@ def _get_bwd_kernel(
         N,
         has_weight=has_weight,
         casting_mode=casting_mode,
+        weight_offset=weight_offset,
     )
     compiled = cute.compile(
         kernel,
@@ -577,8 +583,8 @@ def _rms_norm_cutedsl_forward(
 ) -> Tuple[Tensor, Tensor, Optional[Tensor], Tensor]:
     """Forward via the inlined ``_cute_lib.rmsnorm_fwd``.
 
-    Returns ``(Y, X_flat, W_eff, RSTD)``. ``W_eff`` is the effective weight
-    ``weight + offset`` (or ``None`` if ``weight is None``), kept around for
+    Returns ``(Y, X_flat, W_kernel, RSTD)``. ``W_kernel`` is the weight
+    passed to the kernel (raw weight for Gemma, pre-added otherwise), kept around for
     the inline backward. ``RSTD`` is fp32 (the kernel always produces it
     in fp32 when ``store_rstd=True``).
     """
@@ -611,28 +617,29 @@ def _rms_norm_cutedsl_forward(
         x_in = x
     x_flat = x_in.view(-1, N).contiguous()
 
-    # Fold offset into the weight host-side — Quack has no offset arg, but
-    # one extra elementwise add on a (N,) vector is essentially free.
+    # Gemma adds offset after promoting the loaded weight to FP32 in the
+    # kernel. Other modes retain their existing host-side rounding.
+    weight_offset = offset if casting_mode == _CASTING_MODE_GEMMA else 0.0
     if weight is not None:
-        if offset != 0.0:
-            w_eff = weight + offset
+        if offset != 0.0 and casting_mode != _CASTING_MODE_GEMMA:
+            w_kernel = weight + offset
         else:
-            # Avoid copying when offset is the common 0.0 — Quack accepts
-            # the original weight directly.
-            w_eff = weight
-        # Only the mixed-dtype gemma route promotes w_eff host-side;
+            # Gemma and zero-offset calls use the original weight directly.
+            w_kernel = weight
+        # Only the mixed-dtype gemma route promotes w_kernel host-side;
         # otherwise the kernel up-casts in-register (bit-exact).
-        if _promote_gemma_fp32 and w_eff.dtype != torch.float32:
-            w_eff = w_eff.to(torch.float32)
-        w_eff = w_eff.contiguous()
+        if _promote_gemma_fp32 and w_kernel.dtype != torch.float32:
+            w_kernel = w_kernel.to(torch.float32)
+        w_kernel = w_kernel.contiguous()
     else:
-        w_eff = None
+        w_kernel = None
 
     out, _residual_out, rstd = _cutedsl_rmsnorm_fwd(
         x_flat,
-        weight=w_eff,
+        weight=w_kernel,
         eps=eps,
         store_rstd=True,
+        weight_offset=weight_offset,
     )
 
     # Back-cast if the promote route above widened the output (it is the
@@ -640,17 +647,18 @@ def _rms_norm_cutedsl_forward(
     if out.dtype != x.dtype:
         out = out.to(x.dtype)
 
-    return out.view(shape), x_flat, w_eff, rstd
+    return out.view(shape), x_flat, w_kernel, rstd
 
 
 def _rms_norm_cutedsl_backward(
     dy: Tensor,
     x_flat: Tensor,
-    w_eff: Optional[Tensor],
+    w_kernel: Optional[Tensor],
     rstd: Tensor,
     in_place: bool,
     casting_mode: int,
     ds: Optional[Tensor] = None,
+    weight_offset: float = 0.0,
 ) -> Tuple[Tensor, Optional[Tensor]]:
     """Backward via the inline CuTe DSL kernel.
 
@@ -699,7 +707,7 @@ def _rms_norm_cutedsl_backward(
     # Saturate the grid: never launch more SMs than rows.
     sm_count = min(sm_count, max(M, 1))
 
-    has_weight = w_eff is not None
+    has_weight = w_kernel is not None
     dw_partial = torch.empty((sm_count, N), dtype=torch.float32, device=x_flat.device) if has_weight else None
 
     ds_flat = None
@@ -713,19 +721,20 @@ def _rms_norm_cutedsl_backward(
 
     compiled = _get_bwd_kernel(
         x_dtype=x_flat.dtype,
-        weight_dtype=w_eff.dtype if w_eff is not None else None,
+        weight_dtype=w_kernel.dtype if w_kernel is not None else None,
         dx_dtype=dx.dtype,
         N=N,
         has_weight=has_weight,
         casting_mode=casting_mode,
         has_ds=ds_flat is not None,
+        weight_offset=weight_offset,
     )
 
     # The environment-stream argument configured in _get_bwd_kernel is supplied
     # by TVM FFI from the current PyTorch stream, so callers omit it here.
     compiled(
         x_flat,
-        w_eff,
+        w_kernel,
         dy_flat,
         rstd,
         dx,
@@ -750,7 +759,7 @@ class _LigerRMSNormCuTeDSLFunction(torch.autograd.Function):
     """Autograd wrapper. Saves enough state for the inline-kernel backward.
 
     We save ``x_flat`` (the 2D view passed to the kernel; fp32 when the
-    mixed-dtype gemma route promoted host-side) and ``w_eff`` (``weight + offset``),
+    mixed-dtype gemma route promoted host-side) and the kernel weight,
     so the backward doesn't redo any of the host-side pre-processing.
     """
 
@@ -775,15 +784,16 @@ class _LigerRMSNormCuTeDSLFunction(torch.autograd.Function):
         else:
             casting_mode_int = casting_mode
 
-        Y, X_flat, W_eff, RSTD = _rms_norm_cutedsl_forward(X, W, eps, offset, casting_mode_int)
+        Y, X_flat, W_kernel, RSTD = _rms_norm_cutedsl_forward(X, W, eps, offset, casting_mode_int)
 
         ctx.in_place = in_place
         ctx.elementwise_affine = W is not None
         ctx.casting_mode = casting_mode_int
+        ctx.weight_offset = offset if casting_mode_int == _CASTING_MODE_GEMMA else 0.0
         # Save the user's original weight dtype so we can cast dW back to it.
         ctx.weight_dtype = W.dtype if W is not None else None
         if W is not None:
-            ctx.save_for_backward(X_flat, W_eff, RSTD)
+            ctx.save_for_backward(X_flat, W_kernel, RSTD)
         else:
             ctx.save_for_backward(X_flat, RSTD)
         return Y
@@ -793,18 +803,19 @@ class _LigerRMSNormCuTeDSLFunction(torch.autograd.Function):
         dY = _to_local_if_dtensor(dY).contiguous()
 
         if ctx.elementwise_affine:
-            X_flat, W_eff, RSTD = ctx.saved_tensors
+            X_flat, W_kernel, RSTD = ctx.saved_tensors
         else:
             X_flat, RSTD = ctx.saved_tensors
-            W_eff = None
+            W_kernel = None
 
         dX, dW = _rms_norm_cutedsl_backward(
             dY,
             X_flat,
-            W_eff,
+            W_kernel,
             RSTD,
             ctx.in_place,
             ctx.casting_mode,
+            weight_offset=ctx.weight_offset,
         )
         if ctx.elementwise_affine and dW is not None:
             dW = dW.to(ctx.weight_dtype)

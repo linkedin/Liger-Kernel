@@ -1,39 +1,3 @@
-// ═══════════════════════════════════════════════════════════════════
-// Numerical-correctness + TFLOPS tests for the MLP4 device functions:
-//   * mlp4_{producer,consumer}  →  dB = dU^T·X,  dC = dV^T·X  (weight grads)
-//
-// mlp4 = mlp3 + a two-phase (dB / dC) loop. Per cell the cooperative 2-WG
-// consumer runs TWO sequential phases with INDEPENDENT accumulators (cleared
-// fresh each phase — NOT a cross-phase sum): phase 0 computes dB = dU^T·X,
-// phase 1 computes dC = dV^T·X. Both operands are MN-major; X is shared by both
-// phases/WGs. Both outputs are written via SM90_TMA_REDUCE_ADD, so dB and dC
-// MUST be zero-initialized by the caller (and re-zeroed between launches).
-//
-// Self-contained (no torch, no nvshmem): each TEST builds its own inputs on the
-// host, drives a persistent chunk-fixed launcher kernel (grid.x = cells, one
-// cell = (chunk, walk-lane), both phases run internally), and compares dB / dC
-// against fp32 CPU references computed from the *same bf16-rounded* inputs.
-//
-// Exercises the mlp4 consumers on BOTH architectures, AUTO-GATED to the running
-// GPU so the output stays clean:
-//   * sm_100 (Blackwell) → Compute=100 — always the paired-CTA 2SM path:
-//     Mlp4Traits2Sm + mlp4_fwd<Traits,100> (cudaLaunchKernelEx, even grid,
-//     clusterDim=(2,1,1), UMMA + make_tma_copy_{A,B}_sm100 operand loads).
-//   * sm_90  (Hopper)    → Compute=90  — the original 1SM path: Mlp4Traits +
-//     mlp4_fwd<Traits,90> (ordinary <<<>>> launch, WGMMA, plain make_tma_copy).
-// Both paths share cpu_reference and tolerances (run4 is templated on Compute).
-// The test kernel itself is a thin wrapper that forwards straight to the
-// unified liger::mlp4_fwd<Traits,Compute> device function, so one source
-// builds cleanly for sm_90a and sm_100a — mlp4_fwd internally gates its
-// Compute=100 body on __CUDA_ARCH__>=1000 (and traps otherwise).
-//
-// Two tiny single-tile DIAGNOSTIC tests isolate the two-phase routing:
-//   * PhaseDB (dV=0 → dB = dU^T·X, dC = 0)  — isolates phase 0 + independent clear.
-//   * PhaseDC (dU=0 → dC = dV^T·X, dB = 0)  — isolates phase 1 + independent clear.
-// If an isolated case passes but the combined case fails → phase output routing /
-// acc-carry-across-phases / re-zero bug. If an isolated case fails structurally →
-// the MN-major operand or the store-buf mapping is wrong.
-// ═══════════════════════════════════════════════════════════════════
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
@@ -50,17 +14,14 @@
 
 #include <cute/tensor.hpp>
 #include <cute/atom/copy_traits_sm90_tma.hpp>
-// SM100 2SM (paired-CTA cluster) TMA descriptor factories (make_tma_copy_A_sm100
-// / make_tma_copy_B_sm100) and the SM100_TMA_2SM_LOAD copy atom, mirroring
-// moe_bwd.cu's Phase-2 TMA construction for the Compute=100 X/dU^T/dV^T operands.
 #include <cute/atom/copy_traits_sm100_tma.hpp>
 #include <cutlass/numeric_types.h>
 
-#include "mlp4.cuh"
+#include "mlp4_sm100.cuh"
 
 using namespace cute;
 using liger::Mlp4Traits;
-using liger::Mlp4Traits2Sm;
+using liger::Mlp4TraitsSm100;
 using liger::Mlp4Smem;
 using Element = cutlass::bfloat16_t;
 
@@ -73,13 +34,13 @@ using TraitsM = Mlp4Traits<Element, /*TileM=*/256, /*TileN=*/128,
 using TraitsN = Mlp4Traits<Element, /*TileM=*/128, /*TileN=*/256,
                            /*TileK=*/64, /*Stages=*/4, /*EpiChunkN=*/64>;
 
-// Compute=100 (Blackwell/UMMA, paired-CTA 2SM): the production refactor makes
-// this the ONLY Compute=100 path (no more 1SM UMMA). Mlp4Traits2Sm requires
-// BOTH TileM==256 and TileN==256 (no N-split variant, unlike mlp3); default
-// TileK=64, Stages=3, EpiChunkN=128, ClusterM=2 — the same defaults
-// moe_bwd.cu's Phase-2 Traits4 config uses.
-using TraitsBw = Mlp4Traits2Sm<Element, /*TileM=*/256, /*TileN=*/256,
-                               /*TileK=*/64, /*Stages=*/3, /*EpiChunkN=*/128>;
+// Match the production single-CTA Blackwell weight-gradient tile.
+using TraitsBw = Mlp4TraitsSm100<Element, /*TileM=*/128, /*TileN=*/128,
+                               /*TileK=*/64, /*Stages=*/5, /*EpiChunkN=*/64>;
+static_assert(TraitsBw::ClusterM == 1);
+static_assert(size(typename TraitsBw::TiledMmaSm100::AtomThrID{}) == 1);
+static_assert(TraitsBw::TmaTransBytes ==
+              TraitsBw::TmaTransBytesA + TraitsBw::TmaTransBytesX);
 
 #define CUDA_OK(expr)                                                       \
 	do {                                                                    \
@@ -87,17 +48,6 @@ using TraitsBw = Mlp4Traits2Sm<Element, /*TileM=*/256, /*TileN=*/256,
 		ASSERT_EQ(_e, cudaSuccess) << #expr << ": " << cudaGetErrorString(_e); \
 	} while (0)
 
-// ═══════════════════════════════════════════════════════════════════
-// Persistent chunk-fixed launcher kernel (1D grid for Compute=90; paired-CTA
-// cluster grid for Compute=100 — blockIdx.x/gridDim.x are raw CTA
-// coordinates, mlp4_fwd itself divides by Traits::ClusterM internally for the
-// 2SM path). Each CTA grid-strides over cells, running both dB/dC phases
-// internally via the unified liger::mlp4_fwd<Traits,Compute> (no hand-rolled
-// pipe/TMEM/producer-consumer code). Compute=100 uses the UMMA-aware paired
-// pipe; Compute=90 the Hopper pipe. Both share SharedStorage — Mlp4Smem<Traits>
-// drives either (Mlp4Smem2Sm<Traits> is literally an alias for Mlp4Smem<Traits>,
-// unlike mlp3 which has two distinct smem structs).
-// ═══════════════════════════════════════════════════════════════════
 
 template <typename Traits, int Compute, typename TmaLoadX, typename TmaLoadA,
           typename TmaReduceAdd>
@@ -277,17 +227,6 @@ static std::vector<int> divisors_of(int n) {
 	return ds;
 }
 
-// Build the five TMA descriptors for one shape (X/dU/dV loads, dB/dC
-// reduces). Compute=90 uses ordinary 1SM make_tma_copy; Compute=100 uses the
-// pair-aware make_tma_copy_{A,B}_sm100 factories (SM100_TMA_2SM_LOAD copy op,
-// keyed off Traits::TileShape + Traits::TiledMma2Sm) — exactly moe_bwd.cu's
-// Phase-2 X/dU^T/dV^T descriptor construction for Config::kUsesTwoSm. The
-// dB/dC reduce-add outputs stay ordinary (non-paired) TMA_REDUCE_ADD either
-// way. The field types differ between Compute values (different Copy_Atom
-// specializations), so the aggregate returned by make_tmas is a LOCAL struct
-// with types deduced via decltype of already-constructed local variables
-// (not a pre-declared template `Tmas<Traits>`, which could only hold one
-// fixed set of field types).
 template <typename Traits, int Compute>
 static auto make_tmas(const Mlp4Shape& s, Inputs& in) {
 	int T = s.num_tokens, H = s.hidden_dim, I = s.intermediate_dim;
@@ -301,30 +240,30 @@ static auto make_tmas(const Mlp4Shape& s, Inputs& in) {
 		make_shape(I, T), make_stride(Int<1>{}, I));
 	auto x_tma = [&] {
 		if constexpr (Compute == 100) {
-			return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, tX,
+			return make_tma_copy_B_sm100(SM90_TMA_LOAD{}, tX,
 				typename Traits::SmemLayoutX_1{},
 				typename Traits::TileShape{},
-				typename Traits::TiledMma2Sm{});
+				typename Traits::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(SM90_TMA_LOAD{}, tX, typename Traits::SmemLayoutX_1{});
 		}
 	}();
 	auto dut_tma = [&] {
 		if constexpr (Compute == 100) {
-			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tDU,
+			return make_tma_copy_A_sm100(SM90_TMA_LOAD{}, tDU,
 				typename Traits::SmemLayoutA_1{},
 				typename Traits::TileShape{},
-				typename Traits::TiledMma2Sm{});
+				typename Traits::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(SM90_TMA_LOAD{}, tDU, typename Traits::SmemLayoutA_1{});
 		}
 	}();
 	auto dvt_tma = [&] {
 		if constexpr (Compute == 100) {
-			return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, tDV,
+			return make_tma_copy_A_sm100(SM90_TMA_LOAD{}, tDV,
 				typename Traits::SmemLayoutA_1{},
 				typename Traits::TileShape{},
-				typename Traits::TiledMma2Sm{});
+				typename Traits::TiledMmaSm100{});
 		} else {
 			return make_tma_copy(SM90_TMA_LOAD{}, tDV, typename Traits::SmemLayoutA_1{});
 		}
@@ -365,11 +304,6 @@ static auto make_tmas(const Mlp4Shape& s, Inputs& in) {
 	return Result{x_tma, dut_tma, dvt_tma, db_tma, dc_tma};
 }
 
-// Compute=100 is always the paired-CTA 2SM path (chunk=(e,n_tile), walks
-// m_tile — the same convention as the 1SM kMSplit=true case); Compute=90 walks
-// whichever axis Traits::kMSplit selects. `Traits::kMSplit` is looked up only
-// inside the untaken (discarded) branch when Compute==100, so this compiles
-// even though Mlp4Traits2Sm has no kMSplit member.
 template <typename Traits, int Compute>
 static constexpr bool mlp4_walks_m() {
 	if constexpr (Compute == 100) return true;
@@ -401,13 +335,6 @@ static void run4_once(const Mlp4Shape& s, Inputs& in, int outer_split,
 	CUDA_OK(cudaDeviceSynchronize());
 
 	if constexpr (Compute == 100) {
-		// Paired-CTA cluster launch: opt in to non-portable cluster sizes,
-		// then cudaLaunchKernelEx with an EVEN grid.x (a multiple of
-		// Traits::ClusterM — mlp4_fwd __traps otherwise) and
-		// clusterDim=(ClusterM,1,1). One CTA-pair per cell (matching this
-		// function's original uncapped-grid philosophy for Compute=90 below):
-		// the grid-stride cell loop is a no-op for any pairs beyond
-		// total_cells, so rounding up to a ClusterM multiple is harmless.
 		CUDA_OK(cudaFuncSetAttribute(kernel,
 			cudaFuncAttributeNonPortableClusterSizeAllowed, 1));
 		int pairs  = std::max(1, total_cells);
@@ -456,14 +383,6 @@ static void run4_once(const Mlp4Shape& s, Inputs& in, int outer_split,
 			outC->mean_rel * 100, outC->max_rel * 100, outC->max_abs);
 }
 
-// Full-shape correctness: outer_split = 1 AND, when the walk axis has ≥2
-// tiles, a 2-way split, exercising the walk-axis partition. Both dB and dC
-// must match. Compute=100's 2SM producer/consumer use a balanced
-// multiply-before-divide split that correctly covers a NON-divisible walk axis
-// (see mlp4.cuh's "Balanced split" comment), so it is exercised here even when
-// the split doesn't divide evenly; Compute=90's naive floor-division split
-// would silently drop the tail, so it is only exercised when it divides evenly
-// (matching the ORIGINAL, pre-refactor test coverage for that path).
 template <typename Traits, int Compute>
 static void run4(const Mlp4Shape& s) {
 	Inputs in; make_inputs<Traits>(s, in, /*seed=*/1234, ZM_NONE);
@@ -666,14 +585,7 @@ static const std::vector<Mlp4Shape> kShapesN = {
 	{ 256, 512, 256, 2},   // two experts
 };
 
-// Compute=100 (paired-CTA 2SM, TraitsBw) correctness shapes: Mlp4Traits2Sm
-// requires TileM==256 AND TileN==256 fixed (no N-split variant, unlike mlp3)
-// — I multiple of 256, H multiple of 256, T/E multiple of 64. The last shape
-// gives num_m_tiles=3 (768/256) — an odd, non-divisible walk-axis tile count
-// that explicitly exercises the 2SM producer/consumer's balanced
-// multiply-before-divide outer_split=2 tail handling (run4() always tries a
-// 2-way split for Compute=100, divisible or not).
-static const std::vector<Mlp4Shape> kShapes2Sm = {
+static const std::vector<Mlp4Shape> kShapesSm100 = {
 	{  64, 256, 256, 1},   // single tile, single k-block
 	{ 128, 256, 512, 1},   // two M-tiles, one N-tile, two K-blocks
 	{ 256, 512, 512, 2},   // two experts, two M-tiles, two N-tiles
@@ -699,11 +611,9 @@ TEST(Mlp4, PhaseDC) {
 	run4_isolate<TraitsBw, 100>(kTinyShape, ZM_DU0, "DC(dV^T*X)");
 }
 
-// ── Blackwell (Compute=100) — always the paired-CTA 2SM path; requires an
-//    sm_100 GPU at runtime ──
 TEST(Mlp4, Correctness) {
 	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
-	for (const auto& s : kShapes2Sm) run4<TraitsBw, 100>(s);
+	for (const auto& s : kShapesSm100) run4<TraitsBw, 100>(s);
 }
 
 // ── Hopper (Compute=90 / WGMMA, 1SM) — requires an sm_90 GPU at runtime ──

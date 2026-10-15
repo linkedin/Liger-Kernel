@@ -50,6 +50,7 @@ template <bool ReturnEntropy, int Compute>
 void fused_linear_scaled_cross_entropy_forward(
 		const ForwardTpParamsSm90<Compute>& params,
 		cudaStream_t stream) {
+	liger_cute::detail::TpReduceContextScope selected(params.team_handle);
 	using Traits = ForwardGemmTraitsSm90<Compute>;
 	using Config = typename Traits::Config;
 	using Launch = ForwardGemmLaunchSm90<Compute>;

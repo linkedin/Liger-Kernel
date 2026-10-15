@@ -3,7 +3,6 @@
 #include <cuda_runtime.h>
 #include <host/nvshmemx_api.h>
 
-#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -14,7 +13,6 @@
 #include <string>
 
 #include "liger_cute/check.h"
-#include "liger_cute/detail/comm_schedule.cuh"
 #include "liger_cute/detail/status.h"
 
 #ifndef LIGER_CUTE_SM90_NONRDC_BUILD_FINGERPRINT
@@ -26,10 +24,6 @@ namespace {
 
 constexpr const char* kEnableEnv = "LIGER_MOE_SM90_NONRDC";
 constexpr const char* kCubinPathEnv = "LIGER_MOE_SM90_NONRDC_CUBIN";
-constexpr const char* kDestTableSymbol =
-	"_ZN10liger_cute6detail12g_dest_tableE";
-constexpr const char* kRankTableSymbol =
-	"_ZN10liger_cute6detail12g_rank_tableE";
 constexpr const char* kFingerprintSymbol =
 	"liger_cute_sm90_nonrdc_build_fingerprint";
 constexpr const char* kTransportModeSymbol =
@@ -40,8 +34,6 @@ char g_module_path_anchor = 0;
 struct ModuleState {
 	CUcontext context = nullptr;
 	int device = -1;
-	int num_hosts = -1;
-	int gpus_per_host = -1;
 	CUmodule module = nullptr;
 	bool registered_with_nvshmem = false;
 	std::string path;
@@ -232,47 +224,7 @@ void validate_parameter_abi(
 		kernel_name);
 }
 
-void copy_schedule(
-		CUmodule module,
-		const std::array<int, liger_cute::detail::kMaxPEs>& destinations,
-		const std::array<int, liger_cute::detail::kMaxPEs>& ranks,
-		int num_pes) {
-	CUdeviceptr destination_ptr = 0;
-	CUdeviceptr rank_ptr = 0;
-	std::size_t destination_bytes = 0;
-	std::size_t rank_bytes = 0;
-
-	CUresult result = cuModuleGetGlobal(
-		&destination_ptr, &destination_bytes, module, kDestTableSymbol);
-	if (result != CUDA_SUCCESS)
-		fail_driver(result, "cuModuleGetGlobal(g_dest_table)");
-	result = cuModuleGetGlobal(
-		&rank_ptr, &rank_bytes, module, kRankTableSymbol);
-	if (result != CUDA_SUCCESS)
-		fail_driver(result, "cuModuleGetGlobal(g_rank_table)");
-
-	const std::size_t bytes = static_cast<std::size_t>(num_pes) * sizeof(int);
-	LIGER_CHECK(
-		destination_bytes >= bytes && rank_bytes >= bytes,
-		"non-RDC MoE communication schedule capacity is smaller than ",
-		num_pes, " PEs");
-
-	result = cuMemcpyHtoD(destination_ptr, destinations.data(), bytes);
-	if (result != CUDA_SUCCESS)
-		fail_driver(result, "cuMemcpyHtoD(g_dest_table)");
-	result = cuMemcpyHtoD(rank_ptr, ranks.data(), bytes);
-	if (result != CUDA_SUCCESS)
-		fail_driver(result, "cuMemcpyHtoD(g_rank_table)");
-}
-
-void configure_module(
-		CUcontext context,
-		int device,
-		const std::array<int, liger_cute::detail::kMaxPEs>& destinations,
-		const std::array<int, liger_cute::detail::kMaxPEs>& ranks,
-		int num_pes,
-		int num_hosts,
-		int gpus_per_host) {
+void configure_module(CUcontext context, int device) {
 	const std::string path = configured_cubin_path();
 	LIGER_CHECK(!path.empty(), "non-RDC MoE cubin path is empty");
 	std::ifstream cubin(path, std::ios::binary);
@@ -290,14 +242,6 @@ void configure_module(
 			module_state.path == path,
 			"non-RDC MoE cubin path changed after module initialization: ",
 			module_state.path, " -> ", path);
-		LIGER_CHECK(
-			module_state.num_hosts == num_hosts &&
-				module_state.gpus_per_host == gpus_per_host,
-			"non-RDC MoE topology changed after module initialization: "
-			"configured (num_hosts=", module_state.num_hosts,
-			", gpus_per_host=", module_state.gpus_per_host,
-			"), requested (num_hosts=", num_hosts,
-			", gpus_per_host=", gpus_per_host, ")");
 		if (!module_state.registered_with_nvshmem) {
 			const int init_status =
 				nvshmemx_cumodule_init(module_state.module);
@@ -308,7 +252,6 @@ void configure_module(
 			}
 			module_state.registered_with_nvshmem = true;
 		}
-		copy_schedule(module_state.module, destinations, ranks, num_pes);
 		return;
 	}
 
@@ -327,13 +270,10 @@ void configure_module(
 			init_status);
 	}
 	pending.registered_with_nvshmem = true;
-	copy_schedule(module, destinations, ranks, num_pes);
 
 	ModuleState state;
 	state.context = context;
 	state.device = device;
-	state.num_hosts = num_hosts;
-	state.gpus_per_host = gpus_per_host;
 	state.module = module;
 	state.registered_with_nvshmem = true;
 	state.path = path;
@@ -364,7 +304,7 @@ bool sm90_nonrdc_moe_team_uses_ib(nvshmem_team_t team) {
 	return false;
 }
 
-void configure_sm90_nonrdc_moe(int num_hosts, int gpus_per_host) {
+void configure_sm90_nonrdc_moe() {
 	if (!parse_enable_env())
 		return;
 
@@ -375,18 +315,12 @@ void configure_sm90_nonrdc_moe(int num_hosts, int gpus_per_host) {
 		"=1 requested the SM90 non-RDC MoE path, but this native "
 		"core was built without LIGER_CUTE_ENABLE_SM90_NONRDC_MOE");
 #else
-	const int num_pes = num_hosts * gpus_per_host;
-	LIGER_CHECK(
-		num_hosts > 0 && gpus_per_host > 0 &&
-			num_pes <= liger_cute::detail::kMaxPEs,
-		"invalid non-RDC MoE topology: num_hosts=", num_hosts,
-		", gpus_per_host=", gpus_per_host);
-
-	std::array<int, liger_cute::detail::kMaxPEs> destinations = {};
-	std::array<int, liger_cute::detail::kMaxPEs> ranks = {};
-	liger_cute::detail::build_comm_schedule(
-		num_hosts, gpus_per_host, destinations.data(), ranks.data());
-
+	// Table uploads used to initialize the runtime context before module setup.
+	const cudaError_t init_result = cudaFree(nullptr);
+	if (init_result != cudaSuccess)
+		LIGER_FAIL_CUDA(
+			"CUDA context initialization failed: ",
+			cudaGetErrorString(init_result));
 	const CUcontext context = current_context();
 	const int device = current_device();
 	std::lock_guard<std::mutex> lock(g_module_mutex);
@@ -396,9 +330,7 @@ void configure_sm90_nonrdc_moe(int num_hosts, int gpus_per_host) {
 			"the non-RDC MoE path supports one CUDA context/device per "
 			"process");
 	}
-	configure_module(
-		context, device, destinations, ranks, num_pes,
-		num_hosts, gpus_per_host);
+	configure_module(context, device);
 #endif
 }
 

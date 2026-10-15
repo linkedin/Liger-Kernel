@@ -43,7 +43,7 @@ using backward_sm100::HostTraits;
 BackwardWaveWorkspaceSm100<100> reserve_backward_signals_sm100() {
 	auto& pool = liger_cute::detail::global_buffer_pool();
 	auto* signals = static_cast<std::uint64_t*>(pool.get_device(
-		BackwardSymmetricNames::kBackwardSm100Signals,
+		buffer_name(BackwardSymmetricNames::kBackwardSm100Signals),
 		static_cast<std::size_t>(kBackwardSignalEntries) *
 			sizeof(std::uint64_t)));
 	BackwardWaveWorkspaceSm100<100> workspace = {};
@@ -57,7 +57,7 @@ BackwardWaveWorkspaceSm100<100> reserve_backward_signals_sm100() {
 	if constexpr (kBackwardDiagnosticTimestampsSm100) {
 		workspace.diagnostics =
 			static_cast<std::uint64_t*>(pool.get_device(
-				BackwardSymmetricNames::kBackwardSm100Diagnostics,
+				buffer_name(BackwardSymmetricNames::kBackwardSm100Diagnostics),
 				static_cast<std::size_t>(
 					kBackwardDiagnosticEntries) *
 					sizeof(std::uint64_t)));
@@ -212,6 +212,8 @@ void launch_instance(
 		reserve_backward_signals_sm100();
 	wave_workspace.launch_epoch = comm.launch_epoch;
 	wave_workspace.packed_shard = reduce.nvls.reduced_shard;
+	if (reduce.backend == liger_cute::detail::LocalReduceBackend::kDirectPeer)
+		wave_workspace.direct = reduce.direct;
 	wave_workspace.grid_ctas = grid_ctas;
 	wave_workspace.staging_rows = tma_operands.dx_staging_rows;
 	wave_workspace.num_waves = num_waves;
@@ -317,7 +319,7 @@ void launch_instance(
 			"cudaMemsetAsync(SM100 backward diagnostics)");
 	}
 	if constexpr (EnableLocalReduce) {
-		if (reduce.nvls.size > 1 || RequiresRemote) {
+		if (reduce.nvls.size > 1 || wave_workspace.direct.available || RequiresRemote) {
 			liger_cute::detail::begin_tp_reduce(
 				comm.launch_epoch, stream);
 		}
@@ -328,7 +330,6 @@ void launch_instance(
 		static_cast<unsigned>(cluster_pairs));
 	if constexpr (RequiresRemote) {
 #if defined(LIGER_CUTE_FSLCE_SM100_BACKWARD_ENABLE_NVSHMEM)
-		liger_cute::detail::synchronize_tp_reduce(stream);
 		check_cuda(
 			ClusterLaunch::launch_cooperative(
 				kernel,
@@ -367,7 +368,7 @@ void launch_instance(
 			"cudaLaunchKernelEx(backward_gemm_tp_kernel_sm100)");
 	}
 	if constexpr (EnableLocalReduce) {
-		if (reduce.nvls.size > 1 || RequiresRemote) {
+		if (reduce.nvls.size > 1 || wave_workspace.direct.available || RequiresRemote) {
 			liger_cute::detail::end_tp_reduce(stream);
 		}
 	}
@@ -379,8 +380,9 @@ void dispatch_instance(
 		const liger_cute::detail::TpReducePlan& reduce,
 		cudaStream_t stream) {
 	LIGER_CHECK(
-		reduce.backend == liger_cute::detail::LocalReduceBackend::kNvls,
-		"the fused SM100 backward requires a node-local NVLS team");
+		reduce.backend == liger_cute::detail::LocalReduceBackend::kNvls ||
+			(reduce.direct.available && !reduce.remote.enabled()),
+		"the fused SM100 backward requires NVLS or node-local direct-peer access");
 	if (reduce.remote.enabled()) {
 		LIGER_CHECK(
 			(reduce.nvls.size == 1 ||
@@ -417,15 +419,12 @@ void dispatch_instance(
 template <bool ReturnEntropy, int Compute>
 void fused_linear_scaled_cross_entropy_backward_sm100(
 		const BackwardTpParamsSm100<Compute>& params, cudaStream_t stream) {
+	liger_cute::detail::TpReduceContextScope selected(params.team_handle);
 	static_assert(
 		Compute == 100,
 		"SM100 fused scaled linear cross entropy requires Compute=100");
 	if (params.gemm.tokens == 0) return;
 	validate(params);
-	LIGER_CHECK(
-		params.team_handle == 0 ||
-			params.team_handle == backward_dx_team_handle(),
-		"backward TP team must match the configured reduction team");
 
 	liger_cute::detail::TpReducePlan reduce =
 		liger_cute::detail::tp_reduce_plan();
@@ -451,7 +450,7 @@ void fused_linear_scaled_cross_entropy_backward_diagnostics_sm100(
 	auto& pool = liger_cute::detail::global_buffer_pool();
 	auto* diagnostics =
 		static_cast<std::uint64_t*>(pool.get_device(
-			BackwardSymmetricNames::kBackwardSm100Diagnostics,
+			buffer_name(BackwardSymmetricNames::kBackwardSm100Diagnostics),
 			static_cast<std::size_t>(kBackwardDiagnosticEntries) *
 				sizeof(std::uint64_t)));
 	check_cuda(

@@ -52,32 +52,6 @@ namespace liger {
 #define LIGER_CUTE_DISPATCH_COMPUTE 0
 #endif
 
-// init_comm_schedule lives in liger_cute::detail (comm_schedule.cuh); the host
-// configure path below calls it through this alias.
-using liger_cute::detail::init_comm_schedule;
-
-// ============================================================================
-// Global iteration counter for PeSync
-// ============================================================================
-//
-// PeSync's dispatch_done / mlp_done symmetric arrays must increase
-// monotonically across calls (the wait-side uses NVSHMEM_CMP_GE). The
-// iteration value is what each call SETs the signal to via
-// nvshmemx_signal_op(SET).
-//
-// The counter lives in device memory (allocated by BufferPool as
-// "moe_fwd_iter_counter") and is atomicAdded at the end of every
-// kernel by CTA 0 thread 0 — see PeSync::advance_iteration_counter().
-// This is the form that survives CUDA graph capture: a host-side
-// atomic would be read once on the host before the kernel launch and
-// baked into the captured graph, so all replays would re-SET the same
-// already-met value and the cross-PE wait would race; a GPU-resident
-// counter incremented inside the captured kernel re-evaluates on
-// every replay, giving each launch a fresh monotonic target.
-//
-// Buffer pool keys "moe_fwd_iter_counter" (fwd) and
-// "moe_bwd_iter_counter" (bwd) name the two separate counters.
-
 // ============================================================================
 // MoeFusedConfig — bundles all tunable kernel parameters
 // ============================================================================
@@ -243,14 +217,6 @@ struct MoeBuffers {
 	int* mlp_tile_expert_ids;
 };
 
-// MoeSymmConfig + get_symm_config() declaration live in the shared header so
-// moe.cu and moe_bwd.cu can't disagree on the layout (see header). This TU
-// owns the single instance.
-MoeSymmConfig& get_symm_config() {
-	static MoeSymmConfig cfg;
-	return cfg;
-}
-
 void moe_configure_symmetric(
 		int max_tokens,
 		int hidden_dim,
@@ -261,24 +227,22 @@ void moe_configure_symmetric(
 		int gpus_per_host) {
 	static constexpr int kTileM = kMaxMoeCommTileM;
 
-	// num_hosts × gpus_per_host must equal the team size so the comm
-	// schedule (g_dest_table / g_rank_table) addresses exactly the PEs
-	// in the team. Mismatch would silently map ranks to non-existent
-	// destinations (or skip some).
-	LIGER_CHECK(num_hosts * gpus_per_host == num_pes,
+	LIGER_CHECK(num_hosts > 0 && gpus_per_host > 0 && num_pes > 0,
+		"moe_configure_symmetric: num_hosts, gpus_per_host, and num_pes "
+		"must be positive");
+	LIGER_CHECK(static_cast<int64_t>(num_hosts) * gpus_per_host == num_pes,
 		"moe_configure_symmetric: num_hosts (", num_hosts, ") * gpus_per_host (",
-		gpus_per_host, ") = ", num_hosts * gpus_per_host,
+		gpus_per_host, ") = ", static_cast<int64_t>(num_hosts) * gpus_per_host,
 		" must equal num_pes (", num_pes, ")");
 
-	// Populate g_dest_table / g_rank_table in device constant memory.
-	// Idempotent — safe to re-call with the same (N, M).
-	init_comm_schedule(num_hosts, gpus_per_host);
-
 	auto& cfg = get_symm_config();
+	LIGER_CHECK(cfg.slot < 0, "use configure to prepare additional MoE contexts");
 	cfg.max_total_slots = max_tokens * max_top_k + max_num_experts * kTileM;
 	cfg.max_num_experts = max_num_experts;
 	cfg.hidden_dim = hidden_dim;
 	cfg.num_pes = num_pes;
+	cfg.num_hosts = num_hosts;
+	cfg.gpus_per_host = gpus_per_host;
 	cfg.experts_per_pe = max_num_experts / num_pes;
 	cfg.max_top_k = max_top_k;
 	cfg.initialized = true;
@@ -312,10 +276,10 @@ void moe_pop_fwd() {
 	// LIFO order: bottom pushes first. Reverse the put order in
 	// allocate_moe_buffers (x_sorted, y_buf, all_expert_offsets,
 	// all_expert_counts).
-	stack.pop(kSymmKeyAllExpertCounts);
-	stack.pop(kSymmKeyAllExpertOffsets);
-	stack.pop(kSymmKeyYBuf);
-	stack.pop(kSymmKeyXSorted);
+	stack.pop(moe_buffer_name(kSymmKeyAllExpertCounts));
+	stack.pop(moe_buffer_name(kSymmKeyAllExpertOffsets));
+	stack.pop(moe_buffer_name(kSymmKeyYBuf));
+	stack.pop(moe_buffer_name(kSymmKeyXSorted));
 }
 
 template <typename Config>
@@ -385,18 +349,18 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	int z_m_tiles = max_runtime_grid_x * kZBufferSlots;
 	b.z_rows = z_m_tiles * kTileM;
 	size_t z_bytes = static_cast<size_t>(b.z_rows) * intermediate_dim * sizeof(Element);
-	b.z_buf = reinterpret_cast<Element*>(pool.get_device("moe_z_buf", z_bytes));
+	b.z_buf = reinterpret_cast<Element*>(pool.get_device(moe_buffer_name("moe_z_buf"), z_bytes));
 
 	// Sorted X -- symmetric, dispatch writes here, remote PEs get from here.
-	b.x_sorted = reinterpret_cast<Element*>(sym_stack.put(kSymmKeyXSorted));
+	b.x_sorted = reinterpret_cast<Element*>(sym_stack.put(moe_buffer_name(kSymmKeyXSorted)));
 
 	// Output Y -- symmetric, local MLP writes here, remote PEs put here.
-	b.y_buf = reinterpret_cast<Element*>(sym_stack.put(kSymmKeyYBuf));
+	b.y_buf = reinterpret_cast<Element*>(sym_stack.put(moe_buffer_name(kSymmKeyYBuf)));
 
 	// Phase counters.
 	size_t counter_bytes = max_runtime_grid_x * sizeof(int);
 	b.phase_counter = reinterpret_cast<int*>(
-		pool.get_device("moe_phase_counter", counter_bytes));
+		pool.get_device(moe_buffer_name("moe_phase_counter"), counter_bytes));
 	if (cudaError_t e = cudaMemsetAsync(b.phase_counter, 0, counter_bytes, stream); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(phase_counter) failed: ", cudaGetErrorString(e));
 
@@ -427,10 +391,10 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	size_t signal_l_ub =
 		static_cast<size_t>(sm_count) * scfg.max_comm_stages;
 	size_t sig_bytes = signal_l_ub * sizeof(int);
-	b.src_ready    = static_cast<int*>(pool.get_device("moe_src_ready",    sig_bytes));
-	b.src_consumed = static_cast<int*>(pool.get_device("moe_src_consumed", sig_bytes));
-	b.dst_ready    = static_cast<int*>(pool.get_device("moe_dst_ready",    sig_bytes));
-	b.dst_consumed = static_cast<int*>(pool.get_device("moe_dst_consumed", sig_bytes));
+	b.src_ready    = static_cast<int*>(pool.get_device(moe_buffer_name("moe_src_ready"),    sig_bytes));
+	b.src_consumed = static_cast<int*>(pool.get_device(moe_buffer_name("moe_src_consumed"), sig_bytes));
+	b.dst_ready    = static_cast<int*>(pool.get_device(moe_buffer_name("moe_dst_ready"),    sig_bytes));
+	b.dst_consumed = static_cast<int*>(pool.get_device(moe_buffer_name("moe_dst_consumed"), sig_bytes));
 	if (cudaError_t e = cudaMemsetAsync(b.src_ready, 0, sig_bytes, stream); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(src_ready) failed: ", cudaGetErrorString(e));
 	if (cudaError_t e = cudaMemsetAsync(b.src_consumed, 0, sig_bytes, stream); e != cudaSuccess)
@@ -442,15 +406,15 @@ static MoeBuffers<Config> allocate_moe_buffers(
 
 	// Per-parent-slot expert IDs use the same conservative upper bound.
 	size_t eid_bytes = signal_l_ub * sizeof(int);
-	b.tile_expert_ids = static_cast<int*>(pool.get_device("moe_tile_expert_ids", eid_bytes));
+	b.tile_expert_ids = static_cast<int*>(pool.get_device(moe_buffer_name("moe_tile_expert_ids"), eid_bytes));
 
 	// All PEs' expert offsets (symmetric). Use max experts for stable sizing.
-	b.all_expert_offsets = static_cast<int*>(sym_stack.put(kSymmKeyAllExpertOffsets));
-	b.all_expert_counts = static_cast<int*>(sym_stack.put(kSymmKeyAllExpertCounts));
+	b.all_expert_offsets = static_cast<int*>(sym_stack.put(moe_buffer_name(kSymmKeyAllExpertOffsets)));
+	b.all_expert_counts = static_cast<int*>(sym_stack.put(moe_buffer_name(kSymmKeyAllExpertCounts)));
 
 	// CTA counter for local all-CTA barriers around NVSHMEM collectives.
 	b.cta_counter = static_cast<int*>(
-		pool.get_device("moe_cta_counter", sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_cta_counter"), sizeof(int)));
 
 	// Sort buffers -- use scfg max sizes to avoid reallocation across configs.
 	int max_sorted_slots = scfg.max_total_slots;
@@ -460,9 +424,9 @@ static MoeBuffers<Config> allocate_moe_buffers(
 
 	(void)max_token_slots_ub;
 	b.tile_expert_counts = static_cast<int*>(
-		pool.get_device("moe_sort_tile_counts", max_tile_counts * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_sort_tile_counts"), max_tile_counts * sizeof(int)));
 	b.sorted_token_ids = static_cast<int*>(
-		pool.get_device("moe_sort_sorted_ids", max_sorted_slots * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_sort_sorted_ids"), max_sorted_slots * sizeof(int)));
 	// token_expert_slots: caller-owned torch tensor (passed in). Used by
 	// the bwd path after this call returns — must not alias a pool slot.
 	b.token_expert_slots = token_expert_slots_ptr;
@@ -471,9 +435,9 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	b.expert_counts = static_cast<int*>(
 		pool.get_symmetric("moe_sort_counts", scfg.max_num_experts * sizeof(int)));
 	b.cta_done = static_cast<int*>(
-		pool.get_device("moe_sort_cta_done", num_blocks * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_sort_cta_done"), num_blocks * sizeof(int)));
 	b.cta_sums = static_cast<int*>(
-		pool.get_device("moe_sort_cta_sums", num_blocks * scfg.max_num_experts * sizeof(int)));
+		pool.get_device(moe_buffer_name("moe_sort_cta_sums"), num_blocks * scfg.max_num_experts * sizeof(int)));
 
 	// Per-tile expert IDs for MLP — caller-owned torch tensor.
 	b.mlp_tile_expert_ids = mlp_tile_expert_ids_ptr;
@@ -791,7 +755,11 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	const int num_experts = a.num_experts;
 	const int top_k       = a.top_k;
 	const nvshmem_team_t team = a.team;
+	MoeContextScope context_scope(team);
+	moe_check_forward_capacity();
 	cudaStream_t stream   = a.stream;
+	if (get_symm_config().slot >= 0 && nvshmem_team_n_pes(team) > 1)
+		nvshmemx_barrier_on_stream(team, stream);
 
 	// NC = number of cooperating comm CTAs per (xc, yc) tile. With the
 	// ticket-based GEMM-side iterator, runtime NS and NC no longer need to
@@ -836,9 +804,6 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	constexpr int kTileM      = Config::kTileM;
 	constexpr int kNumThreads = Config::kNumThreads;
 
-	// Iteration counter lives on the device and is incremented at the
-	// end of the kernel — see PeSync::advance_iteration_counter() and
-	// the comment block at the top of this file.
 	int num_tokens       = a.num_tokens;
 	int hidden_dim       = a.hidden_dim;
 	int experts_per_pe   = a.experts_per_pe;      // local experts (from weight matrices)
@@ -1373,9 +1338,9 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 	// Stream-ordered variant — capturable into a CUDA graph. The host-side
 	// nvshmem_team_sync(team) would do an internal cudaStreamSynchronize and
 	// therefore fail with "operation not permitted when stream is capturing".
-	//if (num_pes > 1) {
-	//	nvshmemx_barrier_on_stream(team, stream);
-	//}
+	if (num_pes > 1) {
+		nvshmemx_barrier_on_stream(team, stream);
+	}
 
 	// Hand the persistent symmetric buffers back to the ABI wrapper so it can
 	// alias them as the *_out_symm views (shapes use the static MoeSymmConfig

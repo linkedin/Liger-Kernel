@@ -178,11 +178,11 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         """
         Fused linear layer with DPO loss.
         Args:
-            _input (torch.Tensor): Input tensor. Shape: (batch_size * seq_len, hidden_size)
+            _input (torch.Tensor): Input tensor. Shape: (batch_size, seq_len, hidden_size)
             weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size)
-            target (torch.LongTensor): Target tensor. Shape: (batch_size * seq_len,)
+            target (torch.LongTensor): Target tensor. Shape: (batch_size, seq_len)
             bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,)
-            ref_input (torch.Tensor, optional): Reference model input tensor. Shape: (batch_size * seq_len, hidden_size)
+            ref_input (torch.Tensor, optional): Reference model input tensor. Shape: (batch_size, seq_len, hidden_size)
             ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             ignore_index (int): Index to ignore in loss computation

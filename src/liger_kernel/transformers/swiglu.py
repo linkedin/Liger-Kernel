@@ -20,11 +20,11 @@ def _swiglu_dispatch(a, b, gate_multiplier=1.0, down_multiplier=1.0):
 
 
 class LigerSwiGLUMLP(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, intermediate_size=None):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
+        self.intermediate_size = intermediate_size if intermediate_size is not None else config.intermediate_size
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
@@ -81,10 +81,14 @@ class LigerExperts(nn.Module):
     def __init__(self, config):
         super().__init__()
         if hasattr(config, "num_experts"):
-            # qwen3_moe, qwen3_next uses num_experts
+            # qwen3_moe, qwen3_next, deepseek_v2 use num_experts
             self.num_experts = config.num_experts
-        else:
+        elif hasattr(config, "num_local_experts"):
+            # mixtral, deepseek_v3 use num_local_experts
             self.num_experts = config.num_local_experts
+        else:
+            # deepseek_v2 on early transformers v5 uses n_routed_experts
+            self.num_experts = config.n_routed_experts
         if hasattr(config, "moe_intermediate_size"):
             # qwen3_moe, qwen3_next uses moe_intermediate_size
             self.intermediate_dim = config.moe_intermediate_size

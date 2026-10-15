@@ -3,6 +3,13 @@ name: Publish Liger Kernel on Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the validated wheel to PyPI
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -22,11 +29,50 @@ jobs:
         python -m pip install --upgrade pip
         pip install build twine wheel toml
 
+    - name: Validate release version
+      env:
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+      run: |
+        python - <<'PY'
+        import os
+        import toml
+
+        version = toml.load("pyproject.toml")["project"]["version"]
+        tag = os.environ.get("RELEASE_TAG")
+        if tag and tag != f"v{version}":
+            raise SystemExit(f"Release tag {tag} does not match v{version}")
+        print(f"Building liger-kernel {version}")
+        PY
+
     - name: Build package
       run: |
         python -m build
 
+    - name: Validate built distributions
+      run: |
+        twine check dist/*
+        python - <<'PY'
+        from email.parser import Parser
+        from pathlib import Path
+        from zipfile import ZipFile
+        import toml
+
+        wheels = list(Path("dist").glob("*.whl"))
+        if len(wheels) != 1:
+            raise SystemExit(f"Expected one wheel, found {len(wheels)}")
+        with ZipFile(wheels[0]) as wheel:
+            metadata_paths = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+            if len(metadata_paths) != 1:
+                raise SystemExit("Expected one wheel METADATA file")
+            metadata = Parser().parsestr(wheel.read(metadata_paths[0]).decode())
+            expected = toml.load("pyproject.toml")["project"]["version"]
+            if metadata["Version"] != expected:
+                raise SystemExit(f"Wheel version {metadata['Version']} != {expected}")
+        print(f"Validated {wheels[0].name}")
+        PY
+
     - name: Publish package to PyPI
+      if: github.event_name == 'release' || inputs.publish
       env:
         TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
         TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
@@ -34,5 +80,6 @@ jobs:
         twine upload dist/*
 
     - name: Create release notes
+      if: github.event_name == 'release' || inputs.publish
       run: |
         echo "Release published to PyPI with the name 'liger-kernel'."

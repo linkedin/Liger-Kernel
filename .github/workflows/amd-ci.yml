@@ -1,27 +1,10 @@
 name: AMD GPU
 
+# AMD runners are currently unavailable, so this suite is manual-only
+# (mirrors NVIDIA GPU, but without a schedule). Removing the push / pull_request /
+# merge_group triggers keeps it out of PR checks and the merge queue until the
+# runners are healthy again; only Checkstyle runs in the merge queue for now.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "src/**"
-      - "test/**"
-      - "setup.py"
-      - "pyproject.toml"
-      - ".github/workflows/amd-ci.yml"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "src/**"
-      - "test/**"
-      - "setup.py"
-      - "pyproject.toml"
-      - ".github/workflows/amd-ci.yml"
-  merge_group:
-    branches:
-      - main
   workflow_dispatch:  # Enables manual trigger
 
 concurrency:

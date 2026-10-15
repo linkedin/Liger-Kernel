@@ -11,12 +11,19 @@
 find_package(GTest REQUIRED)
 include(GoogleTest)
 
+add_executable(test_moe_comm_schedule test_moe_comm_schedule.cu)
+target_link_libraries(test_moe_comm_schedule PRIVATE GTest::gtest_main CUDA::cudart)
+target_include_directories(test_moe_comm_schedule PRIVATE
+    "${CMAKE_SOURCE_DIR}/csrc/core/include")
+gtest_discover_tests(test_moe_comm_schedule DISCOVERY_MODE PRE_TEST)
+
 # CUTLASS::CUTLASS is defined when the core is built from source (top-level
 # find_package(CUTLASS)). Fall back to CUTLASS_HOME include dirs otherwise.
 add_executable(test_mlp1_fused test_mlp1_fused.cu)
 target_link_libraries(test_mlp1_fused PRIVATE
     GTest::gtest
-    CUDA::cudart)
+    CUDA::cudart
+    CUDA::cublas)
 if(TARGET CUTLASS::CUTLASS)
     target_link_libraries(test_mlp1_fused PRIVATE CUTLASS::CUTLASS)
 else()

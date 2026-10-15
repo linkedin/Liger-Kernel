@@ -430,6 +430,7 @@ def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, gr
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
+            X_col_stride=grad_input.stride(-1),
             num_warps=32 if not is_hip() else 16,
         )
 
@@ -444,6 +445,7 @@ def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, gr
                 grad_output,
                 H,
                 BLOCK_SIZE=BLOCK_SIZE,
+                X_col_stride=grad_weight.stride(-1),
                 num_warps=32 if not is_hip() else 16,
             )
 

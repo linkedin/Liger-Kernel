@@ -124,7 +124,7 @@ y = orpo_loss(lm_head.weight, x, target)
 #### CUDA
 
 - `torch >= 2.1.2`
-- `triton >= 2.3.0`
+- `triton >= 2.3.1`
 
 #### ROCm
 
@@ -446,6 +446,7 @@ loss.backward()
 | OLMo2   | `liger_kernel.transformers.apply_liger_kernel_to_olmo2`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | Olmo3   | `liger_kernel.transformers.apply_liger_kernel_to_olmo3`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GLM-4   | `liger_kernel.transformers.apply_liger_kernel_to_glm4`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
+| DeepSeek-V2   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v2`     | RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | DeepSeek-V3   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v3`     | RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | DeepSeek-V4   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v4`     | RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GPT-OSS   | `liger_kernel.transformers.apply_liger_kernel_to_gpt_oss`     | RoPE, RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
@@ -571,7 +572,7 @@ loss.backward()
 
 - For issues, create a Github ticket in this repository
 - For open discussion, join [our discord channel on GPUMode](https://discord.com/channels/1189498204333543425/1275130785933951039)
-- For formal collaboration, send an email to Yanning Chen(yannchen@linkedin.com) and Zhipeng Wang(zhipwang@linkedin.com)
+- For formal collaboration, send an email to Vaibhav Jindal(vjindal@linkedin.com), Arup De(arde@linkedin.com), Yiming Yue(yyue@linkedin.com), Michael (Chun-Mao) Lai(chulai@linkedin.com).
 
 ## Cite this work
 

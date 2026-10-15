@@ -242,9 +242,11 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
 def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
     shape = dY.shape
     batch_size = shape[0]
-    hidden_size = dY.shape[-1]
     channels_per_group = num_channels // num_groups
     dY = dY.view(batch_size, num_groups, -1)
+    # Number of elements per channel, so it has to be measured after the flatten:
+    # the last dimension of an unflattened (N, C, H, W) input is only W
+    hidden_size = dY.shape[-1] // channels_per_group
     DX = torch.empty(
         (batch_size, num_groups, hidden_size * channels_per_group),
         dtype=X.dtype,

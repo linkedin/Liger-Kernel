@@ -35,3 +35,8 @@ def test_moe_runtime_only_reads_prepared_team(monkeypatch):
 
     assert moe._resolve_team(pg) == 23
     assert calls == [(pg, False)]
+
+
+def test_moe_class_has_no_configure_method(monkeypatch):
+    moe = _load_moe_module(monkeypatch)
+    assert not hasattr(moe.LigerExpertParallelFusedMoEFunction, "configure")

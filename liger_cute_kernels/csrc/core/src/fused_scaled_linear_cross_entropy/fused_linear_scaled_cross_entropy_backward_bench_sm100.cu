@@ -45,7 +45,7 @@ using backward_sm100::HostLaunch;
 BackwardWaveWorkspaceSm100<100> reserve_bench_signals() {
 	auto& pool = liger_cute::detail::global_buffer_pool();
 	auto* signals = static_cast<std::uint64_t*>(pool.get_device(
-		BackwardSymmetricNames::kBackwardSm100Signals,
+		buffer_name(BackwardSymmetricNames::kBackwardSm100Signals),
 		static_cast<std::size_t>(kBackwardSignalEntries) *
 			sizeof(std::uint64_t)));
 	BackwardWaveWorkspaceSm100<100> workspace = {};
@@ -195,6 +195,7 @@ void dispatch_phase(
 		const liger_cute::detail::TpReducePlan& reduce,
 		int phase_mask,
 		cudaStream_t stream) {
+	liger_cute::detail::TpReduceContextScope selected(params.team_handle);
 	switch (phase_mask) {
 		case 0:
 			launch_phase<ReturnEntropy, 0>(

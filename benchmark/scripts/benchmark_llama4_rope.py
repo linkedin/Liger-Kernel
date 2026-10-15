@@ -52,7 +52,7 @@ def setup_llama4_rope(input: SingleBenchmarkRunInput):
         Llama4TextRotaryEmbedding,
         Llama4TextRotaryEmbedding,
         before_kwargs={"config": config, "device": device},
-        after_kwargs={"config": config, "device": device},
+        after_kwargs={"config": config},
     )
 
     q = torch.randn(

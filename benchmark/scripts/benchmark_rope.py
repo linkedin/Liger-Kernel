@@ -48,7 +48,7 @@ def setup_rope(input: SingleBenchmarkRunInput):
         LlamaRotaryEmbedding,
         LlamaRotaryEmbedding,
         before_kwargs={"dim": head_dim, "device": device},
-        after_kwargs={"config": LlamaConfig(num_kv_heads=num_kv_heads, head_dim=head_dim), "device": device},
+        after_kwargs={"config": LlamaConfig(num_kv_heads=num_kv_heads, head_dim=head_dim)},
     )
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),

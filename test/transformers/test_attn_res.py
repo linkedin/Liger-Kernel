@@ -43,6 +43,8 @@ def pytorch_attn_res(V, w_query, w_norm, eps=1e-6):
         (4, 2, 64, 4096),
         (8, 2, 64, 4096),
         (4, 2, 64, 8192),
+        # more blocks than the old MAX_BLOCKS ceiling of 32
+        (40, 1, 32, 128),
         # weird shapes
         (3, 5, 37, 123),
     ],
@@ -79,6 +81,8 @@ def test_correctness(N, B, T, D, dtype, atol, rtol):
     [
         (4, 2, 64, 4096),
         (8, 2, 64, 4096),
+        # more blocks than the old MAX_BLOCKS ceiling of 32
+        (40, 1, 32, 128),
         # weird shapes
         (3, 5, 37, 123),
     ],

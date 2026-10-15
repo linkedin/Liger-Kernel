@@ -511,6 +511,7 @@ void dispatch_instance(
 template <bool ReturnEntropy, int Compute>
 void fused_linear_scaled_cross_entropy_backward(
 		const BackwardTpParamsSm90<Compute>& params, cudaStream_t stream) {
+	liger_cute::detail::TpReduceContextScope selected(params.team_handle);
 	static_assert(Compute == 90,
 		"SM90 fused scaled linear cross entropy requires Compute=90");
 	if (params.gemm.tokens == 0) return;

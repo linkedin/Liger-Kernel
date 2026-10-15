@@ -52,7 +52,9 @@ def _tv_distance_kernel(
     scale,  # pre-computed reduction scale for gradients (fused into kernel)
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
-    reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
+    # no default: torch.compile re-emits this kernel's source in a module without the
+    # _REDUCTION_MODE_* globals, so a default naming one raises NameError. Always pass it.
+    reduction: tl.constexpr,
 ):
     pid = tl.program_id(0).to(tl.int64)
     p_ptr += pid * p_stride
@@ -62,6 +64,12 @@ def _tv_distance_kernel(
     label_ptr += pid
 
     base_offsets = tl.arange(0, BLOCK_SIZE)
+
+    # Pin the scalar to fp32. Eager Triton specializes a non-constexpr Python float to
+    # fp32, but Inductor specializes it to fp64; mixing an fp64 scalar into the loop body
+    # promotes the gradient expression to float64 on every iteration and makes the
+    # compiled path disagree with eager. This cast is a no-op on the eager path.
+    scale = scale.to(tl.float32)
 
     if HAS_LABEL:
         label = tl.load(label_ptr)
@@ -85,8 +93,9 @@ def _tv_distance_kernel(
         # TVD(P || Q) = 0.5 * |P - Q|
         tv_loss = 0.5 * tl.abs(p - q)
 
+        # d/dp 0.5 * |p - q| = 0.5 * sgn(p - q), which is 0 where p == q
         # Fuse reduction scaling into gradient computation (eliminates separate Python division)
-        grad_res = tl.where(p > q, 0.5 * scale, -0.5 * scale)
+        grad_res = tl.where(p == q, 0.0, tl.where(p > q, 0.5 * scale, -0.5 * scale))
 
         tl.store(grads_ptr + offsets, grad_res, mask=mask)
 

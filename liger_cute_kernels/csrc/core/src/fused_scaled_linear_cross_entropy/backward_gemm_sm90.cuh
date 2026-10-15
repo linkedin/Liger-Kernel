@@ -355,6 +355,8 @@ struct BackwardTpParamsSm90 {
 	int tiles_per_reduce = 2;
 	// Retained for FFI compatibility; CTA ownership ignores this value.
 	int num_comm_channels = 4;
+	// -1 selects the sole configured team for legacy native callers.
+	std::int64_t team_handle = -1;
 };
 
 __host__ __device__ constexpr int backward_dx_split_k(

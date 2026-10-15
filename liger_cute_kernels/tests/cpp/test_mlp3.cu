@@ -1,40 +1,3 @@
-// ═══════════════════════════════════════════════════════════════════
-// Numerical-correctness + TFLOPS tests for the single-launch MLP3 device
-// functions:
-//   * mlp3_{producer,consumer}  →  dA = dY^T · Z   (MoE down-weight gradient)
-//
-// One GEMM, contraction over the token axis T. Both operands are MN-major:
-//   A = dY^T : (H, T)  (M=H contiguous)      — the physical dY[T,H] read as (H,T)
-//   B = Z    : (I, T)  (N=I contiguous)      — the physical Z[T,I]  read as (I,T)
-//   dA       : (E·H, I) row-major             — one [H,I] block per expert
-// The epilogue uses SM90_TMA_REDUCE_ADD (hardware atomic-add into gmem), so dA
-// MUST be zero-initialized by the caller and RE-ZEROED between reused launches.
-//
-// Self-contained (no torch, no nvshmem): each TEST builds its own inputs on the
-// host, drives a stand-alone chunk-fixed 1D-grid launcher kernel (the same
-// persistent (cell_start=blockIdx.x, cell_stride=gridDim.x) walk the fused
-// moe_bwd kernel uses), and compares against an fp32 CPU reference computed from
-// the *same bf16-rounded* inputs. The only error source is bf16 input rounding
-// (+ REDUCE_ADD bf16 read-modify-write), so a tight relative tolerance holds.
-//
-// Exercises the mlp3 consumers on BOTH architectures, AUTO-GATED to the running
-// GPU so the output stays clean:
-//   * sm_100 (Blackwell) → Compute=100 — always the paired-CTA 2SM path:
-//     Mlp3Traits2Sm + mlp3_fwd<Traits,100> (cudaLaunchKernelEx, even grid,
-//     clusterDim=(2,1,1), UMMA + make_tma_copy_{A,B}_sm100 operand loads).
-//   * sm_90  (Hopper)    → Compute=90  — the original 1SM path: Mlp3Traits +
-//     mlp3_fwd<Traits,90> (ordinary <<<>>> launch, WGMMA, plain make_tma_copy).
-// Both paths share cpu_reference and tolerances; the test kernel itself is a
-// thin wrapper that forwards straight to the unified liger::mlp3_fwd<Traits,
-// Compute> device function (no hand-rolled pipe/TMEM/producer-consumer code),
-// so one source builds cleanly for sm_90a and sm_100a — mlp3_fwd internally
-// gates its Compute=100 body on __CUDA_ARCH__>=1000 (and traps otherwise).
-//
-// A tiny single-tile DIAGNOSTIC (Mlp3.SingleTile) does an element-by-element
-// compare on a single Blackwell (256,256)×64 tile to localize a store-buf
-// mapping bug fast: a structured wrong result there points at the TMEM→
-// store_buf mapping pin or the MN-major operand.
-// ═══════════════════════════════════════════════════════════════════
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
@@ -51,19 +14,16 @@
 
 #include <cute/tensor.hpp>
 #include <cute/atom/copy_traits_sm90_tma.hpp>
-// SM100 2SM (paired-CTA cluster) TMA descriptor factories (make_tma_copy_A_sm100
-// / make_tma_copy_B_sm100) and the SM100_TMA_2SM_LOAD copy atom, mirroring
-// moe_bwd.cu's Phase-2 TMA construction for the Compute=100 dY^T/Z operands.
 #include <cute/atom/copy_traits_sm100_tma.hpp>
 #include <cutlass/numeric_types.h>
 
-#include "mlp3.cuh"
+#include "mlp3_sm100.cuh"
 
 using namespace cute;
 using liger::Mlp3Traits;
-using liger::Mlp3Traits2Sm;
+using liger::Mlp3TraitsSm100;
 using liger::Mlp3Smem;
-using liger::Mlp3Smem2Sm;
+using liger::Mlp3SmemSm100;
 using liger::mlp3_fwd;
 using Element = cutlass::bfloat16_t;
 
@@ -73,13 +33,13 @@ using Element = cutlass::bfloat16_t;
 using Traits3 = Mlp3Traits<Element, /*TileM=*/128, /*TileN=*/256,
                            /*TileK=*/64, /*Stages=*/4, /*EpiChunkN=*/64>;
 
-// Compute=100 (Blackwell/UMMA, paired-CTA 2SM): the production refactor makes
-// this the ONLY Compute=100 path (no more 1SM UMMA). Mlp3Traits2Sm requires
-// joined TileM=256 (CtaTileM=128/peer); default TileN=256, TileK=64, Stages=3,
-// EpiChunkN=64, ClusterM=2 — the same defaults moe_bwd.cu's Phase-2 Traits3
-// config uses.
-using Traits3Sm2 = Mlp3Traits2Sm<Element, /*TileM=*/256, /*TileN=*/256,
-                                 /*TileK=*/64, /*Stages=*/3, /*EpiChunkN=*/64>;
+// Match the production single-CTA Blackwell weight-gradient tile.
+using Traits3Blackwell = Mlp3TraitsSm100<Element, /*TileM=*/128, /*TileN=*/128,
+                                 /*TileK=*/64, /*Stages=*/5, /*EpiChunkN=*/64>;
+static_assert(Traits3Blackwell::ClusterM == 1);
+static_assert(size(typename Traits3Blackwell::TiledMmaSm100::AtomThrID{}) == 1);
+static_assert(Traits3Blackwell::TmaTransBytes ==
+              Traits3Blackwell::TmaTransBytesDYT + Traits3Blackwell::TmaTransBytesZ);
 
 #define CUDA_OK(expr)                                                       \
 	do {                                                                    \
@@ -87,23 +47,6 @@ using Traits3Sm2 = Mlp3Traits2Sm<Element, /*TileM=*/256, /*TileN=*/256,
 		ASSERT_EQ(_e, cudaSuccess) << #expr << ": " << cudaGetErrorString(_e); \
 	} while (0)
 
-// ═══════════════════════════════════════════════════════════════════
-// Stand-alone chunk-fixed launcher kernel (1D persistent grid for Compute=90;
-// paired-CTA cluster grid for Compute=100 — blockIdx.x/gridDim.x are raw CTA
-// coordinates, mlp3_fwd itself divides by Traits::ClusterM internally for the
-// 2SM path). Each CTA walks the shared (chunk, walk-lane) cell space
-// internally (producer + consumer loop over cell_idx += cell_stride), so the
-// launch is always logically 1D. `outer_split` is the walk-axis tuning surface
-// (it subdivides the walk into `outer_split` lanes → more, smaller cells for
-// load balance); it need not divide the walk-axis tile count (the 2SM
-// producer/consumer use a balanced multiply-before-divide split that covers
-// any remainder — see run3()'s non-divisible-tail coverage below).
-//
-// The kernel body is now a thin forward to the unified liger::mlp3_fwd<Traits,
-// Compute> device function — it owns TMA prefetch, pipe construction, TMEM
-// alloc/free + cluster_sync (Compute=100 only), and producer/consumer
-// dispatch internally, so the test no longer hand-rolls any of that.
-// ═══════════════════════════════════════════════════════════════════
 
 template <typename Traits, int Compute,
           typename TmaLoadDYT, typename TmaLoadZ, typename TmaReduceDA>
@@ -118,7 +61,7 @@ mlp3_test_kernel(
 		int total_n_rows, int num_m_tiles, int num_n_tiles, int outer_split) {
 
 	extern __shared__ char raw_smem[];
-	using Smem = cute::conditional_t<Compute == 100, Mlp3Smem2Sm<Traits>, Mlp3Smem<Traits>>;
+	using Smem = cute::conditional_t<Compute == 100, Mlp3SmemSm100<Traits>, Mlp3Smem<Traits>>;
 	auto& smem = *reinterpret_cast<Smem*>(raw_smem);
 
 	mlp3_fwd<Traits, Compute, Compute == 90>(
@@ -254,25 +197,15 @@ static std::vector<float> download_bf16(const Element* d, size_t n) {
 	return out;
 }
 
-// ── Build the three TMA descriptors for a given dA device buffer. Compute=90
-//    uses ordinary 1SM make_tma_copy; Compute=100 uses the pair-aware
-//    make_tma_copy_{A,B}_sm100 factories (SM100_TMA_2SM_LOAD copy op, keyed
-//    off Traits::TileShape + Traits::TiledMma2Sm) — exactly moe_bwd.cu's
-//    Phase-2 dY^T/Z descriptor construction for Config::kUsesTwoSm. The dA
-//    reduce-add output stays an ordinary (non-paired) TMA_REDUCE_ADD either
-//    way, while its tensor rank follows the architecture-specific consumer. ──
-//   tma_load_dyt : dY[T,H] row-major, viewed (H, T) stride (1, H)  → A = dY^T
-//   tma_load_z   : Z[T,I]  row-major, viewed (I, T) stride (1, I)  → B = Z^T
-//   tma_reduce_da: dA[E·H, I] row-major, SM90_TMA_REDUCE_ADD, SmemLayoutStore box
 template <typename Traits, int Compute>
 static auto make_dyt_tma(const Inputs& in, const Mlp3Shape& s) {
 	auto t = make_tensor(make_gmem_ptr(in.dDY.ptr),
 		make_shape(s.hidden_dim, s.num_tokens), make_stride(Int<1>{}, s.hidden_dim));
 	if constexpr (Compute == 100) {
-		return make_tma_copy_A_sm100(SM100_TMA_2SM_LOAD{}, t,
+		return make_tma_copy_A_sm100(SM90_TMA_LOAD{}, t,
 			typename Traits::SmemLayoutDYT_1{},
 			typename Traits::TileShape{},
-			typename Traits::TiledMma2Sm{});
+			typename Traits::TiledMmaSm100{});
 	} else {
 		return make_tma_copy(SM90_TMA_LOAD{}, t, typename Traits::SmemLayoutDYT_1{});
 	}
@@ -282,10 +215,10 @@ static auto make_z_tma(const Inputs& in, const Mlp3Shape& s) {
 	auto t = make_tensor(make_gmem_ptr(in.dZ.ptr),
 		make_shape(s.intermediate_dim, s.num_tokens), make_stride(Int<1>{}, s.intermediate_dim));
 	if constexpr (Compute == 100) {
-		return make_tma_copy_B_sm100(SM100_TMA_2SM_LOAD{}, t,
+		return make_tma_copy_B_sm100(SM90_TMA_LOAD{}, t,
 			typename Traits::SmemLayoutZ_1{},
 			typename Traits::TileShape{},
-			typename Traits::TiledMma2Sm{});
+			typename Traits::TiledMmaSm100{});
 	} else {
 		return make_tma_copy(SM90_TMA_LOAD{}, t, typename Traits::SmemLayoutZ_1{});
 	}
@@ -314,11 +247,6 @@ static int sm_count() {
 	return p.multiProcessorCount;
 }
 
-// Compute=100 is always the paired-CTA 2SM path (chunk=(e,n_tile), walks
-// m_tile — the same convention as the 1SM kMSplit=true case); Compute=90 walks
-// whichever axis Traits::kMSplit selects. `Traits::kMSplit` is looked up only
-// inside the untaken (discarded) branch when Compute==100, so this compiles
-// even though Mlp3Traits2Sm has no kMSplit member.
 template <typename Traits, int Compute>
 static constexpr bool mlp3_walks_m() {
 	if constexpr (Compute == 100) return true;
@@ -343,7 +271,7 @@ static void run3_once(const Mlp3Shape& s, Inputs& in, int outer_split,
 	auto tma_z   = make_z_tma<Traits, Compute>(in, s);
 	auto tma_da  = make_da_tma<Traits, Compute>(dA, s);
 
-	using Smem = cute::conditional_t<Compute == 100, Mlp3Smem2Sm<Traits>, Mlp3Smem<Traits>>;
+	using Smem = cute::conditional_t<Compute == 100, Mlp3SmemSm100<Traits>, Mlp3Smem<Traits>>;
 	size_t smem_size = sizeof(Smem);
 	auto kernel = mlp3_test_kernel<Traits, Compute,
 		decltype(tma_dyt), decltype(tma_z), decltype(tma_da)>;
@@ -356,13 +284,6 @@ static void run3_once(const Mlp3Shape& s, Inputs& in, int outer_split,
 	int nsm = sm_count();
 
 	if constexpr (Compute == 100) {
-		// Paired-CTA cluster launch: opt in to non-portable cluster sizes,
-		// then cudaLaunchKernelEx with an EVEN grid.x (a multiple of
-		// Traits::ClusterM — mlp3_fwd __traps otherwise) and
-		// clusterDim=(ClusterM,1,1). `pairs` caps the number of CTA-pairs at
-		// the SM-pair count, so tiny correctness shapes still launch a
-		// small, valid grid; the internal grid-stride cell loop covers the
-		// remaining total_cells regardless of grid size.
 		CUDA_OK(cudaFuncSetAttribute(kernel,
 			cudaFuncAttributeNonPortableClusterSizeAllowed, 1));
 		int pairs  = std::max(1, std::min(nsm / Traits::ClusterM, total_cells));
@@ -408,16 +329,6 @@ static void run3_once(const Mlp3Shape& s, Inputs& in, int outer_split,
 	if (got_opt) *got_opt = std::move(got);
 }
 
-// Full-shape correctness: outer_split=1 (each cell walks the whole walk-axis)
-// AND, when the walk axis has ≥2 tiles, a 2-way split (exercises the
-// multi-lane cell walk + REDUCE_ADD from more CTAs). Both must match the fp32
-// reference. Compute=100's 2SM producer/consumer use a balanced
-// multiply-before-divide split that correctly covers a NON-divisible walk axis
-// (e.g. 3 tiles / 2 lanes → lane0=[0,1), lane1=[1,3)) — see mlp3.cuh's
-// "Balanced split" comment — so it is exercised here even when the split
-// doesn't divide evenly; Compute=90's naive floor-division split would
-// silently drop the tail, so it is only exercised when it divides evenly
-// (matching the ORIGINAL, pre-refactor test coverage for that path).
 template <typename Traits, int Compute>
 static void run3(const Mlp3Shape& s) {
 	Inputs in; make_inputs<Traits>(s, in, /*seed=*/1234);
@@ -492,7 +403,7 @@ static void run3_bench(const Mlp3Shape& s, const BenchCfg& cfg) {
 	auto tma_z   = make_z_tma<Traits, Compute>(in, s);
 	auto tma_da  = make_da_tma<Traits, Compute>(dA, s);
 
-	using Smem = cute::conditional_t<Compute == 100, Mlp3Smem2Sm<Traits>, Mlp3Smem<Traits>>;
+	using Smem = cute::conditional_t<Compute == 100, Mlp3SmemSm100<Traits>, Mlp3Smem<Traits>>;
 	size_t smem_size = sizeof(Smem);
 	auto kernel = mlp3_test_kernel<Traits, Compute,
 		decltype(tma_dyt), decltype(tma_z), decltype(tma_da)>;
@@ -597,11 +508,6 @@ static bool hopper_available() {
 	return p.major == 9;
 }
 
-// Tiny single-tile shape for the Blackwell (Compute=100, paired-CTA 2SM)
-// diagnostic: one M-tile (H=256, joined TileM=256 split 128/peer CTA), one
-// N-tile (I=256), one K-block (T=64), one expert → a single 256×256
-// accumulator over 64 tokens. Used for the element-by-element mapping
-// diagnostic.
 static const Mlp3Shape kTinyShape = {64, 256, 256, 1};
 
 // Small correctness shapes for Compute=90 (1SM, Traits3). H multiple of TileM
@@ -614,24 +520,13 @@ static const std::vector<Mlp3Shape> kShapes = {
 	{ 512, 384, 256, 4},   // 4 experts, 3 m-tiles, 1 n-tile, 2 k-blocks/expert
 };
 
-// Small correctness shapes for Compute=100 (paired-CTA 2SM, Traits3Sm2). H
-// multiple of TileM (256), I of TileN (256), T of TileK (64) with
-// (T/TileK)%E==0. The last shape gives num_m_tiles=3 (768/256) — an odd,
-// non-divisible walk-axis tile count that explicitly exercises the 2SM
-// producer/consumer's balanced multiply-before-divide outer_split=2 tail
-// handling (run3() always tries a 2-way split for Compute=100, divisible or
-// not — see its comment above).
-static const std::vector<Mlp3Shape> kShapes2Sm = {
+static const std::vector<Mlp3Shape> kShapesSm100 = {
 	{  64, 256, 256, 1},   // single tile, single k-block
 	{ 128, 512, 256, 1},   // 2 m-tiles, 1 n-tile, 2 k-blocks
 	{ 256, 512, 512, 2},   // 2 experts, 2×2 tiles
 	{ 512, 768, 256, 4},   // 4 experts, 3 m-tiles (odd!), 1 n-tile, 2 k-blocks/expert
 };
 
-// Large, GPU-saturating shapes for the TFLOPS benchmark. Realistic MoE dims
-// (H=I=4096, E=8); T a multiple of TileM → no padding, so 2·T·H·I exact. 4096
-// is a multiple of both the 1SM (128/256) and 2SM (256/256) tile shapes, so
-// both bench tests share this table.
 static const std::vector<Mlp3Shape> kBenchShapes = {
 	{ 2048, 4096, 4096, 8},
 	{ 4096, 4096, 4096, 8},
@@ -644,10 +539,10 @@ static const std::vector<Mlp3Shape> kBenchShapes = {
 //    swapped MN-major operand before the larger shapes muddy the signal. ──
 TEST(Mlp3, SingleTile) {
 	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
-	Inputs in; make_inputs<Traits3Sm2>(kTinyShape, in, /*seed=*/7);
+	Inputs in; make_inputs<Traits3Blackwell>(kTinyShape, in, /*seed=*/7);
 	ErrStats e{}; std::vector<float> got;
-	run3_once<Traits3Sm2, 100>(kTinyShape, in, /*outer_split=*/1, /*verbose=*/true, "tiny", &e, &got);
-	auto ref = cpu_reference(in.dY, in.Z, kTinyShape, Traits3Sm2::TileK);
+	run3_once<Traits3Blackwell, 100>(kTinyShape, in, /*outer_split=*/1, /*verbose=*/true, "tiny", &e, &got);
+	auto ref = cpu_reference(in.dY, in.Z, kTinyShape, Traits3Blackwell::TileK);
 
 	int I = kTinyShape.intermediate_dim, H = kTinyShape.hidden_dim;
 	int mismatches = 0;
@@ -663,10 +558,9 @@ TEST(Mlp3, SingleTile) {
 	EXPECT_LT(e.max_rel,  0.05f) << "single-tile max_rel too high (mapping pin?)";
 }
 
-// ── Blackwell (Compute=100, paired-CTA 2SM) — requires an sm_100 GPU at runtime ──
 TEST(Mlp3, Correctness) {
 	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
-	for (const auto& s : kShapes2Sm) run3<Traits3Sm2, 100>(s);
+	for (const auto& s : kShapesSm100) run3<Traits3Blackwell, 100>(s);
 }
 
 // ── Hopper (Compute=90 / WGMMA, 1SM) — requires an sm_90 GPU at runtime ──
@@ -680,7 +574,7 @@ TEST(Mlp3, TFLOPs_Blackwell) {
 	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
 	if (!mlp3_bench_enabled())  GTEST_SKIP() << "set MLP3_BENCH=1 to run the TFLOPS benchmark";
 	BenchCfg cfg;
-	for (const auto& s : kBenchShapes) run3_bench<Traits3Sm2, 100>(s, cfg);
+	for (const auto& s : kBenchShapes) run3_bench<Traits3Blackwell, 100>(s, cfg);
 }
 
 TEST(Mlp3, TFLOPs_Hopper) {

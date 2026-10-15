@@ -10,7 +10,7 @@ then exercises the actual compiled bindings:
     contiguous and strided sub-groups, including the team-local PE numbering and
     cross-team PE translation,
   * the WORLD short-circuit,
-  * comm-schedule upload + pool clears (moe_configure_symmetric / pool_clear_all).
+  * MoE configuration + pool clears (moe_configure_symmetric / pool_clear_all).
 
 Each worker captures every result BEFORE the collective teardown
 (team_destroy / nvshmem_finalize / destroy_process_group) and only asserts
@@ -132,8 +132,11 @@ def test_team_from_pg_uses_bootstrap_pe_numbering(monkeypatch, isolated_team_sta
 
     def fake_all_gather_object(output, value, group=None):
         assert group is bootstrap_pg
-        assert value == (1, 3)
-        output[:] = [(0, 2), (1, 3), (0, 2), (1, 3)]
+        if isinstance(value, bool):
+            output[:] = [False] * 4
+        else:
+            assert value == (1, 3)
+            output[:] = [(0, 2), (1, 3), (0, 2), (1, 3)]
 
     monkeypatch.setattr(dist, "all_gather_object", fake_all_gather_object)
     monkeypatch.setattr(tvm_ffi, "team_world", lambda: 42)
@@ -165,6 +168,64 @@ def test_uncached_subgroup_lookup_never_creates_team(monkeypatch, isolated_team_
     assert nvshmem.resolve_team(pg) == 17
     assert nvshmem.resolve_team(pg, create=False) == 17
     assert create_calls == [True]
+
+
+def test_equivalent_process_groups_share_team(monkeypatch, isolated_team_state):
+    actor_group, ref_group = object(), object()
+    monkeypatch.setattr(nvshmem, "_pg_parent_pes", lambda _: (0, 2))
+    monkeypatch.setattr(nvshmem, "_bootstrap_context", lambda: (object(), (0, 1, 2, 3)))
+    calls = []
+    monkeypatch.setattr(nvshmem, "team_from_pg", lambda pg: calls.append(pg) or 17)
+    assert nvshmem.resolve_team(actor_group) == 17
+    assert nvshmem.resolve_team(ref_group, create=False) == 17
+    assert calls == [actor_group]
+
+
+@pytest.mark.parametrize("ranks", [(0, 2), (0, 1, 2, 3)])
+def test_team_lookup_fast_path_skips_rank_translation(monkeypatch, isolated_team_state, ranks):
+    pg = object()
+    monkeypatch.setattr(nvshmem, "_pg_parent_pes", lambda _: ranks)
+    monkeypatch.setattr(nvshmem, "_bootstrap_context", lambda: (object(), (0, 1, 2, 3)))
+    monkeypatch.setattr(tvm_ffi, "team_world", lambda: 0)
+    nvshmem._PG_TEAM_CACHE[(0, 2)] = 17
+    expected = nvshmem.resolve_team(pg, create=False)
+    monkeypatch.setattr(nvshmem, "_pg_parent_pes", lambda _: pytest.fail("cached PG must not reconstruct membership"))
+    monkeypatch.setattr(tvm_ffi, "team_world", lambda: pytest.fail("cached PG must not call native runtime"))
+    assert nvshmem.resolve_team(pg, create=False) == expected
+
+
+def test_team_destroy_invalidates_all_process_group_aliases(monkeypatch, isolated_team_state):
+    actor, ref, other = object(), object(), object()
+    nvshmem._PG_HANDLE_CACHE.update({actor: 17, ref: 17, other: 18})
+    nvshmem._PG_TEAM_CACHE.update({(0, 2): 17, (0, 1): 18})
+    monkeypatch.setattr(tvm_ffi, "team_destroy", lambda team: None)
+    nvshmem.team_destroy(17)
+    assert nvshmem._PG_HANDLE_CACHE == {other: 18}
+    assert nvshmem._PG_TEAM_CACHE == {(0, 1): 18}
+    nvshmem._reset_team_state()
+    assert nvshmem._PG_HANDLE_CACHE == {}
+    assert nvshmem._PG_TEAM_CACHE == {}
+
+
+def test_collective_team_setup_reuses_partially_overlapping_partition(monkeypatch, isolated_team_state):
+    bootstrap = object()
+    nvshmem._BOOTSTRAP_PG = bootstrap
+    nvshmem._BOOTSTRAP_GLOBAL_RANKS = tuple(range(6))
+    nvshmem._PG_TEAM_CACHE[(0, 1)] = 17
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_rank", lambda group: 0)
+    monkeypatch.setattr(nvshmem, "_pg_parent_pes", lambda group: (0, 1))
+    groups = [(0, 1), (0, 1), (2, 4), (3, 5), (2, 4), (3, 5)]
+
+    def gather(output, value, group):
+        output[:] = [True, True, False, False, False, False] if isinstance(value, bool) else groups
+
+    monkeypatch.setattr(dist, "all_gather_object", gather)
+    monkeypatch.setattr(tvm_ffi, "team_world", lambda: 0)
+    splits = []
+    monkeypatch.setattr(tvm_ffi, "team_split_strided", lambda *args: splits.append(args) or -1)
+    assert nvshmem.team_from_pg(object()) == 17
+    assert splits == [(0, 2, 2, 2), (0, 3, 2, 2)]
 
 
 def test_init_pmi_records_aligned_torch_world(monkeypatch, isolated_team_state):

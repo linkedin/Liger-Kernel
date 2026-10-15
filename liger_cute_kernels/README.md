@@ -20,6 +20,238 @@ classifier projection with per-token NLL and optional entropy. Local MAX/SUM
 reductions run in the tensor-core epilogue through NVLS or DirectPeer, with a
 sharded inter-host ring follow-up for multi-host execution.
 
+## Public runtime configuration
+
+Use `liger_cute_kernels.configure(...)` to initialize NVSHMEM once and prepare
+FLSCE and/or MoE through one public setup boundary. This API requires the LCK
+Python package containing this extension; older wheels do not expose it.
+Use a matching native build exposing the TP and EP context entry points.
+Successful native setup returns `None`. Unsupported devices raise
+`liger_cute_kernels.UnsupportedDeviceError` without loading or initializing
+native resources. The `liger_kernel.ops.configure.configure` frontend catches
+that specific error, emits a warning, and returns `False`. Consumers should
+use that Liger-Kernel frontend rather than inspect device capabilities or
+call LCK directly; operator frontends continue to own fallback selection.
+
+```python
+import torch
+import torch.distributed as dist
+
+from liger_cute_kernels import FusedLinearCrossEntropyConfig, MoEConfig, configure
+
+# Initialize torch.distributed and create tp_group/ep_group first.
+torch.cuda.set_device(local_rank)
+configure(
+    process_groups={"tp": tp_group, "ep": ep_group},
+    bootstrap_group=dist.group.WORLD,
+    device=torch.device("cuda", local_rank),
+    flsce=FusedLinearCrossEntropyConfig(
+        max_tokens=8192,
+        hidden_size=4096,
+        local_vocab_size=32000,
+        group="tp",
+    ),
+    moe=MoEConfig(
+        max_tokens=8192,
+        hidden_size=4096,
+        num_experts=128,
+        top_k=8,
+        num_hosts=1,  # This example assumes each EP group is within one host.
+        gpus_per_host=dist.get_world_size(ep_group),
+        group="ep",
+        max_inflight=1,  # Increase for multiple MoE forwards awaiting backward.
+    ),
+)
+```
+
+The bootstrap group defines `NVSHMEM_TEAM_WORLD`; it is **not inferred from
+the first operator's TP or EP group**. TP and EP can use different partitions
+of this common domain. `process_groups` accepts a `Mapping[str, ProcessGroup]`;
+names are arbitrary, and operator sections select them with `group="name"`.
+`group=None` selects the bootstrap group. Unknown names and `None` mapping
+values are rejected rather than silently selecting WORLD.
+
+Every declared group is prepared in sorted-name order, even if it is not yet
+used by an operator. Additional names can be registered in later calls; omitted
+names remain available until finalization. Reusing a name requires unchanged
+ordered membership. Merely registering more groups does not create additional
+operator workspaces.
+
+Every bootstrap rank must call `configure`, in the same
+order, with the same operator sections, capacities, and topology. Local operator
+groups must form consistent, equal-sized, arithmetic-stride partitions in
+bootstrap PE numbering. All ranks must use matching GPU architectures and SM
+counts; TP groups must also have matching host topology. Multi-host TP
+membership must be uniform and host-major. MoE's `num_hosts` and
+`gpus_per_host` describe each EP team, not the full bootstrap domain.
+
+Choose the bootstrap domain to include all intended TP and EP members. With
+pipeline parallelism, either arrange coordinated setup on every bootstrap rank,
+including ranks without an output head, or explicitly choose a smaller domain
+whose members all participate. Do not call a WORLD-collective setup only on
+`post_process` chunks.
+
+Calling `configure` without operator sections initializes only the runtime.
+A later collective call can add an operator without clearing the other's
+resources. Repeating an already prepared section with equal or smaller capacity
+reuses its native reservation. Reserve the maximum across actor/reference consumers
+upfront, including fixed-size microbatches; requests exceeding the reservation
+raise before kernel launch. FLSCE hidden capacity includes the frontend's
+alignment padding. MoE token, hidden, expert-count, and top-k requests may be
+smaller than the reserved limits.
+
+FLSCE capacities remain process-wide, while native execution contexts are cached
+by NVSHMEM team handle. Each context has its own local/remote teams, peer mappings,
+signals, and launch epochs. Bulk scratch is shared through the existing buffer
+pool, sized once for the maximum problem across supported TP topologies.
+Prepare additional actor/reference TP groups
+with another collective call; the groups can have different TP sizes:
+
+```python
+configure(
+    process_groups={"reference_tp": reference_tp_group},
+    flsce=FusedLinearCrossEntropyConfig(
+        max_tokens=2048,  # Must fit the original process-wide reservation.
+        hidden_size=4096,
+        local_vocab_size=local_vocab_size,
+        group="reference_tp",
+    ),
+)
+```
+
+Pass the appropriate process group to each FLSCE call. Backward retains the
+forward's team, and captured graphs retain their original context. Equivalent
+process-group objects with the same ordered membership reuse a native context.
+The Python fast path caches `ProcessGroup -> team_handle`, so repeated execution
+does not reconstruct rank lists or create teams. Native context lookup does not
+allocate or query topology.
+
+Additional contexts reserve only their signaling and mapping state, not another
+copy of the bulk scratch buffers. Symmetric signal allocations use collectively
+ordered slots, not local team-handle values. When only some teams in
+a new partition are already cached, every bootstrap PE still reserves that slot
+to preserve NVSHMEM heap ordering; cached teams continue using their original
+signals and epochs. Slot storage is retained until pool clear or finalization.
+
+The pool contains reusable internal buffers. Forward's saved LSE/entropy are
+ordinary PyTorch tensors, not pooled or symmetric-stack allocations. Symmetric
+tensors that must remain live across calls continue to use the symmetric stack;
+this change does not alter its ownership rules.
+
+MoE uses the same group lifecycle: repeated `configure(moe=MoEConfig(...))`
+calls prepare additional EP partitions beneath the original process-wide
+capacities, including different EP sizes. MoE visits peers in team-local
+round-robin order, `(rank + step) % team_size`, starting with the local PE.
+It needs neither device-global schedule tables nor host-topology fields in
+the kernel iterators, and does not assume a particular HCA layout.
+Each EP context owns its device workspace and symmetric-stack names. Fixed-size
+symmetric payload scratch stays shared. Pass the forward's team to low-level
+`moe_pop_fwd(team_handle)`; the autograd wrapper does this automatically.
+
+`MoEConfig.max_inflight` (default 1) reserves the maximum number of forwards
+awaiting backward **per EP context**. Count all MoE layers and microbatches whose
+intermediates can be live together. Forward intermediates remain in the symmetric
+stack, not the buffer pool. Reservation occurs collectively in `configure`, so
+independent EP execution never triggers a WORLD allocation. Exceeding this
+capacity raises before launch. Pop forwards in LIFO order within each context;
+different contexts have independent stacks. Equivalent groups share a context
+and its retained-forward limit. Warm up the shapes/configurations to be captured
+before capturing their graphs; a group's larger device scratch never invalidates
+another group's captured pointers.
+
+This API supports one CUDA device per process. Growing
+a live reservation remains unsupported. Call
+setup serially at a coordinated boundary, outside CUDA graph capture. **Serialize
+all native launches and graph replays on each process, including across different
+TP/EP groups:** use the same CUDA stream or explicit stream synchronization. Issue
+collectives in consistent order across participating ranks. Destroy teams or clear pools only
+after all dependent launches, backwards, and graphs have finished.
+The legacy low-level MoE setup retains WORLD-collective lazy stack allocation;
+use public `configure` for independent subgroup execution.
+
+Non-communicating kernels need no group workspace. The Triton vocab-parallel CE
+path already uses the caller's process group and per-call tensors; it does not
+share NVSHMEM counters or require a native capacity section.
+
+### One API through either package
+
+Downstream integrations can use the same API through Liger without importing
+NVSHMEM or TVM FFI. The public `liger_kernel.ops.configure` module contains a
+thin entry point and dependency-free configuration data classes, not per-op
+setup methods. It converts the data to LCK's configuration objects only when
+LCK is installed. For Megatron, pass
+the relevant initialized entries of its `pg_collection` explicitly; LCK does
+not depend on Megatron's collection type:
+
+```python
+from liger_kernel.ops.configure import FusedLinearCrossEntropyConfig, MoEConfig, configure
+
+native_configured = configure(
+    process_groups={"tp": pg_collection.tp, "ep": pg_collection.ep},
+    bootstrap_group=dist.group.WORLD,
+    device=torch.device("cuda", local_rank),
+    flsce=FusedLinearCrossEntropyConfig(
+        max_tokens=8192,
+        hidden_size=4096,
+        local_vocab_size=32000,
+        group="tp",
+    ),
+    moe=MoEConfig(
+        max_tokens=8192,
+        hidden_size=4096,
+        num_experts=128,
+        top_k=8,
+        num_hosts=1,
+        gpus_per_host=dist.get_world_size(pg_collection.ep),
+        group="ep",
+    ),
+)
+```
+
+There is one signature: `configure(*, process_groups=None, bootstrap_group=None, device=None,
+flsce=None, moe=None)`. Operator-specific values belong to configuration data,
+not methods on the operator classes. Either section can be omitted. The
+`liger_kernel.ops.cute` implementation namespace remains private and does not
+export this configuration API.
+
+Ordinary operator imports do not expose or load this optional setup API.
+Importing `liger_kernel.ops.configure`, importing its function or classes, and
+constructing configuration objects all work without LCK installed. LCK is
+loaded only when `configure` is called. If LCK is absent or does not support
+the device, the function emits a
+warning and returns `False` without changing the runtime; other Liger kernels
+remain usable. This warning conversion belongs to Liger-Kernel: LCK itself
+raises `UnsupportedDeviceError`. Successful setup through the Liger-Kernel
+frontend returns `True`. Other failures inside an
+installed LCK package still propagate, including invalid capacity, inconsistent
+collective plans, and conflicting NVSHMEM ownership. All bootstrap ranks must
+use a consistent installation and matching hardware. Skipping setup does not
+enable an explicitly selected native-only
+operator or change backend selection.
+The operations' existing `.apply(...)` interfaces and fallback dispatch remain
+unchanged.
+
+### Ownership, offload, and teardown
+
+Set NVSHMEM environment variables **before the first configuration call**.
+Configuration checks the visible host runtime's initialization status and
+rejects already initialized unmanaged runtimes, including DeepEP V1 RDMA.
+Sharing ownership is unsupported in either initialization order: do not
+initialize another NVSHMEM owner after LCK. This check is not a general
+interoperability mechanism for separately loaded or hidden runtimes.
+DeepEP V2 and V1 paths that do not initialize NVSHMEM are not rejected merely
+because their Python modules are imported.
+
+The symmetric heap and workspaces remain resident during parameter/optimizer
+offload and colocated inference-engine sleep/wake. Account for them in the
+device memory budget; model offload does not release them.
+There is no per-model automatic finalization. Once all forwards, backwards,
+and graph replays have finished, synchronize and collectively call
+`liger_cute_kernels.nvshmem.finalize()` before destroying torch process groups.
+For an explicit quiescent pool reset, `nvshmem.pool_clear_all()` invalidates
+both operator reservations; configure them again before use. Partial
+`pool_clear_buffers()` is rejected while the public API manages resources.
+
 ## LigerMoE design
 
 ### Forward pass
@@ -304,12 +536,16 @@ src/liger_kernel/ops/cute/
 
 ## Prerequisites
 
-- **CUDA toolkit 12.9** with `nvcc` (release builds pin 12.9.1) and either SM 9.0a (Hopper / `sm_90a`) or
+- **CUDA toolkit 12.9 or 13.0** with `nvcc` (release builds pin 12.9.1) and either SM 9.0a (Hopper / `sm_90a`) or
   Blackwell family (`sm_100f`) support. The family target covers both B200
   (`sm_100`) and B300 (`sm_103`) while enabling TCGEN05 UMMA and TMEM.
-  CUDA 13.0 also builds the Hopper path, but currently rejects mixed
-  `.cta_group::1`/`.cta_group::2` instructions in the Blackwell MoE backward
-  kernel; the combined release wheel therefore remains on CUDA 12.9.
+  CUDA 13.0 is also supported for native source builds. Blackwell MoE uses
+  only `.cta_group::1` instructions: MLP3/MLP4 use M128xN128 tiles, CTA-local
+  TMEM and single-CTA TMA loads, matching the other fused backward phases.
+  The separate Blackwell cross-entropy kernels retain `.cta_group::2`.
+  This avoids mixing instruction groups within a kernel, which CUDA 13
+  rejects. Release wheels remain on CUDA 12.9; this does not change the
+  release toolchain or previously published artifacts.
 - **NVSHMEM** install (host `.so`, device `.a`, headers). Two layouts are
   supported:
   - Native/system install: point `NVSHMEM_HOME` at it, or use the default

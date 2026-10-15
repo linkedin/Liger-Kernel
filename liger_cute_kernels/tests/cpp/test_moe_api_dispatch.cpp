@@ -535,7 +535,7 @@ void run_dispatch_coverage_for_compute(int target_compute) {
 		else
 			EXPECT_TRUE(mean_relative_close(y, reference_y))
 				<< "forward output differs from the reference template";
-		pop_fwd_fn();
+		pop_fwd_fn(team);
 	}
 
 	const std::string fwd_force = force_string(fwd_configs.front());
@@ -572,7 +572,7 @@ void run_dispatch_coverage_for_compute(int target_compute) {
 				reference_grads = std::move(grads);
 				have_reference_grads = true;
 			}
-			pop_fwd_fn();
+			pop_fwd_fn(team);
 		}
 	}
 

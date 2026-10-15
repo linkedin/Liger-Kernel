@@ -144,6 +144,7 @@ def _fused_add_rms_norm_backward_kernel(
     casting_mode: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     has_dS_out: tl.constexpr,
+    COMPUTE_DW: tl.constexpr = True,
 ):
     """
     This kernel is adapted from the rms_norm backward kernel, and is adapted to support the residual
@@ -169,7 +170,8 @@ def _fused_add_rms_norm_backward_kernel(
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
-    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    if COMPUTE_DW:
+        dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
     W_row = W_row + offset.to(tl.float32)
@@ -187,11 +189,12 @@ def _fused_add_rms_norm_backward_kernel(
         X_row = X_row.to(tl.float32)
 
         # Calculate the gradient of W first to reduce peak register liveness
-        if casting_mode == _CASTING_MODE_LLAMA:
-            dW_row += dY_row * (X_row * rstd_row).to(X_dtype)
-        else:
-            # here X_row is already in fp32 (see previous cast)
-            dW_row += dY_row * (X_row * rstd_row)
+        if COMPUTE_DW:
+            if casting_mode == _CASTING_MODE_LLAMA:
+                dW_row += dY_row * (X_row * rstd_row).to(X_dtype)
+            else:
+                # here X_row is already in fp32 (see previous cast)
+                dW_row += dY_row * (X_row * rstd_row)
 
         # Different backward graphs for different casting modes
         if casting_mode == _CASTING_MODE_LLAMA:
@@ -214,7 +217,8 @@ def _fused_add_rms_norm_backward_kernel(
 
         tl.store(dx_base + col_offsets, dX_row.to(X_dtype), mask=mask)
 
-    tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
+    if COMPUTE_DW:
+        tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
 
 
 _str_to_casting_mode = {
@@ -283,7 +287,7 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
 
 
 def fused_add_rms_norm_backward(
-    dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, num_stages, in_place
+    dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, num_stages, in_place, needs_dw=None
 ):
     shape = dY.shape
     dim = shape[-1]
@@ -291,6 +295,8 @@ def fused_add_rms_norm_backward(
     dS_out = dS_out.view(-1, dim)
     S = S.view(-1, dim)
     n_rows, n_cols = dY.shape
+
+    compute_dw = True if needs_dw is None else needs_dw
 
     sm_count = 1
     if S.device.type == "cuda":
@@ -301,7 +307,7 @@ def fused_add_rms_norm_backward(
         sm_count = get_npu_core_count()
 
     # fp32 for numerical stability especially.
-    _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device) if compute_dw else None
 
     if n_cols > BLOCK_SIZE:
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
@@ -334,7 +340,7 @@ def fused_add_rms_norm_backward(
         RSTD,
         RSTD.stride(0),
         _dW,
-        _dW.stride(0),
+        _dW.stride(0) if compute_dw else 0,
         n_rows,
         n_cols,
         offset,
@@ -344,11 +350,12 @@ def fused_add_rms_norm_backward(
         num_warps=num_warps,
         num_stages=num_stages,
         has_dS_out=dS_out is not None,
+        COMPUTE_DW=compute_dw,
         **kernel_args,  # XPU-specific optimization
     )
 
     dX = dX.view(*shape)
-    dW = _dW.sum(dim=0).to(W.dtype)
+    dW = _dW.sum(dim=0).to(W.dtype) if compute_dw else None
 
     return dX, dX, dW  # dR is equal to dX
 
@@ -406,6 +413,7 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
         Y: (B, T, H) or (BxT, H)
         """
         S, W, RSTD = ctx.saved_tensors
+        needs_dw = ctx.needs_input_grad[2]
         dX, dR, dW = fused_add_rms_norm_backward(
             dY,
             dS_out,
@@ -418,6 +426,7 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
             ctx.num_warps,
             ctx.num_stages,
             ctx.in_place,
+            needs_dw=needs_dw,
         )
 
         return dX, dR, dW, None, None, None, None, None

@@ -7,6 +7,7 @@
 #include <type_traits>
 
 #include "backward_gemm_mainloop_sm90.cuh"
+#include "forward_gemm_sm90.cuh"
 #include "fused_scaled_linear_cross_entropy.cuh"
 
 namespace fslce = liger::fused_scaled_linear_cross_entropy;

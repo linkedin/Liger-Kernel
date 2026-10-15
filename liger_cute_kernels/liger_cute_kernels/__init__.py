@@ -15,8 +15,15 @@ torch-free core ABI rather than a Torch extension. NVSHMEM is supplied separatel
 the ``cu12`` and ``cu13`` extras install the matching pinned runtime dependency.
 
 The package currently includes expert-parallel MoE and tensor-parallel fused
-scaled linear cross-entropy kernels. Consumers should go through
-``liger_kernel.ops.cute`` rather than importing this package directly.
+scaled linear cross-entropy kernels. Use ``configure`` for collective runtime
+setup, and ``liger_kernel.ops`` for autograd-enabled execution.
 """
 
 from __future__ import annotations
+
+from .configuration import FusedLinearCrossEntropyConfig
+from .configuration import MoEConfig
+from .configuration import UnsupportedDeviceError
+from .configuration import configure
+
+__all__ = ["FusedLinearCrossEntropyConfig", "MoEConfig", "UnsupportedDeviceError", "configure"]
