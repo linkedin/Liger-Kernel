@@ -153,6 +153,34 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol):
 
 
 @pytest.mark.parametrize(
+    "shape",
+    [
+        (8, 4096),
+        (8, 8192),
+        (2048, 8192),  # MLP activation shape of a 2.6B model using PolyNorm
+    ],
+)
+def test_correctness_fp16_large_hidden(shape):
+    """
+    For unit-variance fp16 input, sum(x^6) exceeds the fp16 max (65504) at hidden size ~4096,
+    so the forward must accumulate in fp32. Compare against the naive implementation in fp32.
+    """
+    torch.manual_seed(0)
+    x = torch.randn(*shape, device=device, dtype=torch.float16)
+
+    naive_poly_norm = NaivePolyNorm(eps=1e-6).to(device)
+    liger_poly_norm = LigerPolyNorm(eps=1e-6).to(device).to(torch.float16)
+    with torch.no_grad():
+        liger_poly_norm.weight.copy_(naive_poly_norm.weight)
+        liger_poly_norm.bias.copy_(naive_poly_norm.bias)
+        ref_output = naive_poly_norm(x.float())
+        triton_output = liger_poly_norm(x)
+
+    assert torch.isfinite(triton_output).all()
+    assert_verbose_allclose(ref_output, triton_output.float(), atol=2e-3, rtol=2e-3)
+
+
+@pytest.mark.parametrize(
     "bs, sl, hd",
     [
         (2, 2, 8),
