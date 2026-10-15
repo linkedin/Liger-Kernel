@@ -75,6 +75,7 @@ from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_backward_fused_sm9
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_sm90 import ScaledCEForwardFragmentConfig
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_sm90 import scaled_ce_forward_fragment
 from liger_kernel.ops.cutedsl.ops.utils import ensure_cuda_context
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import _scaled_ce_outputs
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 
@@ -175,13 +176,14 @@ def fused_scaled_cross_entropy_forward(
     ignore_index=-100,
     m_tiles_per_cluster=1,
     return_entropy=False,
+    selected_token_ids=None,
 ):
     """Per-token fused scaled cross entropy forward.
 
     Returns ``(nll, entropy, lse, x_padded, weight_padded, hidden_size)``.
     ``nll`` is the ``[M]`` FP32 negative log-likelihood, ``entropy`` is BF16
     when requested (otherwise ``None``), and ``lse`` is the FP32 log-sum-exp
-    reused by backward.
+    reused by backward. Supplied selected IDs append an FP32 ``[M,K]`` output.
     """
     _validate_inputs(_input, weight, target, ignore_index, m_tiles_per_cluster)
     _validate_temperature(temperature)
@@ -191,7 +193,8 @@ def fused_scaled_cross_entropy_forward(
     x_padded, weight_padded, hidden_size = _pad_hidden(_input, weight)
     target = target.contiguous()
 
-    nll, entropy, lse = scaled_ce_forward_fragment(
+    selected_kwargs = {"selected_token_ids": selected_token_ids} if selected_token_ids is not None else {}
+    outputs = scaled_ce_forward_fragment(
         x_padded,
         weight_padded,
         target,
@@ -204,8 +207,11 @@ def fused_scaled_cross_entropy_forward(
             weight_padded.shape[0],
             return_entropy,
         ),
+        **selected_kwargs,
     )
-    return nll, entropy, lse, x_padded, weight_padded, hidden_size
+    nll, entropy, lse = outputs[:3]
+    result = (nll, entropy, lse, x_padded, weight_padded, hidden_size)
+    return result + (outputs[3],) if selected_token_ids is not None else result
 
 
 def fused_scaled_cross_entropy_backward(
@@ -220,6 +226,8 @@ def fused_scaled_cross_entropy_backward(
     entropy=None,
     grad_entropy=None,
     input_dtype=torch.bfloat16,
+    selected_token_ids=None,
+    grad_selected=None,
 ):
     """Backward of :func:`fused_scaled_cross_entropy_forward`.
 
@@ -241,6 +249,9 @@ def fused_scaled_cross_entropy_backward(
     entropy_scale = None
     if grad_entropy is not None:
         entropy_scale = (grad_entropy.detach().to(torch.float32) / temperature).contiguous()
+    selected_scale = None
+    if grad_selected is not None:
+        selected_scale = (grad_selected.detach().to(torch.float32) / temperature).contiguous()
     total_m_tiles = (tokens + BACKWARD_M_TILE - 1) // BACKWARD_M_TILE
     m_tiles_per_wave = min(BACKWARD_M_TILES_PER_WAVE, total_m_tiles)
     return fused_backward_one_kernel(
@@ -256,16 +267,20 @@ def fused_scaled_cross_entropy_backward(
         input_dtype,
         temperature,
         config=FusedBackwardConfig(m_tiles_per_wave=m_tiles_per_wave),
+        selected_token_ids=selected_token_ids,
+        selected_grad=selected_scale,
     )
 
 
 class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
     """``apply(_input, weight, target, temperature=1.0, ignore_index=-100,
-    m_tiles_per_cluster=1, return_entropy=False)``.
+    m_tiles_per_cluster=1, return_entropy=False, selected_token_ids=None)``.
 
     Forward returns the per-token NLL ``[M]`` (FP32).  Backward expects the
     per-token upstream gradient ``[M]``.  ``m_tiles_per_cluster`` is retained
     for API compatibility; backward always uses fixed 1024-token waves.
+    Selected IDs append differentiable FP32 log-probabilities ``[M,K]`` using
+    the same FP16-staged projection and full-vocabulary normalizer as NLL.
     """
 
     @staticmethod
@@ -279,10 +294,11 @@ class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
         ignore_index=-100,
         m_tiles_per_cluster=1,
         return_entropy=False,
+        selected_token_ids=None,
     ):
         ctx.set_materialize_grads(False)
         _validate_temperature(temperature)
-        nll, entropy, lse, x_padded, weight_padded, hidden_size = fused_scaled_cross_entropy_forward(
+        outputs = fused_scaled_cross_entropy_forward(
             _input,
             weight,
             target,
@@ -290,20 +306,26 @@ class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
             ignore_index,
             m_tiles_per_cluster,
             return_entropy,
+            selected_token_ids,
         )
+        nll, entropy, lse, x_padded, weight_padded, hidden_size = outputs[:6]
+        selected = outputs[6] if selected_token_ids is not None else None
+        selected_token_ids = selected_token_ids.contiguous() if selected_token_ids is not None else None
         saved_entropy = entropy if entropy is not None else torch.empty(0, device=_input.device, dtype=torch.bfloat16)
-        ctx.save_for_backward(x_padded, weight_padded, target, lse, saved_entropy)
+        ctx.save_for_backward(x_padded, weight_padded, target, lse, saved_entropy, selected_token_ids)
         ctx.ignore_index = ignore_index
         ctx.temperature = temperature
         ctx.hidden_size = hidden_size
         ctx.input_dtype = _input.dtype
         ctx.return_entropy = return_entropy
-        return (nll, entropy) if return_entropy else nll
+        return _scaled_ce_outputs(nll, entropy, selected)
 
     @staticmethod
     @amp_custom_bwd
-    def backward(ctx, grad_output, grad_entropy=None):
-        x_padded, weight_padded, target, lse, entropy = ctx.saved_tensors
+    def backward(ctx, grad_output, grad_entropy=None, grad_selected=None):
+        x_padded, weight_padded, target, lse, entropy, selected_token_ids = ctx.saved_tensors
+        if not ctx.return_entropy:
+            grad_selected, grad_entropy = grad_entropy, None
         if grad_output is None:
             grad_output = torch.zeros(target.shape[0], device=target.device, dtype=torch.float32)
         grad_input, grad_weight = fused_scaled_cross_entropy_backward(
@@ -318,8 +340,10 @@ class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
             entropy=entropy if ctx.return_entropy else None,
             grad_entropy=grad_entropy,
             input_dtype=ctx.input_dtype,
+            selected_token_ids=selected_token_ids,
+            grad_selected=grad_selected,
         )
-        return grad_input, grad_weight, None, None, None, None, None
+        return grad_input, grad_weight, None, None, None, None, None, None
 
 
 __all__ = [

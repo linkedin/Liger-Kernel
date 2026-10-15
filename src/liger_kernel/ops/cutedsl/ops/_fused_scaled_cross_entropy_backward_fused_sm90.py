@@ -369,6 +369,7 @@ class FusedBackwardConfig:
 
     fast_math: bool = True
     with_entropy: bool = False
+    num_selected: int = 0
 
     @property
     def wave_rows(self):
@@ -466,6 +467,7 @@ class _FusedBackwardSM90:
         self.wave_rows = config.wave_rows
         self.fast_math = config.fast_math
         self.with_entropy = config.with_entropy
+        self.num_selected = config.num_selected
 
         self.logit_dtype = Float16 if config.dz_logit_dtype == "f16" else BFloat16
         self.logit_stride = config.logit_stride
@@ -620,6 +622,9 @@ class _FusedBackwardSM90:
         scale: cute.Tensor,
         entropy: cute.Tensor,
         entropy_scale: cute.Tensor,
+        selected_token_ids: cute.Tensor,
+        selected_scale: cute.Tensor,
+        selected_scale_sum: cute.Tensor,
         inverse_temperature: Float32,
         barrier: cute.Tensor,  # int32 [1]
         ignore_index: Int32,
@@ -774,6 +779,9 @@ class _FusedBackwardSM90:
             scale,
             entropy,
             entropy_scale,
+            selected_token_ids,
+            selected_scale,
+            selected_scale_sum,
             inverse_temperature,
             barrier,
             mma_dz,
@@ -854,6 +862,9 @@ class _FusedBackwardSM90:
         scale: cute.Tensor,
         entropy: cute.Tensor,
         entropy_scale: cute.Tensor,
+        selected_token_ids: cute.Tensor,
+        selected_scale: cute.Tensor,
+        selected_scale_sum: cute.Tensor,
         inverse_temperature: Float32,
         vals: cute.Tensor,
         ignore_index: Int32,
@@ -875,6 +886,8 @@ class _FusedBackwardSM90:
             row_entropy_scale = Float32(0.0)
             row_lse = Float32(0.0)
             tgt_local = Int32(-1)
+            selected_active = Int32(0)
+            row_selected_sum = Float32(0.0)
             if row < target.shape[0]:
                 tcol = Int32(target[row])
                 if tcol != ignore_index:
@@ -885,6 +898,18 @@ class _FusedBackwardSM90:
                         row_entropy_scale = entropy_scale[row]
                     if tcol >= n_base and tcol < n_base + self.tile_n:
                         tgt_local = tcol - n_base
+                    if cutlass.const_expr(self.num_selected > 0):
+                        selected_active = Int32(1)
+                        row_selected_sum = selected_scale_sum[row]
+            row_probability_scale = row_scale - row_selected_sum
+            if cutlass.const_expr(self.num_selected > 0):
+                selected_cols = cute.make_rmem_tensor((self.num_selected,), Int32)
+                selected_tile_active = Int32(0)
+                for k in cutlass.range_constexpr(self.num_selected):
+                    col = Int32(selected_token_ids[k]) - n_base
+                    selected_cols[k] = col
+                    if selected_active and col >= 0 and col < self.tile_n:
+                        selected_tile_active = Int32(1)
 
             rstate = pipeline.PipelineState(1, Int32(0), cr_i, cr_p)
             tile_pipe.consumer_wait(rstate)
@@ -899,29 +924,38 @@ class _FusedBackwardSM90:
                     v = Float32(0.0)
                     if n_base + c0 + j < vocab_size:
                         if cutlass.const_expr(self.with_entropy):
-                            if row_scale != 0.0 or row_entropy_scale != 0.0:
+                            if row_probability_scale != 0.0 or row_entropy_scale != 0.0:
                                 scaled_logit = vals[j] * inverse_temperature
                                 probability = cute.math.exp2(
                                     (scaled_logit - row_lse) * LOG2_E,
                                     fastmath=self.fast_math,
                                 )
                                 v = probability * (
-                                    row_scale + (row_lse - row_entropy - scaled_logit) * row_entropy_scale
+                                    row_probability_scale + (row_lse - row_entropy - scaled_logit) * row_entropy_scale
                                 )
                         else:
-                            if row_scale != 0.0:
+                            if row_probability_scale != 0.0:
                                 v = (
                                     cute.math.exp2(
                                         (vals[j] * inverse_temperature - row_lse) * LOG2_E,
                                         fastmath=self.fast_math,
                                     )
-                                    * row_scale
+                                    * row_probability_scale
                                 )
                     vals[j] = v
                 if tgt_local >= c0 and tgt_local < c0 + chunk:
                     for j in cutlass.range_constexpr(chunk):
                         if tgt_local == c0 + j:
                             vals[j] = vals[j] - row_scale
+                if cutlass.const_expr(self.num_selected > 0):
+                    if selected_tile_active:
+                        for k in cutlass.range_constexpr(self.num_selected):
+                            col = selected_cols[k]
+                            if col >= c0 and col < c0 + chunk:
+                                selected_grad = selected_scale[row, k]
+                                for j in cutlass.range_constexpr(chunk):
+                                    if col == c0 + j:
+                                        vals[j] = vals[j] + selected_grad
 
                 if local_warp == 0:
                     cute.arch.cp_async_bulk_wait_group(self.dz_store_stages - 1, read=True)
@@ -1518,6 +1552,9 @@ class _FusedBackwardSM90:
         scale: cute.Tensor,
         entropy: cute.Tensor,
         entropy_scale: cute.Tensor,
+        selected_token_ids: cute.Tensor,
+        selected_scale: cute.Tensor,
+        selected_scale_sum: cute.Tensor,
         inverse_temperature: Float32,
         barrier: cute.Tensor,
         mma_dz: cute.TiledMma,
@@ -1745,6 +1782,9 @@ class _FusedBackwardSM90:
                     scale,
                     entropy,
                     entropy_scale,
+                    selected_token_ids,
+                    selected_scale,
+                    selected_scale_sum,
                     inverse_temperature,
                     vals,
                     ignore_index,
@@ -1998,6 +2038,8 @@ def fused_backward_one_kernel(
     temperature=1.0,
     config: FusedBackwardConfig = None,
     max_clusters=None,
+    selected_token_ids=None,
+    selected_grad=None,
 ):
     """One-launch dZ+dX+dW backward.  Returns ``(grad_input, grad_weight)``.
 
@@ -2037,6 +2079,19 @@ def fused_backward_one_kernel(
         entropy_scale = torch.empty(1, device=device, dtype=torch.float32)
     if config.with_entropy != with_entropy:
         config = FusedBackwardConfig(**{**config.__dict__, "with_entropy": with_entropy})
+    if selected_grad is not None and selected_token_ids is None:
+        raise ValueError("selected_token_ids is required with selected_grad")
+    num_selected = selected_token_ids.numel() if selected_grad is not None else 0
+    if selected_grad is not None and selected_grad.shape != (tokens, num_selected):
+        raise ValueError("selected_grad must have shape [M, K]")
+    if num_selected:
+        selected_scale = selected_grad.detach().float().contiguous()
+        selected_scale_sum = selected_scale.sum(-1)
+    else:
+        selected_scale = scale.view(tokens, 1)
+        selected_scale_sum = scale
+    if config.num_selected != num_selected:
+        config = FusedBackwardConfig(**{**config.__dict__, "num_selected": num_selected})
     target = target.contiguous()
     lse = lse.contiguous()
 
@@ -2098,6 +2153,9 @@ def fused_backward_one_kernel(
     scale_c = to_cute_tensor(scale, assumed_align=4)
     entropy_c = to_cute_tensor(entropy, assumed_align=2)
     entropy_scale_c = to_cute_tensor(entropy_scale, assumed_align=4)
+    selected_ids_c = to_cute_tensor(selected_token_ids if num_selected else target, assumed_align=8)
+    selected_scale_c = to_cute_tensor(selected_scale, leading_dim=1, assumed_align=4)
+    selected_sum_c = to_cute_tensor(selected_scale_sum, assumed_align=4)
     inverse_temperature = Float32(1.0 / temperature)
 
     # A single int32 counter, zeroed for this launch.  Each device-side barrier
@@ -2125,6 +2183,9 @@ def fused_backward_one_kernel(
             scale_c,
             entropy_c,
             entropy_scale_c,
+            selected_ids_c,
+            selected_scale_c,
+            selected_sum_c,
             inverse_temperature,
             bar_c,
             Int32(ignore_index),
@@ -2147,6 +2208,9 @@ def fused_backward_one_kernel(
         scale_c,
         entropy_c,
         entropy_scale_c,
+        selected_ids_c,
+        selected_scale_c,
+        selected_sum_c,
         inverse_temperature,
         bar_c,
         Int32(ignore_index),
