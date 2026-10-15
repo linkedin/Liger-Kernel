@@ -925,7 +925,9 @@ class GrpoLossFunction(torch.autograd.Function):
         elif loss_type == "luspo":
             # loss = mean(per_token_loss * seq_lens), mean divides by B*L
             seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
-            dloss = dloss_input * seq_lens_bwd / (B * L)
+            # The backward kernels index DLOSS per token (off_b * stride0 + off_l * stride1), so the
+            # per-sequence (B, 1) scale must be materialized as a (B, L) tensor like the other loss types.
+            dloss = (dloss_input * seq_lens_bwd / (B * L)).expand(B, L).contiguous()
         else:
             raise ValueError(f"Unknown loss_type: {loss_type}")
 
