@@ -35,6 +35,7 @@ from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmer
 from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmerTextCentered
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
+from liger_kernel.transformers.rope import liger_rotary_pos_emb_gpt_oss
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
@@ -1978,7 +1979,7 @@ def apply_liger_kernel_to_gpt_oss(
     from transformers.models.gpt_oss.modeling_gpt_oss import GptOssModel
 
     if rope:
-        modeling_gpt_oss.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_gpt_oss.apply_rotary_pos_emb = liger_rotary_pos_emb_gpt_oss
 
     if rms_norm:
         modeling_gpt_oss.GptOssRMSNorm = LigerRMSNorm
@@ -3216,7 +3217,7 @@ def apply_liger_kernel_to_qwen3_next(
 
 
 def apply_liger_kernel_to_qwen3_5(
-    rope: bool = False,
+    rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -3227,8 +3228,11 @@ def apply_liger_kernel_to_qwen3_5(
     Apply Liger kernels to replace original implementation in HuggingFace Qwen3.5 dense models.
 
     Args:
-        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
-            Not yet supported for Qwen3.5 due to hybrid attention (Gated DeltaNet + Gated Attention).
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+            Qwen3.5 uses partial RoPE (partial_rotary_factor=0.25 by default) for text; the Liger kernel
+            correctly infers rotary_dim from cos/sin width, so full and partial RoPE both work.
+            Both text attention (apply_rotary_pos_emb) and vision attention (apply_rotary_pos_emb_vision)
+            are patched.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is True.
@@ -3260,7 +3264,8 @@ def apply_liger_kernel_to_qwen3_5(
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
     if rope:
-        raise NotImplementedError("liger_rotary_pos_emb is not available for Qwen3_5 models.")
+        modeling_qwen3_5.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_qwen3_5.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_vision
 
     if rms_norm:
         modeling_qwen3_5.Qwen3_5RMSNorm = LigerRMSNormForQwen3Next
@@ -3316,7 +3321,7 @@ def apply_liger_kernel_to_qwen3_5(
 
 
 def apply_liger_kernel_to_qwen3_5_moe(
-    rope: bool = False,
+    rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -3327,11 +3332,13 @@ def apply_liger_kernel_to_qwen3_5_moe(
     Apply Liger kernels to replace original implementation in HuggingFace Qwen3.5 MoE models.
 
     Supports both the text-only (`Qwen3_5MoeForCausalLM`, `Qwen3_5MoeTextModel`) and the
-    multimodal (`Qwen3_5MoeForConditionalGeneration`, `Qwen3_5MoeModel`) classes. The vision
-    tower itself is not patched.
+    multimodal (`Qwen3_5MoeForConditionalGeneration`, `Qwen3_5MoeModel`) classes.
 
     Args:
-        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+            Qwen3.5 MoE shares the same rotary position embedding convention as the dense model.
+            Both text attention (apply_rotary_pos_emb) and vision attention (apply_rotary_pos_emb_vision)
+            are patched.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is True.
@@ -3360,7 +3367,8 @@ def apply_liger_kernel_to_qwen3_5_moe(
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
     if rope:
-        raise NotImplementedError("liger_rotary_pos_emb is not available for Qwen3_5Moe models.")
+        modeling_qwen3_5_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_qwen3_5_moe.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_vision
     if rms_norm:
         modeling_qwen3_5_moe.Qwen3_5MoeRMSNorm = LigerRMSNormForQwen3Next
     if cross_entropy:
