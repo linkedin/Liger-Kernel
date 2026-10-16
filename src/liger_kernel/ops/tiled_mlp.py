@@ -19,6 +19,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
 
     This module re-computes `forward` in the `backward`. So the `forward` occurs twice each iteration.
     And if you're using activation checkpointing it then occurs thrice.
+    Explicit parameter tensor inputs keep backward reachable when activations are frozen.
 
     Args:
         fn: the function to call on sharded inputs (e.g., mlp.forward)
@@ -40,10 +41,12 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         x: torch.Tensor,
         shards: int,
         compute_params: Optional[List[torch.nn.Parameter]] = None,
+        *parameters: torch.nn.Parameter,
     ) -> torch.Tensor:
         ctx.fn = fn
         ctx.mlp_module = mlp_module
         ctx.shards = shards
+        ctx.num_parameters = len(parameters)
         ctx.save_for_backward(x)
 
         # x.shape could be [bs, seqlen, hidden_size] or [seqlen, hidden_size] (moe experts)
@@ -62,7 +65,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         mlp_module = ctx.mlp_module
         shards = ctx.shards
 
-        x_requires_grad = x.requires_grad
+        x_requires_grad = ctx.needs_input_grad[2]
         x = x.detach()
         # detach() unsets x.requires_grad, so restore it
         x.requires_grad_(x_requires_grad)
@@ -74,7 +77,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         # flatten bs+seqlen to avoid having stride issues when narrowing into seqlen w/ bs>1
         x = x.view(-1, hidden_size)
         incoming_grad = grads[0].view(-1, hidden_size)
-        x_grad = torch.zeros_like(x)
+        x_grad = torch.zeros_like(x) if x_requires_grad else None
 
         x_shards = list(torch.chunk(x, chunks=shards, dim=0))
 
@@ -85,7 +88,8 @@ class LigerTiledMLPFunction(torch.autograd.Function):
             shard_step = x_shards[i].shape[0]
             shard_offset = i * x_shards[0].shape[0]
 
-            x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
+            if x_requires_grad:
+                x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
             incoming_grad_shard = incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
 
             with torch.enable_grad():
@@ -93,9 +97,10 @@ class LigerTiledMLPFunction(torch.autograd.Function):
             torch.autograd.backward(output, incoming_grad_shard)
 
         # unflatten
-        x_grad = x_grad.view(x_shape_orig)
+        if x_requires_grad:
+            x_grad = x_grad.view(x_shape_orig)
 
-        return (None, None, x_grad, None, None)
+        return (None, None, x_grad, None, None) + (None,) * ctx.num_parameters
 
 
 def apply_tiled_mlp(
@@ -126,6 +131,7 @@ def apply_tiled_mlp(
 
     # Ensure num_shards is at least 1
     num_shards = max(1, num_shards)
+    parameters = tuple(mlp_module.parameters()) if compute_params is None else tuple(compute_params)
 
     return LigerTiledMLPFunction.apply(
         fn,
@@ -133,4 +139,5 @@ def apply_tiled_mlp(
         x,
         num_shards,
         compute_params,
+        *parameters,
     )
