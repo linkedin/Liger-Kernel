@@ -19,6 +19,12 @@ import triton.language as tl
 # autotuner handles such errors itself.
 _AUTOTUNE_DISABLED = os.environ.get("LIGER_FUSED_MOE_AUTOTUNE", "1").lower() in ("0", "false", "no")
 
+# Matmul precision for fp32 tl.dot operands. Triton defaults to TF32 (10 mantissa
+# bits), whereas PyTorch fp32 matmuls default to full fp32 ("highest"), so the
+# default silently degrades fp32 forward and backward by ~1e-3 relative error.
+# "ieee" is plain fp32 FMA math; it has no effect on bf16/fp16 operands.
+_FP32_DOT_PRECISION: tl.constexpr = tl.constexpr("ieee")
+
 # ---------------------------------------------------------------------------
 # Routing metadata overview
 #
@@ -426,7 +432,7 @@ def _fused_up_proj_swiglu_kernel(
             mask=w_mask,
             other=0.0,
         )
-        acc_gate = tl.dot(x_tile, tl.trans(w_gate), acc=acc_gate)
+        acc_gate = tl.dot(x_tile, tl.trans(w_gate), acc=acc_gate, input_precision=_FP32_DOT_PRECISION)
 
         w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
         w_up = tl.load(
@@ -435,7 +441,7 @@ def _fused_up_proj_swiglu_kernel(
             other=0.0,
         )
 
-        acc_up = tl.dot(x_tile, tl.trans(w_up), acc=acc_up)
+        acc_up = tl.dot(x_tile, tl.trans(w_up), acc=acc_up, input_precision=_FP32_DOT_PRECISION)
 
     out_mask = row_mask[:, None] & n_mask[None, :]
 
@@ -521,7 +527,7 @@ def _fused_down_proj_kernel(
             other=0.0,
         )
 
-        acc = tl.dot(a_tile, tl.trans(w_tile), acc=acc)
+        acc = tl.dot(a_tile, tl.trans(w_tile), acc=acc, input_precision=_FP32_DOT_PRECISION)
 
     Y_ptrs = Y_ptr + row_offs[:, None] * stride_Y_TK + n_idx[None, :] * stride_Y_H
     tl.store(Y_ptrs, acc.to(Y_ptr.dtype.element_ty), mask=row_mask[:, None] & n_mask[None, :])
@@ -678,7 +684,7 @@ def _moe_bwd_down_proj_kernel(
 
         w_ptrs = down_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_H + n_idx[None, :] * stride_w_I
         w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
-        acc = tl.dot(dO_tile, w_tile, acc=acc)
+        acc = tl.dot(dO_tile, w_tile, acc=acc, input_precision=_FP32_DOT_PRECISION)
 
     # Epilogue: recompute y1 = silu(gate) * up from saved pre_act.
     # These loads need fp32 for the sigmoid/silu computation.
@@ -787,7 +793,7 @@ def _moe_bwd_dW2_kernel(
         dout_ptrs = dout_ptr + token_idx[:, None] * stride_dout_T + h_idx[None, :] * stride_dout_H
         dout_tile = tl.load(dout_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
-        acc = tl.dot(wact_tile, dout_tile, acc=acc)
+        acc = tl.dot(wact_tile, dout_tile, acc=acc, input_precision=_FP32_DOT_PRECISION)
 
     dW2_ptrs = dW2_ptr + expert_idx * stride_dW2_E + h_idx[None, :] * stride_dW2_H + i_idx[:, None] * stride_dW2_I
     tl.store(dW2_ptrs, acc.to(dW2_ptr.dtype.element_ty), mask=i_mask[:, None] & h_mask[None, :])
@@ -869,7 +875,7 @@ def _moe_bwd_dX_expanded_kernel(
             gate_up_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
         )
         w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-        acc_gate = tl.dot(d_gate, w_gate, acc=acc_gate)
+        acc_gate = tl.dot(d_gate, w_gate, acc=acc_gate, input_precision=_FP32_DOT_PRECISION)
 
         d_up_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + (I_dim + k_idx)[None, :] * stride_d_pre_N
         d_up = tl.load(d_up_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
@@ -881,7 +887,7 @@ def _moe_bwd_dX_expanded_kernel(
             + h_idx[None, :] * stride_w_K
         )
         w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-        acc_up = tl.dot(d_up, w_up, acc=acc_up)
+        acc_up = tl.dot(d_up, w_up, acc=acc_up, input_precision=_FP32_DOT_PRECISION)
 
     acc = acc_gate + acc_up
 
@@ -963,7 +969,7 @@ def _moe_bwd_dW1_kernel(
         d_pre_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + n_idx[None, :] * stride_d_pre_N
         d_pre_tile = tl.load(d_pre_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
 
-        acc = tl.dot(tl.trans(d_pre_tile), x_tile, acc=acc)
+        acc = tl.dot(tl.trans(d_pre_tile), x_tile, acc=acc, input_precision=_FP32_DOT_PRECISION)
 
     dW1_ptrs = dW1_ptr + expert_idx * stride_dW1_E + n_idx[:, None] * stride_dW1_N + h_idx[None, :] * stride_dW1_H
     tl.store(dW1_ptrs, acc.to(dW1_ptr.dtype.element_ty), mask=n_mask[:, None] & h_mask[None, :])
