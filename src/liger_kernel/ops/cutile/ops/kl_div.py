@@ -11,6 +11,7 @@ Computes KL(y_true || y_pred) where y_pred is in log-space.
 import cuda.tile as ct
 import torch
 
+from liger_kernel.ops.cutile.ops.utils import _launch
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 
 MAX_FUSED_SIZE = 4096
@@ -165,8 +166,8 @@ def _kldiv_forward(y_pred, y_true, log_target, reduction, eps):
 
     if reduction_int == _REDUCTION_MODE_NONE:
         output_tensor = torch.zeros(BT, V, device=y_pred.device, dtype=torch.float32)
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            y_pred.device,
             grid,
             _kldiv_fwd_none_kernel_ct,
             (
@@ -183,8 +184,8 @@ def _kldiv_forward(y_pred, y_true, log_target, reduction, eps):
         return output_tensor
     else:
         row_sums = torch.zeros(BT, device=y_pred.device, dtype=torch.float32)
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            y_pred.device,
             grid,
             _kldiv_fwd_reduce_kernel_ct,
             (
@@ -213,8 +214,8 @@ def _kldiv_backward(y_true, scale, log_target):
 
     new_grads = torch.empty_like(y_true)
     grid = (BT, 1, 1)
-    ct.launch(
-        torch.cuda.current_stream(),
+    _launch(
+        y_true.device,
         grid,
         _kldiv_bwd_kernel_ct,
         (
