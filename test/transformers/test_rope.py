@@ -281,6 +281,10 @@ def _hf_partial_rope(q, k, cos, sin):
         (2, 128, 32, 32, 80, 20),  # Phi-2 style
         (2, 128, 32, 8, 64, 16),  # StableLM style
         (2, 128, 16, 4, 128, 64),  # 50% partial RoPE
+        # contiguous [B, H, S, D] with S == 1: token stride must be H * D, not head_dim
+        (2, 1, 32, 4, 128, 128),
+        (2, 1, 32, 4, 128, 64),
+        (1, 1, 32, 4, 128, 128),
     ],
 )
 @pytest.mark.parametrize(
@@ -335,3 +339,30 @@ def test_partial_rope_transformers_correctness(
 
     assert torch.allclose(q1_grad, q2_grad, atol=atol, rtol=rtol)
     assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol)
+
+
+def test_seqlen1_packed_layout_is_not_copied():
+    """S == 1 uses the packed token pitch and does not copy. Prefill transpose views stay zero-copy."""
+    torch.manual_seed(0)
+    q = torch.randn(2, 32, 1, 128, device=device)
+    k = torch.randn(2, 4, 1, 128, device=device)
+    q_before, k_before = q.clone(), k.clone()
+    cos = torch.zeros(1, 1, 128, device=device)
+    sin = torch.ones(1, 1, 128, device=device)
+    q_out, k_out = liger_rotary_pos_emb(q, k, cos, sin)
+    assert q_out.data_ptr() == q.data_ptr()
+    assert k_out.data_ptr() == k.data_ptr()
+    half = 64
+    assert torch.allclose(q_out[..., :half], -q_before[..., half:])
+    assert torch.allclose(q_out[..., half:], q_before[..., :half])
+    assert torch.allclose(k_out[..., :half], -k_before[..., half:])
+    assert torch.allclose(k_out[..., half:], k_before[..., :half])
+
+    q_base = torch.randn(2, 128, 32, 128, device=device)
+    k_base = torch.randn(2, 128, 8, 128, device=device)
+    qv, kv = q_base.transpose(1, 2), k_base.transpose(1, 2)
+    cos = torch.zeros(1, 128, 128, device=device)
+    sin = torch.ones(1, 128, 128, device=device)
+    q_out, k_out = liger_rotary_pos_emb(qv, kv, cos, sin)
+    assert q_out.data_ptr() == q_base.data_ptr()
+    assert k_out.data_ptr() == k_base.data_ptr()
