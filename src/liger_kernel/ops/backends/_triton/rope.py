@@ -47,6 +47,7 @@ def rope_triton(
     unsqueeze_dim: int = 1,
     *,
     mode: Optional[str] = None,
+    rotary_dim: Optional[int] = None,
 ):
     """Triton RoPE via the existing ``LigerRopeFunction`` autograd wrapper.
 
@@ -58,4 +59,4 @@ def rope_triton(
             f"Triton rope has only mode='default'; got mode={mode!r}. "
             f"Pass impl='nvidia-cutedsl' to use the CuTe DSL variant."
         )
-    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim, rotary_dim)
