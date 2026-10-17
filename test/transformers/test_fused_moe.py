@@ -166,6 +166,69 @@ def test_correctness(T, E, H, intermediate_dim, K, dtype, atol, rtol):
 
 
 # ---------------------------------------------------------------------------
+# Test 2b: fp32 mantissa precision (forward + every backward GEMM)
+# ---------------------------------------------------------------------------
+
+
+def _forward_backward(fn, x, gate_up_proj, down_proj, top_k_index, top_k_weights, grad_out):
+    x, gate_up_proj, down_proj, top_k_weights = (
+        t.clone().requires_grad_(True) for t in (x, gate_up_proj, down_proj, top_k_weights)
+    )
+    out = fn(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
+    out.backward(grad_out)
+    return {
+        "out": out.detach(),
+        "dx": x.grad,
+        "d_gate_up_proj": gate_up_proj.grad,
+        "d_down_proj": down_proj.grad,
+        "d_top_k_weights": top_k_weights.grad,
+    }
+
+
+@pytest.mark.skipif(device == "npu", reason="Guards the Triton GPU kernels' fp32 dot precision (fused_moe_kernels.py)")
+@pytest.mark.parametrize(
+    "T, E, H, intermediate_dim, K",
+    [
+        (512, 8, 256, 128, 2),
+        (512, 7, 97, 47, 3),  # odd H/I: tail masking in every GEMM
+    ],
+)
+def test_fp32_precision_matches_fp64_reference(T, E, H, intermediate_dim, K):
+    """fp32 must use full-precision matmuls (PyTorch "highest"), not TF32.
+
+    The tolerances in test_correctness (atol=1e-3 / 3e-3) cannot tell TF32 (10 mantissa bits, ~2e-3
+    relative error) from fp32 (~5e-7). Here every output and gradient is compared against an fp64 run
+    of the same reference with a relative-L2 bound that only true fp32 products satisfy. Each of the
+    forward/backward GEMMs feeds at least one of the checked tensors, so a single TF32 dot fails.
+    """
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(
+        T, E, H, intermediate_dim, K, torch.float32, device
+    )
+    torch.manual_seed(1)
+    # Full-mantissa upstream gradient (an all-ones gradient is exactly representable in TF32).
+    grad_out = torch.randn(T, H, dtype=torch.float32, device=device)
+
+    expected = _forward_backward(
+        _reference_moe_forward,
+        x.double(),
+        gate_up_proj.double(),
+        down_proj.double(),
+        top_k_index,
+        top_k_weights.double(),
+        grad_out.double(),
+    )
+    actual = _forward_backward(
+        LigerFusedMoEFunction.apply, x, gate_up_proj, down_proj, top_k_index, top_k_weights, grad_out
+    )
+
+    max_rel_l2 = 1e-5
+    for name, ref in expected.items():
+        assert actual[name].dtype == torch.float32
+        rel_l2 = ((actual[name].double() - ref).norm() / ref.norm()).item()
+        assert rel_l2 < max_rel_l2, f"{name}: relative L2 error vs fp64 {rel_l2:.3e} >= {max_rel_l2:.0e}"
+
+
+# ---------------------------------------------------------------------------
 # Test 3: Edge cases (forward correctness)
 # ---------------------------------------------------------------------------
 
