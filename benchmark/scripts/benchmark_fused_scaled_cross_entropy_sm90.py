@@ -13,18 +13,35 @@ Sweep parameters (all optional; defaults reproduce the previous behaviour)::
     --hidden H                      hidden size
     --vocab V                       vocabulary size
     --providers NAME [NAME ...]     explicit provider list
+    --selected-tokens K            selected vocabulary columns (default: 0)
+    --selection-mode MODE          native, identity, or disabled
+    --return-entropy               include differentiable vocabulary entropy
+    --temperature T                positive scalar temperature (default: 1)
+    --label-stride N               consume every Nth selected-output row
 
 Providers: ``torch``, ``liger`` (Triton FLCE, ``reduction="none"``),
-``cutile``, and ``cutedsl-sm90`` (fixed 1024-token wave-batched backward).
+``fallback``, ``cutile``, and ``cutedsl-sm90`` (fixed 1024-token wave-batched
+backward). ``liger`` does not support selected outputs, entropy or temperature.
 
 Example::
 
     python benchmark_fused_scaled_cross_entropy_sm90.py \\
         --tokens 4096 --hidden 4096 --vocab 131072 \\
         --providers torch liger cutile cutedsl-sm90
+
+    python benchmark_fused_scaled_cross_entropy_sm90.py \\
+        --tokens 4096 16384 --hidden 1024 --vocab 151936 \\
+        --providers torch fallback cutile cutedsl-sm90 \\
+        --selected-tokens 4 --return-entropy --selection-mode native
+
+Repeat with ``--selection-mode identity`` and ``disabled`` for baselines;
+``--label-stride 32`` measures a sparse consumer without overcharging its
+identity projection. Sparse label targets come from the selected alphabet, so
+their anchor logits reuse that projection. Backend rounding is retained.
 """
 
 import argparse
+import math
 import sys
 
 import torch
@@ -57,6 +74,96 @@ CUTILE_PREFIX = "cutile"
 # Seed of the fixed per-token upstream gradient, so every provider and every
 # repetition sees byte-identical ``d(NLL)/d(loss)`` values.
 GRAD_SEED = 1234
+
+
+class SelectedLMHeadScaledCE(torch.nn.Module):
+    """Native selected output or the extra-projection recovery baseline."""
+
+    def __init__(self, provider, hidden, vocab, dtype, config):
+        super().__init__()
+        self.provider = provider
+        self.temperature = config.get("temperature", 1.0)
+        self.return_entropy = config.get("return_entropy", False)
+        self.selection_mode = config.get("selection_mode", "native")
+        self.label_stride = config.get("label_stride", 1)
+        generator = torch.Generator(device=device).manual_seed(GRAD_SEED + 1)
+        self.weight = torch.nn.Parameter(
+            torch.randn(vocab, hidden, device=device, dtype=dtype, generator=generator) / hidden**0.5
+        )
+        count = config.get("selected_tokens", 0)
+        self.register_buffer(
+            "selected_token_ids",
+            torch.linspace(0, vocab - 1, count, device=device).long() if count else None,
+        )
+
+    def fused(self, x, target, ids=None):
+        if self.provider == CUTEDSL_PREFIX:
+            return LigerFusedScaledCrossEntropySM90Function.apply(
+                x, self.weight, target, self.temperature, -100, 1, self.return_entropy, ids
+            )
+        if self.provider == CUTILE_PREFIX:
+            from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import (
+                LigerFusedLinearScaledCrossEntropyFunction,
+            )
+
+            return LigerFusedLinearScaledCrossEntropyFunction.apply(
+                x, self.weight, target, self.temperature, -100, 1, self.return_entropy, ids
+            )
+        if self.provider == "fallback":
+            from liger_kernel.ops.fused_linear_scaled_cross_entropy import _FusedLinearPPOFallbackFunction
+
+            return _FusedLinearPPOFallbackFunction.apply(
+                x, self.weight, target, self.temperature, -100, self.return_entropy, ids
+            )
+        raise ValueError(f"Provider {self.provider!r} does not support scaled CE with selected outputs")
+
+    def forward(self, x, target):
+        ids = self.selected_token_ids if self.selection_mode != "disabled" else None
+        if self.provider == "torch":
+            logits = ((x @ self.weight.t()) / self.temperature).float()
+            log_probs = logits.log_softmax(-1)
+            valid = target != -100
+            nll = -log_probs.gather(1, target.masked_fill(~valid, 0)[:, None]).squeeze(1)
+            outputs = (nll.masked_fill(~valid, 0),)
+            if self.return_entropy:
+                entropy = -(log_probs.exp() * log_probs).sum(-1).to(x.dtype)
+                outputs += (entropy.masked_fill(~valid, 0),)
+            if ids is not None:
+                selected = log_probs[:: self.label_stride].index_select(1, ids)
+                outputs += (selected.masked_fill(~valid[:: self.label_stride, None], 0),)
+        else:
+            native_ids = ids if self.selection_mode == "native" else None
+            result = self.fused(x, target, native_ids)
+            outputs = result if isinstance(result, tuple) else (result,)
+            if ids is not None:
+                if self.selection_mode == "native":
+                    outputs = outputs[:-1] + (outputs[-1][:: self.label_stride],)
+                else:
+                    h = x[:: self.label_stride]
+                    labels = target[:: self.label_stride]
+                    valid = labels != -100
+                    if self.provider == CUTEDSL_PREFIX:
+                        selected_logits = (h.float() @ self.weight[ids].float().t()).half().float()
+                    else:
+                        selected_logits = h @ self.weight[ids].t()
+                    if self.label_stride > 1:
+                        emitted_class = (labels[:, None] == ids).int().argmax(-1)
+                        target_logits = selected_logits.gather(1, emitted_class[:, None]).squeeze(1)
+                    else:
+                        target_weight = self.weight[labels.masked_fill(~valid, 0)]
+                        if self.provider == CUTEDSL_PREFIX:
+                            target_logits = (h.float() * target_weight.float()).sum(-1).half().float()
+                        else:
+                            target_logits = torch.bmm(h[:, None, :], target_weight[:, :, None]).flatten()
+                    if self.provider != "fallback":
+                        selected_logits, target_logits = selected_logits.float(), target_logits.float()
+                    selected_logits = (selected_logits / self.temperature).float()
+                    target_logits = (target_logits / self.temperature).float()
+                    selected = (
+                        -outputs[0][:: self.label_stride, None] + selected_logits - target_logits[:, None]
+                    ).masked_fill(~valid[:, None], 0)
+                    outputs += (selected,)
+        return outputs[0] if len(outputs) == 1 else outputs
 
 
 class TorchLMHeadCE(torch.nn.Module):
@@ -159,7 +266,22 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
     target = torch.randint(vocab_size, (total_tokens,), dtype=torch.long, device=device)
 
     provider = input.kernel_provider
-    if provider == CUTEDSL_PREFIX:
+    configured = (
+        cfg.get("selected_tokens", 0)
+        or cfg.get("return_entropy", False)
+        or cfg.get("temperature", 1.0) != 1.0
+        or provider == "fallback"
+    )
+    if configured:
+        generator = torch.Generator(device=device).manual_seed(GRAD_SEED)
+        x = torch.randn(total_tokens, hidden_size, requires_grad=True, dtype=dtype, device=device, generator=generator)
+        target = torch.randint(vocab_size, (total_tokens,), device=device, generator=generator)
+        layer = SelectedLMHeadScaledCE(provider, hidden_size, vocab_size, dtype, cfg)
+        stride = cfg.get("label_stride", 1)
+        if cfg.get("selected_tokens", 0) and stride > 1:
+            rows = len(range(0, total_tokens, stride))
+            target[::stride] = layer.selected_token_ids[torch.arange(rows, device=device) % cfg["selected_tokens"]]
+    elif provider == CUTEDSL_PREFIX:
         layer = CuteDSLHopperLMHeadScaledCE(hidden_size, vocab_size, dtype)
     elif provider == CUTILE_PREFIX:
         layer = CuTileLMHeadScaledCE(hidden_size, vocab_size, dtype)
@@ -172,7 +294,17 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
 
     layer = layer.to(device)
     weight = layer.weight if hasattr(layer, "weight") else layer.linear.weight
-    return x, weight, lambda: layer(x, target), fixed_grad_output(total_tokens)
+    grad_output = fixed_grad_output(total_tokens)
+    if configured:
+        grads = (grad_output,)
+        generator = torch.Generator(device=device).manual_seed(GRAD_SEED)
+        if cfg.get("return_entropy", False):
+            grads += (torch.randn(total_tokens, device=device, dtype=dtype, generator=generator),)
+        if cfg.get("selected_tokens", 0) and cfg.get("selection_mode") != "disabled":
+            rows = len(range(0, total_tokens, cfg.get("label_stride", 1)))
+            grads += (torch.randn(rows, cfg["selected_tokens"], device=device, generator=generator),)
+        grad_output = grads[0] if len(grads) == 1 else grads
+    return x, weight, lambda: layer(x, target), grad_output
 
 
 def probe_forward_fn(x, weight, fwd_fn, grad_output):
@@ -192,11 +324,11 @@ def bench_speed_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) 
         y = fwd_fn()
 
         def bench_fn():
-            y.backward(grad_output, retain_graph=True)
+            torch.autograd.backward(y, grad_output, retain_graph=True)
     elif mode == "full":
 
         def bench_fn():
-            fwd_fn().backward(grad_output)
+            torch.autograd.backward(fwd_fn(), grad_output)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
@@ -221,13 +353,13 @@ def bench_memory_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput)
         def bench_fn():
             x.grad = None
             weight.grad = None
-            y.backward(grad_output, retain_graph=True)
+            torch.autograd.backward(y, grad_output, retain_graph=True)
     elif mode == "full":
 
         def bench_fn():
             x.grad = None
             weight.grad = None
-            fwd_fn().backward(grad_output)
+            torch.autograd.backward(fwd_fn(), grad_output)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
@@ -242,35 +374,59 @@ def parse_sweep_args():
     parser.add_argument("--hidden", type=int, default=None, help="Hidden size (H).")
     parser.add_argument("--vocab", type=int, default=None, help="Vocabulary size (V).")
     parser.add_argument("--providers", type=str, nargs="+", default=None, help="Explicit provider list.")
+    parser.add_argument("--selected-tokens", type=int, default=0, help="Number of selected vocabulary IDs.")
+    parser.add_argument("--selection-mode", choices=["disabled", "native", "identity"], default="native")
+    parser.add_argument("--return-entropy", action="store_true")
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--label-stride", type=int, default=1, help="Consume one selected-output row per N tokens.")
     if any(flag in ("-h", "--help") for flag in sys.argv[1:]):
         parser.print_help()
         print()
     sweep_args, remaining = parser.parse_known_args()
+    if sweep_args.selected_tokens < 0 or sweep_args.label_stride < 1:
+        parser.error("--selected-tokens must be nonnegative and --label-stride must be positive")
+    if not math.isfinite(sweep_args.temperature) or sweep_args.temperature <= 0:
+        parser.error("--temperature must be finite and positive")
     sys.argv = [sys.argv[0], *remaining]
     return sweep_args
 
 
 def resolve_providers(sweep_args):
+    configured = sweep_args.selected_tokens or sweep_args.return_entropy or sweep_args.temperature != 1.0
     if sweep_args.providers:
         for provider in sweep_args.providers:
-            if provider not in ("torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX):
+            if provider not in ("torch", "liger", "fallback", CUTILE_PREFIX, CUTEDSL_PREFIX):
                 raise ValueError(f"Unknown provider {provider!r}")
+            if configured and provider == "liger":
+                raise ValueError("The reduction-oriented Triton FLCE provider does not support this output contract")
         return list(sweep_args.providers)
+    if configured:
+        return ["torch", "fallback", CUTILE_PREFIX, CUTEDSL_PREFIX]
     return ["torch", "liger", CUTILE_PREFIX, CUTEDSL_PREFIX]
 
 
 if __name__ == "__main__":
     sweep_args = parse_sweep_args()
     args = parse_benchmark_script_args()
+    extra_configs = {
+        "selected_tokens": sweep_args.selected_tokens,
+        "selection_mode": sweep_args.selection_mode,
+        "return_entropy": sweep_args.return_entropy,
+        "temperature": sweep_args.temperature,
+        "label_stride": sweep_args.label_stride,
+    }
+    if not (sweep_args.selected_tokens or sweep_args.return_entropy or sweep_args.temperature != 1.0):
+        extra_configs = {}
+    kernel_name = "fused_linear_selected_log_probs" if sweep_args.selected_tokens else "fused_scaled_cross_entropy_sm90"
 
     if args.sweep_mode == "model_config":
         common_configs = build_model_config_sweep(
-            kernel_name="fused_scaled_cross_entropy_sm90",
+            kernel_name=kernel_name,
             setup_fn=setup_fused_scaled_cross_entropy_sm90,
             model_keys=["hidden_size", "vocab_size", "dtype"],
             forward_fn=probe_forward_fn,
             probe_provider="torch",
-            extra_configs={},
+            extra_configs=extra_configs,
             probe_dim="BT",
             bt=args.bt,
             overwrite=args.overwrite,
@@ -278,19 +434,20 @@ if __name__ == "__main__":
     else:
         model = get_benchmark_model_config(args.model)
         common_configs = build_token_length_sweep(
-            kernel_name="fused_scaled_cross_entropy_sm90",
+            kernel_name=kernel_name,
             probe_x=1024,
             model=model,
             setup_fn=setup_fused_scaled_cross_entropy_sm90,
             model_keys=["hidden_size", "vocab_size", "dtype"],
             forward_fn=probe_forward_fn,
-            extra_configs={},
+            extra_configs=extra_configs,
             scale_dim="BT",
             x_label="total tokens",
             probe_provider="torch",
             overwrite=args.overwrite,
         )
         shape = dict(REPRESENTATIVE_CONFIG)
+        shape.update(extra_configs)
         if sweep_args.hidden is not None:
             shape["hidden_size"] = sweep_args.hidden
         if sweep_args.vocab is not None:

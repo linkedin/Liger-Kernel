@@ -272,6 +272,27 @@ The implementations share this public contract but use different schedules:
 - **CuTe SM90** uses `LigerFusedScaledCrossEntropySM90Function` for BF16 inputs on Hopper. Its sole forward uses the fixed cluster-M2 N160 fragment kernel, with a measured split-N lookup for profiled long-sequence shapes, and never writes logits to HBM; `m_tiles_per_cluster` remains accepted for API compatibility but does not change that schedule. Backward runs `dZ`, `dX`, and `dW` in one persistent cluster kernel with a reusable 1024-token `dZ` workspace.
 - **Fallback** uses a 512-token chunked PyTorch implementation adapted from Verl's fused PPO formulas when the default frontend cannot use the SM90 kernel.
 
+All three non-TP implementations can additionally return differentiable log-probabilities for a small, shared set of vocabulary IDs:
+
+```python
+selected_token_ids = torch.tensor([no_token_id, yes_token_id], device=x.device, dtype=torch.int64)
+nll, entropy, selected_log_probs = LigerFusedLinearScaledCrossEntropyFunction.apply(
+    x, weight, target, 1.0, -100, 1, True, selected_token_ids
+)  # [M], [M], [M, 2]
+```
+
+`selected_token_ids[K]` is optional, must be on the weight's device, and preserves the requested order and duplicates.
+The additional output is FP32 and uses the same full-vocabulary normalizer and temperature as NLL.
+Targets need not be in the selected set. Ignored rows return zeros and contribute no gradients; consumers must mask these rows before applying their own loss.
+With entropy disabled, the return is `(nll, selected_log_probs)`; omitting the IDs preserves the original return type.
+An empty ID tensor produces an `[M, 0]` output.
+
+Selected logits are read during the existing projection, and their gradients are combined with NLL/entropy inside the existing backward workspace.
+No second projection or separate dense LM-head gradient is needed. Only the selected outputs and small row metadata are added.
+`selected_log_probs.exp()` gives full-vocabulary probabilities; `selected_log_probs.log_softmax(-1)` instead normalizes over the selected set.
+This supports selected-only, NLL-only, entropy-only, and combined backward. Reductions, auxiliary-loss weighting, and causal-position alignment remain the caller's responsibility.
+The separate TP frontend below does not accept selected IDs.
+
 For a classifier weight sharded into equally sized contiguous ranges across a tensor-parallel process group, use the
 TP frontend. Targets remain global vocabulary indices:
 
