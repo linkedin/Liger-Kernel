@@ -18,19 +18,22 @@ from typing import Optional
 
 import torch
 
+from liger_kernel.ops.utils import ensure_contiguous
+
 
 class LigerTiledMLPFunction(torch.autograd.Function):
     """Tiled MLP computation (no GPU kernel, memory-efficient via re-computation)."""
 
     @staticmethod
-    def forward(ctx, fn, mlp_module, x, shards, compute_params=None):
-        # compute_params is part of the upstream API (intended for DeepSpeed ZeRO
-        # weight registration); we accept and forward it for parity but don't
-        # consume it here — the autograd machinery already tracks fn's weights.
+    @ensure_contiguous
+    def forward(ctx, fn, mlp_module, x, shards, compute_params=None, *parameters):
+        # Tensor arguments keep backward reachable when x is frozen; autograd
+        # does not inspect parameters inside the module or compute_params list.
         del compute_params
         ctx.fn = fn
         ctx.mlp_module = mlp_module
         ctx.shards = shards
+        ctx.num_parameters = len(parameters)
         ctx.save_for_backward(x)
 
         x_shards = list(torch.chunk(x, chunks=shards, dim=-2))
@@ -39,13 +42,14 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         return torch.cat(output_shards, dim=-2)
 
     @staticmethod
+    @ensure_contiguous
     def backward(ctx, *grads):
         fn = ctx.fn
         (x,) = ctx.saved_tensors
         mlp_module = ctx.mlp_module
         shards = ctx.shards
 
-        x_requires_grad = x.requires_grad
+        x_requires_grad = ctx.needs_input_grad[2]
 
         x_detached = x.detach()
         x_shards = list(torch.chunk(x_detached, chunks=shards, dim=-2))
@@ -70,7 +74,8 @@ class LigerTiledMLPFunction(torch.autograd.Function):
                 output = fn(mlp_module, x_shard_leaf)
             torch.autograd.backward(output, grad_shard)
 
-        return None, None, x_grad, None, None
+        # The per-shard backward calls already accumulate parameter gradients.
+        return (None, None, x_grad, None, None) + (None,) * ctx.num_parameters
 
 
 def apply_tiled_mlp(
@@ -85,4 +90,5 @@ def apply_tiled_mlp(
         seqlen = x.shape[-2]
         num_shards = math.ceil(seqlen / hidden_size)
     num_shards = max(1, num_shards)
-    return LigerTiledMLPFunction.apply(fn, mlp_module, x, num_shards, compute_params)
+    parameters = tuple(mlp_module.parameters()) if compute_params is None else tuple(compute_params)
+    return LigerTiledMLPFunction.apply(fn, mlp_module, x, num_shards, compute_params, *parameters)
