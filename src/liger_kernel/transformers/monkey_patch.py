@@ -54,7 +54,7 @@ transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
 
-MIN_SUPPORTED_TRANSFORMERS_VERSION = version.parse("4.52.0")
+MIN_SUPPORTED_TRANSFORMERS_VERSION = version.parse("5.0.0")
 if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
     raise ImportError(
         f"liger-kernel requires transformers >= {MIN_SUPPORTED_TRANSFORMERS_VERSION}, got {transformers.__version__}. "

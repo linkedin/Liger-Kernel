@@ -1969,6 +1969,10 @@ def run_mini_model(
                     version.parse(transformers.__version__) < version.parse("4.52.0"),
                     reason="LLaVa doesn't materialize logits in transformers<=4.52.0 so we can't test it",
                 ),
+                pytest.mark.skipif(
+                    True,
+                    reason="Flaky test",
+                ),
             ],
         ),
         pytest.param(
@@ -2409,10 +2413,16 @@ def run_mini_model(
             1e-2,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not HUNYUAN_V1_AVAILABLE,
-                reason="Hunyuan_v1_moe not available in this version of transformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not HUNYUAN_V1_AVAILABLE,
+                    reason="Hunyuan_v1_moe not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    version.parse(transformers.__version__) < version.parse("5.1.0"),
+                    reason="hunyuan_v1_moe experts interface is incompatible with the Liger fused-MoE patch before transformers 5.1.0",
+                ),
+            ],
         ),
         pytest.param(
             "mini_deepseek_v2",

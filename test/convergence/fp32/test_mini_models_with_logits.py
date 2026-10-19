@@ -2275,6 +2275,10 @@ def run_mini_model(
                     not HUNYUAN_V1_AVAILABLE,
                     reason="Hunyuan_v1_moe not available in this version of transformers",
                 ),
+                pytest.mark.skipif(
+                    version.parse(transformers.__version__) < version.parse("5.1.0"),
+                    reason="hunyuan_v1_moe experts interface is incompatible with the Liger fused-MoE patch before transformers 5.1.0",
+                ),
             ],
         ),
         pytest.param(
