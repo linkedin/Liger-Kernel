@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Benchmark Visualization</title>
+  <link rel="stylesheet" href="style.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <div class="panel1">
+      <h1>Panel 1</h1>
+      <div class="controls">
+        <label>Commit Hash:</label>
+        <select id="commit"></select>
+  
+        <label for="kernel">Kernel Name:</label>
+        <select id="kernel"></select>
+  
+        <label for="mode">Pass Type:</label>
+        <select id="mode"></select>
+      </div>
+      <div class="metric-section">
+        <h2>Speed Metrics</h2>
+        <canvas id="benchmarkChartSpeed"></canvas>
+        <h2>Memory Metrics</h2>
+        <canvas id="benchmarkChartMemory"></canvas>
+      </div>
+    </div>
+    <div class="panel2">
+      <h1>Panel 2</h1>
+      <div class="controls">
+        <label>Commit Hash:</label>
+        <select id="commit2"></select>
+  
+        <label for="kernel">Kernel Name:</label>
+        <select id="kernel2"></select>
+  
+        <label for="mode">Pass Type:</label>
+        <select id="mode2"></select>
+      </div>
+      <div class="metric-section">
+        <h2>Speed Metrics</h2>
+        <canvas id="benchmarkChart2Speed"></canvas>
+        <h2>Memory Metrics</h2>
+        <canvas id="benchmarkChart2Memory"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
