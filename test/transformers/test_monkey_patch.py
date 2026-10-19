@@ -4463,6 +4463,7 @@ def test_apply_liger_kernel_to_instance_for_exaone4():
             num_hidden_layers=2,
             num_attention_heads=4,
             num_key_value_heads=2,
+            pad_token_id=0,  # transformers==5.0.0 Exaone4Config has no pad_token_id default; Exaone4Model.__init__ reads it
         )
         dummy_model_instance = Exaone4ForCausalLM._from_config(config)
         assert isinstance(dummy_model_instance, Exaone4ForCausalLM)

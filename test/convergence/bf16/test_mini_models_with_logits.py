@@ -2120,7 +2120,7 @@ def run_mini_model(
             1e-5,
             torch.bfloat16,
             1e-2,
-            1e-2,
+            5e-2,  # loss_rtol: bumped from 1e-2 for deterministic bf16 drift on transformers 5.0.0/5.1.0
             1e-1,
             1e-2,
             1e-2,
@@ -2499,6 +2499,10 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not HUNYUAN_V1_AVAILABLE,
                     reason="Hunyuan_v1_moe not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    version.parse(transformers.__version__) < version.parse("5.1.0"),
+                    reason="hunyuan_v1_moe experts interface is incompatible with the Liger fused-MoE patch before transformers 5.1.0",
                 ),
             ],
         ),

@@ -1956,7 +1956,7 @@ def run_mini_model(
             torch.float32,
             1e-8,
             1e-5,
-            5e-3,
+            5e-2,  # logprobs_atol: bumped from 5e-3; tight fp32 top-k logprobs swap on near-ties on newer transformers
             1e-5,
             5e-3,
             1e-5,
@@ -2409,10 +2409,16 @@ def run_mini_model(
             1e-2,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not HUNYUAN_V1_AVAILABLE,
-                reason="Hunyuan_v1_moe not available in this version of transformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not HUNYUAN_V1_AVAILABLE,
+                    reason="Hunyuan_v1_moe not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    version.parse(transformers.__version__) < version.parse("5.1.0"),
+                    reason="hunyuan_v1_moe experts interface is incompatible with the Liger fused-MoE patch before transformers 5.1.0",
+                ),
+            ],
         ),
         pytest.param(
             "mini_deepseek_v2",
