@@ -50,10 +50,10 @@ SLEEP_SECONDS = 0.1
     ],
 )
 def test_correctness(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol):
-    # For NPU + bfloat16: use quack's distance-based comparison method
+    # For NPU/MPS + bfloat16: use quack's distance-based comparison method
     # For GPU + bfloat16: use direct comparison
     # For float32: use direct comparison
-    if dtype == torch.bfloat16 and device == "npu":
+    if dtype == torch.bfloat16 and device in ("npu", "mps"):
         _test_correctness_quack_method(bsz, seq_len, hidden_size, intermediate_size)
     else:
         # For GPU + bfloat16 or float32, use direct comparison

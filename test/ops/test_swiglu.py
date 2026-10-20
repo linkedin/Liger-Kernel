@@ -22,6 +22,7 @@ from liger_kernel.backends.dispatch import available_backends
 from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import get_registered
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 SWIGLU_TEST_SHAPES = [
@@ -65,7 +66,6 @@ def test_swiglu_correctness(backend, shape, dtype):
         pytest.skip("No swiglu backends registered in this environment")
 
     M, N = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(0)
     a_cpu = torch.randn(M, N, dtype=torch.float32, generator=g)
     b_cpu = torch.randn(M, N, dtype=torch.float32, generator=g)
@@ -118,7 +118,7 @@ def test_swiglu_gate_and_down_multipliers(backend, dtype):
 
     gate_multiplier = 1.75
     down_multiplier = 0.625
-    a = torch.randn(32, 256, device="cuda", dtype=dtype, requires_grad=True)
+    a = torch.randn(32, 256, device=device, dtype=dtype, requires_grad=True)
     b = torch.randn_like(a, requires_grad=True)
     a_ref = a.detach().clone().requires_grad_(True)
     b_ref = b.detach().clone().requires_grad_(True)
@@ -170,8 +170,8 @@ def test_swiglu_global_set_backend(backend):
         pytest.skip("No swiglu backends registered")
 
     M, N = 32, 256
-    a = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
-    b = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
+    a = torch.randn(M, N, device=device, dtype=torch.float32, requires_grad=True)
+    b = torch.randn(M, N, device=device, dtype=torch.float32, requires_grad=True)
 
     try:
         liger_kernel.set_backend(backend)

@@ -26,6 +26,8 @@ from liger_kernel.backends.dispatch import available_impls
 from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.functional import jsd as functional_jsd
 
+from .conftest import device
+
 _REGISTERED_IMPLS: List[str] = available_impls("jsd")
 
 # Shapes chosen to exercise:
@@ -89,8 +91,8 @@ def _pytorch_jsd_reference(
 def _make_inputs(BT: int, V: int, dtype: torch.dtype):
     """Build (log_q, log_p) with autograd, both in log-space (after log_softmax)."""
     torch.manual_seed(BT * 1000 + V)  # deterministic per shape
-    raw_q = torch.randn(BT, V, device="cuda", dtype=dtype)
-    raw_p = torch.randn(BT, V, device="cuda", dtype=dtype)
+    raw_q = torch.randn(BT, V, device=device, dtype=dtype)
+    raw_p = torch.randn(BT, V, device=device, dtype=dtype)
     log_q = raw_q.log_softmax(-1).detach().requires_grad_()
     log_p = raw_p.log_softmax(-1).detach()
     return log_q, log_p
@@ -346,10 +348,10 @@ def test_fused_linear_jsd_routes_through_dispatch(impl, dtype, monkeypatch):
     monkeypatch.setenv("LIGER_KERNEL_IMPL_JSD_LOSS_AND_GRAD", impl)
 
     BT, H, V = 16, 64, 4096
-    student_input = torch.randn(BT, H, device="cuda", dtype=dtype, requires_grad=True)
-    student_weight = torch.randn(V, H, device="cuda", dtype=dtype, requires_grad=True)
-    teacher_input = torch.randn(BT, H, device="cuda", dtype=dtype)
-    teacher_weight = torch.randn(V, H, device="cuda", dtype=dtype)
+    student_input = torch.randn(BT, H, device=device, dtype=dtype, requires_grad=True)
+    student_weight = torch.randn(V, H, device=device, dtype=dtype, requires_grad=True)
+    teacher_input = torch.randn(BT, H, device=device, dtype=dtype)
+    teacher_weight = torch.randn(V, H, device=device, dtype=dtype)
 
     loss = liger_fused_linear_jsd(
         student_input,

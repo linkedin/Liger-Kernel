@@ -276,12 +276,21 @@ def estimate_kernel_peak_memory(probe_fn: Callable[[], torch.Tensor]) -> int:
 
     gc.collect()
     torch_device_mod.empty_cache()
-    torch_device_mod.memory.reset_peak_memory_stats()
+    if device_str == "mps":
+        torch.mps.synchronize()
+        mps_base = torch.mps.current_allocated_memory()
+    else:
+        torch_device_mod.memory.reset_peak_memory_stats()
 
     y = probe_fn()
     y.backward(torch.randn_like(y))
 
-    peak_bytes = torch_device_mod.max_memory_allocated()
+    if device_str == "mps":
+        # MPS has no peak tracker; live tensors after fwd+bwd stand in for max_memory_allocated.
+        torch.mps.synchronize()
+        peak_bytes = torch.mps.current_allocated_memory() - mps_base
+    else:
+        peak_bytes = torch_device_mod.max_memory_allocated()
 
     del y
     gc.collect()
