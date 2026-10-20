@@ -76,7 +76,9 @@ def fused_selective_log_softmax(logits: torch.Tensor, input_ids: torch.Tensor, t
     if mask is not None:
         mask = mask[:, -L:]
     log_p = torch.zeros(B, L, dtype=torch.float32, device=logits.device)
-    kwargs = {"BLOCK_N": 2048, "num_stages": 4, "num_warps": 1}
+    block_n = 4096 if N >= 4096 else triton.next_power_of_2(N)
+    num_warps = 8 if block_n >= 2048 else (4 if block_n >= 1024 else 2)
+    kwargs = {"BLOCK_N": block_n, "num_stages": 4, "num_warps": num_warps}
     _selective_log_softmax_kernel[(B, L)](
         logits,
         input_ids,
