@@ -413,6 +413,11 @@ def _grpo_loss_bwd_kernel_seq(
             dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
     dlogp = dlogp / TEMPERATURE
+    if dlogp == 0.0:
+        for start_n in tl.range(0, N, BLOCK_N):
+            cols = start_n + tl.arange(0, BLOCK_N)
+            tl.store(DLOGITS + cols, 0.0, mask=cols < N)
+        return
     tl.debug_barrier()
     for start_n in tl.range(0, N, BLOCK_N):
         cols = start_n + tl.arange(0, BLOCK_N)
@@ -543,6 +548,11 @@ def _grpo_loss_bwd_kernel(
             dlogp += BETA * (1 - tl.exp(ref_logp - logp))
 
     dlogp = dlogp * dloss / TEMPERATURE
+    if dlogp == 0.0:
+        for start_n in tl.range(0, N, BLOCK_N):
+            cols = start_n + tl.arange(0, BLOCK_N)
+            tl.store(DLOGITS + cols, 0.0, mask=cols < N)
+        return
     tl.debug_barrier()
     for start_n in tl.range(0, N, BLOCK_N):
         cols = start_n + tl.arange(0, BLOCK_N)
