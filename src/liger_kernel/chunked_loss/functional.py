@@ -5,6 +5,7 @@ from liger_kernel.chunked_loss.grpo_loss import LigerFusedLinearGRPOFunction
 from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
 from liger_kernel.chunked_loss.kto_loss import LigerFusedLinearKTOFunction
 from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
+from liger_kernel.chunked_loss.score_centering_loss import LigerFusedLinearScoreCenteringFunction
 from liger_kernel.chunked_loss.simpo_loss import LigerFusedLinearSimPOFunction
 
 liger_fused_linear_orpo = LigerFusedLinearORPOFunction.apply
@@ -15,3 +16,4 @@ liger_fused_linear_cpo = LigerFusedLinearCPOFunction.apply
 liger_fused_linear_simpo = LigerFusedLinearSimPOFunction.apply
 liger_fused_linear_kto = LigerFusedLinearKTOFunction.apply
 liger_fused_linear_grpo = LigerFusedLinearGRPOFunction.apply
+liger_fused_linear_score_centering = LigerFusedLinearScoreCenteringFunction.apply
