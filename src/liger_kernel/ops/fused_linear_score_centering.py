@@ -6,10 +6,10 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.fused_linear_cross_entropy import MAX_FUSED_SIZE
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import is_hip
+from liger_kernel.utils import infer_device
 
 try:
     from torch.distributed.tensor import DTensor
@@ -18,6 +18,8 @@ try:
 except ImportError:
     DTensor = None
 
+# Two passes over each row keep more live registers than cross entropy; 16384 measured faster than 32768.
+MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 16384
 # Each chunk re-reads the weight twice and updates its gradient. FLCE's BT x H budget gives 32-row chunks at
 # V = 128k, H = 4k, which leaves those GEMMs memory-bound; 1024 rows keep them compute-bound.
 MIN_CHUNK_SIZE = 1024
