@@ -25,25 +25,27 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         mlp_module: the MLP nn.Module object
         x: the input to MLP.forward (hidden_states)
         shards: how many shards to use
-        compute_params: a list of weights engaged in the compute
+        compute_params: weights engaged in the compute
 
     Returns:
         the computed hidden_states
     """
 
     @staticmethod
-    @ensure_contiguous
     def forward(
         ctx,
         fn: Callable,
         mlp_module: torch.nn.Module,
         x: torch.Tensor,
         shards: int,
-        compute_params: Optional[List[torch.nn.Parameter]] = None,
+        compute_param_names: tuple[str, ...],
+        *compute_params: torch.nn.Parameter,
     ) -> torch.Tensor:
         ctx.fn = fn
         ctx.mlp_module = mlp_module
         ctx.shards = shards
+        ctx.compute_param_names = compute_param_names
+        x = x.contiguous()
         ctx.save_for_backward(x)
 
         # x.shape could be [bs, seqlen, hidden_size] or [seqlen, hidden_size] (moe experts)
@@ -61,8 +63,9 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         (x,) = ctx.saved_tensors
         mlp_module = ctx.mlp_module
         shards = ctx.shards
+        compute_params = tuple(_resolve_parameter(mlp_module, name) for name in ctx.compute_param_names)
 
-        x_requires_grad = x.requires_grad
+        x_requires_grad = ctx.needs_input_grad[2]
         x = x.detach()
         # detach() unsets x.requires_grad, so restore it
         x.requires_grad_(x_requires_grad)
@@ -74,28 +77,58 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         # flatten bs+seqlen to avoid having stride issues when narrowing into seqlen w/ bs>1
         x = x.view(-1, hidden_size)
         incoming_grad = grads[0].view(-1, hidden_size)
-        x_grad = torch.zeros_like(x)
+        x_grad = torch.zeros_like(x) if x_requires_grad else None
+        param_grads = [None for _ in compute_params]
 
         x_shards = list(torch.chunk(x, chunks=shards, dim=0))
 
+        shard_offset = 0
         for i, x_shard in enumerate(x_shards):
             x_shard.requires_grad_(x_requires_grad)
 
-            # if seqlen is not exactly divisible by shards the last step will be shorter than shard_step
             shard_step = x_shards[i].shape[0]
-            shard_offset = i * x_shards[0].shape[0]
-
-            x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
             incoming_grad_shard = incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
 
             with torch.enable_grad():
                 output = fn(mlp_module, x_shard)
-            torch.autograd.backward(output, incoming_grad_shard)
+                grad_inputs = ((x_shard,) if x_requires_grad else ()) + compute_params
+                local_grads = torch.autograd.grad(
+                    outputs=output,
+                    inputs=grad_inputs,
+                    grad_outputs=incoming_grad_shard,
+                    allow_unused=True,
+                )
+
+            if x_requires_grad and x_grad is not None:
+                local_x_grad = local_grads[0]
+                if local_x_grad is not None:
+                    x_grad.narrow(0, shard_offset, shard_step).copy_(local_x_grad)
+                local_param_grads = local_grads[1:]
+            else:
+                local_param_grads = local_grads
+
+            for param_index, local_param_grad in enumerate(local_param_grads):
+                if local_param_grad is None:
+                    continue
+                if param_grads[param_index] is None:
+                    param_grads[param_index] = local_param_grad
+                else:
+                    param_grads[param_index].add_(local_param_grad)
+
+            shard_offset += shard_step
 
         # unflatten
-        x_grad = x_grad.view(x_shape_orig)
+        if x_grad is not None:
+            x_grad = x_grad.view(x_shape_orig)
 
-        return (None, None, x_grad, None, None)
+        return (None, None, x_grad, None, None, *param_grads)
+
+
+def _resolve_parameter(module: torch.nn.Module, name: str) -> torch.Tensor:
+    parameter = module
+    for component in name.split("."):
+        parameter = getattr(parameter, component)
+    return parameter
 
 
 def apply_tiled_mlp(
@@ -127,10 +160,22 @@ def apply_tiled_mlp(
     # Ensure num_shards is at least 1
     num_shards = max(1, num_shards)
 
+    if compute_params is None:
+        compute_params = [param for param in mlp_module.parameters() if param.requires_grad]
+    else:
+        compute_params = [param for param in compute_params if param.requires_grad]
+
+    module_param_names = {id(param): name for name, param in mlp_module.named_parameters(remove_duplicate=False)}
+    try:
+        compute_param_names = tuple(module_param_names[id(param)] for param in compute_params)
+    except KeyError as error:
+        raise ValueError("compute_params must contain parameters from mlp_module") from error
+
     return LigerTiledMLPFunction.apply(
         fn,
         mlp_module,
         x,
         num_shards,
-        compute_params,
+        compute_param_names,
+        *compute_params,
     )
