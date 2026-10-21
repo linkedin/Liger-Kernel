@@ -35,7 +35,6 @@ MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 16384
 # compute-bound for a 256 MiB bf16 logits chunk at V = 128k.
 MIN_CHUNK_SIZE = 1024
 DUAL_CLIP = 3.0  # PPO's ratio bound for negative advantages (arXiv:1912.09729)
-_SIGNS = {"both": 0, "neg": 1, "pos": 2, "ppo": 3}
 
 
 class ISCorrection(NamedTuple):
@@ -49,12 +48,12 @@ class ISCorrection(NamedTuple):
     low: float = 0.0  # band [low, high] on r; 0 / inf leave a side open
     high: float = math.inf
     outside: str = "drop"  # clamp: w = nearest bound | drop: w = 0
-    sign: str = "both"  # which advantages get corrected: both | neg | pos (others w = 1)
-    # | ppo: block only moves away from q; A>0: (0, high], A<0: [low, DUAL_CLIP]
+    sign: str = "both"  # both: the band applies to every token | ppo: only block moves away from q,
+    # A>0: (0, high], A<0: [low, DUAL_CLIP]
 
     def check(self):
         assert self.outside in ("clamp", "drop"), "outside must be 'clamp' or 'drop'"
-        assert self.sign in _SIGNS, "sign must be one of both | neg | pos | ppo"
+        assert self.sign in ("both", "ppo"), "sign must be 'both' or 'ppo'"
         return self
 
 
@@ -69,7 +68,7 @@ def _log_mass(
     HAS_LOW: tl.constexpr,
     HAS_HIGH: tl.constexpr,
     CLAMP: tl.constexpr,
-    SIGN: tl.constexpr,
+    PPO: tl.constexpr,
 ):
     """log(q * w(p/q)): a token's effective sampling mass (-inf where w = 0, log q without a correction).
 
@@ -85,7 +84,7 @@ def _log_mass(
             hi = log_q + LOG_HIGH
         else:
             hi = log_q + float("inf")
-        if SIGN == 3:
+        if PPO:
             in_band = tl.where(positive, log_p <= hi, (log_p >= lo) & (log_p <= log_q + 1.0986122886681098))
         else:
             in_band = (log_p >= lo) & (log_p <= hi)
@@ -94,10 +93,6 @@ def _log_mass(
         else:
             outside = log_p - float("inf")
         log_m = tl.where(in_band, log_p, outside)
-        if SIGN == 1:
-            log_m = tl.where(positive, log_q, log_m)
-        if SIGN == 2:
-            log_m = tl.where(positive, log_m, log_q)
     else:
         log_m = log_q + tl.zeros_like(log_p)
     return log_m
@@ -128,7 +123,7 @@ def _score_centering_kernel(
     HAS_LOW: tl.constexpr,
     HAS_HIGH: tl.constexpr,
     CLAMP: tl.constexpr,
-    SIGN: tl.constexpr,
+    PPO: tl.constexpr,
     SCORE_CENTER: tl.constexpr,
     HAS_GRADIENTS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -175,7 +170,7 @@ def _score_centering_kernel(
     zero = tl.zeros_like(lse)
     log_ratio = tl.minimum(tl.maximum(logp_token - logq_token, -20.0), 20.0)
     token_weight = tl.exp(
-        _log_mass(log_ratio, zero, positive, LOG_LOW, LOG_HIGH, HAS_CORRECTION, HAS_LOW, HAS_HIGH, CLAMP, SIGN)
+        _log_mass(log_ratio, zero, positive, LOG_LOW, LOG_HIGH, HAS_CORRECTION, HAS_LOW, HAS_HIGH, CLAMP, PPO)
     )
 
     p_head = tl.where(head_valid, tl.exp(logp_head), 0.0)
@@ -189,10 +184,10 @@ def _score_centering_kernel(
     score = token_weight * logp_token
     if SCORE_CENTER:
         alpha = tl.exp(
-            _log_mass(zero, tl.log(rho), positive, LOG_LOW, LOG_HIGH, HAS_CORRECTION, HAS_LOW, HAS_HIGH, CLAMP, SIGN)
+            _log_mass(zero, tl.log(rho), positive, LOG_LOW, LOG_HIGH, HAS_CORRECTION, HAS_LOW, HAS_HIGH, CLAMP, PPO)
         )
         mass = tl.exp(
-            _log_mass(logp_head, logq_head, positive, LOG_LOW, LOG_HIGH, HAS_CORRECTION, HAS_LOW, HAS_HIGH, CLAMP, SIGN)
+            _log_mass(logp_head, logq_head, positive, LOG_LOW, LOG_HIGH, HAS_CORRECTION, HAS_LOW, HAS_HIGH, CLAMP, PPO)
         )
         residual = tl.where(head_valid, mass - alpha * p_head, 0.0)
         # alpha * E_p[log p] = -alpha * entropy has zero gradient; it only makes the loss value fully centered
@@ -307,7 +302,7 @@ def fused_linear_score_centering_forward(
         HAS_LOW=c is not None and c.low > 0,
         HAS_HIGH=c is not None and c.high < math.inf,
         CLAMP=c is not None and c.outside == "clamp",
-        SIGN=_SIGNS[c.sign] if c is not None else 0,
+        PPO=c is not None and c.sign == "ppo",
     )
     block_size = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     grad_scale = 1.0 / normalizer

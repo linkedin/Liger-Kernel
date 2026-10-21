@@ -26,8 +26,6 @@ CORRECTIONS = {
     "mis": ISCorrection(low=0.5, high=5.0),
     "ppo": ISCorrection(low=0.8, high=1.2, sign="ppo"),
     "dapo": ISCorrection(low=0.8, high=1.28, sign="ppo"),
-    "tis_neg": ISCorrection(high=1.0, outside="clamp", sign="neg"),
-    "mis_pos": ISCorrection(low=0.9, high=1.1, sign="pos"),
 }
 
 
@@ -43,10 +41,6 @@ def ref_log_mass(log_p, log_q, positive, c):
     else:
         in_band = (log_p >= lo) & (log_p <= hi)
     log_m = torch.where(in_band, log_p, torch.clamp(log_p, lo, hi) if c.outside == "clamp" else -math.inf)
-    if c.sign == "neg":
-        log_m = torch.where(positive, log_q, log_m)
-    if c.sign == "pos":
-        log_m = torch.where(positive, log_m, log_q)
     return log_m
 
 
