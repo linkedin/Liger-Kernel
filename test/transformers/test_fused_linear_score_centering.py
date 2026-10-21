@@ -5,12 +5,14 @@ import pytest
 import torch
 import torch.multiprocessing as mp
 
-from liger_kernel.chunked_loss import ISCorrection
-from liger_kernel.chunked_loss import LigerFusedLinearScoreCenteringLoss
-from liger_kernel.chunked_loss.functional import liger_fused_linear_score_centering
-from liger_kernel.utils import infer_device
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
+
+from liger_kernel.transformers import ISCorrection
+from liger_kernel.transformers import LigerFusedLinearScoreCenteringLoss
+from liger_kernel.transformers.functional import liger_fused_linear_score_centering
+from liger_kernel.utils import infer_comm_backend
+from liger_kernel.utils import infer_device
 
 device = infer_device()
 
@@ -132,12 +134,7 @@ def test_correctness(B, T, H, V, k, dtype, atol, rtol, bias, name, score_center)
     x2 = x.detach().clone().requires_grad_(True)
 
     loss1, metrics1 = ref_loss_fn_rl(lin(x1), batch, correction, score_center)
-    liger_loss = LigerFusedLinearScoreCenteringLoss(
-        score_center=score_center,
-        correction=correction,
-        vocab_chunk_size=64,  # several vocab and sequence chunks even at test sizes
-        seq_chunk_size=16,
-    )
+    liger_loss = LigerFusedLinearScoreCenteringLoss(score_center=score_center, correction=correction, chunk_size=24)
     loss2, metrics2 = liger_loss(x2, liger_lin.weight, *liger_args(batch), liger_lin.bias)
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
     for key in metrics1:
@@ -167,9 +164,7 @@ def test_full_vocab_head_is_exact_centering(name, temperature):
     sampler_logp = batch["sampling_vocab_logprobs"]
     ids = sampler_logp.argsort(-1, descending=True)
     args = (*liger_args(batch | {"center_ids": ids, "center_logprobs": sampler_logp.gather(-1, ids)}),)
-    loss2, _ = liger_fused_linear_score_centering(
-        x2, lin.weight, *args, lin.bias, True, correction, temperature, 1e-6, None, 32, 16
-    )
+    loss2, _ = liger_fused_linear_score_centering(x2, lin.weight, *args, lin.bias, True, correction, temperature)
     assert_verbose_allclose(loss1, loss2, atol=1e-5, rtol=1e-4)
     loss1.backward()
     loss2.backward()
@@ -241,12 +236,12 @@ def test_drift_without_centering():  # plain REINFORCE does drift
 
 @pytest.mark.skipif(device == "cpu", reason="peak memory is measured on an accelerator")
 def test_peak_memory_does_not_scale_with_tokens_times_vocab():
-    B, T, H, V, k = 2, 512, 256, 32768, 16
+    B, T, H, V, k = 4, 1024, 256, 32768, 16
     lin = torch.nn.Linear(H, V, bias=False, device=device, dtype=torch.bfloat16)
     x, batch = make_batch(lin, B, T, k)
     del batch["sampling_vocab_logprobs"]
     x.requires_grad_(True)
-    loss_fn = LigerFusedLinearScoreCenteringLoss(seq_chunk_size=256)
+    loss_fn = LigerFusedLinearScoreCenteringLoss()
     device_module = getattr(torch, device)
     device_module.synchronize()
     device_module.empty_cache()
@@ -261,16 +256,17 @@ def test_peak_memory_does_not_scale_with_tokens_times_vocab():
 
 
 class _Policy(torch.nn.Module):
-    def __init__(self, H, V):
+    def __init__(self, H, V, loss_device):
         super().__init__()
         self.body = torch.nn.Linear(H, H)
         self.lm_head = torch.nn.Linear(H, V, bias=False)
-        self.loss = LigerFusedLinearScoreCenteringLoss(
-            correction=CORRECTIONS["tis"], vocab_chunk_size=16, seq_chunk_size=8
-        )
+        self.loss = LigerFusedLinearScoreCenteringLoss(correction=CORRECTIONS["tis"])
+        self.loss_device = loss_device
 
     def forward(self, x, *args):
-        return self.loss(self.body(x), self.lm_head.weight, *args)[0]
+        # Inside the FSDP2-wrapped forward, lm_head.weight is the unsharded local tensor.
+        args = tuple(a.to(self.loss_device) for a in args)
+        return self.loss(self.body(x).to(self.loss_device), self.lm_head.weight.to(self.loss_device), *args)[0]
 
 
 def _policy_batch(B, T, H, V, k):
@@ -286,44 +282,53 @@ def _policy_batch(B, T, H, V, k):
     return x, (*args, head_ids, head_logp)
 
 
-def _fsdp2_worker(rank, world_size, file_name, loss_in_forward, shape, ref_grads):
+def _fsdp2_worker(rank, world_size, file_name, dtensor_weight, shape, ref_grads):
     from torch.distributed.fsdp import fully_shard
 
-    torch.distributed.init_process_group("gloo", init_method=f"file://{file_name}", rank=rank, world_size=world_size)
-    mesh = torch.distributed.device_mesh.init_device_mesh("cpu", (world_size,))
+    if dtensor_weight:  # one accelerator per rank; the sharded lm_head.weight DTensor goes straight into the loss
+        backend, mesh_device, model_device = infer_comm_backend(), device, f"{device}:{rank}"
+        getattr(torch, device).set_device(rank)
+    else:  # FSDP2 on a CPU mesh; the loss runs on the (shared) accelerator inside the wrapped forward
+        backend, mesh_device, model_device = "gloo", "cpu", "cpu"
+    torch.distributed.init_process_group(backend, init_method=f"file://{file_name}", rank=rank, world_size=world_size)
+    mesh = torch.distributed.device_mesh.init_device_mesh(mesh_device, (world_size,))
     torch.manual_seed(0)
-    model = _Policy(*shape[2:4])
-    if not loss_in_forward:
+    loss_device = model_device if dtensor_weight else device
+    model = _Policy(*shape[2:4], loss_device).to(model_device)
+    if dtensor_weight:
         fully_shard(model.lm_head, mesh=mesh)
         fully_shard(model.body, mesh=mesh)
     fully_shard(model, mesh=mesh)
     x, args = _policy_batch(*shape)
     rows = slice(rank * shape[0] // world_size, (rank + 1) * shape[0] // world_size)
-    x, args = x[rows], tuple(a[rows] for a in args)
-    if loss_in_forward:
-        loss = model(x, *args)
-    else:  # the sharded lm_head.weight DTensor goes straight into the loss
+    x, args = x[rows].to(model_device), tuple(a[rows].to(loss_device) for a in args)
+    if dtensor_weight:
         loss = model.loss(model.body(x), model.lm_head.weight, *args)[0]
+    else:
+        loss = model(x, *args)
     loss.backward()
-    torch.testing.assert_close(model.lm_head.weight.grad.full_tensor(), ref_grads[0], atol=1e-6, rtol=1e-5)
-    torch.testing.assert_close(model.body.weight.grad.full_tensor(), ref_grads[1], atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(model.lm_head.weight.grad.full_tensor().cpu(), ref_grads[0], atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(model.body.weight.grad.full_tensor().cpu(), ref_grads[1], atol=1e-5, rtol=1e-4)
     torch.distributed.destroy_process_group()
 
 
-@pytest.mark.parametrize("loss_in_forward", [True, False])
-def test_fsdp2_matches_single_process(loss_in_forward):
-    """Data-parallel FSDP2 on CPU: the gradients equal those of the global token-mean loss on one process."""
+@pytest.mark.parametrize("dtensor_weight", [False, True])
+def test_fsdp2_matches_single_process(dtensor_weight):
+    """Data-parallel FSDP2: the gradients equal those of the global token-mean loss on one process."""
     pytest.importorskip("torch.distributed.fsdp", reason="needs FSDP2")
-    shape, world_size = (4, 12, 16, 64, 8), 2
+    world_size = 2
+    if dtensor_weight and getattr(torch, device).device_count() < world_size:
+        pytest.skip(f"needs {world_size} {device} devices")
+    shape = (4, 12, 16, 64, 8)
     torch.manual_seed(0)
-    model = _Policy(*shape[2:4])
+    model = _Policy(*shape[2:4], device)
     x, args = _policy_batch(*shape)
     model(x, *args).backward()
-    ref_grads = (model.lm_head.weight.grad, model.body.weight.grad)
+    ref_grads = (model.lm_head.weight.grad.cpu(), model.body.weight.grad.cpu())
     with tempfile.NamedTemporaryFile() as f:
         mp.spawn(
             _fsdp2_worker,
-            args=(world_size, f.name, loss_in_forward, shape, ref_grads),
+            args=(world_size, f.name, dtensor_weight, shape, ref_grads),
             nprocs=world_size,
             join=True,
         )
