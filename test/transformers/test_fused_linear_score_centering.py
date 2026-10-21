@@ -276,44 +276,85 @@ def _policy_batch(B, T, H, V, k):
     return x, (*args, head_ids, head_logp)
 
 
-def _fsdp2_worker(rank, world_size, file_name, dtensor_weight, shape, ref_grads):
-    from torch.distributed.fsdp import fully_shard
-
-    if dtensor_weight:  # one accelerator per rank; the sharded lm_head.weight DTensor goes straight into the loss
-        backend, mesh_device, model_device = infer_comm_backend(), device, f"{device}:{rank}"
-        getattr(torch, device).set_device(rank)
-    else:  # FSDP2 on a CPU mesh; the loss runs on the (shared) accelerator inside the wrapped forward
-        backend, mesh_device, model_device = "gloo", "cpu", "cpu"
-    torch.distributed.init_process_group(backend, init_method=f"file://{file_name}", rank=rank, world_size=world_size)
-    mesh = torch.distributed.device_mesh.init_device_mesh(mesh_device, (world_size,))
+def _test_dtensor_score_centering(rank, world_size, B, T, H, V, k, file_name):
+    torch.distributed.init_process_group(
+        backend=infer_comm_backend(),
+        init_method=f"file://{file_name}",
+        rank=rank,
+        world_size=world_size,
+    )
+    device = f"{infer_device()}:{rank}" if infer_device() != "cpu" else "cpu"
+    if infer_device() != "cpu":
+        getattr(torch, infer_device()).set_device(rank)
+    device_mesh = torch.distributed.device_mesh.init_device_mesh(
+        infer_device(), mesh_shape=(world_size,), mesh_dim_names=("dp",)
+    )
     torch.manual_seed(0)
-    loss_device = model_device if dtensor_weight else device
-    model = _Policy(*shape[2:4], loss_device).to(model_device)
-    if dtensor_weight:
-        fully_shard(model.lm_head, mesh=mesh)
-        fully_shard(model.body, mesh=mesh)
-    fully_shard(model, mesh=mesh)
-    x, args = _policy_batch(*shape)
-    rows = slice(rank * shape[0] // world_size, (rank + 1) * shape[0] // world_size)
-    x, args = x[rows].to(model_device), tuple(a[rows].to(loss_device) for a in args)
-    if dtensor_weight:
-        loss = model.loss(model.body(x), model.lm_head.weight, *args)[0]
-    else:
-        loss = model(x, *args)
-    loss.backward()
-    torch.testing.assert_close(model.lm_head.weight.grad.full_tensor().cpu(), ref_grads[0], atol=1e-5, rtol=1e-4)
-    torch.testing.assert_close(model.body.weight.grad.full_tensor().cpu(), ref_grads[1], atol=1e-5, rtol=1e-4)
+    weight = torch.randn(V, H, device=device)
+    x, args = _policy_batch(B, T, H, V, k)
+    x, args = x.to(device), tuple(a.to(device) for a in args)
+    loss_fn = LigerFusedLinearScoreCenteringLoss(correction=CORRECTIONS["tis"])
+
+    # Every rank runs the full batch with a plain weight: the all-reduced normalizer still gives the global token mean.
+    w1 = weight.clone().requires_grad_(True)
+    loss1 = loss_fn(x, w1, *args)[0]
+    loss1.backward()
+
+    # Data parallel: each rank takes its own rows, with the weight sharded like an FSDP2 parameter.
+    w2 = torch.distributed.tensor.distribute_tensor(
+        weight.clone(), device_mesh=device_mesh, placements=[torch.distributed.tensor.Shard(0)]
+    ).requires_grad_(True)
+    rows = slice(rank * B // world_size, (rank + 1) * B // world_size)
+    loss2 = loss_fn(x[rows], w2, *(a[rows] for a in args))[0]
+    loss2.backward()
+
+    mean_loss2 = loss2.detach().clone()
+    torch.distributed.all_reduce(mean_loss2)
+    torch.testing.assert_close(mean_loss2 / world_size, loss1.detach(), atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(w2.grad.full_tensor(), w1.grad, atol=1e-5, rtol=1e-4)
     torch.distributed.destroy_process_group()
 
 
-@pytest.mark.parametrize("dtensor_weight", [False, True])
-def test_fsdp2_matches_single_process(dtensor_weight):
-    """Data-parallel FSDP2: the gradients equal those of the global token-mean loss on one process."""
+@pytest.mark.parametrize("world_size, B, T, H, V, k", [(2, 4, 12, 16, 64, 8), (4, 8, 33, 31, 129, 16)])
+def test_dtensor_score_centering(world_size, B, T, H, V, k):
+    device_type = infer_device()
+    device_module = getattr(torch, device_type, None)
+    device_count = device_module.device_count() if hasattr(device_module, "device_count") else 0
+    if device_count < world_size:
+        pytest.xfail(f"Requires {world_size} {device_type.upper()} devices, but only {device_count} are available.")
+
+    with tempfile.NamedTemporaryFile() as f:
+        mp.spawn(
+            _test_dtensor_score_centering,
+            args=(world_size, B, T, H, V, k, f.name),
+            nprocs=world_size,
+            join=True,
+        )
+
+
+def _test_fsdp2_cpu_mesh(rank, world_size, shape, ref_grads, file_name):
+    from torch.distributed.fsdp import fully_shard
+
+    torch.distributed.init_process_group("gloo", init_method=f"file://{file_name}", rank=rank, world_size=world_size)
+    mesh = torch.distributed.device_mesh.init_device_mesh("cpu", (world_size,))
+    torch.manual_seed(0)
+    model = _Policy(*shape[2:4], device)
+    fully_shard(model, mesh=mesh)
+    x, args = _policy_batch(*shape)
+    rows = slice(rank * shape[0] // world_size, (rank + 1) * shape[0] // world_size)
+    model(x[rows], *(a[rows] for a in args)).backward()
+    torch.testing.assert_close(model.lm_head.weight.grad.full_tensor(), ref_grads[0], atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(model.body.weight.grad.full_tensor(), ref_grads[1], atol=1e-5, rtol=1e-4)
+    torch.distributed.destroy_process_group()
+
+
+def test_fsdp2_cpu_mesh():
+    """
+    FSDP2 data parallelism on a CPU mesh, with the loss computed on the (shared) accelerator inside the wrapped
+    forward, so a distributed run is covered on single-GPU hosts too.
+    """
     pytest.importorskip("torch.distributed.fsdp", reason="needs FSDP2")
-    world_size = 2
-    if dtensor_weight and getattr(torch, device).device_count() < world_size:
-        pytest.skip(f"needs {world_size} {device} devices")
-    shape = (4, 12, 16, 64, 8)
+    world_size, shape = 2, (4, 12, 16, 64, 8)
     torch.manual_seed(0)
     model = _Policy(*shape[2:4], device)
     x, args = _policy_batch(*shape)
@@ -321,8 +362,8 @@ def test_fsdp2_matches_single_process(dtensor_weight):
     ref_grads = (model.lm_head.weight.grad.cpu(), model.body.weight.grad.cpu())
     with tempfile.NamedTemporaryFile() as f:
         mp.spawn(
-            _fsdp2_worker,
-            args=(world_size, f.name, dtensor_weight, shape, ref_grads),
+            _test_fsdp2_cpu_mesh,
+            args=(world_size, shape, ref_grads, f.name),
             nprocs=world_size,
             join=True,
         )
