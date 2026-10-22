@@ -31,6 +31,7 @@ from liger_kernel.ops import LigerSiLUMulFunction
 from liger_kernel.ops import LigerSoftmaxFunction
 from liger_kernel.ops import LigerSparsemaxFunction
 from liger_kernel.ops import LigerTVDLossFunction
+from liger_kernel.ops import fused_linear_score_centering
 
 
 @dataclass
@@ -173,6 +174,42 @@ def liger_fused_linear_jsd(
         accum_dtype,
         None,
         None,
+    )
+
+
+def liger_fused_linear_score_centering(
+    _input,
+    weight,
+    selected_token_ids,
+    attention_mask,
+    advantages,
+    sampler_token_logps,
+    sampler_topk_ids,
+    sampler_topk_logps,
+    bias=None,
+    score_center: bool = True,
+    correction=None,
+    temperature: float = 1.0,
+    eps: float = 1e-6,
+    num_items_in_batch=None,
+    chunk_size=None,
+):
+    return fused_linear_score_centering(
+        _input,
+        weight,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        sampler_token_logps,
+        sampler_topk_ids,
+        sampler_topk_logps,
+        bias,
+        score_center,
+        correction,
+        temperature,
+        eps,
+        num_items_in_batch,
+        chunk_size,
     )
 
 
