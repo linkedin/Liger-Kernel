@@ -135,11 +135,11 @@ y = orpo_loss(lm_head.weight, x, target)
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
 ```
 
-#### Ascend NPU
+#### Huawei Ascend NPU
 
 - `torch == 2.9.0`
 - `torch_npu == 2.9.0`
-- `triton-ascend == 3.2.2` Install from the Ascend PyPI mirror (not on default PyPI).
+- `triton-ascend == 3.2.2` Install from the Huawei Ascend PyPI mirror (not on default PyPI).
 - `CANN == 9.1.0`
 
 ```bash
