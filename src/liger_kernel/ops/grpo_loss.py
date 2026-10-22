@@ -393,6 +393,11 @@ def _grpo_loss_bwd_kernel_seq(
             dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
     dlogp = dlogp / TEMPERATURE
+    if dlogp == 0.0:
+        for start_n in tl.range(0, N, BLOCK_N):
+            cols = start_n + tl.arange(0, BLOCK_N)
+            tl.store(DLOGITS + cols, 0.0, mask=cols < N)
+        return
     tl.debug_barrier()
     for start_n in tl.range(0, N, BLOCK_N):
         cols = start_n + tl.arange(0, BLOCK_N)
@@ -523,6 +528,11 @@ def _grpo_loss_bwd_kernel(
             dlogp += BETA * (1 - tl.exp(ref_logp - logp))
 
     dlogp = dlogp * dloss / TEMPERATURE
+    if dlogp == 0.0:
+        for start_n in tl.range(0, N, BLOCK_N):
+            cols = start_n + tl.arange(0, BLOCK_N)
+            tl.store(DLOGITS + cols, 0.0, mask=cols < N)
+        return
     tl.debug_barrier()
     for start_n in tl.range(0, N, BLOCK_N):
         cols = start_n + tl.arange(0, BLOCK_N)
@@ -644,6 +654,11 @@ class GrpoLossFunction(torch.autograd.Function):
 
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
+
+        if advantages.ndim != 1 or advantages.shape[0] != B:
+            raise ValueError("advantages must have shape (B,)")
+        # Forward and backward kernels read one contiguous advantage per sequence.
+        advantages = advantages.contiguous()
 
         # VESPO requires phi_seq pre-computed by the caller (uses get_gamma_weights).
         if loss_type == "vespo":
@@ -899,7 +914,9 @@ class GrpoLossFunction(torch.autograd.Function):
         elif loss_type == "luspo":
             # loss = mean(per_token_loss * seq_lens), mean divides by B*L
             seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
-            dloss = dloss_input * seq_lens_bwd / (B * L)
+            # The backward kernels index DLOSS per token (off_b * stride0 + off_l * stride1), so the
+            # per-sequence (B, 1) scale must be materialized as a (B, L) tensor like the other loss types.
+            dloss = (dloss_input * seq_lens_bwd / (B * L)).expand(B, L).contiguous()
         else:
             raise ValueError(f"Unknown loss_type: {loss_type}")
 
