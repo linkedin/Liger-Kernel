@@ -358,3 +358,21 @@ def test_dtensor_rms_norm(world_size, bs, sl, hd, dtype, atol, rtol, offset, cas
             nprocs=world_size,
             join=True,
         )
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_torch_compile_matches_eager(dtype):
+    """Compiled RMSNorm must match eager for both low-precision dtypes.
+
+    Companion coverage to the kl_div/tvd compile tests: the scalar ``eps`` is
+    passed to the Triton kernel and must survive Inductor's specialization.
+    """
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    hidden = 1024
+    model = LigerRMSNorm(hidden).to(device=device, dtype=dtype)
+    x = torch.randn(64, hidden, device=device, dtype=dtype)
+    with torch.no_grad():
+        expected = model(x)
+        actual = torch.compile(model)(x)
+    torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)

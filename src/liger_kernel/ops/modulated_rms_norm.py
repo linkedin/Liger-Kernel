@@ -88,8 +88,8 @@ def _modulated_rms_norm_forward_kernel(
         offset = offset.to(X_row_dtype)
     else:
         # Force fp32 scalars: Inductor may use fp64 under torch.compile and tank throughput.
-        eps = eps.to(tl.float32)
-        offset = offset.to(tl.float32)
+        eps = tl.cast(eps, tl.float32)
+        offset = tl.cast(offset, tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
     rstd = rsqrt(mean_square + eps)
