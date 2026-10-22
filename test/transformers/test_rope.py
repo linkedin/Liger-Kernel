@@ -533,32 +533,62 @@ def test_qwen3_5_rope_matches_hf(
     ],
 )
 def test_qwen3_5_vision_rope_matches_hf(seq_len, num_heads, head_dim, dtype, atol, rtol):
-    """Regression test: liger_rotary_pos_emb_vision matches Qwen3.5 vision RoPE."""
+    """Regression test: liger_rotary_pos_emb_vision matches Qwen3.5 vision RoPE.
+
+    Handles two incompatible Qwen3_5VisionRotaryEmbedding APIs:
+      - transformers < 5.17: __init__(dim: int, theta: float); forward(seqlen: int) → freqs tensor
+      - transformers >= 5.17: __init__(config: Qwen3_5VisionConfig);  forward(x, pos_ids) → (cos, sin)
+    """
+    from packaging import version
+
+    from transformers import __version__ as transformers_version
+
     modeling_qwen3_5 = pytest.importorskip("transformers.models.qwen3_5.modeling_qwen3_5")
-    from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
 
     torch.manual_seed(42)
-
-    config = Qwen3_5VisionConfig(
-        hidden_size=num_heads * head_dim,
-        num_heads=num_heads,
-        rope_parameters={
-            "rope_type": "axial",
-            "rope_theta": 10000.0,
-        },
-    )
-    rotary_emb = modeling_qwen3_5.Qwen3_5VisionRotaryEmbedding(config).to(device)
 
     # Qwen3.5 vision input shapes: q, k are (seq_len, num_heads, head_dim)
     # cos, sin are (seq_len, head_dim) with duplicated halves
     q = torch.randn((seq_len, num_heads, head_dim), device=device, dtype=dtype)
     k = torch.randn((seq_len, num_heads, head_dim), device=device, dtype=dtype)
 
+    # Position ids: (seq_len, 2) — h-coord and w-coord for each token
     pos_ids = torch.stack([torch.arange(seq_len, device=device), torch.arange(seq_len, device=device)], dim=-1)
-    with torch.no_grad():
-        cos, sin = rotary_emb(k, pos_ids)
-    cos = cos.to(dtype)
-    sin = sin.to(dtype)
+
+    if version.parse(transformers_version) < version.parse("5.17.0"):
+        # Old API: VisionRotaryEmbedding(dim: int); forward(seqlen: int) → freqs (seq_len, dim//2)
+        # The vision model passes head_dim // 2 as dim so inv_freq has shape (head_dim // 4,).
+        # rot_pos_emb(seqlen) produces a lookup table of shape (seqlen, head_dim // 4).
+        # Each token's freqs are indexed by its h/w coord, concatenated, then duplicated:
+        #   freqs_hw = cat(freq_table[h_ids], freq_table[w_ids], dim=-1)  → (seq, head_dim // 2)
+        #   emb      = cat(freqs_hw, freqs_hw, dim=-1)                    → (seq, head_dim)
+        #   cos, sin = emb.cos(), emb.sin()
+        rotary_emb = modeling_qwen3_5.Qwen3_5VisionRotaryEmbedding(head_dim // 2).to(device)
+        with torch.no_grad():
+            freq_table = rotary_emb(seq_len)  # (seq_len, head_dim // 4)
+        h_ids = pos_ids[:, 0]  # (seq_len,)
+        w_ids = pos_ids[:, 1]  # (seq_len,)
+        freqs_hw = torch.cat([freq_table[h_ids], freq_table[w_ids]], dim=-1)  # (seq_len, head_dim // 2)
+        emb = torch.cat([freqs_hw, freqs_hw], dim=-1)  # (seq_len, head_dim)
+        cos = emb.cos().to(dtype)
+        sin = emb.sin().to(dtype)
+    else:
+        # New API (>= 5.17): VisionRotaryEmbedding(config); forward(x, pos_ids) → (cos, sin)
+        from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
+
+        config = Qwen3_5VisionConfig(
+            hidden_size=num_heads * head_dim,
+            num_heads=num_heads,
+            rope_parameters={
+                "rope_type": "axial",
+                "rope_theta": 10000.0,
+            },
+        )
+        rotary_emb = modeling_qwen3_5.Qwen3_5VisionRotaryEmbedding(config).to(device)
+        with torch.no_grad():
+            cos, sin = rotary_emb(k, pos_ids)
+        cos = cos.to(dtype)
+        sin = sin.to(dtype)
 
     q1, k1 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
     q2, k2 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
