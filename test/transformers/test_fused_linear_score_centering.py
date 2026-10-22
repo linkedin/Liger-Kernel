@@ -8,6 +8,7 @@ import torch.multiprocessing as mp
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 
+from liger_kernel.ops.fused_linear_score_centering import _loss_normalizer
 from liger_kernel.transformers import ISCorrection
 from liger_kernel.transformers import LigerFusedLinearScoreCenteringLoss
 from liger_kernel.transformers.functional import liger_fused_linear_score_centering
@@ -180,6 +181,32 @@ def test_frozen_weight_and_num_items_in_batch():
         x, lin.weight, *liger_args(batch), None, True, None, 1.0, 1e-6, 2 * n_tokens
     )
     assert_verbose_allclose(loss_scaled, loss / 2, atol=1e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize("bias", [False, True])
+def test_empty_mask(bias):
+    B, T, H, V, k = 2, 16, 32, 100, 4
+    lin = torch.nn.Linear(H, V, bias=bias, device=device)
+    x, batch = make_batch(lin, B, T, k)
+    x.requires_grad_(True)
+    batch["mask"].zero_()
+    loss, _ = liger_fused_linear_score_centering(x, lin.weight, *liger_args(batch), lin.bias)
+    loss.backward()
+    assert loss.item() == 0
+    assert torch.all(x.grad == 0)
+    assert torch.all(lin.weight.grad == 0)
+    if bias:
+        assert torch.all(lin.bias.grad == 0)
+
+
+def test_loss_normalizer_with_fewer_tokens_than_ranks(monkeypatch):
+    # DDP averages gradients over ranks, so 1 active token over 2 ranks needs a per-rank normalizer of 0.5.
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+    mask = torch.ones(1, 1, device=device)
+    assert _loss_normalizer(mask, num_items_in_batch=1).item() == 0.5
+    assert _loss_normalizer(mask, num_items_in_batch=0).item() == 0.5
 
 
 # Score centering cancels drift: with a constant advantage, the expected (corrected) REINFORCE gradient under a

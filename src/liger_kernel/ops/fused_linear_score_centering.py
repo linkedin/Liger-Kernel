@@ -242,7 +242,7 @@ def _loss_normalizer(mask, num_items_in_batch):
         normalizer = mask.sum().to(torch.float32)
         if distributed:
             torch.distributed.all_reduce(normalizer)
-    return (normalizer / world_size).clamp_min(1.0)
+    return normalizer.clamp_min(1.0) / world_size
 
 
 def fused_linear_score_centering_forward(
@@ -277,7 +277,8 @@ def fused_linear_score_centering_forward(
     kl_head_1d = torch.empty(BT, dtype=torch.float32, device=device)
     masked_1d = torch.empty(BT, dtype=torch.float32, device=device)
     grad_input = torch.empty_like(_input) if compute_grad_input else None
-    grad_weight = torch.empty_like(weight) if compute_grad_weight else None
+    # the first chunk overwrites grad_weight, so it only needs zeroing when there are no active tokens
+    grad_weight = (torch.empty_like(weight) if BT > 0 else torch.zeros_like(weight)) if compute_grad_weight else None
     grad_bias = torch.zeros(V, dtype=torch.float32, device=device) if compute_grad_bias else None
 
     c = correction
