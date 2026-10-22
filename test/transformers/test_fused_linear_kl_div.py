@@ -555,6 +555,29 @@ def test_torch_kl_div_parity():
     assert_verbose_allclose(expected, got, atol=1e-6, rtol=1e-5)
 
 
+@pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
+@pytest.mark.parametrize("offset", [0.0, 20.0])
+def test_bf16_student_close_to_teacher(offset):
+    # When the student is close to the teacher the KL is small (~4e-5 here), so the loss must be
+    # computed from float32 logits; logits rounded to bf16 before the log-softmax overestimate it.
+    # A shared logit offset (softmax-invariant) makes the logits larger and the rounding worse.
+    BT, H, V = 8, 4096, 128256
+    torch.manual_seed(0)
+    _input = torch.randn(BT, H, device=device)
+    _weight = torch.randn(V, H, device=device) * (2.0 / H**0.5)  # student logits ~ N(0, 2^2)
+    _input[:, 0] = 1.0
+    _weight[:, 0] += offset
+    _input, _weight = _input.to(torch.bfloat16), _weight.to(torch.bfloat16)
+
+    logits = _input.float() @ _weight.float().t()
+    target = torch.softmax(logits + 0.01 * torch.randn_like(logits), dim=-1).to(torch.bfloat16)
+
+    expected = torch.nn.functional.kl_div(torch.log_softmax(logits, dim=-1), target.float(), reduction="batchmean")
+    got = liger_fused_linear_kl_div(_input, _weight, target)
+
+    assert_verbose_allclose(expected, got.float(), atol=0.0, rtol=5e-2)
+
+
 def test_invalid_reduction():
     B = 1
     T = 4
