@@ -532,63 +532,66 @@ def test_qwen3_5_rope_matches_hf(
         (torch.float16, 1e-2, 1e-5),
     ],
 )
+def _get_qwen3_5_vision_cos_sin(modeling_qwen3_5, num_heads, head_dim, seq_len, pos_ids, dtype):
+    """Build (cos, sin) for Qwen3.5 vision RoPE, adapting to the transformers version.
+
+    API history:
+      < 5.17  Qwen3_5VisionRotaryEmbedding(dim: int); forward(seqlen: int) → raw freqs tensor
+              The vision model passes (head_dim // 2) as dim; forward returns a (seqlen, head_dim//4)
+              lookup table that the model then indexes by (h, w) position and duplicates.
+      >= 5.17 Qwen3_5VisionRotaryEmbedding(config);   forward(x, pos_ids) → (cos, sin)
+
+    Uses transformers_version_dispatch for construction (consistent with the rest of this
+    module), then applies the matching forward convention.
+    """
+    from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
+
+    vision_config = Qwen3_5VisionConfig(
+        hidden_size=num_heads * head_dim,
+        num_heads=num_heads,
+        rope_parameters={"rope_type": "axial", "rope_theta": 10000.0},
+    )
+
+    def _old_cos_sin():
+        # < 5.17: integer dim constructor + seqlen-integer forward
+        rotary_emb = modeling_qwen3_5.Qwen3_5VisionRotaryEmbedding(head_dim // 2).to(pos_ids.device)
+        freq_table = rotary_emb(seq_len)  # (seq_len, head_dim // 4)
+        h_ids, w_ids = pos_ids[:, 0], pos_ids[:, 1]
+        freqs_hw = torch.cat([freq_table[h_ids], freq_table[w_ids]], dim=-1)  # (seq_len, head_dim // 2)
+        emb = torch.cat([freqs_hw, freqs_hw], dim=-1)  # (seq_len, head_dim)
+        return emb.cos().to(dtype), emb.sin().to(dtype)
+
+    def _new_cos_sin():
+        # >= 5.17: config constructor + (x, pos_ids) forward → (cos, sin)
+        rotary_emb = modeling_qwen3_5.Qwen3_5VisionRotaryEmbedding(vision_config).to(pos_ids.device)
+        # forward only needs x for its device; shape doesn't matter
+        dummy_x = pos_ids.new_zeros(1)
+        cos, sin = rotary_emb(dummy_x, pos_ids)
+        return cos.to(dtype), sin.to(dtype)
+
+    with torch.no_grad():
+        return transformers_version_dispatch("5.17.0", _old_cos_sin, _new_cos_sin)
+
+
 def test_qwen3_5_vision_rope_matches_hf(seq_len, num_heads, head_dim, dtype, atol, rtol):
     """Regression test: liger_rotary_pos_emb_vision matches Qwen3.5 vision RoPE.
 
-    Handles two incompatible Qwen3_5VisionRotaryEmbedding APIs:
-      - transformers < 5.17: __init__(dim: int, theta: float); forward(seqlen: int) → freqs tensor
-      - transformers >= 5.17: __init__(config: Qwen3_5VisionConfig);  forward(x, pos_ids) → (cos, sin)
+    Qwen3_5VisionRotaryEmbedding changed constructor/forward signatures in transformers 5.17.
+    _get_qwen3_5_vision_cos_sin() abstracts the version difference via
+    transformers_version_dispatch, consistent with the rest of this test module.
     """
-    from packaging import version
-
-    from transformers import __version__ as transformers_version
-
     modeling_qwen3_5 = pytest.importorskip("transformers.models.qwen3_5.modeling_qwen3_5")
 
     torch.manual_seed(42)
 
     # Qwen3.5 vision input shapes: q, k are (seq_len, num_heads, head_dim)
-    # cos, sin are (seq_len, head_dim) with duplicated halves
     q = torch.randn((seq_len, num_heads, head_dim), device=device, dtype=dtype)
     k = torch.randn((seq_len, num_heads, head_dim), device=device, dtype=dtype)
 
     # Position ids: (seq_len, 2) — h-coord and w-coord for each token
     pos_ids = torch.stack([torch.arange(seq_len, device=device), torch.arange(seq_len, device=device)], dim=-1)
 
-    if version.parse(transformers_version) < version.parse("5.17.0"):
-        # Old API: VisionRotaryEmbedding(dim: int); forward(seqlen: int) → freqs (seq_len, dim//2)
-        # The vision model passes head_dim // 2 as dim so inv_freq has shape (head_dim // 4,).
-        # rot_pos_emb(seqlen) produces a lookup table of shape (seqlen, head_dim // 4).
-        # Each token's freqs are indexed by its h/w coord, concatenated, then duplicated:
-        #   freqs_hw = cat(freq_table[h_ids], freq_table[w_ids], dim=-1)  → (seq, head_dim // 2)
-        #   emb      = cat(freqs_hw, freqs_hw, dim=-1)                    → (seq, head_dim)
-        #   cos, sin = emb.cos(), emb.sin()
-        rotary_emb = modeling_qwen3_5.Qwen3_5VisionRotaryEmbedding(head_dim // 2).to(device)
-        with torch.no_grad():
-            freq_table = rotary_emb(seq_len)  # (seq_len, head_dim // 4)
-        h_ids = pos_ids[:, 0]  # (seq_len,)
-        w_ids = pos_ids[:, 1]  # (seq_len,)
-        freqs_hw = torch.cat([freq_table[h_ids], freq_table[w_ids]], dim=-1)  # (seq_len, head_dim // 2)
-        emb = torch.cat([freqs_hw, freqs_hw], dim=-1)  # (seq_len, head_dim)
-        cos = emb.cos().to(dtype)
-        sin = emb.sin().to(dtype)
-    else:
-        # New API (>= 5.17): VisionRotaryEmbedding(config); forward(x, pos_ids) → (cos, sin)
-        from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
-
-        config = Qwen3_5VisionConfig(
-            hidden_size=num_heads * head_dim,
-            num_heads=num_heads,
-            rope_parameters={
-                "rope_type": "axial",
-                "rope_theta": 10000.0,
-            },
-        )
-        rotary_emb = modeling_qwen3_5.Qwen3_5VisionRotaryEmbedding(config).to(device)
-        with torch.no_grad():
-            cos, sin = rotary_emb(k, pos_ids)
-        cos = cos.to(dtype)
-        sin = sin.to(dtype)
+    cos, sin = _get_qwen3_5_vision_cos_sin(modeling_qwen3_5, num_heads, head_dim, seq_len, pos_ids, dtype)
 
     q1, k1 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
     q2, k2 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
