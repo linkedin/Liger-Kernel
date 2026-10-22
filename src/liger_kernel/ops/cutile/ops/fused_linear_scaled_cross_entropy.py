@@ -9,6 +9,8 @@ import torch
 from liger_kernel.ops.cutile.ops.utils import LOG2E
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.cutile.ops.utils import _select_cross_entropy_block_size
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import _scaled_ce_outputs
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_selected_token_ids
 from liger_kernel.utils import infer_device_arch
 
 ConstInt = ct.Constant[int]
@@ -104,11 +106,14 @@ def _fused_scaled_cross_entropy_forward_kernel_ct(
     nll,
     entropy,
     lse,
+    selected_token_ids,
+    selected_log_probs,
     vocab_size,
     inv_temperature,
     ignore_index,
     BLOCK_SIZE: ConstInt,
     RETURN_ENTROPY: ConstInt,
+    NUM_SELECTED: ConstInt,
 ):
     row_idx = ct.bid(0)
     target_idx = ct.load(target, row_idx, shape=())
@@ -118,6 +123,8 @@ def _fused_scaled_cross_entropy_forward_kernel_ct(
         ct.scatter(lse, row_idx, ct.astype(0.0, lse.dtype))
         if RETURN_ENTROPY:
             ct.scatter(entropy, row_idx, ct.astype(0.0, entropy.dtype))
+        for k in range(NUM_SELECTED):
+            ct.scatter(selected_log_probs, (row_idx, k), ct.float32(0.0))
         return
 
     target_col = ct.astype(target_idx, ct.int32)
@@ -163,6 +170,10 @@ def _fused_scaled_cross_entropy_forward_kernel_ct(
     if RETURN_ENTROPY:
         entropy_value = logsumexp - running_weighted_sum / running_sum
         ct.scatter(entropy, row_idx, ct.astype(entropy_value, entropy.dtype))
+    for k in range(NUM_SELECTED):
+        selected_id = ct.load(selected_token_ids, k, shape=())
+        selected_logit = ct.astype(ct.gather(logits, (row_idx, selected_id), check_bounds=False), ct.float32)
+        ct.scatter(selected_log_probs, (row_idx, k), selected_logit * inv_temperature - logsumexp)
 
 
 def fused_scaled_cross_entropy_forward(
@@ -173,13 +184,16 @@ def fused_scaled_cross_entropy_forward(
     ignore_index=-100,
     m_tiles_per_cluster=1,
     return_entropy=False,
+    selected_token_ids=None,
 ):
     """Compute per-token NLL and optional entropy in token chunks.
 
-    Returns per-token NLL, optional entropy, and log-sum-exp.
+    Returns per-token NLL, optional entropy, and log-sum-exp. When selected
+    IDs are supplied, appends FP32 selected log-probabilities ``[M,K]``.
     """
     _validate_inputs(_input, weight, target, ignore_index)
     _validate_temperature(temperature)
+    selected_token_ids = _validate_selected_token_ids(selected_token_ids, weight)
     if not isinstance(m_tiles_per_cluster, int) or isinstance(m_tiles_per_cluster, bool):
         raise TypeError("m_tiles_per_cluster must be an int")
     if m_tiles_per_cluster < 1:
@@ -197,6 +211,9 @@ def fused_scaled_cross_entropy_forward(
     nll = torch.empty(BT, dtype=torch.float32, device=_input.device)
     entropy = torch.empty(BT, dtype=_input.dtype, device=_input.device) if return_entropy else None
     lse = torch.empty(BT, dtype=torch.float32, device=_input.device)
+    num_selected = selected_token_ids.numel() if selected_token_ids is not None else 0
+    selected = nll.new_empty(BT, num_selected) if selected_token_ids is not None else None
+    selected_arg = selected if num_selected else nll.view(BT, 1)
     dummy_entropy = torch.empty(1, dtype=_input.dtype, device=_input.device)
     target = target.contiguous()
 
@@ -215,15 +232,19 @@ def fused_scaled_cross_entropy_forward(
                 nll[start:end],
                 entropy_arg,
                 lse[start:end],
+                selected_token_ids if num_selected else target,
+                selected_arg[start:end],
                 int(V),
                 float(1.0 / temperature),
                 int(ignore_index),
                 int(block_size),
                 int(return_entropy),
+                int(num_selected),
             ),
         )
 
-    return nll, entropy, lse
+    outputs = (nll, entropy, lse)
+    return outputs + (selected,) if selected is not None else outputs
 
 
 @ct.kernel(occupancy=4)
@@ -234,12 +255,16 @@ def _fused_scaled_cross_entropy_backward_kernel_ct(
     entropy,
     grad_nll,
     grad_entropy,
+    selected_token_ids,
+    grad_selected,
+    selected_grad_sum,
     vocab_size,
     inv_temperature,
     ignore_index,
     BLOCK_SIZE: ConstInt,
     HAS_NLL_GRAD: ConstInt,
     HAS_ENTROPY_GRAD: ConstInt,
+    NUM_SELECTED: ConstInt,
 ):
     row_idx = ct.bid(0)
     target_idx = ct.load(target, row_idx, shape=())
@@ -262,6 +287,9 @@ def _fused_scaled_cross_entropy_backward_kernel_ct(
     if HAS_ENTROPY_GRAD:
         row_entropy = ct.astype(ct.load(entropy, row_idx, shape=()), ct.float32)
         row_grad_entropy = ct.astype(ct.load(grad_entropy, row_idx, shape=()), ct.float32)
+    row_selected_sum = ct.float32(0.0)
+    if NUM_SELECTED:
+        row_selected_sum = ct.load(selected_grad_sum, row_idx, shape=())
 
     for chunk_idx in range(num_chunks):
         col_idx = ct.add(ct.arange(BLOCK_SIZE, dtype=ct.int32), chunk_idx * BLOCK_SIZE)
@@ -278,6 +306,12 @@ def _fused_scaled_cross_entropy_backward_kernel_ct(
         if HAS_ENTROPY_GRAD:
             log_probabilities = scaled_logits - row_lse
             grad_scaled_logits -= row_grad_entropy * probabilities * (log_probabilities + row_entropy)
+        if NUM_SELECTED:
+            grad_scaled_logits -= row_selected_sum * probabilities
+            for k in range(NUM_SELECTED):
+                selected_id = ct.load(selected_token_ids, k, shape=())
+                selected_grad = ct.load(grad_selected, (row_idx, k), shape=())
+                grad_scaled_logits += ct.where(ct.equal(col_idx, selected_id), selected_grad, 0.0)
         grad_raw_logits = grad_scaled_logits * inv_temperature
 
         ct.scatter(
@@ -299,17 +333,19 @@ def fused_scaled_cross_entropy_backward(
     *,
     entropy=None,
     grad_entropy=None,
+    selected_token_ids=None,
+    grad_selected=None,
 ):
     """Compute gradients for per-token NLL and optional entropy outputs.
 
     Returns gradients for ``_input`` and ``weight``. ``grad_nll`` may be
-    ``None`` for entropy-only backward; ``entropy`` and ``grad_entropy`` are
-    needed only when entropy contributes to the gradient.
+    ``None`` for entropy-only or selected-only backward; ``entropy`` and
+    ``grad_entropy`` are needed only when entropy contributes to the gradient.
     """
     _validate_input_metadata(_input, weight, target)
     _validate_temperature(temperature)
-    if grad_nll is None and grad_entropy is None:
-        raise ValueError("at least one of grad_nll or grad_entropy must be provided")
+    if grad_nll is None and grad_entropy is None and grad_selected is None:
+        raise ValueError("at least one output gradient must be provided")
     if grad_nll is not None and grad_nll.shape != target.shape:
         raise ValueError(f"grad_nll must have shape {tuple(target.shape)}, got {tuple(grad_nll.shape)}")
     if lse.shape != target.shape:
@@ -322,6 +358,9 @@ def fused_scaled_cross_entropy_backward(
                 f"entropy and grad_entropy must have shape {tuple(target.shape)}, "
                 f"got {tuple(entropy.shape)} and {tuple(grad_entropy.shape)}"
             )
+    if grad_selected is not None:
+        if selected_token_ids is None or grad_selected.shape != (_input.shape[0], selected_token_ids.numel()):
+            raise ValueError("grad_selected must have shape [tokens, selected_token_ids.numel()]")
 
     BT = _input.shape[0]
     V = weight.shape[0]
@@ -346,6 +385,9 @@ def fused_scaled_cross_entropy_backward(
     grad_nll = grad_nll.contiguous() if grad_nll is not None else None
     entropy = entropy.contiguous() if entropy is not None else None
     grad_entropy = grad_entropy.contiguous() if grad_entropy is not None else None
+    num_selected = selected_token_ids.numel() if grad_selected is not None else 0
+    grad_selected = grad_selected.float().contiguous() if num_selected else None
+    selected_grad_sum = grad_selected.sum(-1) if num_selected else None
 
     for start in range(0, BT, chunk_size):
         end = min(start + chunk_size, BT)
@@ -364,12 +406,16 @@ def fused_scaled_cross_entropy_backward(
                 entropy[start:end] if entropy is not None else dummy_input_dtype,
                 grad_nll[start:end] if grad_nll is not None else dummy_f32,
                 grad_entropy[start:end] if grad_entropy is not None else dummy_input_dtype,
+                selected_token_ids if num_selected else target,
+                grad_selected[start:end] if num_selected else dummy_f32.view(1, 1),
+                selected_grad_sum[start:end] if num_selected else dummy_f32,
                 int(V),
                 float(1.0 / temperature),
                 int(ignore_index),
                 int(block_size),
                 int(grad_nll is not None),
                 int(grad_entropy is not None),
+                int(num_selected),
             ),
         )
 
@@ -388,27 +434,33 @@ def fused_scaled_cross_entropy_backward(
 
 class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, _input, weight, target, temperature, ignore_index, return_entropy):
+    def forward(ctx, _input, weight, target, temperature, ignore_index, return_entropy, selected_token_ids=None):
         ctx.set_materialize_grads(False)
-        nll, entropy, lse = fused_scaled_cross_entropy_forward(
+        outputs = fused_scaled_cross_entropy_forward(
             _input,
             weight,
             target,
             temperature,
             ignore_index,
             return_entropy=return_entropy,
+            selected_token_ids=selected_token_ids,
         )
+        nll, entropy, lse = outputs[:3]
+        selected = outputs[3] if selected_token_ids is not None else None
+        selected_token_ids = selected_token_ids.contiguous() if selected_token_ids is not None else None
 
         saved_entropy = entropy if entropy is not None else _input.new_empty(0)
-        ctx.save_for_backward(_input, weight, target, lse, saved_entropy)
+        ctx.save_for_backward(_input, weight, target, lse, saved_entropy, selected_token_ids)
         ctx.temperature = temperature
         ctx.ignore_index = ignore_index
         ctx.return_entropy = return_entropy
-        return (nll, entropy) if return_entropy else nll
+        return _scaled_ce_outputs(nll, entropy, selected)
 
     @staticmethod
-    def backward(ctx, grad_nll, grad_entropy=None):
-        _input, weight, target, lse, entropy = ctx.saved_tensors
+    def backward(ctx, grad_nll, grad_entropy=None, grad_selected=None):
+        _input, weight, target, lse, entropy, selected_token_ids = ctx.saved_tensors
+        if not ctx.return_entropy:
+            grad_selected, grad_entropy = grad_entropy, None
         grad_input, grad_weight = fused_scaled_cross_entropy_backward(
             grad_nll,
             _input,
@@ -419,15 +471,18 @@ class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function)
             ctx.ignore_index,
             entropy=entropy if ctx.return_entropy else None,
             grad_entropy=grad_entropy,
+            selected_token_ids=selected_token_ids,
+            grad_selected=grad_selected,
         )
-        return grad_input, grad_weight, None, None, None, None
+        return grad_input, grad_weight, None, None, None, None, None
 
 
 class LigerFusedLinearScaledCrossEntropyFunction:
     """Compute per-token scaled NLL and optional vocabulary entropy.
 
     ``m_tiles_per_cluster`` is accepted for API compatibility but does not
-    change the cuTile schedule.
+    change the cuTile schedule. Supplying int64 ``selected_token_ids[K]``
+    appends differentiable FP32 full-vocabulary log-probabilities ``[M,K]``.
     """
 
     @staticmethod
@@ -439,6 +494,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
         ignore_index=-100,
         m_tiles_per_cluster=1,
         return_entropy=False,
+        selected_token_ids=None,
     ):
         if not isinstance(m_tiles_per_cluster, int) or isinstance(m_tiles_per_cluster, bool):
             raise TypeError("m_tiles_per_cluster must be an int")
@@ -454,4 +510,5 @@ class LigerFusedLinearScaledCrossEntropyFunction:
             temperature,
             ignore_index,
             return_entropy,
+            selected_token_ids,
         )

@@ -147,7 +147,7 @@ pip install -e ".[dev]"
 
 !!!Tip "Optional Dependencies "
 
-    - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
+    - `transformers >= 5.0.0`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
 
 !!! Note
      Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).

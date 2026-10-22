@@ -6,7 +6,7 @@ ROOT_PATH = Path(__file__).parent.parent.parent
 REMOTE_ROOT_PATH = "/root/liger-kernel"
 PYTHON_VERSION = "3.12"
 
-OLDEST_SUPPORTED_TRANSFORMERS_V4_VERSION = "4.52.0"
+OLDEST_SUPPORTED_TRANSFORMERS_VERSION = "5.0.0"
 
 image = modal.Image.debian_slim(python_version=PYTHON_VERSION).pip_install("uv")
 
@@ -104,11 +104,11 @@ def liger_cutedsl_tests_b200():
     subprocess.run(["make test-cutedsl"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
-oldest_v4_app = modal.App("liger_oldest_v4_tests", image=image)  # 4.52.0
+oldest_app = modal.App("liger_oldest_tests", image=image)  # 5.0.0
 
 
-@oldest_v4_app.function(gpu="H100!", image=repo, timeout=90 * 60)
-def liger_oldest_v4_correctness_tests():
+@oldest_app.function(gpu="H100!", image=repo, timeout=90 * 60)
+def liger_oldest_correctness_tests():
     import subprocess
 
     subprocess.run(
@@ -118,7 +118,7 @@ def liger_oldest_v4_correctness_tests():
         cwd=REMOTE_ROOT_PATH,
     )
     subprocess.run(
-        [f"uv pip install 'transformers=={OLDEST_SUPPORTED_TRANSFORMERS_V4_VERSION}' --system"],
+        [f"uv pip install 'transformers=={OLDEST_SUPPORTED_TRANSFORMERS_VERSION}' --system"],
         check=True,
         shell=True,
         cwd=REMOTE_ROOT_PATH,
@@ -126,8 +126,8 @@ def liger_oldest_v4_correctness_tests():
     subprocess.run(["make test"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
-@oldest_v4_app.function(gpu="H100!", image=repo, timeout=90 * 60)
-def liger_oldest_v4_convergence_tests():
+@oldest_app.function(gpu="H100!", image=repo, timeout=90 * 60)
+def liger_oldest_convergence_tests():
     import subprocess
 
     subprocess.run(
@@ -137,12 +137,9 @@ def liger_oldest_v4_convergence_tests():
         cwd=REMOTE_ROOT_PATH,
     )
     subprocess.run(
-        [f"uv pip install 'transformers=={OLDEST_SUPPORTED_TRANSFORMERS_V4_VERSION}' --system"],
+        [f"uv pip install 'transformers=={OLDEST_SUPPORTED_TRANSFORMERS_VERSION}' --system"],
         check=True,
         shell=True,
         cwd=REMOTE_ROOT_PATH,
     )
     subprocess.run(["make test-convergence"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
-
-
-latest_v4_app = modal.App("liger_latest_v4_tests", image=image)  # 4.57.6

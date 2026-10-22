@@ -26,6 +26,7 @@ def _selective_log_softmax_kernel(
     LOGITS,
     INPUT_IDS,
     LOG_P,
+    LSE,
     MASK,
     TEMPERATURE: tl.constexpr,
     stride_input_ids_b,
@@ -64,11 +65,15 @@ def _selective_log_softmax_kernel(
     x = tl.load(LOGITS + ids).to(tl.float32) / TEMPERATURE
     logp = x - lse
     tl.store(LOG_P, logp)
+    if LSE is not None:
+        tl.store(LSE + off_b * L + off_l, lse)
 
 
 # compue old_logp and ref_logp, it reduce 10G peak Memory. it does not requires grad
 @torch.no_grad
-def fused_selective_log_softmax(logits: torch.Tensor, input_ids: torch.Tensor, temperature: float = 0.9, mask=None):
+def fused_selective_log_softmax(
+    logits: torch.Tensor, input_ids: torch.Tensor, temperature: float = 0.9, mask=None, lse: torch.Tensor = None
+):
     assert logits.is_contiguous()
     B, L_ADD_1, N = logits.shape
     L = L_ADD_1 - 1
@@ -81,6 +86,7 @@ def fused_selective_log_softmax(logits: torch.Tensor, input_ids: torch.Tensor, t
         logits,
         input_ids,
         log_p,
+        lse,
         mask,
         temperature,
         input_ids.stride(0),
@@ -230,10 +236,8 @@ def _grpo_loss_fwd_kernel(
 # Sequence-level forward kernel: uses pre-computed coef_1 per sequence
 @triton.jit
 def _grpo_loss_fwd_kernel_seq(
-    LOGITS,
-    OLD_LOGP,
+    LOGP,
     REF_LOGP,
-    INPUT_IDS,
     COMPLETION_MASK,
     ADVANTAGES,
     COEF_1,  # Pre-computed sequence-level importance weight, post delta-clamp (B,)
@@ -243,16 +247,11 @@ def _grpo_loss_fwd_kernel_seq(
     VLLM_IS_RATIO,  # vLLM importance sampling ratio (B, L) or (B, 1) or None
     VLLM_IS_RATIO_STRIDE,  # stride for VLLM_IS_RATIO (L for per-token, 1 for per-sequence)
     LOSS,
-    LSE,
     KL,
     IS_CLIPPED,
-    # constexpr for the fp64 reason in _selective_log_softmax_kernel above.
-    TEMPERATURE: tl.constexpr,
     BETA: tl.constexpr,
     USE_BIAS_CORRECTION_KL: tl.constexpr,
     L: tl.constexpr,
-    N: tl.constexpr,
-    BLOCK_N: tl.constexpr = 4096,
 ):
     off_b = tl.program_id(0).cast(tl.int64)
     off_l = tl.program_id(1).cast(tl.int64)
@@ -263,32 +262,13 @@ def _grpo_loss_fwd_kernel_seq(
         if not_skip == 0:
             return
 
-    LOGITS += off_b * (L + 1) * N + off_l * N
-    INPUT_IDS += off_b * L + off_l
     ADVANTAGES += off_b
     COEF_1 += off_b
     COEF_1_RAW += off_b
     COEF_2 += off_b
     IS_CLIPPED_SEQ += off_b
     LOSS += off_b * L + off_l
-    LSE += off_b * L + off_l
     IS_CLIPPED += off_b * L + off_l
-
-    # Compute log softmax
-    m_i = float("-inf")
-    l_i = 0.0
-    for start in range(0, N, BLOCK_N):
-        cols = start + tl.arange(0, BLOCK_N)
-        logits = tl.load(LOGITS + cols, mask=cols < N, other=float("-inf")).to(tl.float32) / TEMPERATURE
-        new_m_i = tl.maximum(m_i, tl.max(logits))
-        alpha = tl.exp(m_i - new_m_i)
-        l_i = l_i * alpha + tl.sum(tl.exp(logits - new_m_i))
-        m_i = new_m_i
-    lse = m_i + tl.log(l_i)
-
-    idx = tl.load(INPUT_IDS)
-    x = tl.load(LOGITS + idx).to(tl.float32) / TEMPERATURE
-    logp = x - lse
 
     # Load pre-computed sequence-level coefficients
     coef_1 = tl.load(COEF_1).to(tl.float32)
@@ -308,6 +288,7 @@ def _grpo_loss_fwd_kernel_seq(
         per_token_loss = per_token_loss * vllm_is_ratio
 
     if BETA != 0.0:
+        logp = tl.load(LOGP + off_b * L + off_l).to(tl.float32)
         REF_LOGP += off_b * L + off_l
         KL += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
@@ -321,7 +302,6 @@ def _grpo_loss_fwd_kernel_seq(
         tl.store(KL, kl)
 
     tl.store(LOSS, per_token_loss)
-    tl.store(LSE, lse)
     tl.store(IS_CLIPPED, is_clipped_seq)  # Same for all tokens in sequence
 
 
@@ -413,6 +393,11 @@ def _grpo_loss_bwd_kernel_seq(
             dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
     dlogp = dlogp / TEMPERATURE
+    if dlogp == 0.0:
+        for start_n in tl.range(0, N, BLOCK_N):
+            cols = start_n + tl.arange(0, BLOCK_N)
+            tl.store(DLOGITS + cols, 0.0, mask=cols < N)
+        return
     tl.debug_barrier()
     for start_n in tl.range(0, N, BLOCK_N):
         cols = start_n + tl.arange(0, BLOCK_N)
@@ -543,6 +528,11 @@ def _grpo_loss_bwd_kernel(
             dlogp += BETA * (1 - tl.exp(ref_logp - logp))
 
     dlogp = dlogp * dloss / TEMPERATURE
+    if dlogp == 0.0:
+        for start_n in tl.range(0, N, BLOCK_N):
+            cols = start_n + tl.arange(0, BLOCK_N)
+            tl.store(DLOGITS + cols, 0.0, mask=cols < N)
+        return
     tl.debug_barrier()
     for start_n in tl.range(0, N, BLOCK_N):
         cols = start_n + tl.arange(0, BLOCK_N)
@@ -665,6 +655,11 @@ class GrpoLossFunction(torch.autograd.Function):
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
 
+        if advantages.ndim != 1 or advantages.shape[0] != B:
+            raise ValueError("advantages must have shape (B,)")
+        # Forward and backward kernels read one contiguous advantage per sequence.
+        advantages = advantages.contiguous()
+
         # VESPO requires phi_seq pre-computed by the caller (uses get_gamma_weights).
         if loss_type == "vespo":
             if phi_seq is None:
@@ -706,8 +701,8 @@ class GrpoLossFunction(torch.autograd.Function):
 
         if importance_sampling_level == "sequence":
             # Sequence-level: pre-compute sequence importance weights, then use Triton kernel
-            # Step 1: Get per-token log probs using existing Triton kernel
-            per_token_logps = fused_selective_log_softmax(logits, completion_ids, temperature, completion_mask)
+            # Step 1: Get per-token log probs and lse in a single vocab pass
+            per_token_logps = fused_selective_log_softmax(logits, completion_ids, temperature, completion_mask, lse=lse)
 
             # Step 2: Compute sequence-level importance weights
             if old_logp is None:
@@ -730,13 +725,10 @@ class GrpoLossFunction(torch.autograd.Function):
             else:
                 coef_1_for_loss = coef_1
 
-            # Step 3: Run Triton kernel with pre-computed coefficients
-            kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
+            # Step 3: Run Triton kernel with pre-computed logps and coefficients
             _grpo_loss_fwd_kernel_seq[(B, L)](
-                logits,
-                old_logp,
+                per_token_logps,
                 ref_logp,
-                completion_ids,
                 completion_mask,
                 advantages,
                 coef_1_for_loss.contiguous(),
@@ -746,15 +738,12 @@ class GrpoLossFunction(torch.autograd.Function):
                 vllm_is_ratio_ptr,
                 vllm_is_ratio_stride,
                 loss,
-                lse,
                 kl,
                 is_clipped,
-                temperature,
                 beta,
                 use_bias_correction_kl,
                 L,
-                N,
-                **kwargs,
+                num_warps=1,
             )
 
             # Save extra tensors for backward
@@ -925,7 +914,9 @@ class GrpoLossFunction(torch.autograd.Function):
         elif loss_type == "luspo":
             # loss = mean(per_token_loss * seq_lens), mean divides by B*L
             seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
-            dloss = dloss_input * seq_lens_bwd / (B * L)
+            # The backward kernels index DLOSS per token (off_b * stride0 + off_l * stride1), so the
+            # per-sequence (B, 1) scale must be materialized as a (B, L) tensor like the other loss types.
+            dloss = (dloss_input * seq_lens_bwd / (B * L)).expand(B, L).contiguous()
         else:
             raise ValueError(f"Unknown loss_type: {loss_type}")
 

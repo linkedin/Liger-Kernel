@@ -93,9 +93,9 @@ jobs:
           - name: convergence (H100)
             modal_fn: liger_convergence_tests
           - name: oldest-tf correctness (H100)
-            modal_fn: liger_oldest_v4_correctness_tests
+            modal_fn: liger_oldest_correctness_tests
           - name: oldest-tf convergence (H100)
-            modal_fn: liger_oldest_v4_convergence_tests
+            modal_fn: liger_oldest_convergence_tests
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}

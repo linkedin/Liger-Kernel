@@ -35,6 +35,7 @@ from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmer
 from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmerTextCentered
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
+from liger_kernel.transformers.rope import liger_rotary_pos_emb_gpt_oss
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
@@ -53,7 +54,7 @@ transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
 
-MIN_SUPPORTED_TRANSFORMERS_VERSION = version.parse("4.52.0")
+MIN_SUPPORTED_TRANSFORMERS_VERSION = version.parse("5.0.0")
 if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
     raise ImportError(
         f"liger-kernel requires transformers >= {MIN_SUPPORTED_TRANSFORMERS_VERSION}, got {transformers.__version__}. "
@@ -1978,7 +1979,7 @@ def apply_liger_kernel_to_gpt_oss(
     from transformers.models.gpt_oss.modeling_gpt_oss import GptOssModel
 
     if rope:
-        modeling_gpt_oss.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_gpt_oss.apply_rotary_pos_emb = liger_rotary_pos_emb_gpt_oss
 
     if rms_norm:
         modeling_gpt_oss.GptOssRMSNorm = LigerRMSNorm

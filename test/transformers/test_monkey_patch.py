@@ -44,9 +44,9 @@ from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
 
-# We only support transformers >= 4.52.0
+# We only support transformers >= 5.0.0
 transformer_version = version.parse(transformers.__version__)
-MIN_SUPPORTED_TRANSFORMERS_VERSION = version.parse("4.52.0")
+MIN_SUPPORTED_TRANSFORMERS_VERSION = version.parse("5.0.0")
 if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
     pytest.skip(
         f"tests require transformers >= {MIN_SUPPORTED_TRANSFORMERS_VERSION}, got {transformers.__version__}",
@@ -4463,6 +4463,7 @@ def test_apply_liger_kernel_to_instance_for_exaone4():
             num_hidden_layers=2,
             num_attention_heads=4,
             num_key_value_heads=2,
+            pad_token_id=0,  # transformers==5.0.0 Exaone4Config has no pad_token_id default; Exaone4Model.__init__ reads it
         )
         dummy_model_instance = Exaone4ForCausalLM._from_config(config)
         assert isinstance(dummy_model_instance, Exaone4ForCausalLM)
