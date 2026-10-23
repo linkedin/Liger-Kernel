@@ -1,7 +1,9 @@
 import pytest
 import torch
 
+from test.utils import COLLAPSE_MARGINS
 from test.utils import assert_verbose_allclose
+from test.utils import dominant_target_logits
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
@@ -139,3 +141,34 @@ def test_softmax_large_row_offset():
 
     assert_verbose_allclose(y[-1].float(), y_ref, atol=5e-2, rtol=5e-2)
     assert_verbose_allclose(x.grad[-1].float(), x_ref.grad, atol=5e-2, rtol=5e-2)
+
+
+@pytest.mark.parametrize("V", [4096, 65536])  # 65536 is the widest row the kernel accepts
+@pytest.mark.parametrize(
+    "dtype, rtol",
+    [
+        (torch.float32, 1e-4),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
+        ),
+    ],
+)
+def test_dominant_entry_does_not_collapse(V, dtype, rtol):
+    # Once softmax rounds the max entry to 1 its backward rounds that entry's gradient to 0 while the others stay
+    # non-zero; it must still match fp64 (arXiv 2610.31642). Margins stay below fp64's own cliff (~36.7) so
+    # autograd in fp64 is a valid reference.
+    set_seed()
+    margins = [m for m in COLLAPSE_MARGINS if m < 30]
+    x, _ = dominant_target_logits(margins, V=V, dtype=dtype, device=device)
+    dy = torch.randn(len(margins), V, device=device, dtype=dtype)
+    _ref = x.double().requires_grad_(True)
+    torch.softmax(_ref, -1).backward(dy.double())
+
+    _input = x.clone().requires_grad_(True)
+    liger_softmax(_input).backward(dy)
+
+    # Per-row scale: off-max entries are y_j * (dy_j - sum(dy * y)), accurate only to the row's scale.
+    row_scale = _ref.grad.abs().amax(-1, keepdim=True)
+    torch.testing.assert_close(_input.grad.double() / row_scale, _ref.grad / row_scale, rtol=rtol, atol=rtol)
