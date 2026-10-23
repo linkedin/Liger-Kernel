@@ -27,8 +27,10 @@ _SOFTMAX_MIN_FREE_BYTES = 4 * _SOFTMAX_OVERFLOW_ROWS * _SOFTMAX_OVERFLOW_COLS * 
         (4, 16),
         (1, 1023),  # Large single row single-block dispatch
         (3, 7, 256),  # 3D input
-        (1, 4096),  # test multi-block dispatch
-        (1, 2, 4096),  # test multi-block dispatch on 3D input
+        (1, 4096),
+        (1, 2, 4096),
+        (1, 100003),  # wider than one block: multi-block dispatch
+        (2, 3, 70000),  # multi-block dispatch on 3D input
     ],
 )
 @pytest.mark.parametrize(
@@ -75,6 +77,8 @@ def test_liger_softmax(shape, dtype, atol, rtol):
         (3, 7, 256),
         (1, 4096),
         (1, 2, 4096),
+        (1, 100003),
+        (2, 3, 70000),
     ],
 )
 @pytest.mark.parametrize(
@@ -143,7 +147,7 @@ def test_softmax_large_row_offset():
     assert_verbose_allclose(x.grad[-1].float(), x_ref.grad, atol=5e-2, rtol=5e-2)
 
 
-@pytest.mark.parametrize("V", [4096, 65536])  # 65536 is the widest row the kernel accepts
+@pytest.mark.parametrize("V", [4096, 65536, 100003])  # 100003 is wider than one block: multi-block kernels
 @pytest.mark.parametrize(
     "dtype, rtol",
     [
