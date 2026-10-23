@@ -73,14 +73,17 @@ def _kl_div_kernel(
     # Everything below runs on fp32 values upcast from X on load (registers),
     # so HBM only ever sees the native-precision logits buffer. Y, the student
     # log-probabilities, is never materialized: Y = x / T - logsumexp(x / T).
-    # Pass 1: row max of x / T (masked lanes forced to -inf, sign-of-T safe).
+    # Pass 1: row max of x / T (masked lanes forced to -inf, sign-of-T safe) and its index.
     m = float("-inf")
+    argmax = 0
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_cols
         x = tl.load(X_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         x = tl.where(mask, x / temperature, float("-inf"))
-        m = tl.maximum(m, tl.max(x, axis=0))
+        block_max = tl.max(x, axis=0)
+        argmax = tl.where(block_max > m, tl.min(tl.where(x == block_max, offsets, n_cols)), argmax)
+        m = tl.maximum(m, block_max)
 
     # Pass 2: softmax denominator, plus the loss pieces that don't need lse yet.
     # KL(Q || P) = sum(Q * (log(Q) - Y))
@@ -89,15 +92,21 @@ def _kl_div_kernel(
     a1 = 0.0
     a2 = 0.0
     s = 0.0
+    a2_others = 0.0
+    s_others = 0.0
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_cols
         x = tl.load(X_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         x = tl.where(mask, x / temperature, float("-inf"))
         q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        s += tl.sum(tl.exp(x - m), axis=0)
+        e = tl.exp(x - m)
+        s += tl.sum(e, axis=0)
         a1 += tl.sum(tl.where(mask, q * (tl.log(tl.maximum(q, eps)) - x), 0.0), axis=0)
         a2 += tl.sum(q, axis=0)
+        not_argmax = offsets != argmax
+        s_others += tl.sum(tl.where(not_argmax, e, 0.0), axis=0)
+        a2_others += tl.sum(tl.where(not_argmax, q, 0.0), axis=0)
 
     lse = m + tl.log(s)
     tl.store(loss_ptr, (a1 + lse * a2) * scale)
@@ -114,6 +123,12 @@ def _kl_div_kernel(
         softmax = tl.exp(x - m) / s
         d = -scale * (q - softmax * a2) / temperature
         tl.store(X_ptr + offsets, d, mask=mask)
+
+    # At the argmax, q - softmax * a2 cancels to 0 once softmax rounds to 1 (arXiv 2610.31642). The gradient
+    # sums to 0, so take it as minus the sum over the other entries, which don't cancel.
+    tl.debug_barrier()
+    d_argmax = scale * (a2_others - a2 * s_others / s) / temperature
+    tl.store(X_ptr + argmax, d_argmax)
 
 
 def fused_linear_kl_div_forward(
