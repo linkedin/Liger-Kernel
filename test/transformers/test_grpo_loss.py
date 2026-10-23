@@ -2,9 +2,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from test.utils import COLLAPSE_MARGINS
 from test.utils import assert_verbose_allclose
+from test.utils import dominant_target_logits
 from test.utils import infer_device
 from test.utils import set_seed
+from test.utils import supports_bfloat16
 
 from liger_kernel.ops.grpo_loss import fused_selective_log_softmax
 from liger_kernel.transformers.grpo_loss import triton_grpo_loss
@@ -1477,3 +1480,60 @@ def test_triton_sequence_level_rejects_unsupported_loss_types(loss_type):
             loss_type=loss_type,
             reduce=True,
         )
+
+
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+@pytest.mark.parametrize(
+    "dtype, rtol",
+    [
+        (torch.float32, 1e-4),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
+        ),
+    ],
+)
+def test_dominant_target_does_not_collapse(importance_sampling_level, dtype, rtol):
+    # When softmax(x_y) rounds to 1, logp and the 1 - p_y gradient of the sampled token must still match fp64
+    # instead of flushing to 0 (arXiv 2610.31642).
+    set_seed()
+    rows, completion_ids = dominant_target_logits(COLLAPSE_MARGINS, V=4096, dtype=dtype, device=device)
+    logits = torch.cat([rows, torch.randn_like(rows[:1])])[None]  # the last position predicts nothing
+    completion_ids = completion_ids[None]
+    advantages = torch.tensor([0.7], device=device)
+
+    ref_logits = logits.double().requires_grad_(True)
+    ref_logp = ref_logits[:, :-1].log_softmax(-1).gather(-1, completion_ids[..., None])[..., 0]
+    old_logp = (ref_logp.detach() + 0.01 * torch.randn_like(ref_logp)).float()
+
+    logp = fused_selective_log_softmax(logits, completion_ids, temperature=1.0)
+    torch.testing.assert_close(logp.double(), ref_logp.detach(), rtol=rtol, atol=0)
+
+    log_ratio = ref_logp - old_logp.double()
+    if importance_sampling_level == "sequence":
+        log_ratio = log_ratio.mean(-1, keepdim=True).expand_as(ref_logp)
+    coef_1 = log_ratio.exp()
+    coef_2 = coef_1.clamp(1 - 0.2, 1 + 0.2)
+    ref_loss = -torch.min(coef_1 * advantages.double()[:, None], coef_2 * advantages.double()[:, None])
+    ref_loss.sum().backward()
+
+    _logits = logits.clone().requires_grad_(True)
+    loss, _, _ = triton_grpo_loss(
+        _logits,
+        old_logp,
+        None,
+        completion_ids,
+        advantages,
+        temperature=1.0,
+        beta=0.0,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type="grpo",
+        importance_sampling_level=importance_sampling_level,
+        reduce=False,
+    )
+    loss.sum().backward()
+
+    torch.testing.assert_close(_logits.grad[:, :-1].double(), ref_logits.grad[:, :-1], rtol=rtol, atol=0)

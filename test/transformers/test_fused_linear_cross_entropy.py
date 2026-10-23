@@ -4,8 +4,11 @@ import pytest
 import torch
 
 from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
+from test.utils import COLLAPSE_MARGINS
 from test.utils import assert_verbose_allclose
+from test.utils import dominant_target_logits
 from test.utils import set_seed
+from test.utils import supports_bfloat16
 
 from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.transformers.functional import CrossEntropyOutput
@@ -1108,3 +1111,34 @@ def test_correctness_reduction_none_per_token_grad_output(B, T, H, V, bias, dtyp
     assert_verbose_allclose(lig_gw, ref_gw, atol=atol, rtol=rtol)
     if bias:
         assert_verbose_allclose(lig_gb, ref_gb, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("reduction", ["none", "sum", "mean"])
+@pytest.mark.parametrize(
+    "dtype, rtol",
+    [
+        (torch.float32, 1e-4),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
+        ),
+    ],
+)
+def test_dominant_target_does_not_collapse(reduction, dtype, rtol):
+    # With an identity lm_head the fused path sees exactly these logits, so the input gradient is the logits
+    # gradient and must match fp64 even once softmax(x_y) rounds to 1 (arXiv 2610.31642).
+    set_seed()
+    V = 4096
+    logits, target = dominant_target_logits(COLLAPSE_MARGINS, V=V, dtype=dtype, device=device)
+    weight = torch.eye(V, dtype=dtype, device=device)
+    _input = logits.clone().requires_grad_(True)
+    _ref = logits.double().requires_grad_(True)
+
+    loss = liger_fused_linear_cross_entropy(_input, weight, target, reduction=reduction)
+    ref = torch.nn.functional.cross_entropy(_ref, target, reduction=reduction)
+    loss.backward(torch.ones_like(loss))
+    ref.backward(torch.ones_like(ref))
+
+    torch.testing.assert_close(loss.double(), ref.detach(), rtol=rtol, atol=0)
+    torch.testing.assert_close(_input.grad.double(), _ref.grad, rtol=rtol, atol=0)
