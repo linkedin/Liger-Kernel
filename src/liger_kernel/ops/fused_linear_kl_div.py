@@ -108,9 +108,9 @@ def _kl_div_kernel(
     s = s_others + n_max
     lse = m + tl.log(s)
 
-    # At a unique argmax, q - softmax * a2 cancels to 0 once softmax rounds to 1 (arXiv 2610.31642). The gradient
-    # sums to 0, so take it as minus the sum over the other entries, which don't cancel. Tied maxima have
-    # softmax <= 1/2 and need no correction.
+    # At a dominant argmax, q - softmax * a2 cancels to 0 once softmax rounds to 1 (arXiv 2610.31642). The gradient
+    # sums to 0, so take it as minus the sum over the other entries, which don't cancel. Below softmax 1/2 (s >= 2,
+    # which includes ties) nothing collapses and this would only pull the others' rounding error into the argmax.
     d_argmax = scale * (a2_others - a2 * s_others / s) / temperature
     tl.store(loss_ptr, (a1 + lse * a2) * scale)
 
@@ -125,7 +125,7 @@ def _kl_div_kernel(
         q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         softmax = tl.exp(x - m) / s
         d = -scale * (q - softmax * a2) / temperature
-        d = tl.where((x == m) & (n_max == 1.0), d_argmax, d)
+        d = tl.where((x == m) & (s < 2.0), d_argmax, d)
         tl.store(X_ptr + offsets, d, mask=mask)
 
 

@@ -226,14 +226,18 @@ def fused_linear_jsd_forward(
         total_loss = total_loss + loss_chunk.sum()
         # ``student_prob_chunk`` now holds dx (per-element). Continue the
         # logits-side reduction using the pre-computed softmax.
-        student_argmax = student_logits_chunk.argmax(dim=-1, keepdim=True)
+        student_max_prob, student_argmax = softmax_s_chunk.max(dim=-1, keepdim=True)
         student_logits_chunk = student_prob_chunk - softmax_s_chunk * student_prob_chunk.sum(
             dim=-1, keepdim=True
         ).broadcast_to(student_prob_chunk.shape)
-        # At the argmax the subtraction cancels to 0 once softmax rounds to 1 (arXiv 2610.31642). The gradient
-        # sums to 0, so take it as minus the sum over the other entries, which don't cancel.
-        student_logits_chunk.scatter_(-1, student_argmax, 0.0)
-        student_logits_chunk.scatter_(-1, student_argmax, -student_logits_chunk.sum(dim=-1, keepdim=True))
+        # At a dominant argmax the subtraction cancels to 0 once softmax rounds to 1 (arXiv 2610.31642). The
+        # gradient sums to 0, so take it as minus the sum over the other entries, which don't cancel. Below 1/2
+        # nothing collapses and this would only pull the others' rounding error into the argmax.
+        argmax_grad = student_logits_chunk.gather(-1, student_argmax)
+        others_grad = student_logits_chunk.sum(dim=-1, keepdim=True) - argmax_grad
+        student_logits_chunk.scatter_(
+            -1, student_argmax, torch.where(student_max_prob > 0.5, -others_grad, argmax_grad)
+        )
         student_logits_chunk = student_logits_chunk / temperature
         # now we traverse back to grad w.r.t. input to `lm_head` and grad
         # w.r.t. `lm_head` which should be computed in original dtype
