@@ -3,7 +3,9 @@ import torch
 
 from packaging.version import Version
 from test.transformers.test_jsd import JSD as TorchJSD
+from test.utils import COLLAPSE_MARGINS
 from test.utils import assert_verbose_allclose
+from test.utils import dominant_target_logits
 from test.utils import set_seed
 
 from liger_kernel.ops import LigerFusedLinearJSDFunction
@@ -568,3 +570,26 @@ def test_logits_projection_is_not_rounded_to_input_dtype(dtype, beta):
             f"{name} deviates {relative_error:.2%} from the float32-projection reference, "
             f"which means the projection rounded its logits to {dtype}"
         )
+
+
+@pytest.mark.parametrize("beta", [0.0, 1.0])
+def test_dominant_token_does_not_collapse(beta):
+    # Student and teacher both put almost all mass on one token, so the softmax backward at that token cancels
+    # to 0 in fp32 while the other tokens keep their gradients; it must still match fp64 (arXiv 2610.31642).
+    # Mixed betas are unaffected: every dX there is a log-ratio-sized term, so nothing O(1) cancels.
+    # Margins stay below fp64's own cliff (~36.7) so autograd in fp64 is a valid reference.
+    set_seed()
+    V = 4096
+    margins = [m for m in COLLAPSE_MARGINS if m < 30]
+    student, target = dominant_target_logits(margins, V=V, device=device)
+    teacher, _ = dominant_target_logits([m + 3 for m in margins], V=V, device=device, target=target)
+    weight = torch.eye(V, device=device)
+    _input = student.clone().requires_grad_(True)
+    _ref = student.double().requires_grad_(True)
+
+    liger_fused_linear_jsd(_input, weight, teacher, weight, jsd_beta=beta).backward()
+    TorchJSD(beta=beta, dtype=torch.float64)(_ref.log_softmax(-1), teacher.double().log_softmax(-1)).backward()
+
+    # Per-row scale: off-argmax entries are differences of two tiny probabilities, accurate only to the row's scale.
+    row_scale = _ref.grad.abs().amax(-1, keepdim=True)
+    torch.testing.assert_close(_input.grad.double() / row_scale, _ref.grad / row_scale, rtol=1e-4, atol=1e-4)

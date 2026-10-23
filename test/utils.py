@@ -96,10 +96,10 @@ def get_qwen3_vl_rope_config() -> dict:
 COLLAPSE_MARGINS = [-5.0, 0.0, 5.0, 12.0, 17.0, 25.0, 40.0]
 
 
-def dominant_target_logits(margins, V, dtype=torch.float32, device="cpu"):
+def dominant_target_logits(margins, V, dtype=torch.float32, device="cpu", target=None):
     """One row of random logits per margin, with the target logit `margin` above the logsumexp of the rest."""
     logits = torch.randn(len(margins), V, dtype=torch.float64)
-    target = torch.randint(0, V, (len(margins),))
+    target = torch.randint(0, V, (len(margins),)) if target is None else target.cpu()
     rows = torch.arange(len(margins))
     others = logits.clone()
     others[rows, target] = float("-inf")
