@@ -31,6 +31,45 @@ def sapo_loss_fn(importance_ratio: torch.Tensor, temperature: float) -> torch.Te
     return sigmoid_smoothed_loss * 4 / temperature
 
 
+def torch_gmpo_loss(
+    per_token_logps,
+    attention_mask,
+    advantages,
+    full_attention_mask,
+    old_per_token_logps,
+    ref_per_token_logps,
+    epsilon_low,
+    epsilon_high,
+    beta,
+    use_bias_correction_kl=False,
+):
+    log_ratio = per_token_logps - old_per_token_logps
+    lengths = attention_mask.sum(-1).clamp(min=1.0)
+    positive_advantages = advantages.unsqueeze(1) >= 0
+    effective_log_ratio = torch.where(
+        positive_advantages,
+        torch.minimum(log_ratio, torch.as_tensor(epsilon_high, device=log_ratio.device, dtype=log_ratio.dtype)),
+        torch.maximum(log_ratio, torch.as_tensor(-epsilon_low, device=log_ratio.device, dtype=log_ratio.dtype)),
+    )
+    sequence_log_ratio = (effective_log_ratio * attention_mask).sum(-1) / lengths
+    loss = (-advantages * torch.exp(sequence_log_ratio)).sum() / full_attention_mask.shape[0]
+
+    metrics = []
+    if beta != 0.0:
+        ref_delta = ref_per_token_logps - per_token_logps
+        kl_div = torch.exp(ref_delta) - ref_delta - 1.0
+        if use_bias_correction_kl:
+            kl_div = kl_div * torch.exp(log_ratio)
+        per_sequence_kl = (kl_div * attention_mask).sum(-1) / lengths
+        loss = loss + beta * (per_sequence_kl.sum() / full_attention_mask.shape[0])
+        metrics.append((kl_div * attention_mask).sum() / full_attention_mask.sum().clamp(min=1.0))
+    is_clipped = ((log_ratio < -epsilon_low) & (advantages.unsqueeze(1) < 0)) | (
+        (log_ratio > epsilon_high) & (advantages.unsqueeze(1) > 0)
+    )
+    metrics.append((is_clipped * attention_mask).sum() / full_attention_mask.sum().clamp(min=1.0))
+    return loss, metrics
+
+
 class TorchLMHeadGRPO(torch.nn.Module):
     def __init__(
         self,
@@ -390,6 +429,234 @@ def test_selective_chunk_forward_matches_reference(B, T, H, V, dtype, atol, rtol
     ref = torch.log_softmax((logits / 0.9).float(), dim=-1).gather(-1, selected_token_ids.unsqueeze(-1)).squeeze(-1)
 
     assert_verbose_allclose(out, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        (torch.bfloat16, 2e-2, 5e-2),
+    ],
+)
+@pytest.mark.parametrize("chunk_size", [1, 2, 5])
+@pytest.mark.parametrize(
+    "beta, use_bias_correction_kl",
+    [(0.0, False), (0.04, False), (0.04, True)],
+)
+def test_gmpo_correctness_across_outer_chunks(dtype, atol, rtol, chunk_size, beta, use_bias_correction_kl):
+    set_seed()
+    B, T, H, V = 5, 7, 13, 31
+    epsilon_low = 0.15
+    epsilon_high = 0.4
+    temperature = 0.9
+
+    inputs = torch.randn(B, T, H, device=device, dtype=dtype)
+    weight = torch.randn(V, H, device=device, dtype=dtype) * 0.2
+    bias = torch.randn(V, device=device, dtype=dtype) * 0.1
+    input1 = inputs.detach().clone().requires_grad_(True)
+    input2 = inputs.detach().clone().requires_grad_(True)
+    weight1 = weight.detach().clone().requires_grad_(True)
+    weight2 = weight.detach().clone().requires_grad_(True)
+    bias1 = bias.detach().clone().requires_grad_(True)
+    bias2 = bias.detach().clone().requires_grad_(True)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.tensor(
+        [
+            [1, 1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 0, 0],
+            [1, 1, 1, 0, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1, 0],
+            [1, 0, 0, 0, 0, 0, 0],
+        ],
+        device=device,
+        dtype=torch.float32,
+    )
+    advantages = torch.tensor([-1.0, 0.0, 0.5, 1.25, -0.4], device=device)
+
+    with torch.no_grad():
+        initial_logits = (inputs @ weight.t() + bias) / temperature
+        initial_logps = (
+            F.log_softmax(initial_logits.float(), dim=-1).gather(-1, selected_token_ids.unsqueeze(-1)).squeeze(-1)
+        )
+        old_per_token_logps = initial_logps - torch.linspace(-0.8, 0.8, B * T, device=device).reshape(B, T)
+        ref_per_token_logps = initial_logps + 0.05 * torch.sin(torch.arange(B * T, device=device).reshape(B, T))
+
+    logits = (input1 @ weight1.t() + bias1) / temperature
+    per_token_logps = F.log_softmax(logits.float(), dim=-1).gather(-1, selected_token_ids.unsqueeze(-1)).squeeze(-1)
+    loss1, metrics1 = torch_gmpo_loss(
+        per_token_logps,
+        attention_mask,
+        advantages,
+        attention_mask,
+        old_per_token_logps,
+        ref_per_token_logps,
+        epsilon_low,
+        epsilon_high,
+        beta,
+        use_bias_correction_kl,
+    )
+    loss2, metrics2 = LigerFusedLinearGRPOLoss(
+        beta=beta,
+        compiled=False,
+        use_ref_model=True,
+        chunk_size=chunk_size,
+        epsilon_low=epsilon_low,
+        epsilon_high=epsilon_high,
+        loss_type="gmpo",
+        temperature=temperature,
+        use_bias_correction_kl=use_bias_correction_kl,
+    )(
+        input2,
+        weight2,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        bias=bias2,
+        ref_per_token_logps=ref_per_token_logps,
+        old_per_token_logps=old_per_token_logps,
+    )
+
+    assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+    assert len(metrics1) == len(metrics2) == 1 + (1 if beta else 0)
+    for metric1, metric2 in zip(metrics1, metrics2):
+        assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
+
+    loss1.backward()
+    loss2.backward()
+    assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(weight1.grad, weight2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(bias1.grad, bias2.grad, atol=atol, rtol=rtol)
+
+
+def test_gmpo_compiled_forward_backward():
+    B, T, H, V = 2, 3, 5, 11
+    inputs = torch.randn(B, T, H, device=device, requires_grad=True)
+    weight = torch.randn(V, H, device=device, requires_grad=True)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.tensor([[1, 1, 1], [1, 1, 0]], device=device)
+    advantages = torch.tensor([1.0, -1.0], device=device)
+
+    loss, metrics = LigerFusedLinearGRPOLoss(
+        beta=0.0,
+        compiled=True,
+        use_ref_model=False,
+        loss_type="gmpo",
+    )(inputs, weight, selected_token_ids, attention_mask, advantages)
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert len(metrics) == 1
+    assert torch.isfinite(metrics[0])
+    assert torch.isfinite(inputs.grad).all()
+    assert torch.isfinite(weight.grad).all()
+
+
+def test_gmpo_log_clip_boundaries_match_reference_forward_backward():
+    dtype = torch.float64
+    lower_bound = torch.tensor(-0.15, device=device, dtype=dtype)
+    upper_bound = torch.tensor(0.4, device=device, dtype=dtype)
+    negative_infinity = torch.tensor(float("-inf"), device=device, dtype=dtype)
+    positive_infinity = torch.tensor(float("inf"), device=device, dtype=dtype)
+    log_ratio = torch.stack(
+        (
+            torch.stack(
+                (
+                    upper_bound,
+                    torch.nextafter(upper_bound, positive_infinity),
+                    torch.nextafter(upper_bound, negative_infinity),
+                )
+            ),
+            torch.stack(
+                (
+                    lower_bound,
+                    torch.nextafter(lower_bound, negative_infinity),
+                    torch.nextafter(lower_bound, positive_infinity),
+                )
+            ),
+        )
+    )
+    per_token_logps_ref = torch.zeros_like(log_ratio, requires_grad=True)
+    per_token_logps = per_token_logps_ref.detach().clone().requires_grad_(True)
+    old_per_token_logps = -log_ratio
+    attention_mask = torch.ones_like(log_ratio)
+    advantages = torch.tensor([1.0, -1.0], device=device, dtype=dtype)
+
+    expected_loss, expected_metrics = torch_gmpo_loss(
+        per_token_logps_ref,
+        attention_mask,
+        advantages,
+        attention_mask,
+        old_per_token_logps,
+        per_token_logps_ref.detach(),
+        epsilon_low=0.15,
+        epsilon_high=0.4,
+        beta=0.0,
+    )
+    loss, metrics = LigerFusedLinearGRPOFunction.ppo_loss_fn(
+        per_token_logps,
+        attention_mask,
+        advantages,
+        attention_mask,
+        old_per_token_logps=old_per_token_logps,
+        epsilon_low=0.15,
+        epsilon_high=0.4,
+        beta=0.0,
+        loss_type="gmpo",
+    )
+    expected_loss.backward()
+    loss.backward()
+
+    torch.testing.assert_close(loss, expected_loss, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(per_token_logps.grad, per_token_logps_ref.grad, rtol=0.0, atol=0.0)
+    assert len(metrics) == len(expected_metrics) == 1
+    torch.testing.assert_close(metrics[0], expected_metrics[0], rtol=0.0, atol=0.0)
+    torch.testing.assert_close(metrics[0], torch.tensor(1 / 3, device=device, dtype=dtype), rtol=0.0, atol=0.0)
+
+
+def test_gmpo_extreme_active_clips_are_finite():
+    per_token_logps_ref = torch.zeros(3, 3, device=device, requires_grad=True)
+    per_token_logps = per_token_logps_ref.detach().clone().requires_grad_(True)
+    log_ratio = torch.tensor(
+        [[1000.0, 100.0, 0.1], [-1000.0, -100.0, -0.1], [1000.0, 100.0, 0.1]],
+        device=device,
+    )
+    old_per_token_logps = per_token_logps.detach() - log_ratio
+    attention_mask = torch.ones_like(per_token_logps)
+    advantages = torch.tensor([1.0, -1.0, 0.0], device=device)
+
+    expected_loss, expected_metrics = torch_gmpo_loss(
+        per_token_logps_ref,
+        attention_mask,
+        advantages,
+        attention_mask,
+        old_per_token_logps,
+        per_token_logps_ref.detach(),
+        epsilon_low=0.15,
+        epsilon_high=0.4,
+        beta=0.0,
+    )
+
+    loss, metrics = LigerFusedLinearGRPOFunction.ppo_loss_fn(
+        per_token_logps,
+        attention_mask,
+        advantages,
+        attention_mask,
+        old_per_token_logps=old_per_token_logps,
+        epsilon_low=0.15,
+        epsilon_high=0.4,
+        beta=0.0,
+        loss_type="gmpo",
+    )
+    expected_loss.backward()
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(per_token_logps.grad).all()
+    assert_verbose_allclose(loss, expected_loss)
+    assert_verbose_allclose(per_token_logps.grad, per_token_logps_ref.grad)
+    assert len(metrics) == len(expected_metrics) == 1
+    assert_verbose_allclose(metrics[0], expected_metrics[0])
+    assert_verbose_allclose(metrics[0], torch.tensor(4 / 9, device=device))
 
 
 @pytest.mark.parametrize("loss_type", ["dapo", "grpo"])
@@ -1084,6 +1351,86 @@ def test_reduce_grpo_loss_requires_max_completion_length():
     reduced = _reduce_grpo_loss(per_token_loss, mask, "dr_grpo", max_completion_length=None)
     expected = (per_token_loss * mask).sum() / (per_token_loss.size(0) * per_token_loss.size(1))
     assert_verbose_allclose(reduced, expected)
+
+
+def test_gmpo_rejects_sequence_importance_sampling():
+    B, T, H, V = 2, 4, 8, 16
+    loss_fn = LigerFusedLinearGRPOLoss(
+        beta=0.0,
+        compiled=False,
+        use_ref_model=False,
+        loss_type="gmpo",
+        importance_sampling_level="sequence",
+    )
+    inputs = torch.randn(B, T, H, device=device, requires_grad=True)
+    weight = torch.randn(V, H, device=device, requires_grad=True)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    advantages = torch.randn(B, device=device)
+
+    with pytest.raises(
+        ValueError,
+        match="Sequence-level importance sampling is not supported for loss_type='gmpo'",
+    ):
+        loss_fn(
+            inputs,
+            weight,
+            selected_token_ids,
+            attention_mask,
+            advantages,
+        )
+
+
+@pytest.mark.parametrize("option", ["vllm", "delta"])
+def test_gmpo_ignores_vllm_ratio_and_delta(option):
+    set_seed()
+    B, T, H, V = 2, 4, 8, 16
+    inputs = torch.randn(B, T, H, device=device)
+    weight = torch.randn(V, H, device=device)
+    bias = torch.randn(V, device=device)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.tensor([[1, 1, 1, 1], [1, 1, 0, 0]], device=device)
+    advantages = torch.tensor([1.0, -1.0], device=device)
+    with torch.no_grad():
+        current_logps = LigerFusedLinearPPOBase.chunk_forward(inputs, weight, selected_token_ids, bias=bias)
+        old_per_token_logps = current_logps - torch.linspace(-0.6, 0.6, B * T, device=device).reshape(B, T)
+
+    def run(with_option):
+        module_kwargs = {"delta": 0.5} if option == "delta" and with_option else {}
+        forward_kwargs = (
+            {"vllm_is_ratio": torch.full((B, T), 0.5, device=device)} if option == "vllm" and with_option else {}
+        )
+        input_tensor = inputs.detach().clone().requires_grad_(True)
+        weight_tensor = weight.detach().clone().requires_grad_(True)
+        bias_tensor = bias.detach().clone().requires_grad_(True)
+        loss, metrics = LigerFusedLinearGRPOLoss(
+            beta=0.0,
+            compiled=False,
+            use_ref_model=False,
+            loss_type="gmpo",
+            **module_kwargs,
+        )(
+            input_tensor,
+            weight_tensor,
+            selected_token_ids,
+            attention_mask,
+            advantages,
+            bias=bias_tensor,
+            old_per_token_logps=old_per_token_logps,
+            **forward_kwargs,
+        )
+        loss.backward()
+        return loss.detach(), metrics, input_tensor.grad, weight_tensor.grad, bias_tensor.grad
+
+    baseline = run(False)
+    with_option = run(True)
+    for expected, actual in zip(baseline, with_option):
+        if isinstance(expected, tuple):
+            assert len(expected) == len(actual)
+            for expected_metric, actual_metric in zip(expected, actual):
+                assert_verbose_allclose(expected_metric, actual_metric)
+        else:
+            assert_verbose_allclose(expected, actual)
 
 
 @pytest.mark.parametrize("loss_type", ["cispo", "sapo"])
