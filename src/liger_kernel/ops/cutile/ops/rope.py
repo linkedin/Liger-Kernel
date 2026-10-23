@@ -9,6 +9,7 @@ Rotary Positional Embedding (RoPE) kernel (CuTile backend).
 import cuda.tile as ct
 import torch
 
+from liger_kernel.ops.cutile.ops.utils import _launch
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 
 ConstInt = ct.Constant[int]
@@ -74,7 +75,7 @@ def _rope_general_kernel_ct(
     Works for arbitrary head_dim (including odd) and arbitrary n_heads:
     - tile size is padded via _next_power_of_2 but original data is NOT padded
     - ct.gather uses padding_value=0.0 for OOB reads (when TILE_HD > head_dim_half)
-    - elements past 2*head_dim_half (tail when head_dim is odd) are preserved unchanged
+    - elements past the rotary prefix are preserved unchanged
     """
     pid = ct.bid(0)
     batch_idx = pid // seq_len
@@ -96,6 +97,10 @@ def _rope_general_kernel_ct(
     )
 
     valid_mask = dim_idx < HEAD_DIM_HALF
+    q_real_idx = ct.where(valid_mask, dim_idx, Q.shape[-1])
+    q_imag_idx = ct.where(valid_mask, dim_idx + HEAD_DIM_HALF, Q.shape[-1])
+    k_real_idx = ct.where(valid_mask, dim_idx, K.shape[-1])
+    k_imag_idx = ct.where(valid_mask, dim_idx + HEAD_DIM_HALF, K.shape[-1])
 
     for h in range(N_Q_HEADS):
         q_r = ct.astype(
@@ -110,8 +115,8 @@ def _rope_general_kernel_ct(
         new_q_i = q_i * cos_row + q_r * sin_row
         new_q_r = ct.where(valid_mask, new_q_r, q_r)
         new_q_i = ct.where(valid_mask, new_q_i, q_i)
-        ct.scatter(Q, (batch_idx, seq_idx, h, dim_idx), ct.astype(new_q_r, Q.dtype), check_bounds=True)
-        ct.scatter(Q, (batch_idx, seq_idx, h, dim_idx + HEAD_DIM_HALF), ct.astype(new_q_i, Q.dtype), check_bounds=True)
+        ct.scatter(Q, (batch_idx, seq_idx, h, q_real_idx), ct.astype(new_q_r, Q.dtype), check_bounds=True)
+        ct.scatter(Q, (batch_idx, seq_idx, h, q_imag_idx), ct.astype(new_q_i, Q.dtype), check_bounds=True)
 
     for h in range(N_K_HEADS):
         k_r = ct.astype(
@@ -126,21 +131,24 @@ def _rope_general_kernel_ct(
         new_k_i = k_i * cos_row + k_r * sin_row
         new_k_r = ct.where(valid_mask, new_k_r, k_r)
         new_k_i = ct.where(valid_mask, new_k_i, k_i)
-        ct.scatter(K, (batch_idx, seq_idx, h, dim_idx), ct.astype(new_k_r, K.dtype), check_bounds=True)
-        ct.scatter(K, (batch_idx, seq_idx, h, dim_idx + HEAD_DIM_HALF), ct.astype(new_k_i, K.dtype), check_bounds=True)
+        ct.scatter(K, (batch_idx, seq_idx, h, k_real_idx), ct.astype(new_k_r, K.dtype), check_bounds=True)
+        ct.scatter(K, (batch_idx, seq_idx, h, k_imag_idx), ct.astype(new_k_i, K.dtype), check_bounds=True)
 
 
 def rope_forward(q, k, cos, sin):
+    # The kernels rotate in place; broadcast views alias elements being written.
+    q = q.contiguous() if 0 in q.stride() else q
+    k = k.contiguous() if 0 in k.stride() else k
     bsz, n_q_heads, seq_len, head_dim = q.shape
     n_k_heads = k.shape[1]
-    head_dim_half = head_dim // 2
+    head_dim_half = min(cos.shape[-1], head_dim) // 2
     original_dtype = q.dtype
 
     TILE_HD = _next_power_of_2(head_dim_half)
     TILE_QH = _next_power_of_2(n_q_heads)
     TILE_KH = _next_power_of_2(n_k_heads)
-    # ALIGNED: shapes are all power-of-2 → _rope_4d_kernel_ct's block-indexed ct.load
-    # works (its TILE_HD must equal head_dim_half exactly, which must be pow2).
+    # ALIGNED: head counts and the rotary half-width are powers of two.
+    # The block-indexed loads/stores touch only the rotary prefix.
     # Otherwise we fall back to _rope_general_kernel_ct (ct.gather/scatter on element
     # indices). Both are cuTile-native; we cannot reuse the 4D kernel for non-pow2
     # head_dim_half because ct.load requires the load shape to be power-of-2.
@@ -161,8 +169,8 @@ def rope_forward(q, k, cos, sin):
     grid = (bsz * seq_len,)
 
     if ALIGNED:
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            q.device,
             grid,
             _rope_4d_kernel_ct,
             (
@@ -186,8 +194,8 @@ def rope_forward(q, k, cos, sin):
         cos_3d = cos.contiguous()
         sin_3d = sin.contiguous()
         cos_bs = cos_3d.shape[0]
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            q.device,
             grid,
             _rope_general_kernel_ct,
             (
@@ -204,8 +212,8 @@ def rope_forward(q, k, cos, sin):
                 int(TILE_HD),
             ),
         )
-        q_out = q_t.transpose(1, 2).to(original_dtype)
-        k_out = k_t.transpose(1, 2).to(original_dtype)
+        q_out = q_t.transpose(1, 2)
+        k_out = k_t.transpose(1, 2)
         return q_out, k_out, cos_3d, sin_3d, cos_bs, ALIGNED, TILE_QH, TILE_KH, TILE_HD, original_dtype
 
 
@@ -226,7 +234,10 @@ def rope_backward(
     n_k_heads,
     head_dim,
 ):
-    head_dim_half = head_dim // 2
+    # Reductions such as sum() supply expanded, zero-stride gradients.
+    dq = dq.contiguous() if 0 in dq.stride() else dq
+    dk = dk.contiguous() if 0 in dk.stride() else dk
+    head_dim_half = min(cos.shape[-1], head_dim) // 2
     n_row = bsz * seq_len
     grid = (n_row,)
 
@@ -238,8 +249,8 @@ def rope_backward(
         sin = sin.unsqueeze(0)
 
     if ALIGNED:
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            dq.device,
             grid,
             _rope_4d_kernel_ct,
             (
@@ -258,8 +269,8 @@ def rope_backward(
     else:
         dq_t = dq.transpose(1, 2).contiguous()
         dk_t = dk.transpose(1, 2).contiguous()
-        ct.launch(
-            torch.cuda.current_stream(),
+        _launch(
+            dq.device,
             grid,
             _rope_general_kernel_ct,
             (
@@ -276,8 +287,8 @@ def rope_backward(
                 int(TILE_HD),
             ),
         )
-        dq_out = dq_t.transpose(1, 2).to(original_dtype)
-        dk_out = dk_t.transpose(1, 2).to(original_dtype)
+        dq_out = dq_t.transpose(1, 2)
+        dk_out = dk_t.transpose(1, 2)
         return dq_out, dk_out
 
 
