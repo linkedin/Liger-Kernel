@@ -40,6 +40,7 @@ from liger_kernel.utils import infer_device
 from test.utils import COLLAPSE_MARGINS
 from test.utils import assert_verbose_allclose
 from test.utils import dominant_target_logits
+from test.utils import reference_cross_entropy
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
@@ -169,7 +170,7 @@ def test_vp_class_dominant_target_does_not_collapse(dtype, rtol):
     h_ref = logits[:, None].double().requires_grad_(True)
 
     got = LigerVocabParallelCrossEntropy()(h_got, target[:, None])
-    ref = F.cross_entropy(h_ref.flatten(0, 1), target, reduction="none").view(-1, 1)
+    ref = reference_cross_entropy(h_ref.flatten(0, 1), target).view(-1, 1)
     got.sum().backward()
     ref.sum().backward()
 

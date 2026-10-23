@@ -7,6 +7,7 @@ from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
 from test.utils import COLLAPSE_MARGINS
 from test.utils import assert_verbose_allclose
 from test.utils import dominant_target_logits
+from test.utils import reference_cross_entropy
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
@@ -1136,7 +1137,7 @@ def test_dominant_target_does_not_collapse(reduction, dtype, rtol):
     _ref = logits.double().requires_grad_(True)
 
     loss = liger_fused_linear_cross_entropy(_input, weight, target, reduction=reduction)
-    ref = torch.nn.functional.cross_entropy(_ref, target, reduction=reduction)
+    ref = reference_cross_entropy(_ref, target, reduction=reduction)
     loss.backward(torch.ones_like(loss))
     ref.backward(torch.ones_like(ref))
 

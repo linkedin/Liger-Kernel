@@ -107,6 +107,16 @@ def dominant_target_logits(margins, V, dtype=torch.float32, device="cpu"):
     return logits.to(device=device, dtype=dtype), target.to(device)
 
 
+def reference_cross_entropy(logits, target, reduction="none"):
+    """fp64 cross entropy as softplus(logsumexp_{j != y} x_j - x_y), which keeps the loss and its gradient exact
+    past the margin where even an fp64 F.cross_entropy collapses (~36.7)."""
+    logits = logits.double()
+    rows = torch.arange(logits.shape[0], device=logits.device)
+    others = logits.masked_fill(torch.nn.functional.one_hot(target, logits.shape[-1]).bool(), float("-inf"))
+    nll = torch.nn.functional.softplus(others.logsumexp(-1) - logits[rows, target])
+    return {"none": nll, "sum": nll.sum(), "mean": nll.mean()}[reduction]
+
+
 def set_seed(seed=42):
     """
     Fix all random seeds we use for reproducibility.

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from test.utils import COLLAPSE_MARGINS
 from test.utils import dominant_target_logits
+from test.utils import reference_cross_entropy
 from test.utils import supports_bfloat16
 
 from liger_kernel.ops.fused_ce_tvd import LigerFusedCETVDFunction
@@ -227,7 +228,7 @@ def test_dominant_target_does_not_collapse(dtype, rtol):
     student_ref = student.double().requires_grad_(True)
 
     ce, _ = LigerFusedCETVDFunction.apply(student_liger, teacher, target)
-    ref = F.cross_entropy(student_ref, target, reduction="none")
+    ref = reference_cross_entropy(student_ref, target)
     ce.sum().backward()
     ref.sum().backward()
 

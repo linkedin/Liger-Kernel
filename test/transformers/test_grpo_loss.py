@@ -6,6 +6,7 @@ from test.utils import COLLAPSE_MARGINS
 from test.utils import assert_verbose_allclose
 from test.utils import dominant_target_logits
 from test.utils import infer_device
+from test.utils import reference_cross_entropy
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
@@ -1504,7 +1505,7 @@ def test_dominant_target_does_not_collapse(importance_sampling_level, dtype, rto
     advantages = torch.tensor([0.7], device=device)
 
     ref_logits = logits.double().requires_grad_(True)
-    ref_logp = ref_logits[:, :-1].log_softmax(-1).gather(-1, completion_ids[..., None])[..., 0]
+    ref_logp = -reference_cross_entropy(ref_logits[0, :-1], completion_ids[0])[None]
     old_logp = (ref_logp.detach() + 0.01 * torch.randn_like(ref_logp)).float()
 
     logp = fused_selective_log_softmax(logits, completion_ids, temperature=1.0)
