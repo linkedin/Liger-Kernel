@@ -593,3 +593,20 @@ def test_dominant_token_does_not_collapse(beta):
     # Per-row scale: off-argmax entries are differences of two tiny probabilities, accurate only to the row's scale.
     row_scale = _ref.grad.abs().amax(-1, keepdim=True)
     torch.testing.assert_close(_input.grad.double() / row_scale, _ref.grad / row_scale, rtol=1e-4, atol=1e-4)
+
+
+def test_tied_student_logits_keep_their_gradients():
+    # No student entry dominates, so nothing collapses and the argmax correction must not apply: taking the tied
+    # argmax as minus the sum of the others would pull their rounding error into it.
+    student = torch.tensor([[32.0, 32.0, 32.0]], device=device)
+    teacher = torch.tensor([[2.0**-20, 0.0, -(2.0**-20)]], device=device)
+    weight = torch.eye(3, device=device)
+    _input = student.clone().requires_grad_(True)
+    _ref = student.double().requires_grad_(True)
+
+    liger_fused_linear_jsd(_input, weight, teacher, weight, jsd_beta=0.0).backward()
+    TorchJSD(beta=0.0, dtype=torch.float64)(_ref.log_softmax(-1), teacher.double().log_softmax(-1)).backward()
+
+    # fp32 log-probs of nearly equal distributions only carry ~10% of this gradient, so compare at that scale.
+    row_scale = _ref.grad.abs().amax(-1, keepdim=True)
+    torch.testing.assert_close(_input.grad.double() / row_scale, _ref.grad / row_scale, rtol=0, atol=0.15)
