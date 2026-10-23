@@ -90,6 +90,33 @@ def get_qwen3_vl_rope_config() -> dict:
     }
 
 
+# Target logit margins over the log-sum-exp of the other logits. Above ~16.6 an fp32 softmax rounds the target
+# probability to exactly 1, so `p - 1` and `lse - x_target` collapse to 0 (arXiv 2610.31642). Negative margins
+# cover a target that is not the argmax.
+COLLAPSE_MARGINS = [-5.0, 0.0, 5.0, 12.0, 17.0, 25.0, 40.0]
+
+
+def dominant_target_logits(margins, V, dtype=torch.float32, device="cpu", target=None):
+    """One row of random logits per margin, with the target logit `margin` above the logsumexp of the rest."""
+    logits = torch.randn(len(margins), V, dtype=torch.float64)
+    target = torch.randint(0, V, (len(margins),)) if target is None else target.cpu()
+    rows = torch.arange(len(margins))
+    others = logits.clone()
+    others[rows, target] = float("-inf")
+    logits[rows, target] = others.logsumexp(-1) + torch.tensor(margins, dtype=torch.float64)
+    return logits.to(device=device, dtype=dtype), target.to(device)
+
+
+def reference_cross_entropy(logits, target, reduction="none"):
+    """fp64 cross entropy as softplus(logsumexp_{j != y} x_j - x_y), which keeps the loss and its gradient exact
+    past the margin where even an fp64 F.cross_entropy collapses (~36.7)."""
+    logits = logits.double()
+    rows = torch.arange(logits.shape[0], device=logits.device)
+    others = logits.masked_fill(torch.nn.functional.one_hot(target, logits.shape[-1]).bool(), float("-inf"))
+    nll = torch.nn.functional.softplus(others.logsumexp(-1) - logits[rows, target])
+    return {"none": nll, "sum": nll.sum(), "mean": nll.mean()}[reduction]
+
+
 def set_seed(seed=42):
     """
     Fix all random seeds we use for reproducibility.

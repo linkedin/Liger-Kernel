@@ -86,20 +86,32 @@ def _kl_div_kernel(
     # KL(Q || P) = sum(Q * (log(Q) - Y))
     #            = sum(Q * (log(max(Q, eps)) - x / T)) + lse * sum(Q)   (= a1 + lse * a2)
     # 0 * log 0 is treated as 0 by clamping Q to eps before the log.
+    # The max entries (x == m, exp(x - m) == 1) are summed apart for the argmax correction in pass 3.
     a1 = 0.0
     a2 = 0.0
-    s = 0.0
+    n_max = 0.0
+    a2_others = 0.0
+    s_others = 0.0
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_cols
         x = tl.load(X_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         x = tl.where(mask, x / temperature, float("-inf"))
         q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        s += tl.sum(tl.exp(x - m), axis=0)
+        is_max = x == m
         a1 += tl.sum(tl.where(mask, q * (tl.log(tl.maximum(q, eps)) - x), 0.0), axis=0)
         a2 += tl.sum(q, axis=0)
+        n_max += tl.sum(is_max.to(tl.float32), axis=0)
+        s_others += tl.sum(tl.where(is_max, 0.0, tl.exp(x - m)), axis=0)
+        a2_others += tl.sum(tl.where(is_max, 0.0, q), axis=0)
 
+    s = s_others + n_max
     lse = m + tl.log(s)
+
+    # At a unique argmax, q - softmax * a2 cancels to 0 once softmax rounds to 1 (arXiv 2610.31642). The gradient
+    # sums to 0, so take it as minus the sum over the other entries, which don't cancel. Tied maxima have
+    # softmax <= 1/2 and need no correction.
+    d_argmax = scale * (a2_others - a2 * s_others / s) / temperature
     tl.store(loss_ptr, (a1 + lse * a2) * scale)
 
     # Pass 3: gradient w.r.t. the logits, stored in place over X. Backprop
@@ -113,6 +125,7 @@ def _kl_div_kernel(
         q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         softmax = tl.exp(x - m) / s
         d = -scale * (q - softmax * a2) / temperature
+        d = tl.where((x == m) & (n_max == 1.0), d_argmax, d)
         tl.store(X_ptr + offsets, d, mask=mask)
 
 
