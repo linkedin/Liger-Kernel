@@ -79,6 +79,13 @@ def _softmax_single_block_backward_kernel(
     y = tl.load(y_ptr + row_id * y_stride + offs, mask=mask, other=0.0, cache_modifier=".ca")
     dot = tl.sum(dy * y, axis=0)
     dx = y * (dy - dot)
+    # At the argmax k, dy - dot cancels to 0 once y_k rounds to 1 (arXiv 2610.31642). Using 1 - y_k = sum of the
+    # other y gives dx_k = y_k * sum_{j != k} y_j * (dy_k - dy_j), which doesn't cancel.
+    is_max = offs == tl.argmax(tl.where(mask, y, -1.0), axis=0)
+    y_k = tl.sum(tl.where(is_max, y, 0.0), axis=0)
+    dy_k = tl.sum(tl.where(is_max, dy, 0.0), axis=0)
+    dx_k = y_k * tl.sum(tl.where(is_max, 0.0, y * (dy_k - dy)), axis=0)
+    dx = tl.where(is_max, dx_k, dx)
     tl.store(dx_ptr + row_id * dx_stride + offs, dx, mask=mask, cache_modifier=".wb")
 
 
