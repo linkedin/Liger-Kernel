@@ -6,6 +6,9 @@ from functools import partial
 import torch
 import torch._dynamo.config
 
+from liger_kernel.ops.selective_logprob import selective_logprob_backward
+from liger_kernel.ops.selective_logprob import selective_logprob_forward
+
 _SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE = 4096
 _SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE = 2048
 
@@ -15,14 +18,105 @@ def _maybe_mark_dynamic_dim1(tensor):
         torch._dynamo.maybe_mark_dynamic(tensor, 1)
 
 
+def _selective_logprob_forward_triton(hidden, weight, targets, bias=None, temperature=1.0):
+    n_rows, H = hidden.shape
+    V = weight.shape[0]
+    device = hidden.device
+
+    logprobs = torch.empty((n_rows,), device=device, dtype=torch.float32)
+    log_z = torch.empty((n_rows,), device=device, dtype=torch.float32)
+
+    chunk_size = min(2048, max(1, (256 * 1024 * 1024) // (V * max(hidden.element_size(), 2))))
+    chunk_size = min(chunk_size, n_rows)
+    num_chunks = (n_rows + chunk_size - 1) // chunk_size
+
+    for i in range(num_chunks):
+        start = i * chunk_size
+        end = min((i + 1) * chunk_size, n_rows)
+        hidden_chunk = hidden[start:end]
+        targets_chunk = targets[start:end]
+
+        logits_chunk = torch.mm(hidden_chunk, weight.t())
+
+        lp_chunk, lz_chunk = selective_logprob_forward(
+            logits_chunk,
+            targets_chunk,
+            bias=bias,
+            temperature=temperature,
+            ignore_index=-100,
+            return_log_z=True,
+        )
+        logprobs[start:end] = lp_chunk
+        log_z[start:end] = lz_chunk
+
+    return logprobs, log_z
+
+
+def _selective_logprob_backward_triton(
+    hidden,
+    weight,
+    targets,
+    bias,
+    grad_logprobs,
+    temperature,
+    compute_grad_weight=True,
+    compute_grad_bias=True,
+):
+    n_rows, H = hidden.shape
+    V = weight.shape[0]
+    device = hidden.device
+    has_bias = bias is not None
+
+    grad_hidden = torch.empty_like(hidden)
+    grad_weight = torch.zeros_like(weight, dtype=torch.float32) if compute_grad_weight else None
+    grad_bias = torch.zeros((V,), device=device, dtype=torch.float32) if (compute_grad_bias and has_bias) else None
+
+    chunk_size = min(2048, max(1, (256 * 1024 * 1024) // (V * max(hidden.element_size(), 2))))
+    chunk_size = min(chunk_size, n_rows)
+    num_chunks = (n_rows + chunk_size - 1) // chunk_size
+
+    for i in range(num_chunks):
+        start = i * chunk_size
+        end = min((i + 1) * chunk_size, n_rows)
+        hidden_chunk = hidden[start:end]
+        targets_chunk = targets[start:end]
+        grad_chunk = grad_logprobs[start:end]
+
+        logits_chunk = torch.mm(hidden_chunk, weight.t())
+
+        selective_logprob_backward(
+            logits_chunk,
+            targets_chunk,
+            grad_chunk,
+            bias=bias,
+            temperature=temperature,
+            ignore_index=-100,
+        )
+
+        grad_hidden[start:end] = torch.mm(logits_chunk, weight)
+        if compute_grad_weight:
+            grad_weight.addmm_(logits_chunk.t().float(), hidden_chunk.float())
+        if compute_grad_bias and has_bias:
+            grad_bias.add_(logits_chunk.sum(dim=0))
+
+    return grad_hidden, grad_weight, grad_bias
+
+
 def _selective_logprob_forward(
     hidden, weight, targets, bias=None, temperature=1.0, vocab_chunk_size=_SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE
 ):
-    """Compute selective log-probabilities by streaming over sequence and vocab chunks.
+    """Compute selective log-probabilities with Triton acceleration on GPU, fallback on CPU."""
+    if hidden.device.type in ("cuda", "xpu"):
+        return _selective_logprob_forward_triton(hidden, weight, targets, bias=bias, temperature=temperature)
+    return _selective_logprob_forward_fallback(
+        hidden, weight, targets, bias=bias, temperature=temperature, vocab_chunk_size=vocab_chunk_size
+    )
 
-    Dual chunking (sequence × vocab) bounds peak temporary memory to
-    ``seq_chunk_size × vocab_chunk_size`` regardless of total N or V.
-    """
+
+def _selective_logprob_forward_fallback(
+    hidden, weight, targets, bias=None, temperature=1.0, vocab_chunk_size=_SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE
+):
+    """Compute selective log-probabilities by streaming over sequence and vocab chunks (fallback)."""
     device = hidden.device
     n_rows, _ = hidden.shape
     vocab_size, _ = weight.shape
@@ -82,11 +176,45 @@ def _selective_logprob_backward(
     compute_grad_weight=True,
     compute_grad_bias=True,
 ):
-    """Dual-chunked (sequence × vocab) backward for selective logprob.
+    """Compute selective logprob backward with Triton acceleration on GPU, fallback on CPU."""
+    if hidden.device.type in ("cuda", "xpu"):
+        return _selective_logprob_backward_triton(
+            hidden=hidden,
+            weight=weight,
+            targets=targets,
+            bias=bias,
+            grad_logprobs=grad_logprobs,
+            temperature=temperature,
+            compute_grad_weight=compute_grad_weight,
+            compute_grad_bias=compute_grad_bias,
+        )
+    return _selective_logprob_backward_fallback(
+        hidden=hidden,
+        weight=weight,
+        targets=targets,
+        bias=bias,
+        log_z=log_z,
+        grad_logprobs=grad_logprobs,
+        temperature=temperature,
+        vocab_chunk_size=vocab_chunk_size,
+        compute_grad_weight=compute_grad_weight,
+        compute_grad_bias=compute_grad_bias,
+    )
 
-    Recomputes logits per chunk for memory efficiency. The weight and bias gradients (a buffer the size of
-    the weight and one GEMM per chunk) are only computed when requested, e.g. not for a frozen lm_head.
-    """
+
+def _selective_logprob_backward_fallback(
+    hidden,
+    weight,
+    targets,
+    bias,
+    log_z,
+    grad_logprobs,
+    temperature,
+    vocab_chunk_size,
+    compute_grad_weight=True,
+    compute_grad_bias=True,
+):
+    """Dual-chunked backward for selective logprob (CPU fallback)."""
     inv_t = 1.0 / temperature
     n_rows, _ = hidden.shape
     vocab_size = weight.shape[0]
