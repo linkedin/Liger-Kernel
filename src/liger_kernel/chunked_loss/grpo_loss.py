@@ -121,6 +121,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vespo_k_neg=3.0,  # VESPO gamma shape k for negative advantages
         vespo_lambda_neg=2.0,  # VESPO gamma rate lambda for negative advantages
         num_items_in_batch=None,  # Total active tokens across the entire generation batch (TRL-compat)
+        entropy_mask=None,  # High-entropy token mask (chunk_size, seq_len) from top_entropy_quantile, or None
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -199,6 +200,11 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             per_token_loss1 = coef_1 * advantages.unsqueeze(1)
             per_token_loss2 = coef_2 * advantages.unsqueeze(1)
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        # Restrict the policy term to high-entropy tokens (top_entropy_quantile). Same position as TRL: after the
+        # loss_type branch, before the vLLM correction and before the KL penalty, so the KL still covers every token.
+        if entropy_mask is not None:
+            per_token_loss = per_token_loss * entropy_mask
 
         # Apply vLLM importance sampling correction BEFORE adding KL penalty
         # VESPO folds this correction into phi_seq (in log space), so we skip it here.
@@ -301,6 +307,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vespo_k_neg=3.0,
         vespo_lambda_neg=2.0,
         num_items_in_batch=None,
+        top_entropy_quantile=1.0,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -328,6 +335,11 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             chunk_size (int): Size of chunks for processing.
             vllm_is_ratio (torch.Tensor, optional): vLLM importance sampling ratio (batch_size, seq_len) or (batch_size, 1) or None.
                 Used to correct for distribution mismatch when using vLLM for generation.
+            top_entropy_quantile (float): Keep the policy gradient only for the ``top_entropy_quantile`` fraction of
+                highest-entropy active tokens, as in TRL's ``top_entropy_quantile`` ("Beyond the 80/20 Rule",
+                https://huggingface.co/papers/2506.01939). 1.0 (default) disables it. Anything lower costs one extra
+                no-grad streaming pass over the lm_head to get per-token entropies; the quantile threshold spans the
+                whole batch and every rank when distributed. Defaults to 1.0.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -372,6 +384,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             vespo_k_neg=vespo_k_neg,
             vespo_lambda_neg=vespo_lambda_neg,
             num_items_in_batch=num_items_in_batch,
+            top_entropy_quantile=top_entropy_quantile,
         )
 
     @staticmethod
@@ -412,6 +425,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_vespo_k_neg
             None,  # grad_vespo_lambda_neg
             None,  # grad_num_items_in_batch
+            None,  # grad_top_entropy_quantile (float, not differentiable)
         )
 
 
@@ -438,6 +452,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         vespo_lambda_pos: float = 3.0,
         vespo_k_neg: float = 3.0,
         vespo_lambda_neg: float = 2.0,
+        top_entropy_quantile: float = 1.0,
     ):
         """
         Args:
@@ -457,6 +472,11 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             temperature (float): Temperature for the logits.
             delta (float, optional): Upper clamp for two-sided clipping (INTELLECT-2). None means disabled.
             use_bias_correction_kl (bool): If True, multiply KL by importance sampling ratio (DeepSeek-V3.2).
+            top_entropy_quantile (float): Keep the policy gradient only for the ``top_entropy_quantile`` fraction of
+                highest-entropy active tokens (TRL ``top_entropy_quantile``, "Beyond the 80/20 Rule",
+                https://huggingface.co/papers/2506.01939). 1.0 disables it. Lower values cost one extra no-grad
+                streaming pass over the lm_head per forward; the quantile threshold spans the whole batch and every
+                rank when distributed. Defaults to 1.0.
         """
         super().__init__()
         # Validate SAPO temperatures to prevent division by zero or numerical instability
@@ -466,6 +486,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             raise ValueError(f"sapo_temperature_neg must be positive, got {sapo_temperature_neg}")
         if delta is not None and delta <= 0:
             raise ValueError(f"delta must be positive, got {delta}")
+        if not 0.0 <= top_entropy_quantile <= 1.0:
+            raise ValueError(f"top_entropy_quantile must be in [0.0, 1.0], got {top_entropy_quantile}")
         self.beta = beta
         self.compiled = compiled
         self.use_ref_model = use_ref_model
@@ -484,6 +506,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self.vespo_lambda_pos = vespo_lambda_pos
         self.vespo_k_neg = vespo_k_neg
         self.vespo_lambda_neg = vespo_lambda_neg
+        self.top_entropy_quantile = top_entropy_quantile
 
     def forward(
         self,
@@ -533,4 +556,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.vespo_k_neg,
             self.vespo_lambda_neg,
             num_items_in_batch,
+            self.top_entropy_quantile,
         )
