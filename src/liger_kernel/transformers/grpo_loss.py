@@ -48,10 +48,13 @@ def triton_grpo_loss(
         eps_low: Lower clipping bound for importance ratio
         eps_high: Upper clipping bound for importance ratio
         inplace: Whether to modify logits in-place during backward
-        loss_type: Loss reduction type ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo")
+        loss_type: Loss reduction type ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo", "vespo")
         max_completion_length: Max completion length for dr_grpo loss type; defaults to sequence length if None
-        importance_sampling_level: "token" or "sequence" importance sampling
+        importance_sampling_level: "token" or "sequence" importance sampling. "sequence" is not supported
+            for loss_type "cispo", "sapo" or "vespo".
         reduce: If True, return reduced loss; if False, return per-token loss
+        sapo_temperature_pos: Temperature for tokens with positive advantages in SAPO. Default 1.0.
+        sapo_temperature_neg: Temperature for tokens with non-positive advantages in SAPO. Default 1.05.
         vllm_is_ratio: vLLM importance sampling ratio (B, L) or (B, 1) or None.
             Used to correct for distribution mismatch when using vLLM for generation.
             Applied to PPO loss BEFORE adding KL penalty.
