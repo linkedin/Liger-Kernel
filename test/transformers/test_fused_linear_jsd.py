@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 
@@ -596,19 +598,42 @@ def test_dominant_token_does_not_collapse(beta):
 
 
 def test_student_near_teacher():
-    # Soft-target gradients must come from the logit gap, not from q - p: a student matching its teacher gets exactly
-    # zero gradient, and one off by 1e-8 or shifted by 32 and off by 2^-20 still gets its small gradient
-    # (arXiv 2610.31642, Eq. 9).
+    # Soft-target gradients must come from the logit gap, not from rounded probabilities or log-probabilities: a
+    # student matching its teacher gets exactly zero gradient, and one off by 1e-8 or shifted by 32 and off by 2^-20
+    # still gets its small gradient (arXiv 2610.31642, Eq. 9).
     teacher = torch.tensor([[2.0, 1.0, 0.0], [2.0, 0.01, 0.0], [2.0**-20, 0.0, -(2.0**-20)]], device=device)
     student = teacher.clone()
     student[1, 1] += 1e-8
     student[2] = 32.0
     weight = torch.eye(3, device=device)
-    _input = student.clone().requires_grad_(True)
-    _ref = student.double().requires_grad_(True)
+    for beta in (0.0, 0.1, 0.5, 0.9, 1.0):
+        _input = student.clone().requires_grad_(True)
+        _ref = student.double().requires_grad_(True)
 
-    liger_fused_linear_jsd(_input, weight, teacher, weight, jsd_beta=0.0).backward()
-    TorchJSD(beta=0.0, dtype=torch.float64)(_ref.log_softmax(-1), teacher.double().log_softmax(-1)).backward()
+        liger_fused_linear_jsd(_input, weight, teacher, weight, jsd_beta=beta).backward()
+        _reference_jsd(_ref, teacher.double(), beta).backward()
 
-    assert torch.count_nonzero(_input.grad[0]) == 0
-    torch.testing.assert_close(_input.grad.double(), _ref.grad, rtol=1e-4, atol=1e-12)
+        assert torch.count_nonzero(_input.grad[0]) == 0, f"beta={beta}"
+        torch.testing.assert_close(_input.grad.double(), _ref.grad, rtol=1e-4, atol=1e-12, msg=f"beta={beta}")
+
+    # Disjoint distributions: the loss is the binary entropy of beta, which needs log(beta) and log(1 - beta) of the
+    # beta passed in, not of its float32 rounding.
+    student = torch.tensor([[-40.0, 40.0]], device=device)
+    weight = torch.eye(2, device=device)
+    for beta in (1e-6, 1 - 1e-6):
+        loss = liger_fused_linear_jsd(student, weight, -student, weight, jsd_beta=beta)
+        expected = -beta * math.log(beta) - (1 - beta) * math.log1p(-beta)
+        torch.testing.assert_close(loss.double().cpu(), torch.tensor(expected, dtype=torch.float64), rtol=1e-5, atol=0)
+
+
+def _reference_jsd(student_logits, teacher_logits, beta):
+    # float64 generalized JSD, mean over rows
+    log_q, log_p = student_logits.log_softmax(-1), teacher_logits.log_softmax(-1)
+    if beta == 0.0:
+        loss = (log_p.exp() * (log_p - log_q)).sum(-1)
+    elif beta == 1.0:
+        loss = (log_q.exp() * (log_q - log_p)).sum(-1)
+    else:
+        log_m = torch.logaddexp(log_p + math.log(beta), log_q + math.log1p(-beta))
+        loss = beta * (log_p.exp() * (log_p - log_m)).sum(-1) + (1 - beta) * (log_q.exp() * (log_q - log_m)).sum(-1)
+    return loss.mean()
