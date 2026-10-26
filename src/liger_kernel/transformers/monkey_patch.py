@@ -37,7 +37,6 @@ from liger_kernel.transformers.rms_norm import LigerRMSNormForMuseGlimmerTextCen
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_gpt_oss
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
-from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
@@ -60,8 +59,6 @@ if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
         f"liger-kernel requires transformers >= {MIN_SUPPORTED_TRANSFORMERS_VERSION}, got {transformers.__version__}. "
         "Please install an older version of liger-kernel that is compatible with your transformers version."
     )
-
-IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
@@ -877,10 +874,7 @@ def apply_liger_kernel_to_mixtral(
         else:
             modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward
     if swiglu:
-        if IS_TRANSFORMERS_V5_OR_LATER:
-            modeling_mixtral.MixtralExperts = LigerExperts
-        else:
-            modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
+        modeling_mixtral.MixtralExperts = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -894,11 +888,7 @@ def apply_liger_kernel_to_mixtral(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                if IS_TRANSFORMERS_V5_OR_LATER:
-                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
-                else:
-                    for expert in decoder_layer.block_sparse_moe.experts:
-                        _patch_swiglu_module(expert, LigerBlockSparseTop2MLP)
+                _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -1892,7 +1882,6 @@ def apply_liger_kernel_to_qwen3_moe(
     from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeModel
 
     from liger_kernel.transformers.model.qwen3_moe import lce_forward as qwen3_lce_forward
-    from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
     if rope:
         modeling_qwen3_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -1912,10 +1901,7 @@ def apply_liger_kernel_to_qwen3_moe(
             modeling_qwen3_moe.Qwen3MoeForCausalLM.forward = qwen3_lce_forward
 
     if swiglu:
-        if IS_TRANSFORMERS_V5_OR_LATER:
-            modeling_qwen3_moe.Qwen3MoeExperts = LigerExperts
-        else:
-            modeling_qwen3_moe.Qwen3MoeMLP = LigerQwen3MoeSwiGLUMLP
+        modeling_qwen3_moe.Qwen3MoeExperts = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -1928,11 +1914,7 @@ def apply_liger_kernel_to_qwen3_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                if IS_TRANSFORMERS_V5_OR_LATER:
-                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
-                else:
-                    for mlp_expert in decoder_layer.mlp.experts:
-                        _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
+                _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -1950,7 +1932,6 @@ def apply_liger_kernel_to_gpt_oss(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace GPT-OSS models.
-    NOTE: GPT-OSS is supported in transformers >= 4.55.0
     NOTE: SwiGLU patching is disabled by default for GPT-OSS as it uses a custom expert
           implementation with clamping and MXFP4 quantization.
 
@@ -1967,10 +1948,6 @@ def apply_liger_kernel_to_gpt_oss(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
             loaded. Default is None.
     """
-    if version.parse(transformers.__version__) < version.parse("4.55.0"):
-        logger.warning("GPT-OSS support requires transformers >= 4.55.0")
-        return
-
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
@@ -2024,7 +2001,6 @@ def apply_liger_kernel_to_qwen2_vl(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
-    NOTE: Qwen2-VL is not supported in transformers<4.52.4
 
     Args:
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -2038,10 +2014,6 @@ def apply_liger_kernel_to_qwen2_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    if transformer_version < version.parse("4.52.4"):
-        logger.warning("Qwen2-VL support is only compatible with transformers >= 4.52.4")
-        return
-
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
@@ -2120,7 +2092,6 @@ def apply_liger_kernel_to_qwen2_5_vl(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2.5-VL models.
-    NOTE: Qwen2.5-VL is not available in transformers<4.48.2
 
     Args:
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -2133,10 +2104,6 @@ def apply_liger_kernel_to_qwen2_5_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    if transformer_version < version.parse("4.52.4"):
-        logger.warning("Qwen2.5-VL support is only compatible with transformers >= 4.52.4")
-        return
-
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
@@ -2331,8 +2298,7 @@ def apply_liger_kernel_to_qwen3_vl_moe(
             modeling_qwen3_vl_moe.Qwen3VLMoeForConditionalGeneration.forward = qwen3_vl_moe_lce_forward
 
     if swiglu:
-        if IS_TRANSFORMERS_V5_OR_LATER:
-            modeling_qwen3_vl_moe.Qwen3VLMoeTextExperts = LigerExperts
+        modeling_qwen3_vl_moe.Qwen3VLMoeTextExperts = LigerExperts
 
     if model is not None:
         if isinstance(model, Qwen3VLMoeForConditionalGeneration):
@@ -2364,8 +2330,7 @@ def apply_liger_kernel_to_qwen3_vl_moe(
                 if swiglu:
                     experts = getattr(decoder_layer.mlp, "experts", None)
                     if experts is not None:
-                        if IS_TRANSFORMERS_V5_OR_LATER:
-                            _patch_swiglu_module(experts, LigerExperts)
+                        _patch_swiglu_module(experts, LigerExperts)
 
 
 def apply_liger_kernel_to_phi3(
@@ -2776,8 +2741,7 @@ def apply_liger_kernel_to_glm4v_moe(
         else:
             modeling_glm4v_moe.Glm4vMoeForConditionalGeneration.forward = glm4v_moe_lce_forward
     if swiglu:
-        if IS_TRANSFORMERS_V5_OR_LATER:
-            modeling_glm4v_moe.Glm4vMoeTextNaiveMoe = LigerExperts
+        modeling_glm4v_moe.Glm4vMoeTextNaiveMoe = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -2818,11 +2782,7 @@ def apply_liger_kernel_to_glm4v_moe(
                 if swiglu:
                     experts = getattr(decoder_layer.mlp, "experts", None)
                     if experts is not None:
-                        if IS_TRANSFORMERS_V5_OR_LATER:
-                            _patch_swiglu_module(experts, LigerExperts)
-                        else:
-                            for expert in experts:
-                                _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                        _patch_swiglu_module(experts, LigerExperts)
                         shared_experts = getattr(decoder_layer.mlp, "shared_experts", None)
                         if shared_experts is not None:
                             _patch_swiglu_module(shared_experts, LigerSwiGLUMLP)
@@ -3170,11 +3130,7 @@ def apply_liger_kernel_to_qwen3_next(
         else:
             modeling_qwen3_next.Qwen3NextForCausalLM.forward = qwen3_next_lce_forward
     if swiglu:
-        if IS_TRANSFORMERS_V5_OR_LATER:
-            modeling_qwen3_next.Qwen3NextExperts = LigerExperts
-        else:
-            # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
-            modeling_qwen3_next.Qwen3NextMLP = LigerQwen3MoeSwiGLUMLP
+        modeling_qwen3_next.Qwen3NextExperts = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -3209,11 +3165,7 @@ def apply_liger_kernel_to_qwen3_next(
                     _patch_swiglu_module(decoder_layer.mlp.shared_expert, LigerQwen3MoeSwiGLUMLP)
                     experts = getattr(decoder_layer.mlp, "experts", None)
                     if experts is not None:
-                        if IS_TRANSFORMERS_V5_OR_LATER:
-                            _patch_swiglu_module(experts, LigerExperts)
-                        else:
-                            for expert in experts:
-                                _patch_swiglu_module(expert, LigerQwen3MoeSwiGLUMLP)
+                        _patch_swiglu_module(experts, LigerExperts)
 
 
 def apply_liger_kernel_to_qwen3_5(
@@ -3499,7 +3451,6 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
     from transformers.models.hunyuan_v1_moe.modeling_hunyuan_v1_moe import HunYuanMoEV1Model
 
     from liger_kernel.transformers.model.hunyuan_v1 import lce_forward as hunyuan_v1_moe_lce_forward
-    from liger_kernel.transformers.swiglu import LigerHunyuanV1SwiGLUMLP
 
     if rope:
         modeling_hunyuan_v1_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -3519,10 +3470,7 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
             modeling_hunyuan_v1_moe.HunYuanMoEV1ForCausalLM.forward = hunyuan_v1_moe_lce_forward
 
     if swiglu:
-        if IS_TRANSFORMERS_V5_OR_LATER:
-            modeling_hunyuan_v1_moe.HunYuanMoEV1Experts = LigerExperts
-        else:
-            modeling_hunyuan_v1_moe.HunYuanMoEV1MLP = LigerHunyuanV1SwiGLUMLP
+        modeling_hunyuan_v1_moe.HunYuanMoEV1Experts = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -3535,11 +3483,7 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                if IS_TRANSFORMERS_V5_OR_LATER:
-                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
-                else:
-                    for mlp_expert in decoder_layer.mlp.experts:
-                        _patch_swiglu_module(mlp_expert, LigerHunyuanV1SwiGLUMLP)
+                _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -3577,10 +3521,8 @@ def apply_liger_kernel_to_deepseek_v2(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
             Dense MLPs and shared experts (``DeepseekV2MLP``) are replaced with
-            ``LigerQwen3MoeSwiGLUMLP``. On transformers v5 or later, routed experts use the
-            batched ``DeepseekV2Experts`` layout and are replaced with ``LigerExperts`` (fused MoE);
-            on transformers v4 (>= 4.54), each routed expert is a ``DeepseekV2MLP`` and is patched
-            individually.
+            ``LigerQwen3MoeSwiGLUMLP``. Routed experts use the batched ``DeepseekV2Experts``
+            layout and are replaced with ``LigerExperts`` (fused MoE).
         model (PreTrainedModel): The model instance to apply Liger kernels to, if already loaded.
             Default is None.
     """
@@ -3590,12 +3532,7 @@ def apply_liger_kernel_to_deepseek_v2(
 
     from transformers.models.deepseek_v2 import modeling_deepseek_v2
     from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2Model
-
-    # Transformers v4 (>= 4.54) names the MoE block DeepseekV2MoE; v5 renamed it to DeepseekV2Moe.
-    try:
-        from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2Moe
-    except ImportError:
-        from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2MoE as DeepseekV2Moe
+    from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2Moe
 
     from liger_kernel.transformers.model.deepseek_v2 import lce_forward as deepseek_v2_lce_forward
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
@@ -3623,9 +3560,8 @@ def apply_liger_kernel_to_deepseek_v2(
     if swiglu:
         # Dense MLPs and shared experts are DeepseekV2MLP instances in all supported versions.
         modeling_deepseek_v2.DeepseekV2MLP = LigerQwen3MoeSwiGLUMLP
-        if IS_TRANSFORMERS_V5_OR_LATER:
-            # Routed experts use the batched DeepseekV2Experts layout in transformers v5+.
-            modeling_deepseek_v2.DeepseekV2Experts = LigerExperts
+        # Routed experts use the batched DeepseekV2Experts layout.
+        modeling_deepseek_v2.DeepseekV2Experts = LigerExperts
 
     if model is not None:
         base_model: DeepseekV2Model = getattr(model, model.base_model_prefix, model)
@@ -3635,11 +3571,7 @@ def apply_liger_kernel_to_deepseek_v2(
         for decoder_layer in base_model.layers:
             if swiglu:
                 if isinstance(decoder_layer.mlp, DeepseekV2Moe):
-                    if IS_TRANSFORMERS_V5_OR_LATER:
-                        _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
-                    else:
-                        for mlp_expert in decoder_layer.mlp.experts:
-                            _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
+                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
                     if decoder_layer.mlp.shared_experts is not None:
                         _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerQwen3MoeSwiGLUMLP)
                 else:
@@ -3678,9 +3610,8 @@ def apply_liger_kernel_to_deepseek_v3(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
             Dense MLPs and shared experts (``DeepseekV3MLP``) are replaced with
-            ``LigerQwen3MoeSwiGLUMLP``. On transformers v5 or later, routed experts use the
-            batched ``DeepseekV3Experts`` layout and are replaced with ``LigerExperts`` (fused MoE);
-            on transformers v4, each routed expert is a ``DeepseekV3MLP`` and is patched individually.
+            ``LigerQwen3MoeSwiGLUMLP``. Routed experts use the batched ``DeepseekV3Experts``
+            layout and are replaced with ``LigerExperts`` (fused MoE).
         model (PreTrainedModel): The model instance to apply Liger kernels to, if already loaded.
             Default is None.
     """
@@ -3718,9 +3649,8 @@ def apply_liger_kernel_to_deepseek_v3(
     if swiglu:
         # Dense MLPs and shared experts are DeepseekV3MLP instances in all supported versions.
         modeling_deepseek_v3.DeepseekV3MLP = LigerQwen3MoeSwiGLUMLP
-        if IS_TRANSFORMERS_V5_OR_LATER:
-            # Routed experts use the batched DeepseekV3Experts layout in transformers v5+.
-            modeling_deepseek_v3.DeepseekV3Experts = LigerExperts
+        # Routed experts use the batched DeepseekV3Experts layout.
+        modeling_deepseek_v3.DeepseekV3Experts = LigerExperts
 
     if model is not None:
         base_model: DeepseekV3Model = getattr(model, model.base_model_prefix, model)
@@ -3730,11 +3660,7 @@ def apply_liger_kernel_to_deepseek_v3(
         for decoder_layer in base_model.layers:
             if swiglu:
                 if isinstance(decoder_layer.mlp, DeepseekV3MoE):
-                    if IS_TRANSFORMERS_V5_OR_LATER:
-                        _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
-                    else:
-                        for mlp_expert in decoder_layer.mlp.experts:
-                            _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
+                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
                     if decoder_layer.mlp.shared_experts is not None:
                         _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerQwen3MoeSwiGLUMLP)
                 else:
