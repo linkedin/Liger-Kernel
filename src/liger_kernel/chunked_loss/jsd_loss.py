@@ -4,9 +4,79 @@ from typing import Tuple
 from typing import Union
 
 import torch
-import torch.nn.functional as F
 
 from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinearDistillationBase
+
+
+def _log_normalizer(logits, max_logits):
+    # log sum exp(logits - max), keeping the mass below the max when it is far under 1 (arXiv 2610.31642, Eq. 5)
+    shifted = logits - max_logits
+    at_max = shifted == 0
+    n = at_max.sum(-1, keepdim=True)
+    others = torch.where(at_max, 0.0, shifted.exp()).sum(-1, keepdim=True)
+    return torch.where(n == 1, torch.log1p(others), torch.log(n + others))
+
+
+def _logit_gap(zs, zt, s_max, t_max):
+    # (zs - s_max) - (zt - t_max), carrying the exact rounding error of both subtractions so it keeps a small
+    # student-teacher difference as well as independent shifts of either side
+    delta = zs - zt
+    delta_err = torch.where(zs.abs() >= zt.abs(), (zs - delta) - zt, zs - (delta + zt))
+    shift = s_max - t_max
+    shift_err = torch.where(s_max.abs() >= t_max.abs(), (s_max - shift) - t_max, s_max - (shift + t_max))
+    return (delta - shift) + (delta_err - shift_err)
+
+
+def _log_mixture_ratio(log_ratio, w):
+    # log(a / m) for m = w * b + (1 - w) * a, from log_ratio = log(a / b)
+    return torch.where(
+        log_ratio.abs() <= 0.5,
+        -torch.log1p(w * torch.expm1(-log_ratio.clamp(-0.5, 0.5))),
+        -torch.logaddexp(torch.full_like(log_ratio, math.log1p(-w)), math.log(w) - log_ratio),
+    )
+
+
+def _jsd_and_grad(student_logits, teacher_logits, beta):
+    """
+    Per-row generalized JSD and its gradient w.r.t. the student logits. Both come from the logit gap log(q / p)
+    instead of rounded probabilities (arXiv 2610.31642, Eq. 9), so the gradient stays accurate as the student
+    approaches the teacher and is exactly 0 when they match.
+    """
+    zs, zt = student_logits.float(), teacher_logits.float()
+    s_max = zs.max(-1, keepdim=True).values
+    t_max = zt.max(-1, keepdim=True).values
+    s_log_z, t_log_z = _log_normalizer(zs, s_max), _log_normalizer(zt, t_max)
+    q = (zs - s_max - s_log_z).exp()
+    p = (zt - t_max - t_log_z).exp()
+
+    # log(q / p) = gap - (mean_gap + forward_kl). Near the teacher, forward_kl = log1p(sum p expm1(gap - mean_gap))
+    # keeps its small part; elsewhere the two normalizers are far enough apart to subtract.
+    gap = _logit_gap(zs, zt, s_max, t_max)
+    mean_gap = (p * gap).sum(-1, keepdim=True)
+    d = gap - mean_gap
+    near = ((d.abs() <= 0.5) | (p == 0)).all(-1, keepdim=True)
+    forward_kl = torch.where(
+        near, torch.log1p((p * torch.expm1(d.clamp(max=0.5))).sum(-1, keepdim=True)), s_log_z - t_log_z - mean_gap
+    )
+    log_q_p = d - forward_kl
+
+    if beta == 0:
+        # q - p, through expm1 of a non-positive argument on each side
+        grad = torch.where(
+            log_q_p <= 0, p * torch.expm1(log_q_p.clamp(max=0)), -q * torch.expm1((-log_q_p).clamp(max=0))
+        )
+        return forward_kl.squeeze(-1), grad
+    if beta == 1:
+        h = log_q_p
+        loss = (q * h).sum(-1)
+    else:
+        h = _log_mixture_ratio(log_q_p, beta)
+        loss = (1 - beta) * (q * h).sum(-1) + beta * (p * _log_mixture_ratio(-log_q_p, 1 - beta)).sum(-1)
+    # The gradient is q * (h - E_q[h]); shifting h by its value at the student's argmax keeps E_q[h] from cancelling at
+    # a dominant token (as in unslothai/unsloth-zoo#2079).
+    h = h - h.gather(-1, zs.argmax(-1, keepdim=True))
+    grad = q * (h - (q * h).sum(-1, keepdim=True))
+    return loss, grad if beta == 1 else (1 - beta) * grad
 
 
 class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
@@ -27,27 +97,9 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             - KL divergence requires summing over vocab dimension (not mean)
             - Masking excludes padding/prompt tokens from loss computation
         """
-        student_log_probs = F.log_softmax(student_logits, dim=-1)
-        teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
-
-        if beta == 0:
-            jsd_loss = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
-        elif beta == 1:
-            jsd_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="none", log_target=True)
-        else:
-            # Compute probabilities (only required for mean calculation)
-            log_mean_probs = torch.logsumexp(
-                torch.stack([student_log_probs + math.log(1 - beta), teacher_log_probs + math.log(beta)], dim=0), dim=0
-            )
-
-            student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="none", log_target=True)
-            teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="none", log_target=True)
-
-            # JSD is the weighted average of the KL divergences
-            jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
-
-        # Sum over vocab dimension (KL divergence definition)
-        jsd_loss = jsd_loss.sum(dim=-1)  # (chunk_size,)
+        loss, grad = _jsd_and_grad(student_logits.detach(), teacher_logits, beta)
+        # The surrogate term is 0 in value and has gradient `grad`, as in the paper's reference implementation.
+        jsd_loss = loss + (grad * (student_logits - student_logits.detach())).sum(-1)
 
         # Apply ignore_index mask
         if target is not None:
