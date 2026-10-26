@@ -1,3 +1,5 @@
+import math
+
 from typing import Optional
 
 import torch
@@ -6,12 +8,6 @@ import triton.language as tl
 
 from packaging.version import Version
 
-# Trigger declaration of the ``jsd_loss_and_grad`` op location so the
-# dispatcher knows where to discover the Triton + cuTile impls. Without this
-# import the first dispatch call would return "no impl registered".
-import liger_kernel.functional  # noqa: F401
-
-from liger_kernel.backends import dispatch
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import element_mul_kernel
@@ -106,7 +102,16 @@ def _project_to_float32(inputs, weight):
 # on B300).
 _CHUNK_MEM_CONST_B200 = 8
 _CHUNK_MEM_CONST_B300 = 16
-_FORWARD_KL_BLOCK_SIZE = 4096
+_JSD_BLOCK_SIZE = 4096
+
+
+@triton.jit
+def _load_logits(s_ptr, t_ptr, start, n_cols, BLOCK_SIZE: tl.constexpr):
+    offsets = start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_cols
+    zs = tl.load(s_ptr + offsets, mask=mask, other=float("-inf"))
+    zt = tl.load(t_ptr + offsets, mask=mask, other=float("-inf"))
+    return offsets, mask, zs, zt
 
 
 @triton.jit
@@ -126,20 +131,30 @@ def _online_max_count_others(m, n, o, x, mask):
 
 @triton.jit
 def _logit_gap(zs, zt, s_max, t_max):
-    # log(q / p) up to a per-row constant: (zs - s_max) - (zt - t_max), carrying the exact rounding error of both
-    # subtractions so it keeps a small student-teacher difference as well as independent shifts of either side.
+    # (zs - s_max) - (zt - t_max), carrying the exact rounding error of both subtractions so it keeps a small
+    # student-teacher difference as well as independent shifts of either side
     delta = zs - zt
     delta_err = tl.where(tl.abs(zs) >= tl.abs(zt), (zs - delta) - zt, zs - (delta + zt))
     shift = s_max - t_max
     shift_err = tl.where(tl.abs(s_max) >= tl.abs(t_max), (s_max - shift) - t_max, s_max - (shift + t_max))
     gap = (delta - shift) + (delta_err - shift_err)
     is_inf = (zs == float("-inf")) | (zt == float("-inf"))
-    # masked entries: -inf or +inf from one side, 0 when both are masked out
     return tl.where(is_inf, tl.where(zs == zt, 0.0, zs - zt), gap)
 
 
 @triton.jit
-def _forward_kl_kernel(
+def _log_mixture_ratio(log_ratio, log_w, log_w_other):
+    # log(a / m) for m = w * b + (1 - w) * a, from log_ratio = log(a / b): -log1p(w * expm1(-log_ratio)) near 0,
+    # else -logaddexp(log(1 - w), log(w) - log_ratio)
+    near = -log1p(tl.exp(log_w) * expm1(tl.minimum(tl.maximum(-log_ratio, -0.5), 0.5)))
+    b = log_w - log_ratio
+    top = tl.maximum(log_w_other, b)
+    far = -top - tl.log(tl.exp(log_w_other - top) + tl.exp(b - top))
+    return tl.where(tl.abs(log_ratio) <= 0.5, near, far)
+
+
+@triton.jit
+def _jsd_kernel(
     s_ptr,  # student logits, overwritten with the gradient
     t_ptr,  # teacher logits
     s_stride,
@@ -148,13 +163,16 @@ def _forward_kl_kernel(
     label_ptr,
     n_non_ignore,
     n_cols,
+    log_beta,
+    log1m_beta,
     ignore_index: tl.constexpr,
+    MODE: tl.constexpr,  # 0: forward KL(p || q), 1: reverse KL(q || p), 2: generalized JSD
     HAS_LABEL: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    # KL(p || q) with p = softmax(teacher), q = softmax(student). Its gradient q - p is computed from the logit gap
-    # (arXiv 2610.31642, Eq. 9) rather than by subtracting two rounded probabilities, so it stays accurate as the
-    # student approaches the teacher and is exactly 0 when they match.
+    # p = softmax(teacher), q = softmax(student). Everything is computed from the logit gap log(q / p) instead of
+    # from rounded probabilities (arXiv 2610.31642, Eq. 9), so gradients stay accurate as the student approaches the
+    # teacher and are exactly 0 when they match.
     row = tl.program_id(0).to(tl.int64)
     s_ptr += row * s_stride
     t_ptr += row * t_stride
@@ -173,25 +191,22 @@ def _forward_kl_kernel(
     t_m = float("-inf")
     t_n = 0.0
     t_o = 0.0
+    t_at_s_max = 0.0
     for start in range(0, n_cols, BLOCK_SIZE):
-        offsets = start + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_cols
-        zs = tl.load(s_ptr + offsets, mask=mask, other=float("-inf"))
-        zt = tl.load(t_ptr + offsets, mask=mask, other=float("-inf"))
+        offsets, mask, zs, zt = _load_logits(s_ptr, t_ptr, start, n_cols, BLOCK_SIZE)
+        block_argmax = tl.argmax(zs, axis=0)
+        block_t = tl.sum(tl.where(tl.arange(0, BLOCK_SIZE) == block_argmax, zt, 0.0), axis=0)
+        t_at_s_max = tl.where(tl.max(zs, axis=0) > s_m, block_t, t_at_s_max)
         s_m, s_n, s_o = _online_max_count_others(s_m, s_n, s_o, zs, mask)
         t_m, t_n, t_o = _online_max_count_others(t_m, t_n, t_o, zt, mask)
     s_log_z = tl.where(s_n == 1.0, log1p(s_o), tl.log(s_n + s_o))
     t_log_z = tl.where(t_n == 1.0, log1p(t_o), tl.log(t_n + t_o))
 
-    # mean gap under p, and the range of the gaps p puts mass on
     mean_gap = 0.0
     gap_max = float("-inf")
     gap_min = float("inf")
     for start in range(0, n_cols, BLOCK_SIZE):
-        offsets = start + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_cols
-        zs = tl.load(s_ptr + offsets, mask=mask, other=float("-inf"))
-        zt = tl.load(t_ptr + offsets, mask=mask, other=float("-inf"))
+        offsets, mask, zs, zt = _load_logits(s_ptr, t_ptr, start, n_cols, BLOCK_SIZE)
         p = tl.exp((zt - t_m) - t_log_z)
         gap = _logit_gap(zs, zt, s_m, t_m)
         has_p = mask & (p > 0.0)
@@ -199,36 +214,59 @@ def _forward_kl_kernel(
         gap_max = tl.maximum(gap_max, tl.max(tl.where(has_p, gap, float("-inf")), axis=0))
         gap_min = tl.minimum(gap_min, tl.min(tl.where(has_p, gap, float("inf")), axis=0))
 
-    # log(q / p) = gap - log_ratio. Near the teacher, log_ratio = mean_gap + log1p(sum p expm1(gap - mean_gap)) keeps
-    # its small part; elsewhere the two normalizers are far enough apart to subtract.
+    # log(q / p) = gap - log_z_ratio. Near the teacher, log_z_ratio = mean_gap + log1p(sum p expm1(gap - mean_gap))
+    # keeps its small part; elsewhere the two normalizers are far enough apart to subtract.
     if (gap_max - mean_gap <= 0.5) & (mean_gap - gap_min <= 0.5):
         excess = 0.0
         for start in range(0, n_cols, BLOCK_SIZE):
-            offsets = start + tl.arange(0, BLOCK_SIZE)
-            mask = offsets < n_cols
-            zs = tl.load(s_ptr + offsets, mask=mask, other=float("-inf"))
-            zt = tl.load(t_ptr + offsets, mask=mask, other=float("-inf"))
+            offsets, mask, zs, zt = _load_logits(s_ptr, t_ptr, start, n_cols, BLOCK_SIZE)
             p = tl.exp((zt - t_m) - t_log_z)
             d = tl.minimum(_logit_gap(zs, zt, s_m, t_m) - mean_gap, 0.5)
             excess += tl.sum(tl.where(mask & (p > 0.0), p * expm1(d), 0.0), axis=0)
         loss = log1p(excess)
-        log_ratio = mean_gap + loss
+        log_z_ratio = mean_gap + loss
     else:
-        log_ratio = s_log_z - t_log_z
-        loss = log_ratio - mean_gap
+        log_z_ratio = s_log_z - t_log_z
+        loss = log_z_ratio - mean_gap
+
+    # Reverse KL and JSD: the gradient is w * q * (h - E_q[h]) for h = log(q / p) or log(q / m). Shifting h by its
+    # value at the student's argmax keeps E_q[h] from cancelling at a dominant token (as in unslothai/unsloth-zoo#2079).
+    anchor = _logit_gap(s_m, t_at_s_max, s_m, t_m) - log_z_ratio
+    if MODE == 2:
+        anchor = _log_mixture_ratio(anchor, log_beta, log1m_beta)
+    centered_mean = 0.0
+    if MODE != 0:
+        loss = 0.0
+        for start in range(0, n_cols, BLOCK_SIZE):
+            offsets, mask, zs, zt = _load_logits(s_ptr, t_ptr, start, n_cols, BLOCK_SIZE)
+            q = tl.exp((zs - s_m) - s_log_z)
+            log_q_p = _logit_gap(zs, zt, s_m, t_m) - log_z_ratio
+            has_q = mask & (q > 0.0)
+            if MODE == 1:
+                h = log_q_p
+                loss += tl.sum(tl.where(has_q, q * h, 0.0), axis=0)
+            else:
+                p = tl.exp((zt - t_m) - t_log_z)
+                h = _log_mixture_ratio(log_q_p, log_beta, log1m_beta)
+                log_p_m = _log_mixture_ratio(-log_q_p, log1m_beta, log_beta)
+                loss += tl.exp(log1m_beta) * tl.sum(tl.where(has_q, q * h, 0.0), axis=0)
+                loss += tl.exp(log_beta) * tl.sum(tl.where(mask & (p > 0.0), p * log_p_m, 0.0), axis=0)
+            centered_mean += tl.sum(tl.where(has_q, q * (h - anchor), 0.0), axis=0)
     scale = 1.0 / n_non_ignore
     tl.store(loss_ptr + row, loss * scale)
 
     for start in range(0, n_cols, BLOCK_SIZE):
-        offsets = start + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_cols
-        zs = tl.load(s_ptr + offsets, mask=mask, other=float("-inf"))
-        zt = tl.load(t_ptr + offsets, mask=mask, other=float("-inf"))
-        p = tl.exp((zt - t_m) - t_log_z)
+        offsets, mask, zs, zt = _load_logits(s_ptr, t_ptr, start, n_cols, BLOCK_SIZE)
         q = tl.exp((zs - s_m) - s_log_z)
-        log_q_p = _logit_gap(zs, zt, s_m, t_m) - log_ratio
-        # q - p, through expm1 of a non-positive argument on each side
-        grad = tl.where(log_q_p <= 0.0, p * expm1(tl.minimum(log_q_p, 0.0)), -q * expm1(tl.minimum(-log_q_p, 0.0)))
+        log_q_p = _logit_gap(zs, zt, s_m, t_m) - log_z_ratio
+        if MODE == 0:
+            # q - p, through expm1 of a non-positive argument on each side
+            p = tl.exp((zt - t_m) - t_log_z)
+            grad = tl.where(log_q_p <= 0.0, p * expm1(tl.minimum(log_q_p, 0.0)), -q * expm1(tl.minimum(-log_q_p, 0.0)))
+        else:
+            h = log_q_p if MODE == 1 else _log_mixture_ratio(log_q_p, log_beta, log1m_beta)
+            weight = 1.0 if MODE == 1 else tl.exp(log1m_beta)
+            grad = tl.where(mask & (q > 0.0), weight * q * ((h - anchor) - centered_mean), 0.0)
         tl.store(s_ptr + offsets, grad * scale, mask=mask)
 
 
@@ -296,6 +334,10 @@ def fused_linear_jsd_forward(
     else:
         n_non_ignore = BT
 
+    mode = 0 if jsd_beta == 0.0 else 1 if jsd_beta == 1.0 else 2
+    log_beta = math.log(jsd_beta) if mode == 2 else 0.0
+    log1m_beta = math.log1p(-jsd_beta) if mode == 2 else 0.0
+
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = min((chunk_id + 1) * chunk_size, BT)
@@ -314,77 +356,26 @@ def fused_linear_jsd_forward(
         # apply temperature
         student_logits_chunk = student_logits_chunk / temperature
         teacher_logits_chunk = teacher_logits_chunk / temperature
-        chunk_labels = shift_labels[start_idx:end_idx] if has_label else None
-        if jsd_beta == 0.0:
-            # Forward KL is a soft-target cross-entropy; its kernel writes the gradient over the student logits.
-            n_rows = end_idx - start_idx
-            loss_chunk = torch.empty(n_rows, dtype=torch.float32, device=device)
-            _forward_kl_kernel[(n_rows,)](
-                student_logits_chunk,
-                teacher_logits_chunk,
-                student_logits_chunk.stride(0),
-                teacher_logits_chunk.stride(0),
-                loss_chunk,
-                chunk_labels if has_label else loss_chunk,
-                n_non_ignore,
-                V,
-                ignore_index=ignore_index,
-                HAS_LABEL=has_label,
-                BLOCK_SIZE=min(_FORWARD_KL_BLOCK_SIZE, triton.next_power_of_2(V)),
-                num_warps=16 if not is_hip() else 8,
-            )
-            total_loss = total_loss + loss_chunk.sum()
-        else:
-            student_prob_chunk = torch.log_softmax(student_logits_chunk, dim=-1)
-            teacher_prob_chunk = torch.log_softmax(teacher_logits_chunk, dim=-1)
-
-            # Optimization #3: pre-compute softmax(logits) BEFORE the JSD kernel
-            # launch so CUDA can overlap it with the kernel's startup. We need
-            # softmax(student_logits) in the dx reduction below; computing it
-            # eagerly here unblocks the launch pipeline.
-            softmax_s_chunk = torch.softmax(student_logits_chunk, dim=-1)
-
-            # ensure _input and target are contiguous
-            student_prob_chunk = student_prob_chunk.contiguous()
-            teacher_prob_chunk = teacher_prob_chunk.contiguous()
-
-            # Compute the per-chunk loss + dx through the dispatcher so cuTile is
-            # picked up when the user sets ``impl="nvidia-cutile"``. The dispatched
-            # primitive writes the per-row loss tile into a (chunk_n_rows, V) buffer
-            # and returns ``dx`` — either an in-place overwrite of ``student_prob_chunk``
-            # (Triton) or a freshly allocated tensor (cuTile). We rebind so the rest
-            # of the function sees the gradient regardless of which impl ran.
-            jsd_args = (
-                student_prob_chunk,
-                teacher_prob_chunk,
-                chunk_labels,
-                float(jsd_beta),
-                int(ignore_index),
-                float(n_non_ignore),
-            )
-            loss_chunk, student_prob_chunk = dispatch(
-                "jsd_loss_and_grad",
-                *jsd_args,
-                impl=jsd_impl,
-                mode=jsd_mode,
-            )
-            # Accumulate this chunk's loss into the scalar; the (chunk_size, V)
-            # ``loss_chunk`` tensor is freed at the end of this iteration.
-            total_loss = total_loss + loss_chunk.sum()
-            # ``student_prob_chunk`` now holds dx (per-element). Continue the
-            # logits-side reduction using the pre-computed softmax.
-            student_max_prob, student_argmax = softmax_s_chunk.max(dim=-1, keepdim=True)
-            student_logits_chunk = student_prob_chunk - softmax_s_chunk * student_prob_chunk.sum(
-                dim=-1, keepdim=True
-            ).broadcast_to(student_prob_chunk.shape)
-            # At a dominant argmax the subtraction cancels to 0 once softmax rounds to 1 (arXiv 2610.31642). The
-            # gradient sums to 0, so take it as minus the sum over the other entries, which don't cancel. Below 1/2
-            # nothing collapses and this would only pull the others' rounding error into the argmax.
-            argmax_grad = student_logits_chunk.gather(-1, student_argmax)
-            others_grad = student_logits_chunk.sum(dim=-1, keepdim=True) - argmax_grad
-            student_logits_chunk.scatter_(
-                -1, student_argmax, torch.where(student_max_prob > 0.5, -others_grad, argmax_grad)
-            )
+        n_rows = end_idx - start_idx
+        loss_chunk = torch.empty(n_rows, dtype=torch.float32, device=device)
+        _jsd_kernel[(n_rows,)](
+            student_logits_chunk,
+            teacher_logits_chunk,
+            student_logits_chunk.stride(0),
+            teacher_logits_chunk.stride(0),
+            loss_chunk,
+            shift_labels[start_idx:end_idx] if has_label else loss_chunk,
+            n_non_ignore,
+            V,
+            log_beta,
+            log1m_beta,
+            ignore_index=ignore_index,
+            MODE=mode,
+            HAS_LABEL=has_label,
+            BLOCK_SIZE=min(_JSD_BLOCK_SIZE, triton.next_power_of_2(V)),
+            num_warps=16 if not is_hip() else 8,
+        )
+        total_loss = total_loss + loss_chunk.sum()
         student_logits_chunk = student_logits_chunk / temperature
         # now we traverse back to grad w.r.t. input to `lm_head` and grad
         # w.r.t. `lm_head` which should be computed in original dtype
