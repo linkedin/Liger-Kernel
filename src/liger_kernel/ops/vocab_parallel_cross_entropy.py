@@ -67,6 +67,7 @@ def liger_vocab_parallel_ce_forward_kernel(
     n_cols,  # V_local
     ignore_index,  # int — target value that means "skip this position"
     BLOCK_SIZE: tl.constexpr,
+    HAS_LABEL_SMOOTHING: tl.constexpr = False,
 ):
     """Per-token forward stats. One program per row.
 
@@ -79,15 +80,23 @@ def liger_vocab_parallel_ce_forward_kernel(
     EXP_ptr += program_id * EXP_stride
 
     y_global = tl.load(Y_ptr + program_id)
+    if y_global == ignore_index:
+        tl.store(pred_ptr + program_id, 0.0)
+        tl.store(sum_exp_ptr + program_id, 1.0)
+        if HAS_LABEL_SMOOTHING:
+            for i in range(0, n_cols, BLOCK_SIZE):
+                X_offsets = i + tl.arange(0, BLOCK_SIZE)
+                tl.store(EXP_ptr + X_offsets, 1.0, mask=X_offsets < n_cols)
+        return
+
     m = tl.load(logits_max_ptr + program_id).cast(tl.float32)
 
-    is_ignored = y_global == ignore_index
     target_off_rank = (y_global < vocab_start) | (y_global >= vocab_start + n_cols)
     y_local = y_global - vocab_start  # only used when on-rank
 
     # Predicted logit — shifted by the global max. Off-rank / ignored positions
     # store 0; the AllReduce(SUM) gathers the one nonzero contribution.
-    if is_ignored or target_off_rank:
+    if target_off_rank:
         pred_local = 0.0
     else:
         pred_local = tl.load(X_ptr + y_local).cast(tl.float32) - m
@@ -270,6 +279,7 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
             n_cols=v_local,
             ignore_index=ignore_index,
             BLOCK_SIZE=block_size,
+            HAS_LABEL_SMOOTHING=label_smoothing > 0,
             num_warps=num_warps,
         )
 
