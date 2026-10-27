@@ -1906,6 +1906,10 @@ def run_mini_model_multimodal(
                     reason="Qwen3-VL-MoE not available in this version of transformers",
                 ),
                 pytest.mark.skipif(
+                    version.parse(transformers.__version__) < version.parse("5.1.0"),
+                    reason="Qwen3VLMoeTextConfig lacks a pad_token_id default before transformers 5.1.0",
+                ),
+                pytest.mark.skipif(
                     not is_torchvision_available(),
                     reason="Qwen3VLVideoProcessor requires torchvision",
                 ),
@@ -2041,7 +2045,7 @@ def run_mini_model_multimodal(
             torch.float32,
             1e-7,
             5e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
-            5e-2,
+            2e-1,  # logprobs_atol: bumped from 5e-2 for fp32 top-k near-tie slot swaps
             2e-1,  # LigerExperts fused MoE kernel needs higher logprobs rtol
             5e-3,
             1e-5,

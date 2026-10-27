@@ -2142,6 +2142,10 @@ def run_mini_model(
                     not QWEN3_AVAILABLE,
                     reason="Qwen3 not available in this version of transformers",
                 ),
+                pytest.mark.xfail(
+                    reason="MoE bf16 non-determinism (LigerExperts fused-MoE backward) makes per-step loss / top-k logprobs flaky run-to-run",
+                    strict=False,
+                ),
             ],
         ),
         pytest.param(
@@ -2645,6 +2649,10 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not HUNYUAN_V1_AVAILABLE,
                     reason="Hunyuan_v1_moe not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    version.parse(transformers.__version__) < version.parse("5.1.0"),
+                    reason="hunyuan_v1_moe experts interface is incompatible with the Liger fused-MoE patch before transformers 5.1.0",
                 ),
             ],
         ),

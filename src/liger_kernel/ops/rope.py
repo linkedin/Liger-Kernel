@@ -116,7 +116,23 @@ def _triton_rope(
         tl.store(k_ptr + second_half_k_offsets, new_k_tile_2, mask=second_k_mask)
 
 
-def rope_forward(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+def _resolve_rotary_dim(cos, head_dim, rotary_dim):
+    # By default the rotary width is the width of cos/sin, which holds for the duplicated
+    # `cat(freqs, freqs)` layout (Llama, partial RoPE). A caller whose cos/sin are not duplicated
+    # (GPT-OSS: width == rotary_dim / 2) has to pass the rotary width explicitly.
+    if rotary_dim is None:
+        return min(cos.shape[-1], head_dim)
+    if rotary_dim % 2 != 0 or not 0 < rotary_dim <= head_dim:
+        raise ValueError(f"rotary_dim must be even and in (0, head_dim={head_dim}]; got {rotary_dim}")
+    if cos.shape[-1] < rotary_dim // 2:
+        raise ValueError(
+            f"cos/sin need at least rotary_dim / 2 = {rotary_dim // 2} entries in the last dimension; "
+            f"got {cos.shape[-1]}"
+        )
+    return rotary_dim
+
+
+def rope_forward(q, k, cos, sin, position_ids=None, unsqueeze_dim=1, rotary_dim=None):
     # Support 2D, 3D, and 4D cos/sin shapes
     if cos.ndim == 4:
         if cos.shape[unsqueeze_dim] == 1:
@@ -139,7 +155,7 @@ def rope_forward(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
     batch_size, seq_len, n_q_head, head_dim = q.shape
     n_kv_head = k.shape[2]
-    rotary_dim = min(cos.shape[-1], head_dim)
+    rotary_dim = _resolve_rotary_dim(cos, head_dim, rotary_dim)
 
     pad_hd = triton.next_power_of_2(head_dim)
     pad_rd = triton.next_power_of_2(rotary_dim)
@@ -182,7 +198,7 @@ def rope_forward(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     return q.transpose(1, 2), k.transpose(1, 2), cos, sin
 
 
-def rope_backward(dq, dk, cos, sin, position_ids=None, unsqueeze_dim=1):
+def rope_backward(dq, dk, cos, sin, position_ids=None, unsqueeze_dim=1, rotary_dim=None):
     if cos.ndim == 4:
         if cos.shape[unsqueeze_dim] == 1:
             cos = cos.squeeze(unsqueeze_dim)
@@ -203,7 +219,7 @@ def rope_backward(dq, dk, cos, sin, position_ids=None, unsqueeze_dim=1):
     batch_size, seq_len, n_q_head, head_dim = dq.shape
     cos_batch_size = cos.shape[0]
     n_kv_head = dk.shape[2]
-    rotary_dim = min(cos.shape[-1], head_dim)
+    rotary_dim = _resolve_rotary_dim(cos, head_dim, rotary_dim)
 
     pad_hd = triton.next_power_of_2(head_dim)
     pad_rd = triton.next_power_of_2(rotary_dim)
@@ -260,15 +276,18 @@ class LigerRopeFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    def forward(ctx, q, k, cos, sin, position_ids=None, unsqueeze_dim=1, rotary_dim=None):
         """
         q size: (bsz, n_q_head, seq_len, head_dim)
         k size: (bsz, n_kv_head, seq_len, head_dim)
         cos size: (1, seq_len, rotary_dim), (bsz, seq_len, rotary_dim), or (seq_len, rotary_dim)
         sin size: (1, seq_len, rotary_dim), (bsz, seq_len, rotary_dim), or (seq_len, rotary_dim)
+        rotary_dim: how many leading entries of each head are rotated. Defaults to the width of
+            cos/sin. Pass it when cos/sin are not duplicated, i.e. have width rotary_dim / 2.
         """
-        q, k, cos, sin = rope_forward(q, k, cos, sin, position_ids, unsqueeze_dim)
+        q, k, cos, sin = rope_forward(q, k, cos, sin, position_ids, unsqueeze_dim, rotary_dim)
         ctx.save_for_backward(cos, sin)
+        ctx.rotary_dim = rotary_dim
         return q, k
 
     @staticmethod
@@ -281,5 +300,5 @@ class LigerRopeFunction(torch.autograd.Function):
         """
 
         cos, sin = ctx.saved_tensors
-        dq, dk = rope_backward(dq, dk, cos, sin)
-        return dq, dk, None, None, None, None
+        dq, dk = rope_backward(dq, dk, cos, sin, rotary_dim=ctx.rotary_dim)
+        return dq, dk, None, None, None, None, None

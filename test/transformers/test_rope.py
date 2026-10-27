@@ -9,6 +9,8 @@ from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 from liger_kernel.ops import LigerRopeFunction
 from liger_kernel.transformers.functional import liger_rope
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
+from liger_kernel.transformers.rope import liger_rotary_pos_emb_gpt_oss
+from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.utils import infer_device
 from liger_kernel.utils import transformers_version_dispatch
 
@@ -335,3 +337,284 @@ def test_partial_rope_transformers_correctness(
 
     assert torch.allclose(q1_grad, q2_grad, atol=atol, rtol=rtol)
     assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, num_q_heads, num_kv_heads, head_dim",
+    [
+        (1, 128, 8, 8, 64),
+        (2, 128, 8, 2, 64),
+        (2, 64, 16, 4, 128),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_gpt_oss_rope_matches_hf(bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol):
+    # GPT-OSS's rotary embedding returns cos/sin of width head_dim / 2 while its
+    # apply_rotary_pos_emb rotates the whole head. Inferring the rotary width from
+    # cos/sin would read that as partial RoPE over the first half of each head.
+    modeling_gpt_oss = pytest.importorskip("transformers.models.gpt_oss.modeling_gpt_oss")
+    from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
+
+    config = GptOssConfig(
+        hidden_size=num_q_heads * head_dim,
+        head_dim=head_dim,
+        num_attention_heads=num_q_heads,
+        num_key_value_heads=num_kv_heads,
+    )
+    rotary_emb = modeling_gpt_oss.GptOssRotaryEmbedding(config).to(device)
+
+    q = torch.randn((bsz, num_q_heads, seq_len, head_dim), device=device, dtype=dtype)
+    k = torch.randn((bsz, num_kv_heads, seq_len, head_dim), device=device, dtype=dtype)
+    q1, k1 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
+    q2, k2 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
+
+    pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0).expand(bsz, -1)
+    cos, sin = rotary_emb(k1, pos_ids)
+    assert cos.shape[-1] == head_dim // 2
+
+    hf_q, hf_k = modeling_gpt_oss.apply_rotary_pos_emb(q1, k1, cos, sin)
+    tt_q, tt_k = liger_rotary_pos_emb_gpt_oss(q2, k2, cos, sin)
+    assert torch.allclose(hf_q, tt_q, atol=atol, rtol=rtol)
+    assert torch.allclose(hf_k, tt_k, atol=atol, rtol=rtol)
+
+    # Both outputs come from one autograd node, so they are backpropagated together.
+    dq, dk = torch.randn_like(hf_q, dtype=dtype), torch.randn_like(hf_k, dtype=dtype)
+    dq_clone, dk_clone = dq.clone(), dk.clone()
+    torch.autograd.backward((hf_q, hf_k), (dq, dk))
+    torch.autograd.backward((tt_q, tt_k), (dq_clone, dk_clone))
+    assert torch.allclose(q1.grad, q2.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(k1.grad, k2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, num_q_heads, num_kv_heads, head_dim, partial_rotary_factor",
+    [
+        # Qwen3.5 default: 25% partial RoPE (matches Qwen3.5-7B / 27B config)
+        (2, 128, 16, 8, 128, 0.25),
+        # 50% partial, as some smaller Qwen3.5 variants may configure
+        (1, 64, 8, 4, 64, 0.5),
+        # GQA with 25% partial
+        (2, 256, 32, 8, 128, 0.25),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        (torch.float16, 1e-2, 1e-5),
+    ],
+)
+def test_qwen3_5_rope_matches_hf(
+    bsz,
+    seq_len,
+    num_q_heads,
+    num_kv_heads,
+    head_dim,
+    partial_rotary_factor,
+    dtype,
+    atol,
+    rtol,
+):
+    """Regression test: liger_rotary_pos_emb must match HF apply_rotary_pos_emb for Qwen3.5.
+
+    Qwen3.5 uses partial RoPE (partial_rotary_factor=0.25 by default) with the
+    *duplicated* cat(freqs, freqs) cos/sin convention. After PR #1451, the kernel
+    infers rotary_dim = min(cos.shape[-1], head_dim) which correctly identifies
+    the rotary slice. This test guards against regressions similar to #1512
+    (where GPT-OSS's half-width cos/sin was misidentified as partial RoPE).
+    """
+    modeling_qwen3_5 = pytest.importorskip("transformers.models.qwen3_5.modeling_qwen3_5")
+
+    from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+
+    torch.manual_seed(42)
+
+    # Build a minimal Qwen3.5 text config mirroring the real model's rope convention
+    config = Qwen3_5TextConfig(
+        hidden_size=num_q_heads * head_dim,
+        num_attention_heads=num_q_heads,
+        num_key_value_heads=num_kv_heads,
+        head_dim=head_dim,
+        num_hidden_layers=1,
+        rope_parameters={
+            "rope_type": "default",
+            "rope_theta": 10000.0,
+            "partial_rotary_factor": partial_rotary_factor,
+            "mrope_section": [11, 11, 10],
+        },
+    )
+    rotary_emb = modeling_qwen3_5.Qwen3_5TextRotaryEmbedding(config).to(device)
+
+    _q = torch.randn((bsz, num_q_heads, seq_len, head_dim), device=device, dtype=dtype)
+    _k = torch.randn((bsz, num_kv_heads, seq_len, head_dim), device=device, dtype=dtype)
+
+    q1 = _q.clone().requires_grad_(True)
+    k1 = _k.clone().requires_grad_(True)
+    q2 = _q.clone().requires_grad_(True)
+    k2 = _k.clone().requires_grad_(True)
+
+    # Qwen3.5 uses 3-component position_ids [T, H, W], expand to (3, bsz, seq_len)
+    base_pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0).expand(bsz, -1)
+    pos_ids = base_pos_ids.unsqueeze(0).expand(3, -1, -1)
+
+    with torch.no_grad():
+        cos, sin = rotary_emb(k1, pos_ids)
+
+    # Verify cos/sin are full-width (duplicated): cos.shape[-1] == rotary_dim
+    rotary_dim = int(head_dim * partial_rotary_factor)
+    assert cos.shape[-1] == rotary_dim, (
+        f"Expected cos.shape[-1] == {rotary_dim}, got {cos.shape[-1]}. "
+        "The rotary_emb recompose_frequencies step must be producing cat(freqs, freqs)."
+    )
+
+    # HF reference
+    hf_q, hf_k = modeling_qwen3_5.apply_rotary_pos_emb(q1, k1, cos, sin)
+    # Liger kernel — no explicit rotary_dim needed; inference from cos.shape[-1] is correct
+    tt_q, tt_k = liger_rotary_pos_emb(q2, k2, cos, sin)
+
+    assert torch.allclose(hf_q, tt_q, atol=atol, rtol=rtol), (
+        f"Forward q mismatch: max_err={(hf_q - tt_q).abs().max().item():.3e}"
+    )
+    assert torch.allclose(hf_k, tt_k, atol=atol, rtol=rtol), (
+        f"Forward k mismatch: max_err={(hf_k - tt_k).abs().max().item():.3e}"
+    )
+
+    # Backward pass
+    dq = torch.randn_like(hf_q)
+    dk = torch.randn_like(hf_k)
+
+    q1_grad, k1_grad = torch.autograd.grad((hf_q, hf_k), (q1, k1), (dq, dk), allow_unused=True)
+    q2_grad, k2_grad = torch.autograd.grad((tt_q, tt_k), (q2, k2), (dq.clone(), dk.clone()), allow_unused=True)
+
+    assert torch.allclose(q1_grad, q2_grad, atol=atol, rtol=rtol), (
+        f"Backward dq mismatch: max_err={(q1_grad - q2_grad).abs().max().item():.3e}"
+    )
+    assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol), (
+        f"Backward dk mismatch: max_err={(k1_grad - k2_grad).abs().max().item():.3e}"
+    )
+
+
+@pytest.mark.parametrize(
+    "seq_len, num_heads, head_dim",
+    [
+        (128, 16, 72),  # Qwen3.5 vision default: hidden_size=1152, num_heads=16, head_dim=72
+        (256, 16, 72),
+        (512, 16, 64),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        (torch.float16, 1e-2, 1e-5),
+    ],
+)
+def _get_qwen3_5_vision_cos_sin(modeling_qwen3_5, num_heads, head_dim, seq_len, pos_ids, dtype):
+    """Build (cos, sin) for Qwen3.5 vision RoPE, adapting to the transformers version.
+
+    API history:
+      < 5.17  Qwen3_5VisionRotaryEmbedding(dim: int); forward(seqlen: int) → raw freqs tensor
+              The vision model passes (head_dim // 2) as dim; forward returns a (seqlen, head_dim//4)
+              lookup table that the model then indexes by (h, w) position and duplicates.
+      >= 5.17 Qwen3_5VisionRotaryEmbedding(config);   forward(x, pos_ids) → (cos, sin)
+
+    Uses transformers_version_dispatch for construction (consistent with the rest of this
+    module), then applies the matching forward convention.
+    """
+    from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
+
+    vision_config = Qwen3_5VisionConfig(
+        hidden_size=num_heads * head_dim,
+        num_heads=num_heads,
+        rope_parameters={"rope_type": "axial", "rope_theta": 10000.0},
+    )
+
+    def _old_cos_sin():
+        # < 5.17: integer dim constructor + seqlen-integer forward
+        rotary_emb = modeling_qwen3_5.Qwen3_5VisionRotaryEmbedding(head_dim // 2).to(pos_ids.device)
+        freq_table = rotary_emb(seq_len)  # (seq_len, head_dim // 4)
+        h_ids, w_ids = pos_ids[:, 0], pos_ids[:, 1]
+        freqs_hw = torch.cat([freq_table[h_ids], freq_table[w_ids]], dim=-1)  # (seq_len, head_dim // 2)
+        emb = torch.cat([freqs_hw, freqs_hw], dim=-1)  # (seq_len, head_dim)
+        return emb.cos().to(dtype), emb.sin().to(dtype)
+
+    def _new_cos_sin():
+        # >= 5.17: config constructor + (x, pos_ids) forward → (cos, sin)
+        rotary_emb = modeling_qwen3_5.Qwen3_5VisionRotaryEmbedding(vision_config).to(pos_ids.device)
+        # forward only needs x for its device; shape doesn't matter
+        dummy_x = pos_ids.new_zeros(1)
+        cos, sin = rotary_emb(dummy_x, pos_ids)
+        return cos.to(dtype), sin.to(dtype)
+
+    with torch.no_grad():
+        return transformers_version_dispatch("5.17.0", _old_cos_sin, _new_cos_sin)
+
+
+def test_qwen3_5_vision_rope_matches_hf(seq_len, num_heads, head_dim, dtype, atol, rtol):
+    """Regression test: liger_rotary_pos_emb_vision matches Qwen3.5 vision RoPE.
+
+    Qwen3_5VisionRotaryEmbedding changed constructor/forward signatures in transformers 5.17.
+    _get_qwen3_5_vision_cos_sin() abstracts the version difference via
+    transformers_version_dispatch, consistent with the rest of this test module.
+    """
+    modeling_qwen3_5 = pytest.importorskip("transformers.models.qwen3_5.modeling_qwen3_5")
+
+    torch.manual_seed(42)
+
+    # Qwen3.5 vision input shapes: q, k are (seq_len, num_heads, head_dim)
+    q = torch.randn((seq_len, num_heads, head_dim), device=device, dtype=dtype)
+    k = torch.randn((seq_len, num_heads, head_dim), device=device, dtype=dtype)
+
+    # Position ids: (seq_len, 2) — h-coord and w-coord for each token
+    pos_ids = torch.stack([torch.arange(seq_len, device=device), torch.arange(seq_len, device=device)], dim=-1)
+
+    cos, sin = _get_qwen3_5_vision_cos_sin(modeling_qwen3_5, num_heads, head_dim, seq_len, pos_ids, dtype)
+
+    q1, k1 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
+    q2, k2 = q.clone().requires_grad_(True), k.clone().requires_grad_(True)
+
+    hf_q, hf_k = modeling_qwen3_5.apply_rotary_pos_emb_vision(q1, k1, cos, sin)
+    tt_q, tt_k = liger_rotary_pos_emb_vision(q2, k2, cos, sin)
+
+    assert torch.allclose(hf_q, tt_q, atol=atol, rtol=rtol), (
+        f"Vision forward q mismatch: max_err={(hf_q - tt_q).abs().max().item():.3e}"
+    )
+    assert torch.allclose(hf_k, tt_k, atol=atol, rtol=rtol), (
+        f"Vision forward k mismatch: max_err={(hf_k - tt_k).abs().max().item():.3e}"
+    )
+
+    dq = torch.randn_like(hf_q)
+    dk = torch.randn_like(hf_k)
+
+    q1_grad, k1_grad = torch.autograd.grad((hf_q, hf_k), (q1, k1), (dq, dk), allow_unused=True)
+    q2_grad, k2_grad = torch.autograd.grad((tt_q, tt_k), (q2, k2), (dq.clone(), dk.clone()), allow_unused=True)
+
+    assert torch.allclose(q1_grad, q2_grad, atol=atol, rtol=rtol), (
+        f"Vision backward dq mismatch: max_err={(q1_grad - q2_grad).abs().max().item():.3e}"
+    )
+    assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol), (
+        f"Vision backward dk mismatch: max_err={(k1_grad - k2_grad).abs().max().item():.3e}"
+    )

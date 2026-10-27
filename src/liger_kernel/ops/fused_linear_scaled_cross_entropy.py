@@ -33,6 +33,29 @@ def _validate_temperature(temperature):
         raise ValueError("temperature must be finite and > 0")
 
 
+def _validate_selected_token_ids(selected_token_ids, weight):
+    if selected_token_ids is None:
+        return None
+    if not isinstance(selected_token_ids, torch.Tensor):
+        raise TypeError("selected_token_ids must be an int64 tensor")
+    if selected_token_ids.ndim != 1:
+        raise ValueError("selected_token_ids must have shape [K]")
+    if selected_token_ids.dtype != torch.int64:
+        raise TypeError("selected_token_ids must be an int64 tensor")
+    if selected_token_ids.device != weight.device:
+        raise ValueError("selected_token_ids and weight must be on the same device")
+    if bool(((selected_token_ids < 0) | (selected_token_ids >= weight.shape[0])).any()):
+        raise ValueError(f"selected_token_ids must be in [0, {weight.shape[0]})")
+    return selected_token_ids.contiguous()
+
+
+def _scaled_ce_outputs(nll, entropy, selected_log_probs):
+    outputs = (nll,) if entropy is None else (nll, entropy)
+    if selected_log_probs is not None:
+        outputs += (selected_log_probs,)
+    return outputs[0] if len(outputs) == 1 else outputs
+
+
 def _validate_fallback_inputs(_input, weight, target, ignore_index):
     if _input.ndim != 2 or weight.ndim != 2 or target.ndim != 1:
         raise ValueError("expected input[M,H], weight[V,H], and target[M]")
@@ -216,7 +239,7 @@ def _apply_tp_fallback(_input, weight, target, temperature, ignore_index, return
     )
 
 
-def _fallback_forward_chunk(hidden_states, vocab_weights, input_ids, valid, temperature):
+def _fallback_forward_chunk(hidden_states, vocab_weights, input_ids, valid, temperature, selected_token_ids=None):
     logits = (hidden_states @ vocab_weights.t()) / temperature
     output_dtype = logits.dtype
     logits = logits.to(torch.float32)
@@ -226,10 +249,14 @@ def _fallback_forward_chunk(hidden_states, vocab_weights, input_ids, valid, temp
     log_probs = logits.log_softmax(dim=-1)
     token_log_probs = log_probs.gather(-1, input_ids.unsqueeze(-1)).squeeze(-1)
 
-    return (
+    outputs = (
         torch.where(valid, -token_log_probs, torch.zeros_like(token_log_probs)),
         torch.where(valid, entropy, torch.zeros_like(entropy)).to(output_dtype),
     )
+    if selected_token_ids is not None:
+        selected = log_probs.index_select(1, selected_token_ids).masked_fill(~valid[:, None], 0.0)
+        outputs += (selected,)
+    return outputs
 
 
 def _fallback_backward_chunk(
@@ -240,6 +267,8 @@ def _fallback_backward_chunk(
     input_ids,
     valid,
     temperature,
+    selected_token_ids=None,
+    grad_selected=None,
 ):
     logits = (hidden_states @ vocab_weights.t()) / temperature
     output_dtype = logits.dtype
@@ -258,43 +287,58 @@ def _fallback_backward_chunk(
         entropy = torch.logsumexp(logits, dim=-1) - torch.sum(probs * logits, dim=-1)
         grad_logits.add_(probs * (log_probs + entropy.unsqueeze(-1)) * (-grad_entropy.unsqueeze(-1)))
 
+    if grad_selected is not None:
+        selected_grad = grad_selected.float().masked_fill(~valid[:, None], 0.0)
+        grad_logits.sub_(probs * selected_grad.sum(-1, keepdim=True))
+        grad_logits.scatter_add_(1, selected_token_ids.expand(hidden_states.shape[0], -1), selected_grad)
+
     grad_logits = grad_logits.to(output_dtype) / temperature
     return grad_logits @ vocab_weights, grad_logits.t() @ hidden_states
 
 
 class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, hidden_states, vocab_weights, input_ids, temperature, ignore_index, return_entropy):
+    def forward(
+        ctx, hidden_states, vocab_weights, input_ids, temperature, ignore_index, return_entropy, selected_token_ids=None
+    ):
         ctx.set_materialize_grads(False)
         _validate_fallback_inputs(hidden_states, vocab_weights, input_ids, ignore_index)
         _validate_temperature(temperature)
+        selected_token_ids = _validate_selected_token_ids(selected_token_ids, vocab_weights)
 
         valid = input_ids != ignore_index
         safe_input_ids = input_ids.masked_fill(~valid, 0)
         token_count = hidden_states.shape[0]
         nll = torch.empty(token_count, device=hidden_states.device, dtype=torch.float32)
         entropy = hidden_states.new_empty(token_count) if return_entropy else None
+        selected = nll.new_empty(token_count, selected_token_ids.numel()) if selected_token_ids is not None else None
 
         for start in range(0, token_count, _FALLBACK_CHUNK_SIZE):
             end = min(start + _FALLBACK_CHUNK_SIZE, token_count)
-            chunk_nll, chunk_entropy = _fallback_forward_chunk(
+            chunk_outputs = _fallback_forward_chunk(
                 hidden_states[start:end],
                 vocab_weights,
                 safe_input_ids[start:end],
                 valid[start:end],
                 temperature,
+                selected_token_ids,
             )
-            nll[start:end] = chunk_nll
+            nll[start:end] = chunk_outputs[0]
             if return_entropy:
-                entropy[start:end] = chunk_entropy
+                entropy[start:end] = chunk_outputs[1]
+            if selected is not None:
+                selected[start:end] = chunk_outputs[2]
 
-        ctx.save_for_backward(hidden_states, vocab_weights, safe_input_ids, valid)
+        ctx.save_for_backward(hidden_states, vocab_weights, safe_input_ids, valid, selected_token_ids)
         ctx.temperature = temperature
-        return (nll, entropy) if return_entropy else nll
+        ctx.return_entropy = return_entropy
+        return _scaled_ce_outputs(nll, entropy, selected)
 
     @staticmethod
-    def backward(ctx, grad_nll, grad_entropy=None):
-        hidden_states, vocab_weights, input_ids, valid = ctx.saved_tensors
+    def backward(ctx, grad_nll, grad_entropy=None, grad_selected=None):
+        hidden_states, vocab_weights, input_ids, valid, selected_token_ids = ctx.saved_tensors
+        if not ctx.return_entropy:
+            grad_selected, grad_entropy = grad_entropy, None
         grad_hidden_states = torch.zeros_like(hidden_states) if ctx.needs_input_grad[0] else None
         grad_vocab_weights = torch.zeros_like(vocab_weights) if ctx.needs_input_grad[1] else None
 
@@ -308,13 +352,15 @@ class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
                 input_ids[start:end],
                 valid[start:end],
                 ctx.temperature,
+                selected_token_ids,
+                grad_selected[start:end] if grad_selected is not None else None,
             )
             if grad_hidden_states is not None:
                 grad_hidden_states[start:end].add_(chunk_grad_hidden)
             if grad_vocab_weights is not None:
                 grad_vocab_weights.add_(chunk_grad_weight)
 
-        return grad_hidden_states, grad_vocab_weights, None, None, None, None
+        return grad_hidden_states, grad_vocab_weights, None, None, None, None, None
 
 
 def _resolve_implementation(device):
@@ -328,7 +374,12 @@ def _resolve_implementation(device):
 
 
 class LigerFusedLinearScaledCrossEntropyFunction:
-    """Dispatch fused scaled cross entropy to the implementation for ``input.device``."""
+    """Per-token NLL and optional entropy, dispatched by input device.
+
+    Supplying int64 ``selected_token_ids[K]`` appends FP32 full-vocabulary
+    log-probabilities ``[M,K]`` to the outputs. Ignored rows are zero; ID order
+    and duplicates are preserved. All floating-point outputs are differentiable.
+    """
 
     @staticmethod
     def apply(
@@ -339,6 +390,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
         ignore_index=-100,
         m_tiles_per_cluster=1,
         return_entropy=False,
+        selected_token_ids=None,
     ):
         if not isinstance(m_tiles_per_cluster, int) or isinstance(m_tiles_per_cluster, bool):
             raise TypeError("m_tiles_per_cluster must be an int")
@@ -348,6 +400,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
             raise TypeError("return_entropy must be a bool")
 
         implementation = _resolve_implementation(_input.device)
+        selected_args = (selected_token_ids,) if selected_token_ids is not None else ()
         if implementation is _FusedLinearPPOFallbackFunction:
             return implementation.apply(
                 _input,
@@ -356,6 +409,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
                 temperature,
                 ignore_index,
                 return_entropy,
+                *selected_args,
             )
         return implementation.apply(
             _input,
@@ -365,6 +419,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
             ignore_index,
             m_tiles_per_cluster,
             return_entropy,
+            *selected_args,
         )
 
 

@@ -49,6 +49,7 @@ from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import 
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import _pad_hidden
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_utils_sm90 import _validate
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_selected_token_ids
 
 THREADS_PER_CTA = 384
 PRODUCER_WARP_GROUP = 0
@@ -95,6 +96,7 @@ class ScaledCEForwardFragmentConfig:
     extra_m_pairs: int = 0
     target_cluster_pairs: int = 0
     max_split_n: int = 9
+    num_selected: int = 0
 
     def smem_bytes(self):
         return SHARED_MEMORY_BYTES_BASE + (TILE_M if self.return_entropy else 1) * 4
@@ -107,6 +109,7 @@ class _ScaledCEForwardFragmentSM90:
     def __init__(self, config: ScaledCEForwardFragmentConfig):
         self.fast_math = config.fast_math
         self.return_entropy = config.return_entropy
+        self.num_selected = config.num_selected
         self.split_n = config.split_n
         self.base_split_n = config.base_split_n
         self.extra_m_pairs = config.extra_m_pairs
@@ -144,6 +147,8 @@ class _ScaledCEForwardFragmentSM90:
         partial_sum: cute.Tensor,
         partial_target: cute.Tensor,
         partial_weighted: cute.Tensor,
+        selected_token_ids: cute.Tensor,
+        selected_log_probs: cute.Tensor,
         inverse_temperature: Float32,
         stream: cuda.CUstream,
     ):
@@ -223,6 +228,8 @@ class _ScaledCEForwardFragmentSM90:
             partial_sum,
             partial_target,
             partial_weighted,
+            selected_token_ids,
+            selected_log_probs,
             inverse_temperature,
             tiled_mma,
             a_smem_layout,
@@ -269,6 +276,9 @@ class _ScaledCEForwardFragmentSM90:
         run_sum: Float32,
         run_target: Float32,
         run_weighted: Float32,
+        selected_token_ids: cute.Tensor,
+        selected_log_probs: cute.Tensor,
+        selected_row: Int32,
     ):
         segment_n = EPILOGUE_SLICE_N // 2
         segment_base = segment * segment_n
@@ -326,6 +336,14 @@ class _ScaledCEForwardFragmentSM90:
         target_end = target_begin + segment_n
         if target_col >= target_begin and target_col < target_end:
             run_target += Float32(s_logits[buffer, row, target_col - slice_global_base]) * inverse_temperature
+        if cutlass.const_expr(self.num_selected > 0):
+            if selected_row >= 0:
+                for k in cutlass.range_constexpr(self.num_selected):
+                    col = Int32(selected_token_ids[k])
+                    if col >= target_begin and col < target_end:
+                        selected_log_probs[selected_row, k] = (
+                            Float32(s_logits[buffer, row, col - slice_global_base]) * inverse_temperature
+                        )
         return run_max, run_sum, run_target, run_weighted
 
     @cute.kernel
@@ -340,6 +358,8 @@ class _ScaledCEForwardFragmentSM90:
         output_partial_sum: cute.Tensor,
         output_partial_target: cute.Tensor,
         output_partial_weighted: cute.Tensor,
+        selected_token_ids: cute.Tensor,
+        selected_log_probs: cute.Tensor,
         inverse_temperature: Float32,
         tiled_mma: cute.TiledMma,
         a_smem_layout: cute.ComposedLayout,
@@ -528,8 +548,10 @@ class _ScaledCEForwardFragmentSM90:
             epi_segment = local_tid // 64
             global_row = raw_pid_m * TILE_M + epi_row
             target_col = Int32(-1)
+            selected_row = Int32(-1)
             if store_enabled and global_row < target.shape[0]:
                 target_col = Int32(target[global_row])
+                selected_row = global_row
 
             run_max = Float32(NEG_INF_F32)
             run_sum = Float32(0.0)
@@ -636,6 +658,9 @@ class _ScaledCEForwardFragmentSM90:
                     run_sum,
                     run_target,
                     run_weighted,
+                    selected_token_ids,
+                    selected_log_probs,
+                    selected_row,
                 )
                 self.epilogue_barrier.arrive_and_wait()
                 self._stage_slice(accum1, s_logits, Int32(0), row_base, col_base, Int32(0))
@@ -652,6 +677,9 @@ class _ScaledCEForwardFragmentSM90:
                     run_sum,
                     run_target,
                     run_weighted,
+                    selected_token_ids,
+                    selected_log_probs,
+                    selected_row,
                 )
                 self.epilogue_barrier.arrive_and_wait()
                 self._stage_slice(
@@ -675,6 +703,9 @@ class _ScaledCEForwardFragmentSM90:
                     run_sum,
                     run_target,
                     run_weighted,
+                    selected_token_ids,
+                    selected_log_probs,
+                    selected_row,
                 )
                 self.epilogue_barrier.arrive_and_wait()
                 run_max, run_sum, run_target, run_weighted = self._fold_slice(
@@ -690,6 +721,9 @@ class _ScaledCEForwardFragmentSM90:
                     run_sum,
                     run_target,
                     run_weighted,
+                    selected_token_ids,
+                    selected_log_probs,
+                    selected_row,
                 )
                 self.epilogue_barrier.arrive_and_wait()
 
@@ -733,12 +767,13 @@ class _ScaledCEForwardFragmentSM90:
 class _ScaledCEForwardFragmentFinalizeSM90:
     """Combine split vocabulary statistics into final NLL/LSE/entropy."""
 
-    def __init__(self, split_n, base_split_n, extra_m_pairs, fast_math, return_entropy):
+    def __init__(self, split_n, base_split_n, extra_m_pairs, fast_math, return_entropy, num_selected=0):
         self.split_n = split_n
         self.base_split_n = base_split_n
         self.extra_m_pairs = extra_m_pairs
         self.fast_math = fast_math
         self.return_entropy = return_entropy
+        self.num_selected = num_selected
 
     @cute.jit
     def __call__(
@@ -751,6 +786,7 @@ class _ScaledCEForwardFragmentFinalizeSM90:
         lse: cute.Tensor,
         token_loss: cute.Tensor,
         entropy: cute.Tensor,
+        selected_log_probs: cute.Tensor,
         ignore_index: Int32,
         stream: cuda.CUstream,
     ):
@@ -764,6 +800,7 @@ class _ScaledCEForwardFragmentFinalizeSM90:
             lse,
             token_loss,
             entropy,
+            selected_log_probs,
             ignore_index,
         ).launch(
             grid=(num_m_tiles, 1, 1),
@@ -783,6 +820,7 @@ class _ScaledCEForwardFragmentFinalizeSM90:
         lse: cute.Tensor,
         token_loss: cute.Tensor,
         entropy: cute.Tensor,
+        selected_log_probs: cute.Tensor,
         ignore_index: Int32,
     ):
         tid, _, _ = cute.arch.thread_idx()
@@ -828,10 +866,14 @@ class _ScaledCEForwardFragmentFinalizeSM90:
                 token_loss[row] = Float32(0.0)
                 if cutlass.const_expr(self.return_entropy):
                     entropy[row] = BFloat16(0.0)
+                for k in cutlass.range_constexpr(self.num_selected):
+                    selected_log_probs[row, k] = Float32(0.0)
             else:
                 token_loss[row] = row_lse - row_target
                 if cutlass.const_expr(self.return_entropy):
                     entropy[row] = BFloat16(row_lse - row_weighted / row_sum)
+                for k in cutlass.range_constexpr(self.num_selected):
+                    selected_log_probs[row, k] = selected_log_probs[row, k] - row_lse
 
 
 def _resolve_split(config, tokens, vocab_size):
@@ -868,13 +910,18 @@ def scaled_ce_forward_fragment(
     ignore_index=-100,
     return_entropy=False,
     config: ScaledCEForwardFragmentConfig = None,
+    selected_token_ids=None,
 ):
     """Run the fixed two-N160/four-N80 fragment forward."""
     _validate(_input, weight, target)
+    selected_token_ids = _validate_selected_token_ids(selected_token_ids, weight)
+    num_selected = selected_token_ids.numel() if selected_token_ids is not None else 0
     if config is None:
         config = ScaledCEForwardFragmentConfig()
     if config.return_entropy != return_entropy:
         config = replace(config, return_entropy=return_entropy)
+    if config.num_selected != num_selected:
+        config = replace(config, num_selected=num_selected)
     if min(config.split_n, config.base_split_n, config.extra_m_pairs, config.target_cluster_pairs) < 0:
         raise ValueError("split and cluster tuning values must be non-negative")
     if config.max_split_n < 1:
@@ -926,6 +973,7 @@ def scaled_ce_forward_fragment(
     )
     lse = torch.empty(tokens, device=_input.device, dtype=torch.float32)
     token_loss = torch.empty(tokens, device=_input.device, dtype=torch.float32)
+    selected = token_loss.new_empty(tokens, num_selected) if selected_token_ids is not None else None
     entropy = torch.empty(
         tokens if return_entropy else 1,
         device=_input.device,
@@ -946,6 +994,10 @@ def scaled_ce_forward_fragment(
     lse_cute = to_cute_tensor(lse, assumed_align=4)
     token_loss_cute = to_cute_tensor(token_loss, assumed_align=4)
     entropy_cute = to_cute_tensor(entropy, assumed_align=2)
+    selected_ids_cute = to_cute_tensor(selected_token_ids if num_selected else target, assumed_align=8)
+    selected_cute = to_cute_tensor(
+        selected if num_selected else token_loss.view(tokens, 1), leading_dim=1, assumed_align=4
+    )
     stream = _cute_stream()
     inverse_temperature = Float32(1.0 / temperature)
 
@@ -961,6 +1013,8 @@ def scaled_ce_forward_fragment(
             partial_sum_cute,
             partial_target_cute,
             partial_weighted_cute,
+            selected_ids_cute,
+            selected_cute,
             inverse_temperature,
             stream,
         )
@@ -973,6 +1027,8 @@ def scaled_ce_forward_fragment(
         partial_sum_cute,
         partial_target_cute,
         partial_weighted_cute,
+        selected_ids_cute,
+        selected_cute,
         inverse_temperature,
         stream,
     )
@@ -984,6 +1040,7 @@ def scaled_ce_forward_fragment(
         extra_m_pairs,
         config.fast_math,
         config.return_entropy,
+        num_selected,
     )
     finalize = _compile_cache.get(finalize_key)
     if finalize is None:
@@ -994,6 +1051,7 @@ def scaled_ce_forward_fragment(
                 extra_m_pairs,
                 config.fast_math,
                 config.return_entropy,
+                num_selected,
             ),
             partial_max_cute,
             partial_sum_cute,
@@ -1003,6 +1061,7 @@ def scaled_ce_forward_fragment(
             lse_cute,
             token_loss_cute,
             entropy_cute,
+            selected_cute,
             Int32(ignore_index),
             stream,
         )
@@ -1016,7 +1075,9 @@ def scaled_ce_forward_fragment(
         lse_cute,
         token_loss_cute,
         entropy_cute,
+        selected_cute,
         Int32(ignore_index),
         stream,
     )
-    return token_loss, entropy if return_entropy else None, lse
+    outputs = (token_loss, entropy if return_entropy else None, lse)
+    return outputs + (selected,) if selected is not None else outputs
