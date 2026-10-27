@@ -129,6 +129,11 @@ def jsd_loss_and_grad_triton(
     BLOCK_SIZE = min(_JSD_TRITON_BLOCK_SIZE, _next_pow2(V))
     has_label = shift_labels is not None
 
+    # NOTE: this must be a standalone contiguous buffer, *not* a view into a caller-owned
+    # loss tensor. `torch.compile` functionalizes the kernel's mutation by cloning the pointer
+    # argument via `clone_preserve_strides`, which clones `storage_offset + numel` elements out
+    # of a buffer Inductor may have sized to the view alone -- an out-of-bounds read whose
+    # garbage survives into the loss on rows where the kernel returns early (ignore_index).
     loss = torch.zeros((BT, V), dtype=torch.float32, device=student_prob.device)
     label_arg = shift_labels if has_label else torch.empty(1, device=student_prob.device)
 
