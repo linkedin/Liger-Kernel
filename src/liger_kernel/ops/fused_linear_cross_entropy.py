@@ -1,3 +1,5 @@
+import os
+
 import torch
 import triton
 
@@ -25,6 +27,16 @@ MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 65536 // 2
 # approximately BT x H elements regardless of vocabulary size. Integrations
 # with stricter reduction-order requirements may explicitly request more.
 _CHUNK_MEM_CONST = 1
+# The budget is C x BT x H, so the transient [chunk_size, V] logits slab grows
+# linearly with BT and on memory-tight runs can become the binding allocation
+# (measurements in #1439). LIGER_FLCE_CHUNK_SIZE sets chunk_size directly (rows;
+# floored to a power of two, clamped to BT per call), replacing the heuristic:
+# set below its choice it bounds the slab at chunk_size x V x itemsize bytes
+# independent of BT; set above, it trades a larger slab for fewer loop
+# iterations. Unset (default) leaves the geometry unchanged.
+_CHUNK_SIZE_OVERRIDE = int(os.environ.get("LIGER_FLCE_CHUNK_SIZE") or "0")
+if _CHUNK_SIZE_OVERRIDE > 0:
+    _CHUNK_SIZE_OVERRIDE = 1 << (_CHUNK_SIZE_OVERRIDE.bit_length() - 1)  # floor to a power of two
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
@@ -102,6 +114,8 @@ def fused_linear_cross_entropy_forward(
     # Bound transient logits to C x BT x H.
     inc_factor = triton.cdiv(V, chunk_mem_const * H)
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
+    if _CHUNK_SIZE_OVERRIDE > 0:
+        chunk_size = _CHUNK_SIZE_OVERRIDE  # opt-in direct control of the [chunk_size, V] slab
     chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
