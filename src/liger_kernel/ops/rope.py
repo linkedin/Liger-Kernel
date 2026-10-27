@@ -14,7 +14,13 @@ def _triton_rope(
     sin,
     sin_row_stride,
     sl,
-    bs: tl.constexpr,
+    # `bs` is unused by the kernel body and is deliberately NOT a tl.constexpr.
+    # Marking it constexpr forces Triton/Dynamo to specialize on the batch size,
+    # which fails when torch.compile makes the batch dimension dynamic: the value
+    # arrives as a SymInt and Dynamo trips an internal assertion while tracing
+    # LigerRopeFunction ("assert subgraph_vt.is_tensor() or isinstance(
+    # subgraph_vt, SymNodeVariable)" in _dynamo/variables/higher_order_ops.py).
+    bs,
     cos_bs: tl.constexpr,
     n_qh: tl.constexpr,
     n_kh: tl.constexpr,
