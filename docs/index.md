@@ -129,6 +129,9 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm
 # Then choose one:
 pip install -e .
 pip install -e ".[dev]"
+
+# Ascend NPU source installs (CANN 9.1.0)
+pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple
 ```
 
 !!! Note " Dependencies " 
@@ -144,6 +147,14 @@ pip install -e ".[dev]"
     - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
     - For ROCm source installs, install ROCm PyTorch first and then use `pip install -e .`.
     - For ROCm source development, install ROCm PyTorch first and then use `pip install -e ".[dev]"`.
+
+    #### Ascend NPU
+
+    - `torch == 2.10.0`
+    - `torch_npu == 2.10.0.post7`
+    - `torchvision == 0.25.0`
+    - `triton-ascend == 3.6.0` Install from the Ascend PyPI mirror (not on default PyPI).
+    - `CANN == 9.1.0`
 
 !!!Tip "Optional Dependencies "
 
