@@ -122,8 +122,8 @@ def _rms_norm_forward_kernel(
         # torch.compile. An fp64 scalar silently promotes mean_square, rsqrt
         # and the weight multiply to float64, roughly halving throughput.
         # Pinning to fp32 is a no-op in eager and keeps both paths identical.
-        eps = eps.to(tl.float32)
-        offset = offset.to(tl.float32)
+        eps = tl.cast(eps, tl.float32)
+        offset = tl.cast(offset, tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
     rstd = rsqrt(mean_square + eps)
@@ -302,8 +302,8 @@ def _block_rms_norm_forward_kernel(
         offset = offset.to(X_row_dtype)
     else:
         # See _rms_norm_forward_kernel: pin fp64 scalars from Inductor to fp32.
-        eps = eps.to(tl.float32)
-        offset = offset.to(tl.float32)
+        eps = tl.cast(eps, tl.float32)
+        offset = tl.cast(offset, tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=1) / n_cols
     rstd = rsqrt(mean_square + eps)
