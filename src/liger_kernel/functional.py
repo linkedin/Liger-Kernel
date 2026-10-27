@@ -630,7 +630,7 @@ def fused_linear_jsd(
     mode: Optional[str] = None,
     backend: Optional[str] = None,  # legacy back-compat alias for impl=
 ) -> torch.Tensor:
-    """Fused linear + JSD loss for RL training (GRPO).
+    """Fused linear + JSD loss for knowledge distillation.
 
     Computes the JSD loss between student and teacher logits without
     materializing the full log-softmax tensors. Matmuls use cuBLAS; the inner

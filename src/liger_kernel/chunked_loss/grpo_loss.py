@@ -367,14 +367,19 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             advantages (torch.Tensor): Advantages tensor. Shape: (batch_size,)
             bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,)
             ref_per_token_logps:  Reference model log probs per token tensor. Shape:(batch_size, seq_len)
+            old_per_token_logps (torch.Tensor, optional): Old policy log probs per token tensor, used for the
+                importance sampling ratio. Shape: (batch_size, seq_len). Defaults to the detached current log probs.
             ref_input (torch.Tensor, optional): Reference model input tensor. Shape: (batch_size * seq_len, hidden_size)
             ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             beta (float): Weight for the KL penalty
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
-                Defaults to "dapo".
+            epsilon_low (float): Lower clipping bound for the importance sampling ratio.
+            epsilon_high (float): Upper clipping bound for the importance sampling ratio.
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo",
+                "vespo"). Defaults to "dapo".
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
+                "sequence" is not supported for loss_type "cispo", "sapo" or "vespo".
             sapo_temperature_pos (float): Temperature for positive advantages in SAPO. Defaults to 1.0.
             sapo_temperature_neg (float): Temperature for negative advantages in SAPO. Defaults to 1.05.
             temperature (float): Temperature for the logits
@@ -383,6 +388,19 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             chunk_size (int): Size of chunks for processing.
             vllm_is_ratio (torch.Tensor, optional): vLLM importance sampling ratio (batch_size, seq_len) or (batch_size, 1) or None.
                 Used to correct for distribution mismatch when using vLLM for generation.
+                Applied to the policy loss BEFORE adding the KL penalty.
+            delta (float, optional): Upper clamp for two-sided clipping (INTELLECT-2). When set, coef_1 is clamped
+                to max=delta before computing the PPO loss. Only supported for standard PPO loss
+                types (grpo, bnpo, dr_grpo, dapo, luspo). None means disabled.
+            use_bias_correction_kl (bool): If True, multiply KL divergence by coef_1 (importance sampling
+                ratio) for bias-corrected KL estimation (DeepSeek-V3.2). Default False.
+            vespo_k_pos, vespo_lambda_pos, vespo_k_neg, vespo_lambda_neg (float): VESPO gamma weighting
+                hyperparameters (k for shape, lambda for rate; ``_pos`` for non-negative
+                advantages, ``_neg`` for negative). Only used when ``loss_type='vespo'``.
+            num_items_in_batch (int or torch.Tensor, optional): Total active tokens across the entire generation batch
+                (all gradient-accumulation micro-batches × all processes). When provided, dapo /
+                cispo / vespo normalization uses ``num_items_in_batch / num_processes`` to match
+                TRL's ``compute_loss``. When None, falls back to the current micro-batch's mask sum.
             off_policy_mask_threshold (float, optional): Off-Policy Sequence Masking threshold (DeepSeek-V3.2,
                 Eq. 9; TRL ``off_policy_mask_threshold``). Sequences with a negative advantage whose mean forward KL
                 between the sampling policy and the current policy exceeds this value are dropped from the policy
@@ -514,16 +532,21 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             chunk_size (int): Size of chunks for processing.
             epsilon_low (float): Lower bound for the importance sampling ratio.
             epsilon_high (float): Upper bound for the importance sampling ratio.
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
-                Defaults to "dapo". For "cispo", epsilon_high is typically larger (e.g. 5.0) and
-                epsilon_low is unused. For "sapo", uses soft gating instead of hard clipping.
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo",
+                "vespo"). Defaults to "dapo". For "cispo", epsilon_high is typically larger (e.g. 5.0) and
+                epsilon_low is unused. For "sapo", uses soft gating instead of hard clipping. For "vespo", uses a
+                detached sequence-level gamma weighting instead of clipping.
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
+                "sequence" is not supported for loss_type "cispo", "sapo" or "vespo".
             sapo_temperature_pos (float): Temperature for positive advantages in SAPO. Defaults to 1.0.
             sapo_temperature_neg (float): Temperature for negative advantages in SAPO. Defaults to 1.05.
             temperature (float): Temperature for the logits.
             delta (float, optional): Upper clamp for two-sided clipping (INTELLECT-2). None means disabled.
             use_bias_correction_kl (bool): If True, multiply KL by importance sampling ratio (DeepSeek-V3.2).
+            vespo_k_pos, vespo_lambda_pos, vespo_k_neg, vespo_lambda_neg (float): VESPO gamma weighting
+                hyperparameters (k for shape, lambda for rate; ``_pos`` for non-negative advantages,
+                ``_neg`` for negative). Only used when ``loss_type='vespo'``.
             off_policy_mask_threshold (float, optional): Off-Policy Sequence Masking threshold (DeepSeek-V3.2,
                 Eq. 9; TRL ``off_policy_mask_threshold``). When set, sequences with a negative advantage whose mean
                 forward KL between the sampling policy and the current policy exceeds this value are dropped from
