@@ -1,4 +1,5 @@
 import math
+import warnings
 
 from typing import Optional
 
@@ -501,6 +502,50 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         vllm_is_ratio=None,
         num_items_in_batch=None,
     ):
+        if _input.device.type == "npu":
+            if self.use_ref_model and ref_per_token_logps is None and ref_input is None:
+                raise AssertionError("If use_ref_model is True, ref_per_token_logps or ref_input must be provided")
+            if self.use_ref_model and ref_per_token_logps is not None and ref_input is not None:
+                warnings.warn("Both ref_per_token_logps and ref_input are provided. Using ref_per_token_logps.")
+            from liger_kernel.ops.backends._ascend.ops.fused_linear_grpo import fused_linear_grpo_forward
+
+            reduced_loss, kl_mean, clip_ratio = fused_linear_grpo_forward(
+                _input,
+                lin_weight,
+                selected_token_ids,
+                attention_mask,
+                advantages,
+                bias=bias,
+                ref_per_token_logps=ref_per_token_logps,
+                old_per_token_logps=old_per_token_logps,
+                ref_input=ref_input if self.use_ref_model else None,
+                ref_weight=ref_weight if self.use_ref_model else None,
+                ref_bias=ref_bias if self.use_ref_model else None,
+                beta=self.beta,
+                epsilon_low=self.epsilon_low,
+                epsilon_high=self.epsilon_high,
+                loss_type=self.loss_type,
+                max_completion_length=self.max_completion_length,
+                importance_sampling_level=self.importance_sampling_level,
+                sapo_temperature_pos=self.sapo_temperature_pos,
+                sapo_temperature_neg=self.sapo_temperature_neg,
+                temperature=self.temperature,
+                vllm_is_ratio=vllm_is_ratio,
+                delta=self.delta,
+                use_bias_correction_kl=self.use_bias_correction_kl,
+                num_items_in_batch=num_items_in_batch,
+                vespo_k_pos=self.vespo_k_pos,
+                vespo_lambda_pos=self.vespo_lambda_pos,
+                vespo_k_neg=self.vespo_k_neg,
+                vespo_lambda_neg=self.vespo_lambda_neg,
+                chunk_size=self.chunk_size,
+            )
+            metrics = []
+            if self.beta != 0.0 and kl_mean is not None:
+                metrics.append(kl_mean)
+            metrics.append(clip_ratio)
+            return reduced_loss, metrics
+
         return LigerFusedLinearGRPOFunction.apply(
             _input,
             lin_weight,
