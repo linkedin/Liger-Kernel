@@ -137,9 +137,10 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm
 
 #### Ascend NPU
 
-- `torch == 2.9.0`
-- `torch_npu == 2.9.0`
-- `triton-ascend == 3.2.2` Install from the Ascend PyPI mirror (not on default PyPI).
+- `torch == 2.10.0`
+- `torch_npu == 2.10.0.post7`
+- `torchvision == 0.25.0`
+- `triton-ascend == 3.6.0` Install from the Ascend PyPI mirror (not on default PyPI).
 - `CANN == 9.1.0`
 
 ```bash
@@ -206,6 +207,9 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm
 # Then choose one:
 pip install -e .
 pip install -e ".[dev]"
+
+# Ascend NPU source installs (CANN 9.1.0)
+pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple
 
 # Setup cuTile Dependencies
 pip install -e ".[cutile]"
