@@ -219,6 +219,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         vespo_k_neg=3.0,
         vespo_lambda_neg=2.0,
         num_items_in_batch=None,
+        off_policy_mask_threshold=None,
+        sampling_per_token_logps=None,
     ):
         """Chunked forward pass for PPO loss computation.
 
@@ -247,6 +249,11 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                     f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
                 )
                 vllm_is_ratio = vllm_is_ratio.unsqueeze(-1)  # (B,) -> (B, 1) for broadcasting
+        if sampling_per_token_logps is not None:
+            assert sampling_per_token_logps.shape == attention_mask.shape, (
+                f"sampling_per_token_logps shape must be {tuple(attention_mask.shape)}, "
+                f"got {tuple(sampling_per_token_logps.shape)}"
+            )
         # Initialize accumulators
         loss_acc = torch.zeros((), device=_input.device, dtype=torch.float32)
         # Determine which parameters require gradients (a frozen lm_head under LoRA/PEFT does not)
@@ -277,6 +284,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             vespo_k_neg=vespo_k_neg,
             vespo_lambda_neg=vespo_lambda_neg,
             num_items_in_batch=num_items_in_batch,
+            off_policy_mask_threshold=off_policy_mask_threshold,
         )
         compiled_compute_loss = torch.compile(compute_loss) if compiled else compute_loss
 
@@ -289,6 +297,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             old_per_token_logps_chunk,
             ref_input_chunk,
             vllm_is_ratio_chunk,
+            sampling_per_token_logps_chunk,
         ):
             """Fused forward and backward for a chunk."""
             with torch.enable_grad():
@@ -324,6 +333,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                     ref_per_token_logps_chunk=ref_per_token_logps_chunk,
                     old_per_token_logps_chunk=old_per_token_logps_chunk,
                     vllm_is_ratio_chunk=vllm_is_ratio_chunk,
+                    sampling_per_token_logps_chunk=sampling_per_token_logps_chunk,
                 )
 
                 grad_targets = [input_chunk]
@@ -343,6 +353,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             old_per_token_logps_chunk=None,
             ref_input_chunk=None,
             vllm_is_ratio_chunk=None,
+            sampling_per_token_logps_chunk=None,
         ):
             (chunk_grad_input, *chunk_grad_params), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
                 input_chunk,
@@ -353,6 +364,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 old_per_token_logps_chunk,
                 ref_input_chunk,
                 vllm_is_ratio_chunk,
+                sampling_per_token_logps_chunk,
             )
             # Accumulate gradients and loss (weight and bias gradients follow the input's, in that order,
             # for whichever of them require grad)
@@ -402,6 +414,11 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         _vllm_is_ratio_chunks = (
             torch.chunk(vllm_is_ratio, chunks=chunks, dim=0) if vllm_is_ratio is not None else [None] * chunks
         )
+        _sampling_per_token_logps_chunks = (
+            torch.chunk(sampling_per_token_logps, chunks=chunks, dim=0)
+            if sampling_per_token_logps is not None
+            else [None] * chunks
+        )
 
         for (
             input_chunk,
@@ -412,6 +429,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             old_per_token_logps_chunk,
             ref_input_chunk,
             vllm_is_ratio_chunk,
+            sampling_per_token_logps_chunk,
         ) in zip(
             _input_chunks,
             _selected_token_ids_chunks,
@@ -421,6 +439,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             _old_per_token_logps_chunks,
             _ref_input_chunks,
             _vllm_is_ratio_chunks,
+            _sampling_per_token_logps_chunks,
         ):
             # Allow torch.compile to generalize sequence length without forcing it to be dynamic.
             _maybe_mark_dynamic_dim1(input_chunk)
@@ -430,6 +449,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             _maybe_mark_dynamic_dim1(ref_input_chunk)
             _maybe_mark_dynamic_dim1(old_per_token_logps_chunk)
             _maybe_mark_dynamic_dim1(vllm_is_ratio_chunk)
+            _maybe_mark_dynamic_dim1(sampling_per_token_logps_chunk)
 
             accumulate_chunk(
                 input_chunk,
@@ -440,6 +460,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 old_per_token_logps_chunk,
                 ref_input_chunk,
                 vllm_is_ratio_chunk,
+                sampling_per_token_logps_chunk,
             )
 
         # Combine gradients
@@ -503,6 +524,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         ref_per_token_logps_chunk=None,
         old_per_token_logps_chunk=None,
         vllm_is_ratio_chunk=None,
+        sampling_per_token_logps_chunk=None,
         full_attention_mask=None,
         epsilon_low=0.2,
         epsilon_high=0.2,
@@ -520,6 +542,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         vespo_k_neg=3.0,
         vespo_lambda_neg=2.0,
         num_items_in_batch=None,
+        off_policy_mask_threshold=None,
     ):
         """Compute loss from pre-computed logprobs. This is the torch.compile-friendly part."""
         chunk_loss, chunk_metrics = ppo_loss_fn(
@@ -545,6 +568,10 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             vespo_k_neg=vespo_k_neg,
             vespo_lambda_neg=vespo_lambda_neg,
             num_items_in_batch=num_items_in_batch,
+            off_policy_mask_threshold=off_policy_mask_threshold,
+            sampling_per_token_logps=(
+                sampling_per_token_logps_chunk.float() if sampling_per_token_logps_chunk is not None else None
+            ),
         )
         return chunk_loss, chunk_metrics
 
@@ -580,6 +607,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             if grad_bias is not None:
                 grad_bias = grad_bias * grad_output
 
+        # One entry per non-ctx argument of LigerFusedLinearPPOBase.forward, in order.
         return (
             grad_input,
             grad_weight,
@@ -607,5 +635,11 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_vllm_is_ratio
             None,  # grad_delta
             None,  # grad_use_bias_correction_kl
+            None,  # grad_vespo_k_pos
+            None,  # grad_vespo_lambda_pos
+            None,  # grad_vespo_k_neg
+            None,  # grad_vespo_lambda_neg
             None,  # grad_num_items_in_batch
+            None,  # grad_off_policy_mask_threshold
+            None,  # grad_sampling_per_token_logps
         )
