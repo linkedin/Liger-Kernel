@@ -56,6 +56,17 @@ def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dty
     _test_liger_group_norm((batch_size, num_channels, hidden_size), num_channels, num_groups, dtype, atol, rtol)
 
 
+def test_liger_group_norm_2d_input():
+    # nn.GroupNorm accepts a bare (N, C) tensor; the kernel already handles it.
+    _test_liger_group_norm((2, 8), 8, 2, torch.float32, 1e-4, 1e-4)
+
+
+def test_liger_group_norm_extra_repr():
+    module = LigerGroupNorm(8, 2)
+    assert "num_channels=8" in repr(module)
+    assert "num_groups=2" in repr(module)
+
+
 @pytest.mark.parametrize(
     "shape, num_channels, num_groups",
     [
