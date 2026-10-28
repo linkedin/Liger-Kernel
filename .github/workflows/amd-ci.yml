@@ -33,7 +33,7 @@ jobs:
         rocm-smi
         python -m pip install --upgrade pip
         pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm${{ matrix.rocm_version }}
-        pip install -e ".[dev]"
+        pip install -e ".[dev,triton]"
     
     - name: List Python Environments
       run: python -m pip list

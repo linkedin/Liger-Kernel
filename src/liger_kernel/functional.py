@@ -81,13 +81,14 @@ declare_op_locations(
     ),
 )
 
-# SwiGLU: Triton (universal) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
+# SwiGLU: Triton (universal), CuTe DSL (Hopper+), and Ascend Triton / TileLang.
 declare_op_locations(
     "swiglu",
     (
         "liger_kernel.ops.backends._triton.swiglu",
         "liger_kernel.ops.backends._cutedsl.swiglu",
         "liger_kernel.ops.backends._ascend.swiglu",
+        "liger_kernel.ops.tilelang.ascend.swiglu",
     ),
 )
 

@@ -14,9 +14,9 @@ This module provides two ways to import operators:
    This always uses the default implementation (no auto-replacement).
 
 The replacement mechanism:
-1. Default implementations are imported from individual modules (e.g., geglu.py)
-2. On module load, device is detected via infer_device() and the env var
-   LIGER_KERNEL_IMPL is read
+1. Default implementations are imported on demand from individual modules (e.g., geglu.py)
+2. On the first public operator request, device is detected via infer_device() and
+   the env var LIGER_KERNEL_IMPL is read
 3. select_impl() picks an active implementation (auto-applied for the device,
    or explicitly requested via env var)
 4. If one is selected, its operators replace/extend the symbols here
@@ -24,101 +24,115 @@ The replacement mechanism:
 
 Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import ...)
       are NOT affected by the replacement mechanism.
+      TileLang does not fall back; unsupported operators raise when called.
 """
 
-# =============================================================================
-# Import default implementations
-# Both Function classes and kernel functions are imported here.
-# All of these can be replaced by backend-specific implementations.
-# =============================================================================
+import importlib
+import importlib.util
+import os
+import threading as _threading
 
-from liger_kernel.ops.attn_res import LigerAttnResFunction  # noqa: F401
-from liger_kernel.ops.attn_res import attn_res_backward  # noqa: F401
-from liger_kernel.ops.attn_res import attn_res_forward  # noqa: F401
-from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction  # noqa: F401
-from liger_kernel.ops.cross_entropy import cross_entropy_backward  # noqa: F401
-from liger_kernel.ops.cross_entropy import cross_entropy_forward  # noqa: F401
-from liger_kernel.ops.dyt import LigerDyTFunction  # noqa: F401
-from liger_kernel.ops.experimental.embedding import LigerEmbeddingFunction  # noqa: F401
-from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction  # noqa: F401
-from liger_kernel.ops.fused_add_rms_norm import fused_add_rms_norm_backward  # noqa: F401
-from liger_kernel.ops.fused_add_rms_norm import fused_add_rms_norm_forward  # noqa: F401
-from liger_kernel.ops.fused_ce_tvd import LigerFusedCETVDFunction  # noqa: F401
-from liger_kernel.ops.fused_ce_tvd import fused_ce_tvd_backward  # noqa: F401
-from liger_kernel.ops.fused_ce_tvd import fused_ce_tvd_forward  # noqa: F401
-from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction  # noqa: F401
-from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_backward  # noqa: F401
-from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward  # noqa: F401
-from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction  # noqa: F401
-from liger_kernel.ops.fused_linear_jsd import fused_linear_jsd_backward  # noqa: F401
-from liger_kernel.ops.fused_linear_jsd import fused_linear_jsd_forward  # noqa: F401
-from liger_kernel.ops.fused_linear_kl_div import LigerFusedLinearKLDivFunction  # noqa: F401
-from liger_kernel.ops.fused_linear_kl_div import fused_linear_kl_div_backward  # noqa: F401
-from liger_kernel.ops.fused_linear_kl_div import fused_linear_kl_div_forward  # noqa: F401
-from liger_kernel.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearScaledCrossEntropyFunction  # noqa: F401
-from liger_kernel.ops.fused_linear_scaled_cross_entropy import (
-    LigerFusedLinearScaledCrossEntropyTPFunction,  # noqa: F401
-)
-from liger_kernel.ops.fused_linear_score_centering import ISCorrection  # noqa: F401
-from liger_kernel.ops.fused_linear_score_centering import LigerFusedLinearScoreCenteringFunction  # noqa: F401
-from liger_kernel.ops.fused_linear_score_centering import fused_linear_score_centering  # noqa: F401
-from liger_kernel.ops.fused_moe import LigerFusedMoEFunction  # noqa: F401
-from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction  # noqa: F401
-from liger_kernel.ops.geglu import LigerGELUMulFunction  # noqa: F401
-from liger_kernel.ops.geglu import geglu_backward  # noqa: F401
-from liger_kernel.ops.geglu import geglu_forward  # noqa: F401
-from liger_kernel.ops.group_norm import LigerGroupNormFunction  # noqa: F401
-from liger_kernel.ops.group_norm import group_norm_backward  # noqa: F401
-from liger_kernel.ops.group_norm import group_norm_forward  # noqa: F401
-from liger_kernel.ops.grpo_loss import GrpoLossFunction  # noqa: F401
-from liger_kernel.ops.jsd import LigerJSDFunction  # noqa: F401
-from liger_kernel.ops.jsd import jsd_backward  # noqa: F401
-from liger_kernel.ops.jsd import jsd_forward  # noqa: F401
-from liger_kernel.ops.kl_div import LigerKLDivLossFunction  # noqa: F401
-from liger_kernel.ops.layer_norm import LigerLayerNormFunction  # noqa: F401
-from liger_kernel.ops.layer_norm import layer_norm_backward  # noqa: F401
-from liger_kernel.ops.layer_norm import layer_norm_forward  # noqa: F401
-from liger_kernel.ops.llama4_rope import LigerLlama4RopeFunction  # noqa: F401
-from liger_kernel.ops.mhc import LigerMHCCoeffsFunction  # noqa: F401
-from liger_kernel.ops.mhc import LigerMHCPostResFunction  # noqa: F401
-from liger_kernel.ops.mhc import LigerMHCPreFunction  # noqa: F401
-from liger_kernel.ops.mlp import LigerMLPFunction  # noqa: F401
-from liger_kernel.ops.modulated_rms_norm import LigerModulatedRMSNormFunction  # noqa: F401
-from liger_kernel.ops.modulated_rms_norm import modulated_rms_norm_backward  # noqa: F401
-from liger_kernel.ops.modulated_rms_norm import modulated_rms_norm_forward  # noqa: F401
-from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunction  # noqa: F401
-from liger_kernel.ops.poly_norm import LigerPolyNormFunction  # noqa: F401
-from liger_kernel.ops.poly_norm import poly_norm_backward  # noqa: F401
-from liger_kernel.ops.poly_norm import poly_norm_forward  # noqa: F401
-from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction  # noqa: F401
-from liger_kernel.ops.relu_squared import LigerReLUSquaredFunction  # noqa: F401
-from liger_kernel.ops.relu_squared import relu_squared_backward  # noqa: F401
-from liger_kernel.ops.relu_squared import relu_squared_forward  # noqa: F401
-from liger_kernel.ops.rms_norm import LigerRMSNormFunction  # noqa: F401
-from liger_kernel.ops.rms_norm import rms_norm_backward  # noqa: F401
-from liger_kernel.ops.rms_norm import rms_norm_forward  # noqa: F401
-from liger_kernel.ops.rope import LigerRopeFunction  # noqa: F401
-from liger_kernel.ops.rope import rope_backward  # noqa: F401
-from liger_kernel.ops.rope import rope_forward  # noqa: F401
-from liger_kernel.ops.softmax import LigerSoftmaxFunction  # noqa: F401
-from liger_kernel.ops.sparsemax import LigerSparsemaxFunction  # noqa: F401
-from liger_kernel.ops.swiglu import LigerFusedGateUpSiLUMulFunction  # noqa: F401
-from liger_kernel.ops.swiglu import LigerSiLUMulFunction  # noqa: F401
-from liger_kernel.ops.swiglu import swiglu_backward  # noqa: F401
-from liger_kernel.ops.swiglu import swiglu_forward  # noqa: F401
-from liger_kernel.ops.tiled_mlp import LigerTiledMLPFunction  # noqa: F401
-from liger_kernel.ops.tiled_mlp import apply_tiled_mlp  # noqa: F401
-from liger_kernel.ops.tvd import LigerTVDLossFunction  # noqa: F401
-from liger_kernel.ops.vocab_parallel_cross_entropy import LigerVocabParallelCEFunction  # noqa: F401
+from types import ModuleType as _ModuleType
 
-# NOTE: __all__ is intentionally NOT defined.
-# - Import from this package (liger_kernel.ops) -> subject to backend replacement
-# - Import from submodules (liger_kernel.ops.geglu) -> always use default implementation
+# Preserve the public names without importing their default Triton modules.
+_DEFAULT_EXPORTS = {
+    "LigerAttnResFunction": "attn_res",
+    "attn_res_backward": "attn_res",
+    "attn_res_forward": "attn_res",
+    "LigerCrossEntropyFunction": "cross_entropy",
+    "cross_entropy_backward": "cross_entropy",
+    "cross_entropy_forward": "cross_entropy",
+    "LigerDyTFunction": "dyt",
+    "LigerEmbeddingFunction": "experimental.embedding",
+    "LigerFusedAddRMSNormFunction": "fused_add_rms_norm",
+    "fused_add_rms_norm_backward": "fused_add_rms_norm",
+    "fused_add_rms_norm_forward": "fused_add_rms_norm",
+    "LigerFusedCETVDFunction": "fused_ce_tvd",
+    "fused_ce_tvd_backward": "fused_ce_tvd",
+    "fused_ce_tvd_forward": "fused_ce_tvd",
+    "LigerFusedLinearCrossEntropyFunction": "fused_linear_cross_entropy",
+    "fused_linear_cross_entropy_backward": "fused_linear_cross_entropy",
+    "fused_linear_cross_entropy_forward": "fused_linear_cross_entropy",
+    "LigerFusedLinearJSDFunction": "fused_linear_jsd",
+    "fused_linear_jsd_backward": "fused_linear_jsd",
+    "fused_linear_jsd_forward": "fused_linear_jsd",
+    "LigerFusedLinearKLDivFunction": "fused_linear_kl_div",
+    "fused_linear_kl_div_backward": "fused_linear_kl_div",
+    "fused_linear_kl_div_forward": "fused_linear_kl_div",
+    "LigerFusedLinearScaledCrossEntropyFunction": "fused_linear_scaled_cross_entropy",
+    "LigerFusedLinearScaledCrossEntropyTPFunction": "fused_linear_scaled_cross_entropy",
+    "ISCorrection": "fused_linear_score_centering",
+    "LigerFusedLinearScoreCenteringFunction": "fused_linear_score_centering",
+    "fused_linear_score_centering": "fused_linear_score_centering",
+    "LigerFusedMoEFunction": "fused_moe",
+    "LigerFusedNeighborhoodAttentionFunction": "fused_neighborhood_attention",
+    "LigerGELUMulFunction": "geglu",
+    "geglu_backward": "geglu",
+    "geglu_forward": "geglu",
+    "LigerGroupNormFunction": "group_norm",
+    "group_norm_backward": "group_norm",
+    "group_norm_forward": "group_norm",
+    "GrpoLossFunction": "grpo_loss",
+    "LigerJSDFunction": "jsd",
+    "jsd_backward": "jsd",
+    "jsd_forward": "jsd",
+    "LigerKLDivLossFunction": "kl_div",
+    "LigerLayerNormFunction": "layer_norm",
+    "layer_norm_backward": "layer_norm",
+    "layer_norm_forward": "layer_norm",
+    "LigerLlama4RopeFunction": "llama4_rope",
+    "LigerMHCCoeffsFunction": "mhc",
+    "LigerMHCPostResFunction": "mhc",
+    "LigerMHCPreFunction": "mhc",
+    "LigerMLPFunction": "mlp",
+    "LigerModulatedRMSNormFunction": "modulated_rms_norm",
+    "modulated_rms_norm_backward": "modulated_rms_norm",
+    "modulated_rms_norm_forward": "modulated_rms_norm",
+    "LigerMultiTokenAttentionFunction": "multi_token_attention",
+    "LigerPolyNormFunction": "poly_norm",
+    "poly_norm_backward": "poly_norm",
+    "poly_norm_forward": "poly_norm",
+    "LigerQwen2VLMRopeFunction": "qwen2vl_mrope",
+    "LigerReLUSquaredFunction": "relu_squared",
+    "relu_squared_backward": "relu_squared",
+    "relu_squared_forward": "relu_squared",
+    "LigerRMSNormFunction": "rms_norm",
+    "rms_norm_backward": "rms_norm",
+    "rms_norm_forward": "rms_norm",
+    "LigerRopeFunction": "rope",
+    "rope_backward": "rope",
+    "rope_forward": "rope",
+    "LigerSoftmaxFunction": "softmax",
+    "LigerSparsemaxFunction": "sparsemax",
+    "LigerFusedGateUpSiLUMulFunction": "swiglu",
+    "LigerSiLUMulFunction": "swiglu",
+    "swiglu_backward": "swiglu",
+    "swiglu_forward": "swiglu",
+    "LigerTiledMLPFunction": "tiled_mlp",
+    "apply_tiled_mlp": "tiled_mlp",
+    "LigerTVDLossFunction": "tvd",
+    "LigerVocabParallelCEFunction": "vocab_parallel_cross_entropy",
+}
+
+# Auxiliary Python types are independent of the selected kernel implementation.
+_AUXILIARY_EXPORTS = {"ISCorrection"}
+
+_impl_loaded = False
+_impl_lock = _threading.RLock()
 
 
-# =============================================================================
-# Implementation discovery + dispatch
-# =============================================================================
+def _unavailable_export(name, impl_name):
+    from liger_kernel.backends import ImplNotAvailableError
+
+    def unavailable(*args, **kwargs):
+        raise ImplNotAvailableError(f"Implementation '{impl_name}' does not provide operator '{name}'.")
+
+    unavailable.__name__ = name
+    if name.endswith("Function"):
+        import torch
+
+        return type(name, (torch.autograd.Function,), {"__module__": __name__, "forward": staticmethod(unavailable)})
+    return unavailable
 
 
 def _discover_impls():
@@ -132,7 +146,6 @@ def _discover_impls():
         Each DSL subpackage's ``__init__.py`` calls ``register_impl()``
         when imported.
     """
-    import importlib
     import pkgutil
 
     # Hardware backends self-register when `backends` is imported.
@@ -150,7 +163,7 @@ def _replace_with_impl_ops():
     """
     Replace/add implementation-specific operators on top of the defaults.
 
-    This function is called automatically on module load. It:
+    This function is called when a legacy public export is first requested. It:
     1. Detects the current device (cuda, npu, xpu, etc.).
     2. Selects the active implementation via ``select_impl()``, honoring any
        explicit ``LIGER_KERNEL_IMPL`` override.
@@ -166,8 +179,6 @@ def _replace_with_impl_ops():
 
     Note: Implementations can both override existing ops AND add new ones.
     """
-    import os
-
     from liger_kernel.ops.backends import LIGER_KERNEL_IMPL_ENV
     from liger_kernel.ops.backends import select_impl
     from liger_kernel.utils import infer_device
@@ -179,8 +190,6 @@ def _replace_with_impl_ops():
         return
 
     try:
-        import importlib
-
         impl_ops = importlib.import_module(impl_info.module_path)
 
         # Get names to export: use __all__ if defined, otherwise auto-discover.
@@ -192,6 +201,11 @@ def _replace_with_impl_ops():
         for name in names_to_export:
             globals()[name] = getattr(impl_ops, name)
 
+        if impl_info.module_path.startswith(f"{__name__}.tilelang."):
+            for name in _DEFAULT_EXPORTS:
+                if name not in names_to_export and name not in _AUXILIARY_EXPORTS:
+                    globals()[name] = _unavailable_export(name, impl_info.name)
+
     except ImportError:
         # An auto-selected implementation that fails to import (e.g., missing
         # optional vendor SDK) silently falls back to defaults. An explicitly
@@ -201,5 +215,54 @@ def _replace_with_impl_ops():
             raise
 
 
-_discover_impls()
-_replace_with_impl_ops()
+def _load_legacy_exports():
+    global _impl_loaded
+    with _impl_lock:
+        if _impl_loaded:
+            return
+
+        # Mark before importing implementations, which may themselves use public ops.
+        _impl_loaded = True
+        try:
+            _discover_impls()
+            _replace_with_impl_ops()
+        except Exception:
+            _impl_loaded = False
+            raise
+
+
+def __getattr__(name):
+    if name == "__all__":
+        _load_legacy_exports()
+        return sorted(
+            set(_DEFAULT_EXPORTS)
+            | {key for key in globals() if not key.startswith("_") and key not in ("importlib", "os")}
+        )
+    if name.startswith("_"):
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if name not in _DEFAULT_EXPORTS and importlib.util.find_spec(f"{__name__}.{name}") is not None:
+        # Let Python import a submodule without activating legacy operator exports.
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    _load_legacy_exports()
+    if name in globals():
+        return globals()[name]
+    if name not in _DEFAULT_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name = _DEFAULT_EXPORTS[name]
+    saved_exports = {
+        export: globals()[export]
+        for export, source in _DEFAULT_EXPORTS.items()
+        if source == module_name and export in globals() and not isinstance(globals()[export], _ModuleType)
+    }
+    module = importlib.import_module(f"{__name__}.{module_name}")
+    # Bind sibling exports too: importing a submodule installs the module itself
+    # on its parent, which can otherwise shadow a public function of the same name.
+    for export, source in _DEFAULT_EXPORTS.items():
+        if source == module_name:
+            globals()[export] = saved_exports[export] if export in saved_exports else getattr(module, export)
+    return globals()[name]
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_DEFAULT_EXPORTS))
