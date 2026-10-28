@@ -19,29 +19,40 @@ def get_project_version() -> str:
     return match.group(1)
 
 
-def get_default_dependencies():
-    """Determine the appropriate dependencies based on detected hardware."""
-    platform = get_platform()
-
+def get_default_dependencies(platform):
+    """Get platform-specific runtime dependencies shared by all DSLs."""
     if platform in ["cuda", "cpu"]:
         return [
             "torch>=2.1.2",
-            "triton>=2.3.1",
         ]
     elif platform == "rocm":
-        return [
-            "triton>=3.0.0",
-        ]
+        # Users install ROCm PyTorch from the appropriate PyTorch index.
+        return []
     elif platform == "xpu":
         return [
             "torch>=2.6.0",
         ]
     elif platform == "npu":
-        return ["torch==2.9.0", "torch_npu==2.9.0", "triton-ascend==3.2.2"]
+        return ["torch==2.9.0", "torch_npu==2.9.0"]
 
 
-def get_optional_dependencies():
+def get_triton_dependencies(platform):
+    """Get the Triton distribution for the detected platform."""
+    if platform in ("cuda", "cpu"):
+        return ["triton>=2.3.1"]
+    if platform == "rocm":
+        return ["triton>=3.0.0"]
+    if platform == "npu":
+        return ["triton-ascend==3.2.2"]
+    # XPU PyTorch provides its own Triton distribution.
+    return []
+
+
+def get_optional_dependencies(platform):
     """Get optional dependency groups."""
+    tilelang_deps = [
+        "tilelang>=0.1.15",
+    ]
     # cuTile kernels use CompilerOptions.num_worker_warps (replace_hints / @ct.kernel),
     # which only exists in cuda-tile >= 1.4.0. Pin the floor to 1.5.0 (validated) so the
     # resolver can't backtrack to an older cuda-tile whose CompilerOptions lacks that
@@ -78,11 +89,14 @@ def get_optional_dependencies():
         "torchvision>=0.20",
         "prek>=0.2.28",
     ]
+    triton_deps = get_triton_dependencies(platform)
     return {
-        "cutile": cutile_deps,
-        "cutile-tileiras": cutile_tileiras_deps,
-        "cutedsl": cutedsl_deps,
-        "lck": lck_deps,
+        "triton": triton_deps,
+        "tilelang": tilelang_deps,
+        "cutile": triton_deps + cutile_deps,
+        "cutile-tileiras": triton_deps + cutile_tileiras_deps,
+        "cutedsl": triton_deps + cutedsl_deps,
+        "lck": triton_deps + lck_deps,
         "dev": dev_deps,
     }
 
@@ -149,12 +163,14 @@ def get_platform() -> Literal["cuda", "rocm", "cpu", "xpu", "npu"]:
                 return "cpu"
 
 
+platform = get_platform()
+
 setup(
     name="liger_kernel",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
-    install_requires=get_default_dependencies(),
-    extras_require=get_optional_dependencies(),
+    install_requires=get_default_dependencies(platform),
+    extras_require=get_optional_dependencies(platform),
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
