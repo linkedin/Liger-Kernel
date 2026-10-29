@@ -255,19 +255,32 @@ def _jsd_kernel(
     scale = 1.0 / n_non_ignore
     tl.store(loss_ptr + row, loss * scale)
 
+    u_sum = 0.0
     for start in range(0, n_cols, BLOCK_SIZE):
         offsets, mask, zs, zt = _load_logits(s_ptr, t_ptr, start, n_cols, BLOCK_SIZE)
         q = tl.exp((zs - s_m) - s_log_z)
         log_q_p = _logit_gap(zs, zt, s_m, t_m) - log_z_ratio
         if MODE == 0:
-            # q - p, through expm1 of a non-positive argument on each side
+            # u = q - p as in the paper's soft_target_cross_entropy (Eq. 9): p * expm1(log(q / p)), and plain q - p
+            # where |log(q / p)| >= 1 so p rounding to 0 can't give 0 * inf. Written in place, projected below.
             p = tl.exp((zt - t_m) - t_log_z)
-            grad = tl.where(log_q_p <= 0.0, p * expm1(tl.minimum(log_q_p, 0.0)), -q * expm1(tl.minimum(-log_q_p, 0.0)))
+            grad = tl.where(tl.abs(log_q_p) < 1.0, p * expm1(log_q_p), q - p)
+            u_sum += tl.sum(tl.where(mask, grad, 0.0), axis=0)
         else:
             h = log_q_p if MODE == 1 else _log_mixture_ratio(log_q_p, log_beta, log1m_beta)
             weight = 1.0 if MODE == 1 else tl.exp(log1m_beta)
-            grad = tl.where(mask & (q > 0.0), weight * q * ((h - anchor) - centered_mean), 0.0)
-        tl.store(s_ptr + offsets, grad * scale, mask=mask)
+            grad = tl.where(mask & (q > 0.0), weight * q * ((h - anchor) - centered_mean), 0.0) * scale
+        tl.store(s_ptr + offsets, grad, mask=mask)
+
+    if MODE == 0:
+        # g = u - q * sum(u), so the gradient sums to 0; q = u + p
+        for start in range(0, n_cols, BLOCK_SIZE):
+            offsets = start + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_cols
+            u = tl.load(s_ptr + offsets, mask=mask, other=0.0)
+            zt = tl.load(t_ptr + offsets, mask=mask, other=float("-inf"))
+            p = tl.exp((zt - t_m) - t_log_z)
+            tl.store(s_ptr + offsets, (u - (u + p) * u_sum) * scale, mask=mask)
 
 
 def fused_linear_jsd_forward(

@@ -61,11 +61,10 @@ def _jsd_and_grad(student_logits, teacher_logits, beta):
     log_q_p = d - forward_kl
 
     if beta == 0:
-        # q - p, through expm1 of a non-positive argument on each side
-        grad = torch.where(
-            log_q_p <= 0, p * torch.expm1(log_q_p.clamp(max=0)), -q * torch.expm1((-log_q_p).clamp(max=0))
-        )
-        return forward_kl.squeeze(-1), grad
+        # As in the paper's soft_target_cross_entropy (Eq. 9): u = q - p through expm1 of log(q / p), plain q - p where
+        # |log(q / p)| >= 1 so p rounding to 0 can't give 0 * inf, then projected so the gradient sums to 0.
+        u = torch.where(log_q_p.abs() < 1, p * torch.expm1(log_q_p), q - p)
+        return forward_kl.squeeze(-1), u - q * u.sum(-1, keepdim=True)
     if beta == 1:
         h = log_q_p
         loss = (q * h).sum(-1)
