@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 import triton
 import triton.language as tl
 
@@ -63,6 +64,7 @@ def liger_vocab_parallel_ce_forward_kernel(
     pred_ptr,  # [BT] OUT: predicted_logit_local (= X[masked_target] - max,
     # 0 if off-rank / ignored)
     sum_exp_ptr,  # [BT] OUT: sum_exp_local
+    sum_exp_others_ptr,  # [BT] OUT: sum_exp_local without the target term
     vocab_start,  # int — first global vocab index owned by this rank
     n_cols,  # V_local
     ignore_index,  # int — target value that means "skip this position"
@@ -83,6 +85,7 @@ def liger_vocab_parallel_ce_forward_kernel(
     if y_global == ignore_index:
         tl.store(pred_ptr + program_id, 0.0)
         tl.store(sum_exp_ptr + program_id, 1.0)
+        tl.store(sum_exp_others_ptr + program_id, 0.0)
         if HAS_LABEL_SMOOTHING:
             for i in range(0, n_cols, BLOCK_SIZE):
                 X_offsets = i + tl.arange(0, BLOCK_SIZE)
@@ -92,7 +95,7 @@ def liger_vocab_parallel_ce_forward_kernel(
     m = tl.load(logits_max_ptr + program_id).cast(tl.float32)
 
     target_off_rank = (y_global < vocab_start) | (y_global >= vocab_start + n_cols)
-    y_local = y_global - vocab_start  # only used when on-rank
+    y_local = y_global - vocab_start  # matches no local column when off-rank
 
     # Predicted logit — shifted by the global max. Off-rank / ignored positions
     # store 0; the AllReduce(SUM) gathers the one nonzero contribution.
@@ -104,7 +107,9 @@ def liger_vocab_parallel_ce_forward_kernel(
     # Single pass over V_local: shift inside, exp, accumulate sum_exp,
     # store exp(shifted) to the fp32 output buffer. Shifted logits are <= 0 so
     # exp() is in (0, 1] — no overflow possible.
+    # The sum without the target keeps the loss and the target grad exact once p_target rounds to 1.
     sum_exp = 0.0
+    sum_exp_others = 0.0
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         col_mask = X_offsets < n_cols
@@ -112,10 +117,12 @@ def liger_vocab_parallel_ce_forward_kernel(
         exp_block = tl.exp(X_block - m)
         exp_block = tl.where(col_mask, exp_block, 0.0)
         sum_exp += tl.sum(exp_block)
+        sum_exp_others += tl.sum(tl.where(X_offsets == y_local, 0.0, exp_block))
         tl.store(EXP_ptr + X_offsets, exp_block, mask=col_mask)
 
     tl.store(pred_ptr + program_id, pred_local)
     tl.store(sum_exp_ptr + program_id, sum_exp)
+    tl.store(sum_exp_others_ptr + program_id, sum_exp_others)
 
 
 @triton.jit
@@ -123,6 +130,7 @@ def liger_vocab_parallel_ce_backward_kernel(
     EXP_ptr,  # [BT, V_local] exp(shifted) from kernel 1; receives grad in-place
     EXP_stride,
     sum_exp_ptr,  # [BT] fp32 sum_exp_global (post-AllReduce on TP>1)
+    sum_exp_others_ptr,  # [BT] fp32 sum_exp_global without the target term
     Y_ptr,  # [BT] int64 GLOBAL target indices
     grad_out_ptr,  # [BT] upstream gradient
     vocab_start,  # int — first global vocab index owned by this rank
@@ -155,6 +163,10 @@ def liger_vocab_parallel_ce_backward_kernel(
     y_local = y_global - vocab_start
     sum_exp_global = tl.load(sum_exp_ptr + program_id)
     grad_out = tl.load(grad_out_ptr + program_id).cast(tl.float32)
+    # softmax(x_y) - (1 - alpha), with softmax(x_y) - 1 taken from the other classes to avoid the cancellation
+    grad_target = alpha_eff - tl.load(sum_exp_others_ptr + program_id) / sum_exp_global
+    if HAS_LABEL_SMOOTHING:
+        grad_target = grad_target - eps_eff
 
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
@@ -168,7 +180,7 @@ def liger_vocab_parallel_ce_backward_kernel(
         # Target adjustment only on the rank that owns the target.
         if not target_off_rank:
             is_target = X_offsets == y_local
-            grad_block = tl.where(is_target, grad_block - (1.0 - alpha_eff), grad_block)
+            grad_block = tl.where(is_target, grad_target, grad_block)
 
         grad_block = grad_block * grad_out
         tl.store(EXP_ptr + X_offsets, grad_block, mask=col_mask)
@@ -260,7 +272,9 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
         # convergence study.
         exp_buf = torch.empty(BT, v_local, device=x.device, dtype=torch.float32)
         predicted_local = torch.empty(BT, device=x.device, dtype=torch.float32)
-        sum_exp_local = torch.empty(BT, device=x.device, dtype=torch.float32)
+        # sum_exp with and without the target term, stacked so TP>1 reduces both in one AllReduce
+        sum_exps_local = torch.empty(2, BT, device=x.device, dtype=torch.float32)
+        sum_exp_local, sum_exp_others_local = sum_exps_local
 
         block_size = _select_block_size(v_local)
         num_warps = _get_num_warps(block_size)
@@ -275,6 +289,7 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
             Y_ptr=flat_target,
             pred_ptr=predicted_local,
             sum_exp_ptr=sum_exp_local,
+            sum_exp_others_ptr=sum_exp_others_local,
             vocab_start=vocab_start,
             n_cols=v_local,
             ignore_index=ignore_index,
@@ -286,10 +301,11 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
         # --- 4. AllReduces (no-ops at TP=1) ---
         if tp_distributed:
             dist.all_reduce(predicted_local, op=dist.ReduceOp.SUM, group=tp_group)
-            dist.all_reduce(sum_exp_local, op=dist.ReduceOp.SUM, group=tp_group)
+            dist.all_reduce(sum_exps_local, op=dist.ReduceOp.SUM, group=tp_group)
 
         # --- 5. Loss ---
-        loss = torch.log(sum_exp_local) - predicted_local
+        # log(sum_exp) - predicted rounds to 0 once p_target rounds to 1; softplus over the other classes doesn't
+        loss = F.softplus(torch.log(sum_exp_others_local) - predicted_local)
 
         # --- 6. Label smoothing (Python; chooses K, formula, averaging scope) ---
         if label_smoothing > 0:
@@ -322,7 +338,7 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
             loss = torch.where(ignore_mask, torch.zeros_like(loss), loss)
 
         # --- 7. Save for backward ---
-        ctx.save_for_backward(exp_buf, sum_exp_local, flat_target)
+        ctx.save_for_backward(exp_buf, sum_exp_local, sum_exp_others_local, flat_target)
         ctx.alpha_eff = float(alpha_eff)
         ctx.eps_eff = float(eps_eff)
         ctx.has_smoothing = bool(label_smoothing > 0)
@@ -337,7 +353,7 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
-        exp_buf, sum_exp_global, flat_target = ctx.saved_tensors
+        exp_buf, sum_exp_global, sum_exp_others_global, flat_target = ctx.saved_tensors
 
         grad_out_flat = grad_output.contiguous().reshape(-1).to(torch.float32)
         BT = exp_buf.size(0)
@@ -347,6 +363,7 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
             EXP_ptr=exp_buf,
             EXP_stride=exp_buf.stride(0),
             sum_exp_ptr=sum_exp_global,
+            sum_exp_others_ptr=sum_exp_others_global,
             Y_ptr=flat_target,
             grad_out_ptr=grad_out_flat,
             vocab_start=ctx.vocab_start,
