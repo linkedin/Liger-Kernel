@@ -592,12 +592,19 @@ def test_dominant_token_does_not_collapse(dtype, rtol):
     teacher, _ = dominant_target_logits([m + 3 for m in margins], V=V, dtype=torch.float64, target=target)
     q = teacher.softmax(-1).float().to(device)
     weight = torch.eye(V, dtype=dtype, device=device)
-    _input = student.clone().requires_grad_(True)
-    _ref = student.double().requires_grad_(True)
+    # A near-teacher row at a typical logit level: its small loss must not come from subtracting lse-sized terms.
+    near = torch.randn(1, V, dtype=torch.float64) * 3 + 30
+    near_q = (near + 1e-3 * torch.randn_like(near)).softmax(-1).float().to(device)
+    for student, q in ((student, q), (near.to(device=device, dtype=dtype), near_q)):
+        _input = student.clone().requires_grad_(True)
+        _ref = student.double().requires_grad_(True)
 
-    liger_fused_linear_kl_div(_input, weight, q, reduction="batchmean").backward()
-    torch.nn.functional.kl_div(_ref.log_softmax(-1), q.double(), reduction="batchmean").backward()
+        loss = liger_fused_linear_kl_div(_input, weight, q, reduction="batchmean")
+        loss.backward()
+        ref_loss = torch.nn.functional.kl_div(_ref.log_softmax(-1), q.double(), reduction="batchmean")
+        ref_loss.backward()
 
-    # Per-row scale: off-argmax entries are differences of two tiny probabilities, accurate only to the row's scale.
-    row_scale = _ref.grad.abs().amax(-1, keepdim=True)
-    torch.testing.assert_close(_input.grad.double() / row_scale, _ref.grad / row_scale, rtol=rtol, atol=rtol)
+        torch.testing.assert_close(loss.double(), ref_loss, rtol=rtol * 10, atol=0)
+        # Per-row scale: off-argmax entries are differences of two tiny probabilities, accurate only to the row's scale.
+        row_scale = _ref.grad.abs().amax(-1, keepdim=True)
+        torch.testing.assert_close(_input.grad.double() / row_scale, _ref.grad / row_scale, rtol=rtol, atol=rtol)
