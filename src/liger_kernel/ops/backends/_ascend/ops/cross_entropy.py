@@ -897,6 +897,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         return_z_loss: bool = False,
         return_token_accuracy: bool = False,
         return_predicted_tokens: bool = False,
+        loss_dtype: Optional[torch.dtype] = None,
     ):
         """
         The forward pass of the Liger Cross Entropy loss.
@@ -918,6 +919,8 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         Returns:
         tuple: A tuple with the computed losses, accuracy, and predicted tokens: (loss, z_loss, token_accuracy, predicted_tokens). z_loss, token_accuracy, and predicted_tokens are None if not requested.
         """
+        if loss_dtype is not None:
+            raise ValueError("loss_dtype is only supported by the Triton cross_entropy backend")
         input_requires_grad = _input.requires_grad
         return_lse = _forward_returns_fp32_lse_rows(
             input_requires_grad,
@@ -1020,6 +1023,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         )
         return (
             _input,
+            None,
             None,
             None,
             None,

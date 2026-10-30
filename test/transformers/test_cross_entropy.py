@@ -1,3 +1,5 @@
+import importlib
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -8,6 +10,7 @@ from test.utils import supports_bfloat16
 from torch.nn import CrossEntropyLoss
 
 from liger_kernel.ops import LigerCrossEntropyFunction
+from liger_kernel.ops.cross_entropy import cross_entropy_forward
 from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
@@ -16,6 +19,7 @@ from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.utils import infer_device
 
 device = infer_device()
+liger_ce_module = importlib.import_module("liger_kernel.transformers.cross_entropy")
 set_seed(42)
 
 
@@ -1322,3 +1326,259 @@ def test_correctness_true_class_grad_confident_predictions(dtype, label_smoothin
         f"true-class grad error {liger_err:.3e} exceeds torch's {torch_err:.3e} "
         f"(reduction={reduction}, label_smoothing={label_smoothing}, dtype={dtype})"
     )
+
+
+_LOSS_DTYPE_SHAPES = [(512, 4096), (256, 32001)]
+
+
+@pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
+@pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
+@pytest.mark.parametrize("BT, V", _LOSS_DTYPE_SHAPES)
+@pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
+@pytest.mark.parametrize("use_weight", [False, True])
+def test_bf16_loss_dtype_float32_matches_fp32_reference(reduction, BT, V, label_smoothing, use_weight):
+    # The tolerances are estimates that have not been confirmed on a GPU; the kernel evaluates exp with an
+    # approximate hardware instruction, so they leave room for ~1e-5 relative error.
+    torch.manual_seed(0)
+    logits = (torch.randn(BT, V, device=device) * 4).to(torch.bfloat16)
+    target = torch.randint(0, V, (BT,), device=device)
+    target[::11] = -100
+    weight = torch.rand(V, device=device) + 0.5 if use_weight else None
+    ref = F.cross_entropy(logits.float(), target, weight=weight, label_smoothing=label_smoothing, reduction=reduction)
+
+    out_fp32 = liger_cross_entropy(
+        logits.clone(),
+        target,
+        weight=weight,
+        label_smoothing=label_smoothing,
+        reduction=reduction,
+        loss_dtype=torch.float32,
+    )
+    assert out_fp32.dtype == torch.float32
+    torch.testing.assert_close(out_fp32, ref, rtol=1e-5, atol=1e-5)
+
+    # Default keeps the input dtype and equals the fp32 result rounded once.
+    out = LigerCrossEntropyLoss(weight=weight, label_smoothing=label_smoothing, reduction=reduction)(
+        logits.clone(), target
+    )
+    assert out.dtype == torch.bfloat16
+    assert torch.equal(out, out_fp32.to(torch.bfloat16))
+
+    out_module = LigerCrossEntropyLoss(
+        weight=weight, label_smoothing=label_smoothing, reduction=reduction, loss_dtype=torch.float32
+    )(logits.clone(), target)
+    assert torch.equal(out_module, out_fp32)
+
+
+@pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
+@pytest.mark.parametrize("reduction", ["mean", "sum"])
+@pytest.mark.parametrize("BT, V", _LOSS_DTYPE_SHAPES)
+def test_bf16_default_reduction_is_at_least_as_close_as_per_token_rounding(reduction, BT, V):
+    torch.manual_seed(0)
+    logits = (torch.randn(BT, V, device=device) * 4).to(torch.bfloat16)
+    target = torch.randint(0, V, (BT,), device=device)
+    target[::11] = -100
+    ref = F.cross_entropy(logits.float(), target, reduction=reduction).double()
+
+    # Emulates the previous algorithm: the per-token losses (already divided by n_non_ignore for "mean")
+    # were stored in bf16 before being summed.
+    per_token = F.cross_entropy(logits.float(), target, reduction="none")
+    if reduction == "mean":
+        per_token = per_token / (target != -100).sum()
+    previous = per_token.to(torch.bfloat16).sum().double()
+
+    out = liger_cross_entropy(logits.clone(), target, reduction=reduction).double()
+    # Rounding the exact value once gives the nearest bf16 number, so it cannot lose to rounding every token first;
+    # the slack only covers the kernel's approximate exp.
+    assert (out - ref).abs() <= (previous - ref).abs() + 1e-5 * ref.abs()
+
+
+@pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
+def test_bf16_z_loss_dtype_float32_matches_fp32_reference():
+    torch.manual_seed(0)
+    BT, V = 2048, 8192
+    logits = (torch.randn(BT, V, device=device) * 4).to(torch.bfloat16)
+    target = torch.randint(0, V, (BT,), device=device)
+    lse_square_scale = 1e-2
+    ref_z = lse_square_scale * torch.logsumexp(logits.float(), dim=-1) ** 2
+
+    out = liger_cross_entropy(
+        logits.clone(),
+        target,
+        reduction="none",
+        lse_square_scale=lse_square_scale,
+        return_z_loss=True,
+        loss_dtype=torch.float32,
+    )
+    assert out.loss.dtype == out.z_loss.dtype == torch.float32
+    torch.testing.assert_close(out.z_loss, ref_z, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("loss_dtype", [torch.float16, torch.bfloat16, torch.float64, "float32"])
+def test_loss_dtype_rejects_unsupported_values(loss_dtype):
+    logits = torch.randn(4, 8, device=device)
+    target = torch.randint(0, 8, (4,), device=device)
+    with pytest.raises(ValueError, match="loss_dtype"):
+        liger_cross_entropy(logits, target, loss_dtype=loss_dtype)
+    with pytest.raises(ValueError, match="loss_dtype"):
+        LigerCrossEntropyLoss(loss_dtype=loss_dtype)
+
+
+def test_loss_dtype_requires_triton_backend(monkeypatch):
+    class _FakeImpl:
+        impl_name = "nvidia-cutedsl"
+
+    monkeypatch.setattr(liger_ce_module, "resolve_impl", lambda *args, **kwargs: _FakeImpl())
+    logits = torch.randn(4, 8, device=device)
+    target = torch.randint(0, 8, (4,), device=device)
+    with pytest.raises(ValueError, match="only supported by the Triton"):
+        LigerCrossEntropyLoss(loss_dtype=torch.float32)(logits, target)
+
+
+def _run_backward(logits, target, backward_fn, kernel_kwargs=None):
+    """Returns (grad, grad_output seen by the op)."""
+    _input = logits.detach().clone().requires_grad_(True)
+    loss = liger_cross_entropy(_input, target, reduction="none", **(kernel_kwargs or {}))
+    seen = []
+    loss.register_hook(lambda g: seen.append(g))
+    backward_fn(loss)
+    return _input.grad.clone(), seen[0]
+
+
+def _none_backward_fns(BT, per_token_weight):
+    strided = torch.rand(2 * BT, device=device)[::2]
+    return {
+        "mean": lambda loss: loss.mean().backward(),
+        "sum": lambda loss: loss.sum().backward(),
+        "weighted_sum": lambda loss: (loss * per_token_weight).sum().backward(),
+        "strided": lambda loss: loss.backward(strided),
+    }
+
+
+_NONE_REDUCERS = ["mean", "sum", "weighted_sum", "strided"]
+_NONE_SHAPES = [(512, 4096), (256, 32001), (1024, 8192)]
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("reducer", _NONE_REDUCERS)
+@pytest.mark.parametrize("BT, V", _NONE_SHAPES)
+def test_none_reduction_grad_matches_per_row_multiply(dtype, reducer, BT, V):
+    if dtype == torch.bfloat16 and not supports_bfloat16():
+        pytest.skip("bfloat16 not supported on this GPU")
+    torch.manual_seed(0)
+    logits = torch.randn(BT, V, device=device, dtype=dtype)
+    target = torch.randint(0, V, (BT,), device=device)
+    target[::7] = -100
+    per_token_weight = torch.rand(BT, device=device) + 0.5
+
+    grad, g_seen = _run_backward(logits, target, _none_backward_fns(BT, per_token_weight)[reducer])
+    assert g_seen.ndim == 1
+
+    # The per-row multiply that the op used to do out of place: fp32 math, a single rounding to the input dtype.
+    # cross_entropy_forward leaves the unscaled gradient in its returned input.
+    unscaled = cross_entropy_forward(
+        logits.clone().requires_grad_(True), target, None, -100, 0.0, 0.0, "none", None, False
+    )[4]
+    expected = (unscaled.float() * g_seen.float().unsqueeze(1)).to(dtype)
+    assert torch.equal(grad, expected)
+
+
+@pytest.mark.parametrize("reducer", _NONE_REDUCERS)
+@pytest.mark.parametrize("BT, V", _NONE_SHAPES)
+def test_none_reduction_grad_matches_torch(reducer, BT, V):
+    torch.manual_seed(0)
+    logits = torch.randn(BT, V, device=device)
+    target = torch.randint(0, V, (BT,), device=device)
+    target[::7] = -100
+    per_token_weight = torch.rand(BT, device=device) + 0.5
+    backward_fn = _none_backward_fns(BT, per_token_weight)[reducer]
+
+    ref_input = logits.clone().requires_grad_(True)
+    backward_fn(F.cross_entropy(ref_input, target, reduction="none"))
+    grad, _ = _run_backward(logits, target, backward_fn)
+    torch.testing.assert_close(grad, ref_input.grad, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.skipif(device != "cuda", reason="requires CUDA memory statistics")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("reducer", ["mean", "sum", "weighted_sum"])
+@pytest.mark.parametrize("BT, V", [(2048, 32000), (1024, 32001)])
+def test_none_reduction_backward_allocates_no_bt_x_v_temporary(dtype, reducer, BT, V):
+    if dtype == torch.bfloat16 and not supports_bfloat16():
+        pytest.skip("bfloat16 not supported on this GPU")
+    torch.manual_seed(0)
+    logits = torch.randn(BT, V, device=device, dtype=dtype)
+    target = torch.randint(0, V, (BT,), device=device)
+    per_token_weight = torch.rand(BT, device=device) + 0.5
+    backward_fn = _none_backward_fns(BT, per_token_weight)[reducer]
+    logits_bytes = logits.numel() * logits.element_size()
+
+    _input = logits.detach().clone().requires_grad_(True)
+    loss = liger_cross_entropy(_input, target, reduction="none")
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    base = torch.cuda.memory_allocated()
+    backward_fn(loss)
+    torch.cuda.synchronize()
+    peak_extra = torch.cuda.max_memory_allocated() - base
+
+    # Before this change the backward allocated a BT x V temporary here.
+    assert peak_extra < 0.5 * logits_bytes
+
+
+def test_none_reduction_second_backward_raises():
+    torch.manual_seed(0)
+    logits = torch.randn(64, 512, device=device, requires_grad=True)
+    target = torch.randint(0, 512, (64,), device=device)
+    loss = liger_cross_entropy(logits, target, reduction="none")
+    loss.sum().backward(retain_graph=True)
+    with pytest.raises(RuntimeError, match=r"second backward \(retain_graph=True\)"):
+        loss.sum().backward()
+
+
+def test_scalar_backward_with_non_unit_grad_twice_raises():
+    torch.manual_seed(0)
+    logits = torch.randn(64, 512, device=device, requires_grad=True)
+    target = torch.randint(0, 512, (64,), device=device)
+    loss = liger_cross_entropy(logits, target, reduction="sum")
+    (loss * 2.0).backward(retain_graph=True)
+    with pytest.raises(RuntimeError, match=r"second backward \(retain_graph=True\)"):
+        (loss * 2.0).backward()
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum"])
+def test_scalar_backward_with_unit_grad_supports_retain_graph(reduction):
+    torch.manual_seed(0)
+    logits = torch.randn(64, 512, device=device)
+    target = torch.randint(0, 512, (64,), device=device)
+
+    ref_input = logits.clone().requires_grad_(True)
+    ref_loss = F.cross_entropy(ref_input, target, reduction=reduction)
+    ref_loss.backward(retain_graph=True)
+    ref_loss.backward()
+
+    _input = logits.clone().requires_grad_(True)
+    loss = liger_cross_entropy(_input, target, reduction=reduction)
+    loss.backward(retain_graph=True)
+    loss.backward()
+    torch.testing.assert_close(_input.grad, ref_input.grad, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
+def test_none_reduction_loss_dtype_float32_backward_keeps_input_dtype():
+    torch.manual_seed(0)
+    logits = torch.randn(256, 1024, device=device, dtype=torch.bfloat16)
+    target = torch.randint(0, 1024, (256,), device=device)
+    weight = torch.rand(256, device=device) + 0.5
+
+    ref_input = logits.float().requires_grad_(True)
+    (F.cross_entropy(ref_input, target, reduction="none") * weight).sum().backward()
+    grad, _ = _run_backward(
+        logits,
+        target,
+        lambda loss: (loss * weight).sum().backward(),
+        kernel_kwargs={"loss_dtype": torch.float32},
+    )
+    assert grad.dtype == torch.bfloat16
+    # bf16 gradient against an fp32 reference: about 2**-8 relative rounding error.
+    torch.testing.assert_close(grad.float(), ref_input.grad, rtol=2e-2, atol=2e-2)

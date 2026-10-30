@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 
@@ -21,6 +22,28 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+# "none_sum" / "none_mean" reduce the per-token losses of reduction="none" outside the loss function.
+# With reduction="none" the backward scales the saved gradient in place for either reduction.
+REDUCTIONS = ("mean", "sum", "none_sum", "none_mean")
+DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
+
+
+def add_cross_entropy_arguments(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--reduction",
+        type=str,
+        default="mean",
+        choices=REDUCTIONS,
+        help="Loss reduction to benchmark. 'none_*' uses reduction='none' followed by .sum()/.mean().",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="float32",
+        choices=tuple(DTYPES),
+        help="Dtype of the logits.",
+    )
+
 
 def setup_cross_entropy(input: SingleBenchmarkRunInput):
     """Create input tensor, target, and CE loss from benchmark config."""
@@ -33,28 +56,43 @@ def setup_cross_entropy(input: SingleBenchmarkRunInput):
         BT = input.x
         V = cfg["vocab_size"]
 
-    _input = torch.randn(BT, V, requires_grad=True, device=device)
+    reduction = cfg.get("reduction", "mean")
+    dtype = DTYPES[cfg.get("dtype", "float32")]
+    loss_reduction, _, post_reduction = reduction.partition("_")
+    if post_reduction == "":
+        post_reduction = None
+
+    _input = torch.randn(BT, V, requires_grad=True, device=device, dtype=dtype)
     target = torch.randint(V, (BT,), device=device)
 
     if input.kernel_provider == "liger":
-        loss_fn = LigerCrossEntropyLoss()
+        loss_fn = LigerCrossEntropyLoss(reduction=loss_reduction)
     elif input.kernel_provider == "torch":
-        loss_fn = CrossEntropyLoss()
+        loss_fn = CrossEntropyLoss(reduction=loss_reduction)
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for CrossEntropy")
 
-    return _input, lambda x: loss_fn(x, target)
+    if post_reduction is None:
+        return _input, lambda x: loss_fn(x, target)
+    return _input, lambda x: getattr(loss_fn(x, target), post_reduction)()
 
 
 if __name__ == "__main__":
-    args = parse_benchmark_script_args()
+    args = parse_benchmark_script_args(add_cross_entropy_arguments)
+
+    # Only non-default values are added so existing benchmark data keeps its config identity.
+    extra_configs = {}
+    if args.reduction != "mean":
+        extra_configs["reduction"] = args.reduction
+    if args.dtype != "float32":
+        extra_configs["dtype"] = args.dtype
 
     if args.sweep_mode == "model_config":
         common_configs = build_model_config_sweep(
             kernel_name="cross_entropy",
             setup_fn=setup_cross_entropy,
             model_keys=["vocab_size"],
-            extra_configs={},
+            extra_configs=extra_configs,
             probe_dim="BT",
             probe_provider="torch",
             bt=args.bt,
@@ -69,7 +107,7 @@ if __name__ == "__main__":
             model=model,
             setup_fn=setup_cross_entropy,
             model_keys=["vocab_size"],
-            extra_configs={},
+            extra_configs=extra_configs,
             scale_dim="BT",
             probe_provider="torch",
             x_label="B * T",
