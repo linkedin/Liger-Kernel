@@ -71,6 +71,12 @@ This kernel is optimized for calculating the loss function used in classificatio
 
 The  kernel achieves a ~3x execution speed increase and a ~5x reduction in memory usage for substantial vocabulary sizes compared to implementations in PyTorch.
 
+The per-token losses are kept in fp32 and reduced (`mean` / `sum`) in fp32, then cast once to the input dtype. For bf16/fp16 inputs the default `mean` and `sum` values can therefore differ slightly from earlier releases (they are closer to an fp32 reference); the returned dtype does not change.
+
+Pass `loss_dtype=torch.float32` to `LigerCrossEntropyLoss` or `liger_cross_entropy` to also get `loss` and `z_loss` back in fp32 for any reduction (`None`, the default, keeps the input dtype; other values raise `ValueError`). This option is only available with the Triton backend.
+
+With `reduction="none"` the gradient is computed in place on the saved buffer, so backward cannot be run twice over the same graph (`retain_graph=True`) once the saved gradient has been scaled; a second backward raises `RuntimeError`. `mean` and `sum` still support it while the upstream gradient is exactly 1.0.
+
 !!! Example "Try it out"
     You can experiment as shown in this example [here](https://colab.research.google.com/drive/1WgaU_cmaxVzx8PcdKB5P9yHB6_WyGd4T?usp=sharing).
 
