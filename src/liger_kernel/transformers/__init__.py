@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v_moe  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm5_next  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gpt_oss  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_hunyuan_v1_dense  # noqa: F401
@@ -140,6 +141,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_glm4",
         "apply_liger_kernel_to_glm4v",
         "apply_liger_kernel_to_glm4v_moe",
+        "apply_liger_kernel_to_glm5_next",
         "apply_liger_kernel_to_gpt_oss",
         "apply_liger_kernel_to_granite",
         "apply_liger_kernel_to_internvl",
@@ -243,6 +245,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_glm4",
             "apply_liger_kernel_to_glm4v",
             "apply_liger_kernel_to_glm4v_moe",
+            "apply_liger_kernel_to_glm5_next",
             "apply_liger_kernel_to_gpt_oss",
             "apply_liger_kernel_to_granite",
             "apply_liger_kernel_to_internvl",

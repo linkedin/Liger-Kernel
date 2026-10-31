@@ -265,6 +265,15 @@ def is_deepseek_v4_available():
         return False
 
 
+def is_glm5_next_available():
+    try:
+        import transformers.models.glm5_next  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_falcon_h1_available():
     try:
         import transformers.models.falcon_h1  # noqa: F401
@@ -3795,6 +3804,93 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe_respects_rms_norm_false():
         for vision_block in visual.blocks:
             assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
+
+
+@pytest.mark.skipif(not is_glm5_next_available(), reason="glm5_next module not available")
+def test_apply_liger_kernel_to_instance_for_glm5_next():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.glm5_next.modeling_glm5_next"):
+        from transformers.models.glm5_next.modeling_glm5_next import Glm5NextForConditionalGeneration
+
+        from liger_kernel.transformers.model.glm5_next import lce_forward as glm5_next_lce_forward
+
+        config = transformers.models.glm5_next.configuration_glm5_next.Glm5NextConfig(
+            text_config={
+                "vocab_size": 1024,
+                "pad_token_id": 2,
+                "hidden_size": 48,
+                "intermediate_size": 16,
+                "num_hidden_layers": 2,
+                # "full_attention" is the MLA (DSA) layer; each transformers version maps it to its own name
+                "layer_types": ["linear_attention", "full_attention"],
+                "mlp_layer_types": ["dense", "sparse"],
+                "num_attention_heads": 2,
+                "num_key_value_heads": 2,
+                "head_dim": 16,
+                "q_lora_rank": 32,
+                "kv_lora_rank": 16,
+                "qk_rope_head_dim": 0,
+                "qk_nope_head_dim": 64,
+                "v_head_dim": 16,
+                "linear_num_heads": 2,
+                "linear_head_dim": 16,
+                "linear_conv_kernel_dim": 2,
+                "index_n_heads": 2,
+                "index_head_dim": 16,
+                "index_topk": 48,
+                "index_kpool": 3,
+                "moe_intermediate_size": 16,
+                "n_routed_experts": 4,
+                "num_local_experts": 4,
+                "num_experts_per_tok": 2,
+            },
+            vision_config={
+                "depth": 1,
+                "hidden_size": 48,
+                "num_heads": 2,
+                "out_hidden_size": 48,
+                "intermediate_size": 16,
+                "projection_intermediate_size": 48,
+            },
+        )
+        dummy_model_instance = Glm5NextForConditionalGeneration(config)
+        text_model = dummy_model_instance.model.language_model
+        vision_model = dummy_model_instance.model.visual
+
+        def text_norms():
+            yield text_model.norm
+            for layer in text_model.layers:
+                yield layer.input_layernorm
+                yield layer.post_attention_layernorm
+                for name in ("q_a_layernorm", "kv_a_layernorm"):
+                    if getattr(layer.self_attn, name, None) is not None:
+                        yield getattr(layer.self_attn, name)
+
+        def vision_norms():
+            yield vision_model.post_layernorm
+            for block in vision_model.blocks:
+                yield from (block.norm1, block.norm2, block.attn.q_norm, block.attn.k_norm)
+
+        # The indexed (MLA) layer has the q_a / kv_a norms, so they are covered
+        assert len(list(text_norms())) == 1 + 2 * 2 + 2
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(glm5_next_lce_forward)
+        for norm in (*text_norms(), *vision_norms()):
+            assert inspect.getsource(norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(glm5_next_lce_forward)
+        for norm in (*text_norms(), *vision_norms()):
+            assert inspect.getsource(norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_smollm3_available(), reason="smollm3 module not available")
