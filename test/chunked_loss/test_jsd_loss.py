@@ -8,8 +8,10 @@ from liger_kernel.chunked_loss import LigerFusedLinearJSDLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_jsd
 from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
 from liger_kernel.utils import infer_device
+from test.utils import COLLAPSE_MARGINS
 from test.utils import HFDistillationLoss
 from test.utils import assert_verbose_allclose
+from test.utils import dominant_target_logits
 from test.utils import set_seed
 
 device = infer_device()
@@ -484,3 +486,48 @@ def test_jsd_hard_loss_computed_only_when_used(monkeypatch, weight_hard_loss, re
             (student_input @ student_weight.t()).float(), target, ignore_index=-100
         )
         assert_verbose_allclose(hard_loss, reference, atol=1e-5, rtol=1e-5)
+
+
+def test_student_near_teacher_and_dominant_token():
+    # Gradients must come from the logit gap, not from rounded probabilities (arXiv 2610.31642, Eq. 9): a student
+    # matching its teacher gets exactly zero gradient, a student off by 1e-8, or shifted by 32 and off by 2^-20, keeps
+    # its small gradient, and a token both put almost all mass on keeps the gradient fp32 softmax would round away.
+    near_teacher = torch.tensor([[2.0, 1.0, 0.0], [2.0, 0.01, 0.0], [2.0**-20, 0.0, -(2.0**-20)]], device=device)
+    near_student = near_teacher.clone()
+    near_student[1, 1] += 1e-8
+    near_student[2] = 32.0
+    margins = [m for m in COLLAPSE_MARGINS if m < 30]
+    dominant_student, target = dominant_target_logits(margins, V=4096, device=device)
+    dominant_teacher, _ = dominant_target_logits([m + 3 for m in margins], V=4096, device=device, target=target)
+
+    for beta in (0.0, 0.1, 0.5, 0.9, 1.0):
+        for student, teacher in ((near_student, near_teacher), (dominant_student, dominant_teacher)):
+            n, V = student.shape
+            weight = torch.eye(V, device=device)
+            labels = torch.zeros(n, dtype=torch.long, device=device)
+            _input = student.clone().requires_grad_(True)
+            _ref = student.double().requires_grad_(True)
+
+            LigerFusedLinearJSDFunction.apply(
+                _input, weight, teacher, weight, labels, None, None, 0.0, 1.0, beta, -100, 1.0, False
+            ).backward()
+            log_q, log_p = _ref.log_softmax(-1), teacher.double().log_softmax(-1)
+            if beta == 0.0:
+                loss = (log_p.exp() * (log_p - log_q)).sum(-1)
+            elif beta == 1.0:
+                loss = (log_q.exp() * (log_q - log_p)).sum(-1)
+            else:
+                log_m = torch.logaddexp(log_p + math.log(beta), log_q + math.log1p(-beta))
+                loss = beta * (log_p.exp() * (log_p - log_m)).sum(-1) + (1 - beta) * (
+                    log_q.exp() * (log_q - log_m)
+                ).sum(-1)
+            loss.mean().backward()
+
+            if V == 3:
+                assert torch.count_nonzero(_input.grad[0]) == 0, f"beta={beta}"
+                torch.testing.assert_close(_input.grad.double(), _ref.grad, rtol=1e-4, atol=1e-12, msg=f"beta={beta}")
+            else:
+                row_scale = _ref.grad.abs().amax(-1, keepdim=True)
+                torch.testing.assert_close(
+                    _input.grad.double() / row_scale, _ref.grad / row_scale, rtol=1e-4, atol=1e-4, msg=f"beta={beta}"
+                )

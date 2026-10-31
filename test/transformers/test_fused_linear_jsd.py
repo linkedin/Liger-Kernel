@@ -1,9 +1,13 @@
+import math
+
 import pytest
 import torch
 
 from packaging.version import Version
 from test.transformers.test_jsd import JSD as TorchJSD
+from test.utils import COLLAPSE_MARGINS
 from test.utils import assert_verbose_allclose
+from test.utils import dominant_target_logits
 from test.utils import set_seed
 
 from liger_kernel.ops import LigerFusedLinearJSDFunction
@@ -568,3 +572,68 @@ def test_logits_projection_is_not_rounded_to_input_dtype(dtype, beta):
             f"{name} deviates {relative_error:.2%} from the float32-projection reference, "
             f"which means the projection rounded its logits to {dtype}"
         )
+
+
+@pytest.mark.parametrize("beta", [0.0, 1.0])
+def test_dominant_token_does_not_collapse(beta):
+    # Student and teacher both put almost all mass on one token, so the softmax backward at that token cancels
+    # to 0 in fp32 while the other tokens keep their gradients; it must still match fp64 (arXiv 2610.31642).
+    # Mixed betas are unaffected: every dX there is a log-ratio-sized term, so nothing O(1) cancels.
+    # Margins stay below fp64's own cliff (~36.7) so autograd in fp64 is a valid reference.
+    set_seed()
+    V = 4096
+    margins = [m for m in COLLAPSE_MARGINS if m < 30]
+    student, target = dominant_target_logits(margins, V=V, device=device)
+    teacher, _ = dominant_target_logits([m + 3 for m in margins], V=V, device=device, target=target)
+    weight = torch.eye(V, device=device)
+    _input = student.clone().requires_grad_(True)
+    _ref = student.double().requires_grad_(True)
+
+    liger_fused_linear_jsd(_input, weight, teacher, weight, jsd_beta=beta).backward()
+    TorchJSD(beta=beta, dtype=torch.float64)(_ref.log_softmax(-1), teacher.double().log_softmax(-1)).backward()
+
+    # Per-row scale: off-argmax entries are differences of two tiny probabilities, accurate only to the row's scale.
+    row_scale = _ref.grad.abs().amax(-1, keepdim=True)
+    torch.testing.assert_close(_input.grad.double() / row_scale, _ref.grad / row_scale, rtol=1e-4, atol=1e-4)
+
+
+def test_student_near_teacher():
+    # Soft-target gradients must come from the logit gap, not from rounded probabilities or log-probabilities: a
+    # student matching its teacher gets exactly zero gradient, and one off by 1e-8 or shifted by 32 and off by 2^-20
+    # still gets its small gradient (arXiv 2610.31642, Eq. 9).
+    teacher = torch.tensor([[2.0, 1.0, 0.0], [2.0, 0.01, 0.0], [2.0**-20, 0.0, -(2.0**-20)]], device=device)
+    student = teacher.clone()
+    student[1, 1] += 1e-8
+    student[2] = 32.0
+    weight = torch.eye(3, device=device)
+    for beta in (0.0, 0.1, 0.5, 0.9, 1.0):
+        _input = student.clone().requires_grad_(True)
+        _ref = student.double().requires_grad_(True)
+
+        liger_fused_linear_jsd(_input, weight, teacher, weight, jsd_beta=beta).backward()
+        _reference_jsd(_ref, teacher.double(), beta).backward()
+
+        assert torch.count_nonzero(_input.grad[0]) == 0, f"beta={beta}"
+        torch.testing.assert_close(_input.grad.double(), _ref.grad, rtol=1e-4, atol=1e-12, msg=f"beta={beta}")
+
+    # Disjoint distributions: the loss is the binary entropy of beta, which needs log(beta) and log(1 - beta) of the
+    # beta passed in, not of its float32 rounding.
+    student = torch.tensor([[-40.0, 40.0]], device=device)
+    weight = torch.eye(2, device=device)
+    for beta in (1e-6, 1 - 1e-6):
+        loss = liger_fused_linear_jsd(student, weight, -student, weight, jsd_beta=beta)
+        expected = -beta * math.log(beta) - (1 - beta) * math.log1p(-beta)
+        torch.testing.assert_close(loss.double().cpu(), torch.tensor(expected, dtype=torch.float64), rtol=1e-5, atol=0)
+
+
+def _reference_jsd(student_logits, teacher_logits, beta):
+    # float64 generalized JSD, mean over rows
+    log_q, log_p = student_logits.log_softmax(-1), teacher_logits.log_softmax(-1)
+    if beta == 0.0:
+        loss = (log_p.exp() * (log_p - log_q)).sum(-1)
+    elif beta == 1.0:
+        loss = (log_q.exp() * (log_q - log_p)).sum(-1)
+    else:
+        log_m = torch.logaddexp(log_p + math.log(beta), log_q + math.log1p(-beta))
+        loss = beta * (log_p.exp() * (log_p - log_m)).sum(-1) + (1 - beta) * (log_q.exp() * (log_q - log_m)).sum(-1)
+    return loss.mean()
