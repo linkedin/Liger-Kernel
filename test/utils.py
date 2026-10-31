@@ -920,6 +920,18 @@ def revert_liger_kernel_to_deepseek_v4(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_glm5_next(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to GLM-5.3 (glm5_next).
+    """
+    from transformers.models.glm5_next import modeling_glm5_next
+
+    importlib.reload(modeling_glm5_next)
+    model_config.model_class = modeling_glm5_next.Glm5NextForConditionalGeneration
+
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_exaone4(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to EXAONE4.
