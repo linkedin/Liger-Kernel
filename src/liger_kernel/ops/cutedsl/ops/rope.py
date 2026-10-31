@@ -35,12 +35,16 @@ Design notes (tuned on B200 / sm_100):
   * The kernel matches the Triton convention exactly: it rotates the
     ``head_dim // 2`` pairs ``(d, d + head_dim // 2)``; for an odd ``head_dim``
     the final element is left untouched, just like the reference.
+  * TMA launches use direct PyTorch tensor arguments and the current framework
+    stream when TVM FFI is available. The fallback creates fresh pointer bindings:
+    changing a cached native memref's pointer does not change its TVM tensor.
 
 The public API mirrors ``liger_kernel.ops.rope``:
 ``rope_forward`` / ``rope_backward`` / ``LigerRopeCuteDSLFunction``.
 """
 
-import ctypes
+from functools import lru_cache
+from threading import Lock
 
 import cuda.bindings.driver as cuda
 import cutlass
@@ -49,10 +53,19 @@ import cutlass.utils as cute_utils
 import torch
 
 from cutlass.cute.nvgpu import cpasync
-from cutlass.cute.runtime import from_dlpack
 
 from liger_kernel.ops.cutedsl.ops.utils import _COMPILE_CACHE
 from liger_kernel.ops.cutedsl.ops.utils import _dyn
+from liger_kernel.ops.cutedsl.ops.utils import torch2cute_dtype_map
+
+try:
+    import tvm_ffi  # noqa: F401
+
+    _TVM_FFI_PRESENT = True
+except Exception:  # pragma: no cover - depends on optional deps
+    _TVM_FFI_PRESENT = False
+
+_TMA_COMPILE_LOCK = Lock()
 
 # Cache the CUstream wrapper keyed on torch's raw stream handle so we don't
 # rebuild the cuda.CUstream object every launch. The kernels MUST run on
@@ -255,6 +268,21 @@ _TMA_VR = 4  # _TMA_TR * _TMA_VR == _TMA_TILE_M
 
 
 def _tma_supported(dtype: torch.dtype, head_dim: int, device: torch.device = None) -> bool:
+    if not torch.cuda.is_available():
+        return False
+    if device is None:
+        device = torch.device("cuda", torch.cuda.current_device())
+    elif isinstance(device, int):
+        device = torch.device("cuda", device)
+    elif not isinstance(device, torch.device):
+        device = torch.device(device)
+    if device.type == "cuda" and device.index is None:
+        device = torch.device("cuda", torch.cuda.current_device())
+    return _tma_supported_cached(dtype, head_dim, device)
+
+
+@lru_cache(maxsize=128)
+def _tma_supported_cached(dtype: torch.dtype, head_dim: int, device: torch.device) -> bool:
     """The TMA kernel requires a 128-bit-vectorizable, 16-byte-box-aligned tile.
 
     ``head_dim`` must be even, ``hd_half`` a multiple of the 128-bit vector width,
@@ -268,7 +296,7 @@ def _tma_supported(dtype: torch.dtype, head_dim: int, device: torch.device = Non
     # earlier instead of failing at kernel compile/launch. Query the *input
     # tensor's* device (not the current/default one) so heterogeneous multi-GPU
     # processes route each tensor by its own arch.
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability(device)[0] < 9:
+    if torch.cuda.get_device_capability(device)[0] < 9:
         return False
     if dtype not in (torch.bfloat16, torch.float16, torch.float32):
         return False
@@ -662,54 +690,30 @@ def _make_launch_tma_qk(nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, 
     return launch
 
 
-def _tma_handle_build(t: torch.Tensor):
-    # head-row tensor for TMA: innermost (head_dim) contiguous, 16-byte aligned.
-    return (
-        from_dlpack(t.detach(), assumed_align=16)
-        .mark_layout_dynamic(leading_dim=1)
-        .mark_compact_shape_dynamic(mode=1, divisibility=16)
+def _make_launch_tma_pointers(launch, head_dim, cos_shape, cos_stride, sin_stride):
+    @cute.jit
+    def pointer_launch(
+        q_ptr: cute.Pointer,
+        k_ptr: cute.Pointer,
+        cos_ptr: cute.Pointer,
+        sin_ptr: cute.Pointer,
+        rows_q: cutlass.Int32,
+        rows_k: cutlass.Int32,
+        stream: cuda.CUstream,
+    ):
+        q = cute.make_tensor(q_ptr, cute.make_layout((rows_q, head_dim), stride=(head_dim, 1)))
+        k = cute.make_tensor(k_ptr, cute.make_layout((rows_k, head_dim), stride=(head_dim, 1)))
+        cos = cute.make_tensor(cos_ptr, cute.make_layout(cos_shape, stride=cos_stride))
+        sin = cute.make_tensor(sin_ptr, cute.make_layout(cos_shape, stride=sin_stride))
+        launch(q, k, cos, sin, rows_q, rows_k, stream)
+
+    return pointer_launch
+
+
+def _tensor_pointer(t, assumed_align):
+    return cute.runtime.make_ptr(
+        torch2cute_dtype_map[t.dtype], t.data_ptr(), cutlass.AddressSpace.gmem, assumed_align=assumed_align
     )
-
-
-# Building a CuTe TMA handle costs ~4.4us/tensor -- it exports a fresh DLPack
-# capsule (torch.__dlpack__) and a memref descriptor every call. Profiling showed
-# this host cost (q+k => ~10.7us) dominates the eager launch and, exceeding the
-# ~16us kernel, makes the end-to-end op CPU-bound (kernel hits 0.95x Triton HBM
-# bandwidth but apply() only ~0.6x). The descriptor is identical across calls for
-# a given (shape, stride, dtype) -- only the data pointer (memref field 0) changes.
-# So we build one template per (slot, shape, stride, dtype) and just overwrite that
-# pointer for each new tensor (~0.1us). ``slot`` keeps q and k on distinct
-# templates so a same-shape q/k pair (e.g. MHA 32x32) never clobber each other.
-_TMA_HANDLE_CACHE: dict = {}
-
-
-def _tma_handle(t: torch.Tensor, slot: int = 0):
-    # Pointer-swap only valid for a plain contiguous, zero-offset view (field 0 of
-    # the memref is then exactly data_ptr()). rope_forward/backward guarantee this
-    # via .contiguous(); fall back to a fresh build otherwise.
-    if t.storage_offset() != 0 or not t.is_contiguous():
-        return _tma_handle_build(t)
-    key = (slot, tuple(t.shape), tuple(t.stride()), t.dtype, t.device.index)
-    entry = _TMA_HANDLE_CACHE.get(key)
-    if entry is None:
-        h = _tma_handle_build(t)
-        ptr = h.__c_pointers__()[0]  # materialize + cache the memref descriptor
-        # The memref C struct now owns the shape/stride/pointer the launch reads;
-        # the source DLPack capsule (which pins the template tensor's storage) is no
-        # longer needed, so drop it to avoid leaking ~tensor-sized memory per shape.
-        h._dlpack_data = None
-        h._dltensor_wrapper = None
-        if len(_TMA_HANDLE_CACHE) > 32:
-            _TMA_HANDLE_CACHE.clear()
-        # Pre-cast the memref field-0 (data pointer) slot ONCE. Re-casting per call
-        # allocated a fresh ctypes object every launch (~0.5us); caching the bound
-        # ctypes pointer lets the hot path do a single store.
-        field0 = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_int64))
-        entry = (h, field0)
-        _TMA_HANDLE_CACHE[key] = entry
-    h, field0 = entry
-    field0[0] = t.data_ptr()
-    return h
 
 
 _INT32_CACHE: dict = {}
@@ -727,130 +731,33 @@ def _int32_cached(v: int):
     return o
 
 
-def _tma_handle_flat(t: torch.Tensor, slot: int, head_dim: int):
-    # Hot path: treat a contiguous ``t`` as its flat ``(numel//head_dim, head_dim)``
-    # 2-D view WITHOUT calling ``t.reshape`` every launch (~0.7us). The compiled
-    # kernel only ever reads field 0 (data pointer) of the 2-D memref, and a
-    # contiguous tensor shares its data pointer with that flat view, so we can swap
-    # ``t.data_ptr()`` directly. The key uses cheap scalars (no shape/stride tuples).
-    if t.storage_offset() != 0 or not t.is_contiguous():
-        return _tma_handle_build(t.reshape(-1, head_dim))
-    rows = t.numel() // head_dim
-    key = (slot, rows, head_dim, t.dtype, t.device.index)
-    entry = _TMA_HANDLE_CACHE.get(key)
-    if entry is None:
-        h = _tma_handle_build(t.reshape(-1, head_dim))
-        ptr = h.__c_pointers__()[0]
-        h._dlpack_data = None
-        h._dltensor_wrapper = None
-        if len(_TMA_HANDLE_CACHE) > 32:
-            _TMA_HANDLE_CACHE.clear()
-        field0 = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_int64))
-        entry = (h, field0)
-        _TMA_HANDLE_CACHE[key] = entry
-    h, field0 = entry
-    field0[0] = t.data_ptr()
-    return h
-
-
-def _static_cos_handle(t: torch.Tensor):
-    # cos/sin are static-shaped persistent buffers. A STATIC (non-dynamic) layout
-    # bakes the strides into the kernel so the per-row cos/sin gather uses constant
-    # address arithmetic -- measured ~1.2x faster than a dynamic layout (8.8 vs
-    # 7.2 TB/s), which dominates the rotation's memory traffic. Compiles are cached
-    # per (cos_bs, seq_len, head_dim) so the baked strides always match.
-    return from_dlpack(t.detach(), assumed_align=16)
-
-
-_STATIC_COS_CACHE: dict = {}
-
-
-def _static_cos_cached(t: torch.Tensor):
-    key = (t.data_ptr(), tuple(t.shape), t.dtype, t.device.index)
-    h = _STATIC_COS_CACHE.get(key)
-    if h is None:
-        h = _static_cos_handle(t)
-        if len(_STATIC_COS_CACHE) > 16:
-            _STATIC_COS_CACHE.clear()
-        _STATIC_COS_CACHE[key] = h
-    return h
-
-
-def _get_compiled_tma_qk(q2d, k2d, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, seq_len):
-    key = (
-        q2d.dtype,
-        k2d.dtype,
-        cos3.dtype,
-        sin3.dtype,
-        nqh,
-        nkh,
-        hd_half,
-        vec,
-        seq_inner,
-        cos_bcast,
-        backward,
-        tuple(cos3.shape),
-        "tma_qk",
-        q2d.device.index,
+def _fake_tma_matrix(dtype, head_dim):
+    return cute.runtime.make_fake_tensor(
+        torch2cute_dtype_map[dtype],
+        (cute.sym_int(), head_dim),
+        stride=(head_dim, 1),
+        assumed_align=16,
     )
-    fn = _COMPILE_CACHE.get(key)
-    if fn is not None:
-        return fn
-    head_dim = 2 * hd_half
-    fn = cute.compile(
-        _make_launch_tma_qk(nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, seq_len),
-        _tma_handle_build(q2d.reshape(-1, head_dim)),
-        _tma_handle_build(k2d.reshape(-1, head_dim)),
-        _static_cos_handle(cos3),
-        _static_cos_handle(sin3),
-        cutlass.Int32(1),
-        cutlass.Int32(1),
-        _cute_stream(),
-    )
-    _COMPILE_CACHE[key] = fn
-    return fn
 
 
-def _compile_key_tma_qk(
-    dtype,
-    k_dtype,
-    cos_dtype,
-    sin_dtype,
-    nqh,
-    nkh,
-    hd_half,
-    vec,
-    seq_inner,
-    cos_bcast,
-    backward,
-    cos_shape,
-    device_index,
-):
-    return (
-        dtype,
-        k_dtype,
-        cos_dtype,
-        sin_dtype,
-        nqh,
-        nkh,
-        hd_half,
-        vec,
-        seq_inner,
-        cos_bcast,
-        backward,
-        cos_shape,
-        "tma_qk",
-        device_index,
+def _fake_rotary_table(t):
+    return cute.runtime.make_fake_tensor(
+        torch2cute_dtype_map[t.dtype],
+        tuple(t.shape),
+        stride=tuple(t.stride()),
+        assumed_align=t.element_size(),
     )
 
 
 def _apply_qk_tma(q, k, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, seq_len, backward):
     """Rotate q and k in a single fused TMA launch (k rides along on q's grid)."""
+    device_index = q.device.index
+    if torch.cuda.current_device() != device_index:
+        with torch.cuda.device(q.device):
+            return _apply_qk_tma(q, k, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, seq_len, backward)
     head_dim = 2 * hd_half
-    # Hot path avoids the per-call ``reshape`` of q/k: look the compiled fn up by a
-    # cheap scalar key (only dtype/config matters) and swap the data pointer into the
-    # cached flat memref. Reshape happens only on the first (compile/build) call.
-    key = _compile_key_tma_qk(
+    use_tvm_ffi = _TVM_FFI_PRESENT
+    key = (
         q.dtype,
         k.dtype,
         cos3.dtype,
@@ -863,20 +770,53 @@ def _apply_qk_tma(q, k, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast
         cos_bcast,
         backward,
         tuple(cos3.shape),
-        q.device.index,
+        tuple(cos3.stride()),
+        tuple(sin3.stride()),
+        device_index,
+        use_tvm_ffi,
+        "tma_qk",
     )
+    q2d, k2d = q.reshape(-1, head_dim), k.reshape(-1, head_dim)
+    if not use_tvm_ffi:
+        # Fresh bindings also work when global TVM FFI is enabled: patching a
+        # cached native memref does not update its underlying TVM tensor.
+        args = (
+            _tensor_pointer(q2d, 16),
+            _tensor_pointer(k2d, 16),
+            _tensor_pointer(cos3, cos3.element_size()),
+            _tensor_pointer(sin3, sin3.element_size()),
+            _int32_cached(q2d.shape[0]),
+            _int32_cached(k2d.shape[0]),
+            _cute_stream(),
+        )
     fn = _COMPILE_CACHE.get(key)
     if fn is None:
-        fn = _get_compiled_tma_qk(q, k, cos3, sin3, nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, seq_len)
-    fn(
-        _tma_handle_flat(q, 0, head_dim),
-        _tma_handle_flat(k, 1, head_dim),
-        _static_cos_cached(cos3),
-        _static_cos_cached(sin3),
-        _int32_cached(q.numel() // head_dim),
-        _int32_cached(k.numel() // head_dim),
-        _cute_stream(),
-    )
+        with _TMA_COMPILE_LOCK:
+            fn = _COMPILE_CACHE.get(key)
+            if fn is None:
+                launch = _make_launch_tma_qk(nqh, nkh, hd_half, vec, seq_inner, cos_bcast, backward, seq_len)
+                if use_tvm_ffi:
+                    fn = cute.compile(
+                        launch,
+                        _fake_tma_matrix(q.dtype, head_dim),
+                        _fake_tma_matrix(k.dtype, head_dim),
+                        _fake_rotary_table(cos3),
+                        _fake_rotary_table(sin3),
+                        cutlass.Int32(1),
+                        cutlass.Int32(1),
+                        cute.runtime.make_fake_stream(use_tvm_ffi_env_stream=True),
+                        options="--enable-tvm-ffi",
+                    )
+                else:
+                    pointer_launch = _make_launch_tma_pointers(
+                        launch, head_dim, tuple(cos3.shape), tuple(cos3.stride()), tuple(sin3.stride())
+                    )
+                    fn = cute.compile(pointer_launch, *args)
+                _COMPILE_CACHE[key] = fn
+    if use_tvm_ffi:
+        fn(q2d, k2d, cos3, sin3, q2d.shape[0], k2d.shape[0])
+    else:
+        fn(*args)
 
 
 # ---------------------------------------------------------------------------
