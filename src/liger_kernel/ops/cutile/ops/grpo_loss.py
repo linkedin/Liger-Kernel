@@ -808,7 +808,7 @@ def _reduce_loss(per_token_loss, mask, loss_type, max_completion_length, B, L, n
     elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
         return (per_token_loss * mask).sum() / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
     elif loss_type == "luspo":
-        return (per_token_loss * mask.sum(-1, keepdim=True)).mean()
+        return (per_token_loss * mask).sum(-1).mean()
     raise ValueError(f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo, luspo")
 
 
@@ -1169,13 +1169,8 @@ class GrpoLossFunction(torch.autograd.Function):
         elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
             dloss = dloss_input * mask / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
         elif loss_type == "luspo":
-            seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
-            # d(loss)/d(per_token_loss[b,l]) = seq_len[b] / (B*L), constant within a sequence.
-            # Broadcast the (B, 1) scale to (B, L). NOTE: this intentionally diverges from the
-            # Triton path, which passes the (B, 1) tensor with stride (1, 1) and reads
-            # dloss[off_b + off_l] — out of bounds (wrong) for B < L. The cuTile result is the
-            # mathematically correct per-sequence gradient.
-            dloss = (dloss_input * seq_lens_bwd / (B * L)).expand(B, L)
+            # loss = (per_token_loss * mask).sum(-1).mean()
+            dloss = dloss_input * mask / B
         else:
             raise ValueError(f"Unknown loss_type: {loss_type}")
 

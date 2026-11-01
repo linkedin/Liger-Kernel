@@ -240,9 +240,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             )
             loss = (per_token_loss * attention_mask).sum() / loss_normalizer
         elif loss_type == "luspo":
-            # Match TRL exactly: loss = (per_token_loss * mask.sum(1, keepdim=True)).mean()
-            weighted = per_token_loss * attention_mask.sum(1, keepdim=True)
-            loss = weighted.sum() / (full_attention_mask.shape[0] * weighted.shape[1])
+            # Match TRL: loss = (per_token_loss * mask).sum(-1).mean(). Masking elementwise keeps
+            # padded positions out once per_token_loss is (B, T) (KL term, per-token vLLM IS ratio).
+            loss = (per_token_loss * attention_mask).sum() / full_attention_mask.shape[0]
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
 

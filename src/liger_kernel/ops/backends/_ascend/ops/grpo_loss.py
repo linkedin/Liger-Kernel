@@ -708,7 +708,7 @@ def reduce_loss(per_token_loss, mask, loss_type, max_completion_length, batch_si
     elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
         return (per_token_loss * mask).sum() / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
     elif loss_type == "luspo":
-        return (per_token_loss * mask.sum(-1, keepdim=True)).mean()
+        return (per_token_loss * mask).sum(-1).mean()
     raise ValueError(
         f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo, luspo, vespo"
     )
@@ -1022,8 +1022,8 @@ def grpo_loss_backward_triton(ctx, *args):
     elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
         dloss = dloss_input * mask / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
     elif loss_type == "luspo":
-        seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
-        dloss = dloss_input * seq_lens_bwd / (B * L)
+        # loss = (per_token_loss * mask).sum(-1).mean()
+        dloss = dloss_input * mask / B
     else:
         raise ValueError(f"Unknown loss_type: {loss_type}")
 
