@@ -655,6 +655,88 @@ def test_grpo_loss_vs_trl(B, T, V, beta, use_bias_correction_kl, loss_type, impo
     assert not torch.isnan(logits_triton.grad).any()
 
 
+@pytest.mark.parametrize("delta", [1.1, 1.5])
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+@pytest.mark.parametrize("B, T, V", [(14, 33, 1000), (14, 128, 4096)])
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-6, 1e-4),
+        (torch.bfloat16, 1e-5, 2e-2),
+    ],
+)
+def test_grpo_loss_with_delta_backward_vs_trl(B, T, V, importance_sampling_level, delta, dtype, atol, rtol):
+    """Gradients with delta must match TRL for ratios in every clip region.
+
+    With delta < 1 + eps_high and a negative advantage, -min() selects coef_2 * advantage
+    for ratios in (delta, 1 + eps_high]. coef_2 is not clamped there, so the gradient is nonzero.
+    """
+    torch.manual_seed(0)
+    temperature = 0.9
+    eps_low, eps_high = 0.2, 0.28
+
+    logits = torch.randn(B, T + 1, V, device=device, dtype=dtype)
+    completion_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.ones(B, T, device=device, dtype=torch.float32)
+    completion_mask[::3, -5:] = 0
+    # Alternate advantage signs so every ratio region is seen with both signs.
+    signs = torch.tensor([1.0, -1.0], device=device).repeat(B // 2)
+    advantages = signs * (0.5 + torch.rand(B, device=device))
+
+    # Ratios below 1 - eps_low, inside the clip interval on both sides of delta, and above 1 + eps_high.
+    ratios = torch.tensor([0.7, 0.95, 1.05, 1.2, 1.4, 1.6, 2.0], device=device)
+    if importance_sampling_level == "token":
+        token_ratios = ratios[torch.randint(0, len(ratios), (B, T), device=device)]
+    else:
+        token_ratios = ratios[(torch.arange(B, device=device) // 2) % len(ratios)].unsqueeze(-1).expand(B, T)
+
+    with torch.no_grad():
+        log_probs = torch.log_softmax(logits[:, :-1, :].float() / temperature, dim=-1)
+        current_logp = log_probs.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+        old_logp = (current_logp - token_ratios.log()).contiguous()
+
+    logits_ref = logits.clone().float().requires_grad_(True)
+    ref_loss = trl_reference_grpo_loss(
+        logits_ref,
+        old_logp,
+        None,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        0.0,
+        eps_low,
+        eps_high,
+        "grpo",
+        importance_sampling_level,
+        delta=delta,
+    )
+    ref_loss.backward()
+
+    logits_triton = logits.clone().requires_grad_(True)
+    triton_loss, _ = triton_grpo_loss(
+        logits_triton,
+        old_logp,
+        None,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature=temperature,
+        beta=0.0,
+        eps_low=eps_low,
+        eps_high=eps_high,
+        inplace=False,
+        loss_type="grpo",
+        importance_sampling_level=importance_sampling_level,
+        reduce=True,
+        delta=delta,
+    )
+    triton_loss.backward()
+
+    assert_verbose_allclose(triton_loss, ref_loss, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(logits_triton.grad.float(), logits_ref.grad, atol=atol, rtol=rtol)
+
+
 @pytest.mark.parametrize("loss_type", ["dapo", "cispo"])
 def test_triton_num_items_in_batch_normalizer(loss_type):
     """``num_items_in_batch`` overrides the dapo/cispo normalizer in the triton path.
