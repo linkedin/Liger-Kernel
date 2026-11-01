@@ -278,7 +278,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
             normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(attention_mask)
             loss = (per_token_loss * attention_mask).sum() / normalizer
         elif self.loss_type == "luspo":
-            loss = (per_token_loss * attention_mask.sum(-1, keepdim=True)).mean()
+            loss = (per_token_loss * attention_mask).sum(-1).mean()
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
 
@@ -1071,7 +1071,7 @@ def test_reduce_grpo_loss_matches_reference(loss_type):
     elif loss_type == "dr_grpo":
         expected = (per_token_loss * mask_f).sum() / (per_token_loss.size(0) * max_completion_length)
     elif loss_type == "luspo":
-        expected = (per_token_loss * mask_f.sum(-1, keepdim=True)).mean()
+        expected = (per_token_loss * mask_f).sum(-1).mean()
     else:  # dapo/cispo
         expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
 

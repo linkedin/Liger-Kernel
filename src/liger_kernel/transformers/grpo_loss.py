@@ -178,8 +178,8 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
         normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
         return (per_token_loss * mask).sum() / normalizer
     if loss_type == "luspo":
-        # LUSPO: scale each sequence's loss by its valid token count, then average across sequences
-        return (per_token_loss * mask.sum(-1, keepdim=True)).mean()
+        # LUSPO: sum each sequence's masked loss (weight = its valid token count), then average across sequences
+        return (per_token_loss * mask).sum(-1).mean()
     raise ValueError(f"Unsupported loss_type '{loss_type}' for Triton GRPO loss.")
 
 
