@@ -490,11 +490,16 @@ def _grpo_loss_bwd_kernel_seq(
                 coef_1_for_loss = coef_1
             per_token_loss1 = coef_1_for_loss * advantage
             per_token_loss2 = coef_2 * advantage
-            is_unclipped = per_token_loss2 >= per_token_loss1
-
-            dlogp = -coef_1 * advantage / seq_len * is_unclipped * dloss_sum
+            is_loss1 = per_token_loss2 >= per_token_loss1
             if DELTA != 0.0:
-                dlogp = dlogp * (coef_1 <= DELTA)
+                # The gradient follows the operand -min() selects. When delta < 1 + eps_high,
+                # loss2 can be selected while coef_2 is still unclamped, so it carries a gradient.
+                in_clip = (coef_1 >= 1 - EPS_LOW) & (coef_1 <= 1 + EPS_HIGH)
+                has_grad = tl.where(is_loss1, coef_1 <= DELTA, in_clip)
+            else:
+                has_grad = is_loss1
+
+            dlogp = -coef_1 * advantage / seq_len * has_grad * dloss_sum
 
             if BETA != 0.0:
                 REF_LOGP_local = REF_LOGP + token_idx
@@ -603,10 +608,15 @@ def _grpo_loss_bwd_kernel(
                     coef_1_for_loss = coef_1
                 per_token_loss1 = coef_1_for_loss * advantage
                 per_token_loss2 = coef_2 * advantage
-                mask = per_token_loss2 >= per_token_loss1
-                dlogp = -coef_1 * advantage * mask
+                is_loss1 = per_token_loss2 >= per_token_loss1
                 if DELTA != 0.0:
-                    dlogp = dlogp * (coef_1 <= DELTA)
+                    # The gradient follows the operand -min() selects. When delta < 1 + eps_high,
+                    # loss2 can be selected while coef_2 is still unclamped, so it carries a gradient.
+                    in_clip = (coef_1 >= 1 - EPS_LOW) & (coef_1 <= 1 + EPS_HIGH)
+                    has_grad = tl.where(is_loss1, coef_1 <= DELTA, in_clip)
+                else:
+                    has_grad = is_loss1
+                dlogp = -coef_1 * advantage * has_grad
 
             elif LOSS_TYPE == 1:  # CISPO
                 coef_2 = tl.minimum(coef_1, EPS_HIGH)
