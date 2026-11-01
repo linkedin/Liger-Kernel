@@ -1,3 +1,4 @@
+from liger_kernel.chunked_loss.bco_loss import LigerFusedLinearBCOFunction
 from liger_kernel.chunked_loss.cosine_similarity_loss import LigerFusedLinearCosineSimilarityFunction
 from liger_kernel.chunked_loss.cpo_loss import LigerFusedLinearCPOFunction
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
@@ -14,4 +15,5 @@ liger_fused_linear_cosine = LigerFusedLinearCosineSimilarityFunction.apply
 liger_fused_linear_cpo = LigerFusedLinearCPOFunction.apply
 liger_fused_linear_simpo = LigerFusedLinearSimPOFunction.apply
 liger_fused_linear_kto = LigerFusedLinearKTOFunction.apply
+liger_fused_linear_bco = LigerFusedLinearBCOFunction.apply
 liger_fused_linear_grpo = LigerFusedLinearGRPOFunction.apply
