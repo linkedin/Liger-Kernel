@@ -145,6 +145,7 @@ Functional APIs are also available:
 | Fused Linear SimPO Loss         | `liger_kernel.chunked_loss.LigerFusedLinearSimPOLoss`     |
 | Fused Linear KTO Loss           | `liger_kernel.chunked_loss.LigerFusedLinearKTOLoss`     |
 | Fused Linear GRPO Loss          | `liger_kernel.chunked_loss.LigerFusedLinearGRPOLoss`    |
+| Fused Linear IRPO Loss          | `liger_kernel.chunked_loss.LigerFusedLinearIRPOLoss`    |
 
 ## Distillation Kernels
 
