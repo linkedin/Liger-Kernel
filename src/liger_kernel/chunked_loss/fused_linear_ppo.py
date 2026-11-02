@@ -1,3 +1,4 @@
+import math
 import warnings
 
 from abc import abstractmethod
@@ -8,6 +9,8 @@ import torch._dynamo.config
 
 _SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE = 4096
 _SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE = 2048
+# torch.quantile refuses inputs larger than this; the entropy quantile falls back to a sort above it.
+_TORCH_QUANTILE_MAX_NUMEL = 2**24
 
 
 def _maybe_mark_dynamic_dim1(tensor):
@@ -68,6 +71,111 @@ def _selective_logprob_forward(
         logprobs[seq_start:seq_end] = target_logit - log_z_chunk
 
     return logprobs, log_z
+
+
+@torch.no_grad()
+def _selective_entropy_forward(
+    hidden, weight, bias=None, temperature=1.0, vocab_chunk_size=_SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE
+):
+    """Per-row softmax entropy of ``hidden @ weight.T / temperature`` without materializing the full logits.
+
+    Streams over sequence and vocab chunks like ``_selective_logprob_forward``, carrying a second online
+    accumulator ``sum_exp_z = sum_v exp(z_v - m) * z_v`` next to the running ``(m, sum_exp)``. Both are rescaled by
+    ``exp(m_old - m_new)`` whenever the running max changes, so at the end
+
+        H = log_z - sum_exp_z / sum_exp,   log_z = m + log(sum_exp),
+
+    which is ``logsumexp(z) - sum(softmax(z) * z)``. Returns an fp32 ``(n_rows,)`` tensor, clamped at 0.
+    """
+    device = hidden.device
+    n_rows, _ = hidden.shape
+    vocab_size, _ = weight.shape
+    inv_t = 1.0 / temperature
+    seq_chunk_size = _SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE
+
+    entropy = torch.empty((n_rows,), device=device, dtype=torch.float32)
+
+    for seq_start in range(0, n_rows, seq_chunk_size):
+        seq_end = min(seq_start + seq_chunk_size, n_rows)
+        n_chunk = seq_end - seq_start
+        hidden_chunk = hidden[seq_start:seq_end]
+
+        max_old = torch.full((n_chunk,), float("-inf"), device=device, dtype=torch.float32)
+        sum_exp = torch.zeros((n_chunk,), device=device, dtype=torch.float32)
+        sum_exp_z = torch.zeros((n_chunk,), device=device, dtype=torch.float32)
+
+        for vocab_start in range(0, vocab_size, vocab_chunk_size):
+            vocab_end = min(vocab_start + vocab_chunk_size, vocab_size)
+            weight_chunk = weight[vocab_start:vocab_end]
+            logits_chunk = (hidden_chunk @ weight_chunk.to(hidden.dtype).t()).float()
+            if bias is not None:
+                logits_chunk.add_(bias[vocab_start:vocab_end].to(torch.float32))
+            logits_chunk.mul_(inv_t)
+
+            chunk_max = logits_chunk.amax(dim=-1)
+            max_new = torch.maximum(max_old, chunk_max)
+            rescale = torch.exp(max_old - max_new)
+            chunk_exp = torch.exp(logits_chunk - max_new.unsqueeze(-1))
+
+            sum_exp = sum_exp * rescale + chunk_exp.sum(dim=-1)
+            sum_exp_z = sum_exp_z * rescale + (chunk_exp * logits_chunk).sum(dim=-1)
+            max_old = max_new
+
+        log_z = max_old + torch.log(sum_exp)
+        entropy[seq_start:seq_end] = (log_z - sum_exp_z / sum_exp).clamp_(min=0.0)
+
+    return entropy
+
+
+def _quantile_large_safe(values, q, max_torch_quantile_numel=_TORCH_QUANTILE_MAX_NUMEL):
+    """``torch.quantile(values, q)`` (linear interpolation) that also works past torch.quantile's 2**24-element cap.
+
+    Above the cap the quantile is read off a full sort with the same linear interpolation torch.quantile uses.
+    """
+    values = values.reshape(-1).float()
+    if values.numel() <= max_torch_quantile_numel:
+        return torch.quantile(values, q)
+    sorted_values, _ = torch.sort(values)
+    position = q * (values.numel() - 1)
+    lower = int(math.floor(position))
+    upper = min(lower + 1, values.numel() - 1)
+    fraction = position - lower
+    return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * fraction
+
+
+def _gather_variable_length(local):
+    """All-gather a 1D tensor whose length differs per rank. Returns ``local`` unchanged outside distributed runs."""
+    if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+        return local
+    import torch.distributed as dist
+
+    world_size = dist.get_world_size()
+    if world_size == 1:
+        return local
+    local_size = torch.tensor([local.numel()], device=local.device, dtype=torch.long)
+    sizes = [torch.zeros_like(local_size) for _ in range(world_size)]
+    dist.all_gather(sizes, local_size)
+    sizes = [int(size.item()) for size in sizes]
+    max_size = max(sizes)
+    padded = torch.zeros((max_size,), device=local.device, dtype=local.dtype)
+    padded[: local.numel()] = local
+    gathered = [torch.empty_like(padded) for _ in range(world_size)]
+    dist.all_gather(gathered, padded)
+    return torch.cat([chunk[:size] for chunk, size in zip(gathered, sizes)], dim=0)
+
+
+def _compute_high_entropy_mask(entropies, attention_mask, top_entropy_quantile):
+    """Mask of the ``top_entropy_quantile`` fraction of highest-entropy active tokens (TRL ``get_high_entropy_mask``).
+
+    The quantile threshold is taken over every active token of the batch and, in a distributed run, over all ranks,
+    matching TRL. Returns an fp32 ``(B, T)`` mask; all zeros when there is no active token.
+    """
+    active = entropies[attention_mask.bool()].float()
+    gathered = _gather_variable_length(active)
+    if gathered.numel() == 0:
+        return torch.zeros_like(entropies, dtype=torch.float32)
+    threshold = _quantile_large_safe(gathered, 1.0 - top_entropy_quantile)
+    return ((entropies * attention_mask.to(entropies.dtype)) >= threshold).to(torch.float32)
 
 
 def _selective_logprob_backward(
@@ -219,12 +327,20 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         vespo_k_neg=3.0,
         vespo_lambda_neg=2.0,
         num_items_in_batch=None,
+        top_entropy_quantile=1.0,
     ):
         """Chunked forward pass for PPO loss computation.
 
         Hybrid approach: chunk_forward (custom autograd, memory-efficient) runs OUTSIDE
         torch.compile; only the loss math (ppo_loss_fn) is compiled.
+
+        ``top_entropy_quantile < 1.0`` restricts the policy term to the highest-entropy fraction of active tokens
+        (TRL ``top_entropy_quantile``). Since the fused path never materializes logits, the per-token entropies come
+        from an extra no-grad streaming pass over the lm_head before the chunk loop; the quantile threshold spans the
+        whole batch (and all ranks when distributed), exactly like TRL.
         """
+        if not 0.0 <= top_entropy_quantile <= 1.0:
+            raise ValueError(f"top_entropy_quantile must be in [0.0, 1.0], got {top_entropy_quantile}")
         if use_ref_model:
             assert ref_per_token_logps is not None or ref_input is not None, (
                 "If use_ref_model is True, ref_per_token_logps or ref_input must be provided"
@@ -289,6 +405,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             old_per_token_logps_chunk,
             ref_input_chunk,
             vllm_is_ratio_chunk,
+            entropy_mask_chunk,
         ):
             """Fused forward and backward for a chunk."""
             with torch.enable_grad():
@@ -324,6 +441,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                     ref_per_token_logps_chunk=ref_per_token_logps_chunk,
                     old_per_token_logps_chunk=old_per_token_logps_chunk,
                     vllm_is_ratio_chunk=vllm_is_ratio_chunk,
+                    entropy_mask_chunk=entropy_mask_chunk,
                 )
 
                 grad_targets = [input_chunk]
@@ -343,6 +461,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             old_per_token_logps_chunk=None,
             ref_input_chunk=None,
             vllm_is_ratio_chunk=None,
+            entropy_mask_chunk=None,
         ):
             (chunk_grad_input, *chunk_grad_params), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
                 input_chunk,
@@ -353,6 +472,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 old_per_token_logps_chunk,
                 ref_input_chunk,
                 vllm_is_ratio_chunk,
+                entropy_mask_chunk,
             )
             # Accumulate gradients and loss (weight and bias gradients follow the input's, in that order,
             # for whichever of them require grad)
@@ -402,6 +522,21 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         _vllm_is_ratio_chunks = (
             torch.chunk(vllm_is_ratio, chunks=chunks, dim=0) if vllm_is_ratio is not None else [None] * chunks
         )
+        # High-entropy token mask: the threshold is a quantile over the whole batch, so the entropies of every
+        # chunk are needed before the first chunk's loss. One extra no-grad streaming pass over the lm_head.
+        entropy_mask = None
+        if top_entropy_quantile < 1.0:
+            entropies = torch.cat(
+                [
+                    LigerFusedLinearPPOBase.chunk_entropy(input_chunk, weight, bias=bias, temperature=temperature)
+                    for input_chunk in _input_chunks
+                ],
+                dim=0,
+            )
+            entropy_mask = _compute_high_entropy_mask(entropies, attention_mask, top_entropy_quantile)
+        _entropy_mask_chunks = (
+            torch.chunk(entropy_mask, chunks=chunks, dim=0) if entropy_mask is not None else [None] * chunks
+        )
 
         for (
             input_chunk,
@@ -412,6 +547,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             old_per_token_logps_chunk,
             ref_input_chunk,
             vllm_is_ratio_chunk,
+            entropy_mask_chunk,
         ) in zip(
             _input_chunks,
             _selected_token_ids_chunks,
@@ -421,6 +557,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             _old_per_token_logps_chunks,
             _ref_input_chunks,
             _vllm_is_ratio_chunks,
+            _entropy_mask_chunks,
         ):
             # Allow torch.compile to generalize sequence length without forcing it to be dynamic.
             _maybe_mark_dynamic_dim1(input_chunk)
@@ -430,6 +567,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             _maybe_mark_dynamic_dim1(ref_input_chunk)
             _maybe_mark_dynamic_dim1(old_per_token_logps_chunk)
             _maybe_mark_dynamic_dim1(vllm_is_ratio_chunk)
+            _maybe_mark_dynamic_dim1(entropy_mask_chunk)
 
             accumulate_chunk(
                 input_chunk,
@@ -440,6 +578,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 old_per_token_logps_chunk,
                 ref_input_chunk,
                 vllm_is_ratio_chunk,
+                entropy_mask_chunk,
             )
 
         # Combine gradients
@@ -503,6 +642,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         ref_per_token_logps_chunk=None,
         old_per_token_logps_chunk=None,
         vllm_is_ratio_chunk=None,
+        entropy_mask_chunk=None,
         full_attention_mask=None,
         epsilon_low=0.2,
         epsilon_high=0.2,
@@ -538,6 +678,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             sapo_temperature_pos=sapo_temperature_pos,
             sapo_temperature_neg=sapo_temperature_neg,
             vllm_is_ratio=vllm_is_ratio_chunk,
+            entropy_mask=entropy_mask_chunk,
             delta=delta,
             use_bias_correction_kl=use_bias_correction_kl,
             vespo_k_pos=vespo_k_pos,
@@ -567,6 +708,16 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             _SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE,
         )
         return per_token_logps.reshape(batch_size, seq_len)
+
+    @staticmethod
+    def chunk_entropy(input_chunk, weight, bias=None, temperature=1.0):
+        """Per-token softmax entropy of the policy without materializing full vocab logits (no grad)."""
+        batch_size, seq_len, hidden_size = input_chunk.shape
+        hidden = input_chunk.reshape(batch_size * seq_len, hidden_size).contiguous()
+        entropy = _selective_entropy_forward(
+            hidden, weight, bias=bias, temperature=temperature, vocab_chunk_size=_SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE
+        )
+        return entropy.reshape(batch_size, seq_len)
 
     @staticmethod
     def backward(ctx, grad_output, *grad_metrics):
@@ -607,5 +758,10 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_vllm_is_ratio
             None,  # grad_delta
             None,  # grad_use_bias_correction_kl
+            None,  # grad_vespo_k_pos
+            None,  # grad_vespo_lambda_pos
+            None,  # grad_vespo_k_neg
+            None,  # grad_vespo_lambda_neg
             None,  # grad_num_items_in_batch
+            None,  # grad_top_entropy_quantile
         )
