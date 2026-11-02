@@ -240,6 +240,32 @@ def test_correctness_with_ignore_index(B, T, V, reduction, dtype, atol, rtol, ig
 
 
 @pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
+def test_correctness_all_ignored(reduction):
+    B, T, V = 2, 8, 4096
+    dtype = torch.float32
+    torch.manual_seed(0)
+    device = infer_device()
+    input = torch.randn(B * T, V, device=device, dtype=dtype)
+    target = torch.randn(B * T, V, device=device).softmax(dim=-1)
+    labels = torch.full((B * T,), -100, device=device, dtype=torch.long)
+
+    liger_tvd = LigerTVDLoss(reduction=reduction)
+    torch_tvd = TorchTVDLoss(reduction=reduction)
+    x1 = input.detach().clone().requires_grad_(True)
+    x2 = input.detach().clone().requires_grad_(True)
+
+    output = liger_tvd(x1, target, labels)
+    if reduction == "none":
+        assert torch.count_nonzero(output) == 0
+        output.sum().backward()
+    else:
+        output_ref = torch_tvd(x2, target, labels)
+        assert torch.allclose(output, output_ref, atol=1e-8, rtol=1e-6)
+        output.backward()
+    assert torch.count_nonzero(x1.grad) == 0
+
+
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 def test_torch_compile_matches_eager(reduction):
     # inductor re-emits the kernel source; a signature default that names a module global must
     # still resolve there, and the compiled call must match eager bit for bit

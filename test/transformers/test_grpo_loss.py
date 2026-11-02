@@ -1233,6 +1233,64 @@ def test_grpo_loss_sequence_backward_matches_reference(beta):
     torch.testing.assert_close(logits_triton.grad, logits_ref.grad, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("padded", [False, True])
+@pytest.mark.parametrize("beta", [0.0, 0.04])
+@pytest.mark.parametrize("B, T, V", [(3, 16, 4097), (8, 4, 1000)])
+def test_luspo_token_level_reduced_backward_matches_reference(B, T, V, beta, padded):
+    """Regression test for #1529: LUSPO + token-level + reduce=True built a (B, 1) upstream
+    gradient that the token-level backward kernel indexed per token (out-of-bounds / wrong values)."""
+    pytest.importorskip("triton")
+    torch.manual_seed(0)
+    temperature, eps_low, eps_high = 0.9, 0.2, 0.4
+
+    logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32)
+    completion_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.ones(B, T, device=device, dtype=torch.float32)
+    if padded:
+        # Distinct valid lengths per sequence so the per-sequence LUSPO scale differs across rows.
+        lengths = torch.arange(B, device=device) % T + 1
+        completion_mask = (torch.arange(T, device=device)[None, :] < lengths[:, None]).float()
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+    with torch.no_grad():
+        cur = torch.log_softmax(logits[:, :-1] / temperature, -1).gather(-1, completion_ids[..., None])[..., 0]
+        old_logp = cur + 0.3 * torch.randn_like(cur)
+        ref_logp = cur + 0.2 * torch.randn_like(cur) if beta != 0.0 else None
+
+    logits_triton = logits.clone().requires_grad_(True)
+    triton_loss, _ = triton_grpo_loss(
+        logits_triton,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature=temperature,
+        beta=beta,
+        eps_low=eps_low,
+        eps_high=eps_high,
+        loss_type="luspo",
+        importance_sampling_level="token",
+        reduce=True,
+    )
+    triton_loss.backward()
+
+    # Reference: token-level clipped objective, padded positions contribute zero loss (as in the
+    # Triton forward kernel), each sequence scaled by its valid length, mean over B * L.
+    logits_ref = logits.clone().requires_grad_(True)
+    logp = torch.log_softmax(logits_ref[:, :-1] / temperature, -1).gather(-1, completion_ids[..., None])[..., 0]
+    coef_1 = torch.exp(logp - old_logp)
+    coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+    adv = advantages.unsqueeze(-1)
+    per_token_loss = -torch.min(coef_1 * adv, coef_2 * adv)
+    if beta != 0.0:
+        per_token_loss = per_token_loss + beta * (torch.exp(ref_logp - logp) - (ref_logp - logp) - 1.0)
+    reference_loss = (per_token_loss * completion_mask * completion_mask.sum(-1, keepdim=True)).mean()
+    reference_loss.backward()
+
+    torch.testing.assert_close(triton_loss, reference_loss, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(logits_triton.grad, logits_ref.grad, rtol=1e-4, atol=1e-5)
+
+
 @pytest.mark.parametrize(
     "temperature, num_iteration, beta, eps_high",
     [(0.7, num_iteration, beta, 5.0) for num_iteration in [1, 5] for beta in [0.0, 0.04]],

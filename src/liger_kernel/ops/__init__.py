@@ -59,6 +59,9 @@ from liger_kernel.ops.fused_linear_scaled_cross_entropy import LigerFusedLinearS
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import (
     LigerFusedLinearScaledCrossEntropyTPFunction,  # noqa: F401
 )
+from liger_kernel.ops.fused_linear_score_centering import ISCorrection  # noqa: F401
+from liger_kernel.ops.fused_linear_score_centering import LigerFusedLinearScoreCenteringFunction  # noqa: F401
+from liger_kernel.ops.fused_linear_score_centering import fused_linear_score_centering  # noqa: F401
 from liger_kernel.ops.fused_moe import LigerFusedMoEFunction  # noqa: F401
 from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction  # noqa: F401
 from liger_kernel.ops.geglu import LigerGELUMulFunction  # noqa: F401

@@ -54,8 +54,8 @@ def _poly_norm_forward_kernel(
     X_ptr += row_idx * X_row_stride
     RSTD_ptr += row_idx * RSTD_row_stride
 
-    # Load input row
-    X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0.0)
+    # Load input row; compute in fp32 (sum(x^6) overflows fp16 at hidden size ~4096)
+    X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
 
     # Load weights and bias
     w0 = tl.load(W_ptr + 0)

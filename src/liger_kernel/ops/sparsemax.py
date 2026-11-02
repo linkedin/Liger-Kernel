@@ -35,6 +35,12 @@ def _sparsemax_forward_kernel(
         cache_modifier=".cg",
     ).to(tl.float32)
 
+    # sparsemax is shift-invariant: subtract the row max so that a large common offset does not
+    # absorb the "- 1" in the threshold (rows whose max is not finite are left unshifted)
+    z_max = tl.load(ptr_sorted_x_data_row).to(tl.float32)
+    z_max = tl.where(tl.abs(z_max) < float("inf"), z_max, 0.0)
+    z_sorted_block = z_sorted_block - z_max
+
     z_valid = tl.where(mask, z_sorted_block, 0.0)
     cssv = tl.cumsum(z_valid, 0)
 
@@ -58,7 +64,7 @@ def _sparsemax_forward_kernel(
         cache_modifier=".cg",
     ).to(tl.float32)
 
-    y = tl.maximum(x_block - tau, 0.0)
+    y = tl.maximum((x_block - z_max) - tau, 0.0)
 
     tl.store(
         ptr_output_row + offs,
