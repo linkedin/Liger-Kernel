@@ -74,6 +74,41 @@ def sapo_loss_fn(importance_ratio: torch.Tensor, temperature: float) -> torch.Te
     return sigmoid_smoothed_loss * 4 / temperature
 
 
+@torch.no_grad()
+def get_off_policy_mask(
+    advantages: torch.Tensor,
+    per_token_logps: torch.Tensor,
+    sampling_per_token_logps: torch.Tensor,
+    mask: torch.Tensor,
+    off_policy_threshold: float,
+) -> torch.Tensor:
+    """Off-Policy Sequence Mask (OPSM) from DeepSeek-V3.2 (Eq. 9).
+
+    A sequence is dropped when its advantage is negative AND its mean forward KL
+    ``log(pi_sampling) - log(pi_theta)`` over valid tokens exceeds ``off_policy_threshold``.
+    Returns a detached ``(B, 1)`` tensor in ``mask.dtype`` where 1 keeps and 0 drops.
+    TRL reference: ``trl.trainer.grpo_trainer.GRPOTrainer.get_off_policy_mask``.
+
+    Args:
+        advantages: Per-sequence advantages, shape ``(B,)``.
+        per_token_logps: Current-policy log probs, shape ``(B, T)``.
+        sampling_per_token_logps: Log probs of the policy that generated the completions
+            (e.g. vLLM sampling logps, or the old policy logps), shape ``(B, T)``.
+        mask: Valid-token mask, shape ``(B, T)``.
+        off_policy_threshold: KL threshold (``delta`` in the paper).
+    """
+    mask = mask.to(per_token_logps.dtype)
+    # forward KL div: log(pi_sampling) - log(pi_theta)
+    kl_div = sampling_per_token_logps - per_token_logps.detach()
+    # Tokens the sampler could not score carry NaN and provide no KL evidence.
+    kl_div = torch.nan_to_num(kl_div, nan=0.0)
+    seq_kl_sum = (kl_div * mask).sum(dim=1, keepdim=True)
+    avg_seq_kl = seq_kl_sum / mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+    is_pos_adv = advantages.unsqueeze(-1) >= 0
+    is_low_kl = avg_seq_kl <= off_policy_threshold
+    return (is_pos_adv | is_low_kl).to(dtype=mask.dtype)  # (B, 1)
+
+
 def clip_coef_fn(coef, epsilon_low, epsilon_high, loss_type):
     if loss_type == "cispo":
         # CISPO: clip and detach the importance weights
@@ -121,6 +156,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vespo_k_neg=3.0,  # VESPO gamma shape k for negative advantages
         vespo_lambda_neg=2.0,  # VESPO gamma rate lambda for negative advantages
         num_items_in_batch=None,  # Total active tokens across the entire generation batch (TRL-compat)
+        off_policy_mask_threshold=None,  # OPSM threshold (DeepSeek-V3.2 Eq. 9); None disables
+        sampling_per_token_logps=None,  # Sampler (e.g. vLLM) logps for OPSM; falls back to old_per_token_logps
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -199,6 +236,22 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             per_token_loss1 = coef_1 * advantages.unsqueeze(1)
             per_token_loss2 = coef_2 * advantages.unsqueeze(1)
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        # Off-Policy Sequence Masking (OPSM, DeepSeek-V3.2 Eq. 9), mirroring TRL's
+        # ``off_policy_mask_threshold``: drop whole sequences whose advantage is negative AND whose
+        # mean forward KL between the sampling policy and the current policy exceeds the threshold.
+        # Applied to the policy term only (before the vLLM IS correction and before the KL penalty).
+        if off_policy_mask_threshold is not None:
+            off_policy_mask = get_off_policy_mask(
+                advantages=advantages,
+                per_token_logps=per_token_logps,
+                sampling_per_token_logps=(
+                    sampling_per_token_logps if sampling_per_token_logps is not None else old_per_token_logps
+                ),
+                mask=attention_mask,
+                off_policy_threshold=off_policy_mask_threshold,
+            )
+            per_token_loss = per_token_loss * off_policy_mask
 
         # Apply vLLM importance sampling correction BEFORE adding KL penalty
         # VESPO folds this correction into phi_seq (in log space), so we skip it here.
@@ -301,6 +354,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vespo_k_neg=3.0,
         vespo_lambda_neg=2.0,
         num_items_in_batch=None,
+        off_policy_mask_threshold=None,
+        sampling_per_token_logps=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -346,6 +401,13 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
                 (all gradient-accumulation micro-batches × all processes). When provided, dapo /
                 cispo / vespo normalization uses ``num_items_in_batch / num_processes`` to match
                 TRL's ``compute_loss``. When None, falls back to the current micro-batch's mask sum.
+            off_policy_mask_threshold (float, optional): Off-Policy Sequence Masking threshold (DeepSeek-V3.2,
+                Eq. 9; TRL ``off_policy_mask_threshold``). Sequences with a negative advantage whose mean forward KL
+                between the sampling policy and the current policy exceeds this value are dropped from the policy
+                term. None disables.
+            sampling_per_token_logps (torch.Tensor, optional): Log probs of the policy that generated the
+                completions (e.g. vLLM sampling logps). Shape: (batch_size, seq_len). Used only for OPSM; falls back
+                to ``old_per_token_logps`` when None.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -390,6 +452,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             vespo_k_neg=vespo_k_neg,
             vespo_lambda_neg=vespo_lambda_neg,
             num_items_in_batch=num_items_in_batch,
+            off_policy_mask_threshold=off_policy_mask_threshold,
+            sampling_per_token_logps=sampling_per_token_logps,
         )
 
     @staticmethod
@@ -430,6 +494,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_vespo_k_neg
             None,  # grad_vespo_lambda_neg
             None,  # grad_num_items_in_batch
+            None,  # grad_off_policy_mask_threshold
+            None,  # grad_sampling_per_token_logps
         )
 
 
@@ -456,6 +522,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         vespo_lambda_pos: float = 3.0,
         vespo_k_neg: float = 3.0,
         vespo_lambda_neg: float = 2.0,
+        off_policy_mask_threshold: Optional[float] = None,
     ):
         """
         Args:
@@ -480,6 +547,11 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             vespo_k_pos, vespo_lambda_pos, vespo_k_neg, vespo_lambda_neg (float): VESPO gamma weighting
                 hyperparameters (k for shape, lambda for rate; ``_pos`` for non-negative advantages,
                 ``_neg`` for negative). Only used when ``loss_type='vespo'``.
+            off_policy_mask_threshold (float, optional): Off-Policy Sequence Masking threshold (DeepSeek-V3.2,
+                Eq. 9; TRL ``off_policy_mask_threshold``). When set, sequences with a negative advantage whose mean
+                forward KL between the sampling policy and the current policy exceeds this value are dropped from
+                the policy term (the KL penalty is still applied). Pass ``sampling_per_token_logps`` to ``forward``
+                to measure drift against the sampler; otherwise ``old_per_token_logps`` is used. None disables.
         """
         super().__init__()
         # Validate SAPO temperatures to prevent division by zero or numerical instability
@@ -507,6 +579,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self.vespo_lambda_pos = vespo_lambda_pos
         self.vespo_k_neg = vespo_k_neg
         self.vespo_lambda_neg = vespo_lambda_neg
+        self.off_policy_mask_threshold = off_policy_mask_threshold
 
     def forward(
         self,
@@ -523,7 +596,14 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         ref_bias=None,
         vllm_is_ratio=None,
         num_items_in_batch=None,
+        sampling_per_token_logps=None,
     ):
+        """
+        Args:
+            sampling_per_token_logps (torch.Tensor, optional): Log probs of the policy that generated the
+                completions (e.g. vLLM sampling logps), shape (batch_size, seq_len). Only used when
+                ``off_policy_mask_threshold`` is set; falls back to ``old_per_token_logps`` when None.
+        """
         return LigerFusedLinearGRPOFunction.apply(
             _input,
             lin_weight,
@@ -556,4 +636,6 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.vespo_k_neg,
             self.vespo_lambda_neg,
             num_items_in_batch,
+            self.off_policy_mask_threshold,
+            sampling_per_token_logps,
         )
