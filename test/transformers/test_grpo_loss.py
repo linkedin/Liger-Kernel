@@ -567,7 +567,7 @@ def trl_reference_grpo_loss(
     elif loss_type == "dapo" or loss_type == "vespo":
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
     elif loss_type == "luspo":
-        loss = (per_token_loss * completion_mask.sum(-1, keepdim=True)).mean()
+        loss = (per_token_loss * completion_mask).sum(-1).mean()
 
     return loss
 
@@ -780,7 +780,7 @@ def trl_reference_grpo_loss_with_vllm_is(
     elif loss_type == "dapo":
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
     elif loss_type == "luspo":
-        loss = (per_token_loss * completion_mask.sum(-1, keepdim=True)).mean()
+        loss = (per_token_loss * completion_mask).sum(-1).mean()
 
     return loss
 
@@ -1233,12 +1233,16 @@ def test_grpo_loss_sequence_backward_matches_reference(beta):
     torch.testing.assert_close(logits_triton.grad, logits_ref.grad, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 @pytest.mark.parametrize("padded", [False, True])
 @pytest.mark.parametrize("beta", [0.0, 0.04])
 @pytest.mark.parametrize("B, T, V", [(3, 16, 4097), (8, 4, 1000)])
-def test_luspo_token_level_reduced_backward_matches_reference(B, T, V, beta, padded):
-    """Regression test for #1529: LUSPO + token-level + reduce=True built a (B, 1) upstream
-    gradient that the token-level backward kernel indexed per token (out-of-bounds / wrong values)."""
+def test_luspo_reduced_backward_matches_reference(B, T, V, beta, padded, importance_sampling_level):
+    """LUSPO + reduce=True against TRL's reduction, (per_token_loss * mask).sum(-1).mean().
+
+    Token level is the regression test for #1529 (a (B, 1) upstream gradient indexed per token).
+    Padded sequence level (the recommended LUSPO setup) checks that each sequence is weighted by its
+    valid length, not by length**2 / T, and that padded positions do not leak into the KL term."""
     pytest.importorskip("triton")
     torch.manual_seed(0)
     temperature, eps_low, eps_high = 0.9, 0.2, 0.4
@@ -1269,22 +1273,24 @@ def test_luspo_token_level_reduced_backward_matches_reference(B, T, V, beta, pad
         eps_low=eps_low,
         eps_high=eps_high,
         loss_type="luspo",
-        importance_sampling_level="token",
+        importance_sampling_level=importance_sampling_level,
         reduce=True,
     )
     triton_loss.backward()
 
-    # Reference: token-level clipped objective, padded positions contribute zero loss (as in the
-    # Triton forward kernel), each sequence scaled by its valid length, mean over B * L.
+    # Reference: TRL GRPOTrainer._compute_loss for loss_type="luspo"
     logits_ref = logits.clone().requires_grad_(True)
     logp = torch.log_softmax(logits_ref[:, :-1] / temperature, -1).gather(-1, completion_ids[..., None])[..., 0]
-    coef_1 = torch.exp(logp - old_logp)
+    log_ratio = logp - old_logp
+    if importance_sampling_level == "sequence":
+        log_ratio = ((log_ratio * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).unsqueeze(-1)
+    coef_1 = torch.exp(log_ratio)
     coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
     adv = advantages.unsqueeze(-1)
     per_token_loss = -torch.min(coef_1 * adv, coef_2 * adv)
     if beta != 0.0:
         per_token_loss = per_token_loss + beta * (torch.exp(ref_logp - logp) - (ref_logp - logp) - 1.0)
-    reference_loss = (per_token_loss * completion_mask * completion_mask.sum(-1, keepdim=True)).mean()
+    reference_loss = (per_token_loss * completion_mask).sum(-1).mean()
     reference_loss.backward()
 
     torch.testing.assert_close(triton_loss, reference_loss, rtol=1e-5, atol=1e-5)
