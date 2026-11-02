@@ -470,6 +470,7 @@ loss.backward()
 | DeepSeek-V2   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v2`     | RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | DeepSeek-V3   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v3`     | RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | DeepSeek-V4   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v4`     | RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
+| GLM-5.3   | `liger_kernel.transformers.apply_liger_kernel_to_glm5_next`     | RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GPT-OSS   | `liger_kernel.transformers.apply_liger_kernel_to_gpt_oss`     | RoPE, RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
 | InternVL3   | `liger_kernel.transformers.apply_liger_kernel_to_internvl`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | HunyuanV1   | `liger_kernel.transformers.apply_liger_kernel_to_hunyuan_v1_dense`    |  RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy       |
