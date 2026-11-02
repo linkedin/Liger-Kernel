@@ -29,6 +29,7 @@ from liger_kernel.backends.dispatch import available_backends
 from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import get_registered
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 SOFTMAX_TEST_SHAPES = [
@@ -74,7 +75,6 @@ def test_softmax_correctness(backend, shape, dtype):
         pytest.skip("No softmax backends registered in this environment")
 
     M, N = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(0)
     x_cpu = torch.randn(M, N, dtype=torch.float32, generator=g)
     x = x_cpu.to(device=device, dtype=dtype).detach().requires_grad_(True)
@@ -138,7 +138,7 @@ def test_softmax_global_set_backend(backend):
         pytest.skip("No softmax backends registered")
 
     M, N = 32, 256
-    x = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
+    x = torch.randn(M, N, device=device, dtype=torch.float32, requires_grad=True)
 
     try:
         liger_kernel.set_backend(backend)
@@ -158,7 +158,7 @@ def test_softmax_env_per_op(backend):
         pytest.skip("No softmax backends registered")
 
     M, N = 32, 256
-    x = torch.randn(M, N, device="cuda", dtype=torch.float32, requires_grad=True)
+    x = torch.randn(M, N, device=device, dtype=torch.float32, requires_grad=True)
 
     saved = os.environ.get("LIGER_KERNEL_BACKEND_SOFTMAX")
     try:
@@ -197,12 +197,10 @@ def test_softmax_explicit_mode(backend, mode, shape):
     """Every explicit mode advertised by a backend must produce correct output."""
     if backend == "__none__":
         pytest.skip("No softmax backends registered")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
 
     M, N = shape
     g = torch.Generator(device="cpu").manual_seed(0)
-    x = torch.randn(M, N, dtype=torch.bfloat16, generator=g).to("cuda").requires_grad_(True)
+    x = torch.randn(M, N, dtype=torch.bfloat16, generator=g).to(device).requires_grad_(True)
     x_ref = x.detach().clone().requires_grad_(True)
 
     try:
