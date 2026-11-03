@@ -75,7 +75,7 @@ The per-token losses are kept in fp32 and reduced (`mean` / `sum`) in fp32, then
 
 Pass `loss_dtype=torch.float32` to `LigerCrossEntropyLoss` or `liger_cross_entropy` to also get `loss` and `z_loss` back in fp32 for any reduction (`None`, the default, keeps the input dtype; other values raise `ValueError`). This option is only available with the Triton backend.
 
-With `reduction="none"` the gradient is computed in place on the saved buffer, so backward cannot be run twice over the same graph (`retain_graph=True`) once the saved gradient has been scaled; a second backward raises `RuntimeError`. `mean` and `sum` still support it while the upstream gradient is exactly 1.0.
+By default `reduction="none"` keeps a non-destructive per-row multiply (it allocates a second gradient-sized tensor), so `retain_graph=True` and backward through different slices of the per-token losses keep working. `in_place=True` (Triton backend only) scales the saved gradient in place instead, which removes that tensor and is faster but makes the graph single-use: a second backward raises `RuntimeError`. `mean` and `sum` apply an upstream gradient other than 1.0 in place as before; such a graph raises `RuntimeError` on a second backward, while with an upstream gradient of exactly 1.0 they still support `retain_graph=True`.
 
 !!! Example "Try it out"
     You can experiment as shown in this example [here](https://colab.research.google.com/drive/1WgaU_cmaxVzx8PcdKB5P9yHB6_WyGd4T?usp=sharing).

@@ -1435,6 +1435,17 @@ def test_loss_dtype_requires_triton_backend(monkeypatch):
         LigerCrossEntropyLoss(loss_dtype=torch.float32)(logits, target)
 
 
+def test_in_place_requires_triton_backend(monkeypatch):
+    class _FakeImpl:
+        impl_name = "nvidia-cutedsl"
+
+    monkeypatch.setattr(liger_ce_module, "resolve_impl", lambda *args, **kwargs: _FakeImpl())
+    logits = torch.randn(4, 8, device=device)
+    target = torch.randint(0, 8, (4,), device=device)
+    with pytest.raises(ValueError, match="only supported by the Triton"):
+        LigerCrossEntropyLoss(in_place=True)(logits, target)
+
+
 def _run_backward(logits, target, backward_fn, kernel_kwargs=None):
     """Returns (grad, grad_output seen by the op)."""
     _input = logits.detach().clone().requires_grad_(True)
@@ -1459,10 +1470,11 @@ _NONE_REDUCERS = ["mean", "sum", "weighted_sum", "strided"]
 _NONE_SHAPES = [(512, 4096), (256, 32001), (1024, 8192)]
 
 
+@pytest.mark.parametrize("in_place", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("reducer", _NONE_REDUCERS)
 @pytest.mark.parametrize("BT, V", _NONE_SHAPES)
-def test_none_reduction_grad_matches_per_row_multiply(dtype, reducer, BT, V):
+def test_none_reduction_grad_matches_per_row_multiply(in_place, dtype, reducer, BT, V):
     if dtype == torch.bfloat16 and not supports_bfloat16():
         pytest.skip("bfloat16 not supported on this GPU")
     torch.manual_seed(0)
@@ -1471,10 +1483,12 @@ def test_none_reduction_grad_matches_per_row_multiply(dtype, reducer, BT, V):
     target[::7] = -100
     per_token_weight = torch.rand(BT, device=device) + 0.5
 
-    grad, g_seen = _run_backward(logits, target, _none_backward_fns(BT, per_token_weight)[reducer])
+    grad, g_seen = _run_backward(
+        logits, target, _none_backward_fns(BT, per_token_weight)[reducer], kernel_kwargs={"in_place": in_place}
+    )
     assert g_seen.ndim == 1
 
-    # The per-row multiply that the op used to do out of place: fp32 math, a single rounding to the input dtype.
+    # Both paths equal the per-row multiply: fp32 math, a single rounding to the input dtype.
     # cross_entropy_forward leaves the unscaled gradient in its returned input.
     unscaled = cross_entropy_forward(
         logits.clone().requires_grad_(True), target, None, -100, 0.0, 0.0, "none", None, False
@@ -1483,9 +1497,10 @@ def test_none_reduction_grad_matches_per_row_multiply(dtype, reducer, BT, V):
     assert torch.equal(grad, expected)
 
 
+@pytest.mark.parametrize("in_place", [False, True])
 @pytest.mark.parametrize("reducer", _NONE_REDUCERS)
 @pytest.mark.parametrize("BT, V", _NONE_SHAPES)
-def test_none_reduction_grad_matches_torch(reducer, BT, V):
+def test_none_reduction_grad_matches_torch(in_place, reducer, BT, V):
     torch.manual_seed(0)
     logits = torch.randn(BT, V, device=device)
     target = torch.randint(0, V, (BT,), device=device)
@@ -1495,7 +1510,7 @@ def test_none_reduction_grad_matches_torch(reducer, BT, V):
 
     ref_input = logits.clone().requires_grad_(True)
     backward_fn(F.cross_entropy(ref_input, target, reduction="none"))
-    grad, _ = _run_backward(logits, target, backward_fn)
+    grad, _ = _run_backward(logits, target, backward_fn, kernel_kwargs={"in_place": in_place})
     torch.testing.assert_close(grad, ref_input.grad, rtol=1e-5, atol=1e-5)
 
 
@@ -1514,7 +1529,7 @@ def test_none_reduction_backward_allocates_no_bt_x_v_temporary(dtype, reducer, B
     logits_bytes = logits.numel() * logits.element_size()
 
     _input = logits.detach().clone().requires_grad_(True)
-    loss = liger_cross_entropy(_input, target, reduction="none")
+    loss = liger_cross_entropy(_input, target, reduction="none", in_place=True)
     torch.cuda.synchronize()
     torch.cuda.reset_peak_memory_stats()
     base = torch.cuda.memory_allocated()
@@ -1522,18 +1537,51 @@ def test_none_reduction_backward_allocates_no_bt_x_v_temporary(dtype, reducer, B
     torch.cuda.synchronize()
     peak_extra = torch.cuda.max_memory_allocated() - base
 
-    # Before this change the backward allocated a BT x V temporary here.
+    # The default out-of-place path allocates a BT x V temporary here; in_place=True does not.
     assert peak_extra < 0.5 * logits_bytes
 
 
-def test_none_reduction_second_backward_raises():
+def test_none_reduction_in_place_second_backward_raises():
     torch.manual_seed(0)
     logits = torch.randn(64, 512, device=device, requires_grad=True)
     target = torch.randint(0, 512, (64,), device=device)
-    loss = liger_cross_entropy(logits, target, reduction="none")
+    loss = liger_cross_entropy(logits, target, reduction="none", in_place=True)
     loss.sum().backward(retain_graph=True)
     with pytest.raises(RuntimeError, match=r"second backward \(retain_graph=True\)"):
         loss.sum().backward()
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_none_reduction_retain_graph_slices_match_single_backward(dtype):
+    if dtype == torch.bfloat16 and not supports_bfloat16():
+        pytest.skip("bfloat16 not supported on this GPU")
+    torch.manual_seed(0)
+    BT, V, k = 256, 4096, 100
+    logits = torch.randn(BT, V, device=device, dtype=dtype)
+    target = torch.randint(0, V, (BT,), device=device)
+
+    # Rows are multiplied by exactly 1.0 or 0.0 on both paths, so the results are bitwise equal.
+    single_input = logits.clone().requires_grad_(True)
+    liger_cross_entropy(single_input, target, reduction="none").sum().backward()
+
+    _input = logits.clone().requires_grad_(True)
+    loss = liger_cross_entropy(_input, target, reduction="none")
+    loss[:k].sum().backward(retain_graph=True)
+    loss[k:].sum().backward()
+    assert torch.equal(_input.grad, single_input.grad)
+
+    if dtype == torch.float32:
+        ref_input = logits.clone().requires_grad_(True)
+        ref_loss = F.cross_entropy(ref_input, target, reduction="none")
+        ref_loss[:k].sum().backward(retain_graph=True)
+        ref_loss[k:].sum().backward()
+        torch.testing.assert_close(_input.grad, ref_input.grad, rtol=1e-5, atol=1e-5)
+
+    in_place_input = logits.clone().requires_grad_(True)
+    in_place_loss = liger_cross_entropy(in_place_input, target, reduction="none", in_place=True)
+    in_place_loss[:k].sum().backward(retain_graph=True)
+    with pytest.raises(RuntimeError, match=r"second backward \(retain_graph=True\)"):
+        in_place_loss[k:].sum().backward()
 
 
 def test_scalar_backward_with_non_unit_grad_twice_raises():
@@ -1565,7 +1613,8 @@ def test_scalar_backward_with_unit_grad_supports_retain_graph(reduction):
 
 
 @pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
-def test_none_reduction_loss_dtype_float32_backward_keeps_input_dtype():
+@pytest.mark.parametrize("in_place", [False, True])
+def test_none_reduction_loss_dtype_float32_backward_keeps_input_dtype(in_place):
     torch.manual_seed(0)
     logits = torch.randn(256, 1024, device=device, dtype=torch.bfloat16)
     target = torch.randint(0, 1024, (256,), device=device)
@@ -1573,12 +1622,17 @@ def test_none_reduction_loss_dtype_float32_backward_keeps_input_dtype():
 
     ref_input = logits.float().requires_grad_(True)
     (F.cross_entropy(ref_input, target, reduction="none") * weight).sum().backward()
-    grad, _ = _run_backward(
+    grad, g_seen = _run_backward(
         logits,
         target,
         lambda loss: (loss * weight).sum().backward(),
-        kernel_kwargs={"loss_dtype": torch.float32},
+        kernel_kwargs={"loss_dtype": torch.float32, "in_place": in_place},
     )
     assert grad.dtype == torch.bfloat16
     # bf16 gradient against an fp32 reference: about 2**-8 relative rounding error.
     torch.testing.assert_close(grad.float(), ref_input.grad, rtol=2e-2, atol=2e-2)
+
+    unscaled = cross_entropy_forward(
+        logits.clone().requires_grad_(True), target, None, -100, 0.0, 0.0, "none", None, False
+    )[4]
+    assert torch.equal(grad, (unscaled.float() * g_seen.float().unsqueeze(1)).to(torch.bfloat16))

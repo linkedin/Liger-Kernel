@@ -701,6 +701,16 @@ def test_cutedsl_rejects_loss_dtype():
         fn.apply(x, t, *args, torch.float32)
 
 
+def test_cutedsl_rejects_in_place():
+    """The CuTe DSL Function accepts in_place positionally (signature parity) but only False."""
+    fn = _cutedsl_ce()
+    x = torch.randn(4, 8)
+    t = torch.zeros(4, dtype=torch.long)
+    args = (None, -100, 0.0, 0.0, "mean", None, False, False, False)
+    with pytest.raises(ValueError, match="in_place is only supported"):
+        fn.apply(x, t, *args, None, True)
+
+
 # =============================================================================
 # E. Confident-prediction true-class gradient precision (CuTe DSL analogue of Triton #1329)
 # =============================================================================
