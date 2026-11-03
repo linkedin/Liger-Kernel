@@ -3917,8 +3917,18 @@ def _apply_liger_kernel(model_type: str, **kwargs) -> None:
     apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
     apply_fn_signature = inspect.signature(apply_fn)
 
-    # Filter out the keyword arguments that are not supported by the apply function
+    # Filter out the keyword arguments that are not supported by the apply function.
+    # Dropping keys is expected for the superset-of-flags pattern (callers may pass
+    # flags meant for another model type), but a typo in a valid flag name drops
+    # silently too. Warn with the dropped key names so typos are visible while
+    # the superset pattern keeps working.
     applicable_kwargs = {key: value for key, value in kwargs.items() if key in apply_fn_signature.parameters}
+    dropped_kwargs = sorted(set(kwargs) - set(apply_fn_signature.parameters))
+    if dropped_kwargs:
+        logger.warning(
+            f"Ignoring kwargs not supported for model type '{model_type}': {dropped_kwargs}. "
+            "They will have no effect; check for typos."
+        )
 
     logger.info(f"Applying Liger kernels for model type: {model_type} with kwargs: {applicable_kwargs}")
 
@@ -3947,8 +3957,18 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
     apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
     apply_fn_signature = inspect.signature(apply_fn)
 
-    # Filter out the keyword arguments that are not supported by the apply function
+    # Filter out the keyword arguments that are not supported by the apply function.
+    # Dropping keys is expected for the superset-of-flags pattern (callers may pass
+    # flags meant for another model type), but a typo in a valid flag name drops
+    # silently too. Warn with the dropped key names so typos are visible while
+    # the superset pattern keeps working.
     applicable_kwargs = {key: value for key, value in kwargs.items() if key in apply_fn_signature.parameters}
+    dropped_kwargs = sorted(set(kwargs) - set(apply_fn_signature.parameters))
+    if dropped_kwargs:
+        logger.warning(
+            f"Ignoring kwargs not supported for model type '{model_type}': {dropped_kwargs}. "
+            "They will have no effect; check for typos."
+        )
     logger.info(
         f"Applying Liger kernels to model instance with model type: {model_type} with kwargs: {applicable_kwargs}"
     )
