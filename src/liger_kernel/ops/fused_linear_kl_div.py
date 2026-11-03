@@ -27,6 +27,19 @@ _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 REDUCTION_LITERAL = Literal["batchmean", "mean", "sum"]
 
 
+def _fp32_logits_supported(inputs, weight):
+    # Same condition as fused_linear_jsd._project_to_float32 (#1433): a bf16/fp16 GEMM can write
+    # float32 output directly (torch>=2.8, sm80+), so the logits are not rounded to the input dtype
+    # before the fp32 log-softmax. Autocast (mixed operand dtypes) keeps the native-dtype output.
+    return (
+        _ADDMM_SUPPORTS_OUT_DTYPE
+        and inputs.device.type == "cuda"
+        and torch.cuda.get_device_capability(inputs.device)[0] >= 8
+        and inputs.dtype in (torch.float16, torch.bfloat16)
+        and weight.dtype == inputs.dtype
+    )
+
+
 def get_num_warps(BLOCK_SIZE):
     num_warps = 4
     if BLOCK_SIZE >= 32768:
@@ -131,9 +144,9 @@ def fused_linear_kl_div_forward(
     device = student_input.device
 
     # inputs have shape: BT x H
-    # the only chunk-sized transient is the native-precision logits/grad buffer of
-    # shape chunk_size x V (the FP32 math happens in-kernel on upcast values in
-    # registers); partitioning the number of tokens BT into chunks keeps it within
+    # the only chunk-sized transient is the logits/grad buffer of shape chunk_size x V
+    # (float32 when _fp32_logits_supported, otherwise native precision; the FP32 math
+    # happens in-kernel on upcast values in registers); partitioning the number of tokens BT into chunks keeps it within
     # the transient budget of _CHUNK_MEM_CONST x BT x H (see fused_linear_cross_entropy.py):
     # inc_factor = (V + _CHUNK_MEM_CONST*H - 1) // (_CHUNK_MEM_CONST*H), chunk_size = (BT + inc_factor - 1) // inc_factor
     BT, H = student_input.shape
@@ -177,12 +190,19 @@ def fused_linear_kl_div_forward(
         input_chunk = student_input[start_idx:end_idx]
         target_chunk = target[start_idx:end_idx]
 
-        # shape: chunk_size x V. The GEMM output keeps its native precision in
-        # HBM; the FP32 upcast, temperature scaling, log-softmax and the
-        # log-softmax backward all happen inside the kl_loss_and_grad primitive
-        # in registers, so this is the only chunk-sized transient and the
-        # primitive overwrites it in place with the gradient w.r.t. the logits.
-        logits_chunk = input_chunk @ student_weight.t()
+        # shape: chunk_size x V. For same-dtype fp16/bf16 operands the GEMM writes
+        # float32 logits directly, so they are not rounded to the input dtype before
+        # the log-softmax (a small KL is otherwise dominated by that rounding);
+        # elsewhere the output keeps its native precision. The FP32 upcast,
+        # temperature scaling, log-softmax and the log-softmax backward all happen
+        # inside the kl_loss_and_grad primitive in registers, so this is the only
+        # chunk-sized transient and the primitive overwrites it in place with the
+        # gradient w.r.t. the logits.
+        fp32_logits = _fp32_logits_supported(input_chunk, student_weight)
+        if fp32_logits:
+            logits_chunk = torch.mm(input_chunk, student_weight.t(), out_dtype=torch.float32)
+        else:
+            logits_chunk = input_chunk @ student_weight.t()
 
         # Dispatch the per-chunk loss + dL/dlogits so new KL backends are picked
         # up automatically. The Triton primitive writes dx in place into
@@ -200,6 +220,9 @@ def fused_linear_kl_div_forward(
             scale,
         )
         loss_1d[start_idx:end_idx] = loss_rows
+        if fp32_logits:
+            # back to the input dtype for the grad GEMMs (the dtype the in-place write used before)
+            logits_chunk = logits_chunk.to(input_chunk.dtype)
 
         # logits_chunk now holds dL/dlogits, shape: chunk_size x V
         grad_input[start_idx:end_idx] = logits_chunk @ student_weight
