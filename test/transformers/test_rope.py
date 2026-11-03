@@ -511,27 +511,6 @@ def test_qwen3_5_rope_matches_hf(
     )
 
 
-@pytest.mark.parametrize(
-    "seq_len, num_heads, head_dim",
-    [
-        (128, 16, 72),  # Qwen3.5 vision default: hidden_size=1152, num_heads=16, head_dim=72
-        (256, 16, 72),
-        (512, 16, 64),
-    ],
-)
-@pytest.mark.parametrize(
-    "dtype, atol, rtol",
-    [
-        (torch.float32, 1e-5, 1e-5),
-        pytest.param(
-            torch.bfloat16,
-            1e-1,
-            1e-5,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-        ),
-        (torch.float16, 1e-2, 1e-5),
-    ],
-)
 def _get_qwen3_5_vision_cos_sin(modeling_qwen3_5, num_heads, head_dim, seq_len, pos_ids, dtype):
     """Build (cos, sin) for Qwen3.5 vision RoPE, adapting to the transformers version.
 
@@ -573,6 +552,27 @@ def _get_qwen3_5_vision_cos_sin(modeling_qwen3_5, num_heads, head_dim, seq_len, 
         return transformers_version_dispatch("5.17.0", _old_cos_sin, _new_cos_sin)
 
 
+@pytest.mark.parametrize(
+    "seq_len, num_heads, head_dim",
+    [
+        (128, 16, 72),  # Qwen3.5 vision default: hidden_size=1152, num_heads=16, head_dim=72
+        (256, 16, 72),
+        (512, 16, 64),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        (torch.float16, 1e-2, 1e-5),
+    ],
+)
 def test_qwen3_5_vision_rope_matches_hf(seq_len, num_heads, head_dim, dtype, atol, rtol):
     """Regression test: liger_rotary_pos_emb_vision matches Qwen3.5 vision RoPE.
 
