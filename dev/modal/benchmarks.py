@@ -20,7 +20,7 @@ def liger_benchmarks():
     import subprocess
 
     subprocess.run(
-        ["uv pip install -e '.[dev]' --system"],
+        ["uv pip install -e '.[dev,triton]' --system"],
         check=True,
         shell=True,
         cwd=REMOTE_ROOT_PATH,
