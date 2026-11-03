@@ -566,3 +566,47 @@ def test_invalid_reduction():
 
     with pytest.raises(ValueError, match="reduction must be one of"):
         liger_fused_linear_kl_div(_input, _weight, target, reduction="none")
+
+
+@pytest.mark.skipif(
+    device != "cuda" or torch.cuda.device_count() < 2,
+    reason="needs two CUDA devices",
+)
+def test_non_default_device():
+    # inputs on cuda:1 while the current device stays cuda:0, see issue 1303
+    assert torch.cuda.current_device() == 0
+    dev = torch.device("cuda:1")
+    torch.manual_seed(0)
+    _input = torch.randn(16, 128, device=dev, dtype=torch.float32, requires_grad=True)
+    _weight = torch.randn(1024, 128, device=dev, dtype=torch.float32, requires_grad=True)
+    target = torch.rand(16, 1024, device=dev, dtype=torch.float32).softmax(dim=-1)
+
+    expected = torch.nn.functional.kl_div(
+        torch.log_softmax(_input @ _weight.t() / 2.0, dim=-1), target, reduction="batchmean"
+    )
+    ref_grads = torch.autograd.grad(expected * 3.0, (_input, _weight))
+
+    got = liger_fused_linear_kl_div(_input, _weight, target, temperature=2.0)
+    (got * 3.0).backward()
+    torch.cuda.synchronize(dev)
+
+    assert torch.cuda.current_device() == 0
+    assert_verbose_allclose(expected, got, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(ref_grads[0], _input.grad, atol=1e-4, rtol=1e-4)
+    assert_verbose_allclose(ref_grads[1], _weight.grad, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.skipif(device != "cuda", reason="torch.compile path is exercised on CUDA")
+def test_torch_compile_matches_eager():
+    # Inductor passes float scalars as fp64; the kernel pins them to fp32, see issue 1330
+    torch.manual_seed(0)
+    _input = torch.randn(16, 128, device=device, dtype=torch.float32)
+    _weight = torch.randn(1024, 128, device=device, dtype=torch.float32)
+    target = torch.rand(16, 1024, device=device, dtype=torch.float32).softmax(dim=-1)
+
+    def fn(x, w, t):
+        return liger_fused_linear_kl_div(x, w, t, temperature=2.0)
+
+    eager = fn(_input, _weight, target)
+    compiled = torch.compile(fn, fullgraph=False)(_input, _weight, target)
+    assert_verbose_allclose(eager, compiled, atol=1e-6, rtol=1e-6)

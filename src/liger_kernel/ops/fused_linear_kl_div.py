@@ -10,6 +10,7 @@ from packaging.version import Version
 from liger_kernel.backends import dispatch
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import element_mul_kernel
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device
@@ -69,6 +70,14 @@ def _kl_div_kernel(
                 offsets = i + tl.arange(0, BLOCK_SIZE)
                 tl.store(X_ptr + offsets, 0.0, mask=offsets < n_cols)
             return
+
+    # Scalar kernel params are specialized to fp32 by eager Triton but to fp64
+    # by Inductor when this kernel is launched from inside torch.compile. An
+    # fp64 scalar promotes x / T, the eps clamp, the log-softmax and the scaled
+    # loss and gradient to float64. Pinning to fp32 is a no-op in eager.
+    temperature = temperature.to(tl.float32)
+    eps = eps.to(tl.float32)
+    scale = scale.to(tl.float32)
 
     # Everything below runs on fp32 values upcast from X on load (registers),
     # so HBM only ever sees the native-precision logits buffer. Y, the student
@@ -273,28 +282,30 @@ def fused_linear_kl_div_backward(grad_output, grad_input, grad_weight):
         n_rows = BT
         BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
 
-        element_mul_kernel[(n_rows,)](
-            grad_input,
-            grad_input.stride(-2),
-            grad_output,
-            H,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32 if not is_hip() else 16,
-        )
+        with device_context(grad_input.device):
+            element_mul_kernel[(n_rows,)](
+                grad_input,
+                grad_input.stride(-2),
+                grad_output,
+                H,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=32 if not is_hip() else 16,
+            )
 
         # handle grad_weight
         if grad_weight is not None:
             V, H = grad_weight.shape
             n_rows = V
 
-            element_mul_kernel[(n_rows,)](
-                grad_weight,
-                grad_weight.stride(-2),
-                grad_output,
-                H,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32 if not is_hip() else 16,
-            )
+            with device_context(grad_weight.device):
+                element_mul_kernel[(n_rows,)](
+                    grad_weight,
+                    grad_weight.stride(-2),
+                    grad_output,
+                    H,
+                    BLOCK_SIZE=BLOCK_SIZE,
+                    num_warps=32 if not is_hip() else 16,
+                )
 
     return grad_input, grad_weight
 
