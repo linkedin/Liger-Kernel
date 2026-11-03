@@ -252,6 +252,31 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
         # --- 2. Flatten target once ---
         flat_target = target.reshape(-1).contiguous().to(torch.int64)
 
+        # --- 2b. Validate targets before any kernel launch ---
+        # The forward kernel treats every target outside this rank's shard as
+        # off-rank and substitutes a predicted logit of 0, which is correct
+        # only for genuinely off-rank targets at TP>1. A globally invalid
+        # target (e.g. == V_global, or negative but != ignore_index) would
+        # otherwise take that branch on every rank and silently return
+        # log(sum_exp_global) with the predicted-logit term missing. Checking
+        # here, on the host, turns that into an explicit error; positions
+        # equal to ignore_index are excluded, mirroring target_mask in
+        # LigerCrossEntropy (ops/cross_entropy.py).
+        v_global = v_local * world
+        if ignore_index is None:
+            target_mask = torch.ones_like(flat_target, dtype=torch.bool)
+        else:
+            target_mask = flat_target != ignore_index
+        if target_mask.any():
+            checked_min = torch.where(target_mask, flat_target, torch.full_like(flat_target, v_global)).min()
+            checked_max = torch.where(target_mask, flat_target, torch.full_like(flat_target, -1)).max()
+            if checked_min < 0 or checked_max >= v_global:
+                raise ValueError(
+                    f"target values are out of range: expected values in [0, {v_global}) "
+                    f"or equal to ignore_index ({ignore_index}), "
+                    f"got min={checked_min.item()}, max={checked_max.item()}."
+                )
+
         # --- 3. Kernel 1: shift, exp, sum_exp, predicted_local ---
         # exp_buf is fp32 for precision — matches Megatron's vocab-parallel CE,
         # which also keeps the saved softmax in fp32. Moving to bf16 (or input
