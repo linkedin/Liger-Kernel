@@ -75,8 +75,9 @@ def _softmax_single_block_backward_kernel(
     offs = tl.arange(0, BLOCK_SIZE)
     mask = offs < n_cols
 
-    dy = tl.load(dy_ptr + row_id * dy_stride + offs, mask=mask, other=0.0)
-    y = tl.load(y_ptr + row_id * y_stride + offs, mask=mask, other=0.0, cache_modifier=".ca")
+    # Upcast before multiplying so small products survive the dot-product reduction.
+    dy = tl.load(dy_ptr + row_id * dy_stride + offs, mask=mask, other=0.0).to(tl.float32)
+    y = tl.load(y_ptr + row_id * y_stride + offs, mask=mask, other=0.0, cache_modifier=".ca").to(tl.float32)
     dot = tl.sum(dy * y, axis=0)
     dx = y * (dy - dot)
     tl.store(dx_ptr + row_id * dx_stride + offs, dx, mask=mask, cache_modifier=".wb")
@@ -95,20 +96,21 @@ def _softmax_multi_block_backward_kernel(
 ):
     row_id = tl.program_id(0).to(tl.int64)
     offs = tl.arange(0, BLOCK_SIZE)
-    acc = tl.float32(0.0)
+    acc = tl.full((), 0.0, tl.float32)
 
     for start in tl.range(0, n_cols, BLOCK_SIZE):
         idx = start + offs
         mask = idx < n_cols
-        dy_blk = tl.load(dy_ptr + row_id * dy_stride + idx, mask=mask, other=0.0)
-        y_blk = tl.load(y_ptr + row_id * y_stride + idx, mask=mask, other=0.0, cache_modifier=".ca")
+        # Upcast before multiplying, not just before accumulating the products.
+        dy_blk = tl.load(dy_ptr + row_id * dy_stride + idx, mask=mask, other=0.0).to(tl.float32)
+        y_blk = tl.load(y_ptr + row_id * y_stride + idx, mask=mask, other=0.0, cache_modifier=".ca").to(tl.float32)
         acc += tl.sum(dy_blk * y_blk, axis=0)
 
     for start in tl.range(0, n_cols, BLOCK_SIZE):
         idx = start + offs
         mask = idx < n_cols
-        dy_blk = tl.load(dy_ptr + row_id * dy_stride + idx, mask=mask, other=0.0)
-        y_blk = tl.load(y_ptr + row_id * y_stride + idx, mask=mask, other=0.0, cache_modifier=".ca")
+        dy_blk = tl.load(dy_ptr + row_id * dy_stride + idx, mask=mask, other=0.0).to(tl.float32)
+        y_blk = tl.load(y_ptr + row_id * y_stride + idx, mask=mask, other=0.0, cache_modifier=".ca").to(tl.float32)
         dx_blk = y_blk * (dy_blk - acc)
         tl.store(dx_ptr + row_id * dx_stride + idx, dx_blk, mask=mask, cache_modifier=".wb")
 
