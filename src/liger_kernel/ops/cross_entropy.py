@@ -106,6 +106,12 @@ def liger_cross_entropy_kernel(
         for i in range(0, n_cols, BLOCK_SIZE):
             X_offsets = i + tl.arange(0, BLOCK_SIZE)
             tl.store(X_ptr + X_offsets, 0.0, mask=X_offsets < n_cols)
+        # Zero the losses explicitly rather than relying on the caller having zeroed them: under
+        # `torch.compile` the buffer handed to us is a functionalization clone, so caller-side
+        # initialization is not guaranteed to reach it.
+        tl.store(loss_ptr + program_id * loss_stride, 0.0)
+        if RETURN_Z_LOSS:
+            tl.store(z_loss_ptr + program_id * loss_stride, 0.0)
         # For ignored tokens, set token accuracy to 0
         if RETURN_TOKEN_ACCURACY:
             token_accuracy_ptr += program_id * token_accuracy_stride
