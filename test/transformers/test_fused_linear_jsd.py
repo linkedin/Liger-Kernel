@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 
@@ -76,34 +78,51 @@ class LigerLMHeadJSD(torch.nn.Module):
         )
 
 
-def test_low_probability_vocab_block_is_finite():
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("temperature", [0.5, 1.0])
+def test_low_probability_vocab_block_is_finite(dtype, temperature):
     H = 4
     V = 32769
-    torch_model = TorchLMHeadJSD(H=H, V=V, dtype=torch.float32, device=device)
-    liger_model = LigerLMHeadJSD(H=H, V=V, dtype=torch.float32, device=device)
+    torch_model = TorchLMHeadJSD(H=H, V=V, dtype=torch.float64, device=device, temperature=temperature)
+    liger_model = LigerLMHeadJSD(H=H, V=V, dtype=dtype, device=device, temperature=temperature)
 
     torch_model.student_lin.weight.data.fill_(-120.0)
     torch_model.student_lin.weight.data[0].zero_()
     torch_model.teacher_lin.weight.data.fill_(-121.0)
     torch_model.teacher_lin.weight.data[0].zero_()
+    torch_model.student_lin.weight.data[2].fill_(-1.0)
+    torch_model.teacher_lin.weight.data[2].fill_(-2.0)
     liger_model.load_state_dict(torch_model.state_dict())
 
-    student_input = torch.zeros(1, H // 2, device=device)
+    student_input = torch.zeros(3, H // 2, device=device, dtype=dtype)
     student_input[:, 0] = 1.0
-    torch_input = student_input.detach().clone().requires_grad_(True)
+    torch_input = student_input.double().detach().requires_grad_(True)
     liger_input = student_input.detach().clone().requires_grad_(True)
-    teacher_input = torch.zeros(1, H, device=device)
+    teacher_input = torch.zeros(3, H, device=device, dtype=dtype)
     teacher_input[:, 0] = 1.0
 
-    torch_output = torch_model(torch_input, teacher_input)
-    liger_output = liger_model(liger_input, teacher_input)
+    labels = torch.tensor([0, -100, 1], device=device)
+    log_q = (torch_model.student_lin(torch_input) / temperature).log_softmax(-1)
+    log_p = (torch_model.teacher_lin(teacher_input.double()) / temperature).log_softmax(-1)
+    log_m = torch.logaddexp(log_q, log_p) - math.log(2.0)
+    rows = 0.5 * (log_q.exp() * (log_q - log_m) + log_p.exp() * (log_p - log_m)).sum(-1)
+    torch_output = rows[labels != -100].mean()
+    liger_output = liger_model(liger_input, teacher_input, labels)
     torch_output.backward()
     liger_output.backward()
 
     assert torch.isfinite(liger_output)
     assert torch.isfinite(liger_input.grad).all()
-    assert_verbose_allclose(torch_output, liger_output, atol=1e-7, rtol=1e-6)
-    assert_verbose_allclose(torch_input.grad, liger_input.grad, atol=1e-7, rtol=1e-6)
+    tol = {torch.float32: 1e-6, torch.float16: 5e-4, torch.bfloat16: 4e-3}[dtype]
+    torch.testing.assert_close(torch_output, liger_output.double(), atol=tol, rtol=tol)
+    torch.testing.assert_close(torch_input.grad, liger_input.grad.double(), atol=tol, rtol=tol)
+    torch.testing.assert_close(
+        torch_model.student_lin.weight.grad,
+        liger_model.student_lin.weight.grad.double(),
+        atol=tol,
+        rtol=tol,
+    )
+    assert torch.count_nonzero(liger_input.grad[1]) == 0
 
 
 #############################################################################
