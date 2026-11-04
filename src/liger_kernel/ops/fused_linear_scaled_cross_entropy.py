@@ -17,6 +17,18 @@ def _load_sm90_function():
     return LigerFusedScaledCrossEntropySM90Function
 
 
+def _load_sm100_function():
+    try:
+        import cutlass  # noqa: F401
+    except ModuleNotFoundError as exc:
+        if exc.name == "cutlass":
+            return None
+        raise
+    from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm100 import LigerFusedScaledCrossEntropySM100Function
+
+    return LigerFusedScaledCrossEntropySM100Function
+
+
 def _load_native_tp_function():
     from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import (
         LigerFusedLinearScaledCrossEntropyNativeTPFunction,
@@ -363,13 +375,17 @@ class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
         return grad_hidden_states, grad_vocab_weights, None, None, None, None, None
 
 
-def _resolve_implementation(device):
+def _resolve_implementation(device, dtype=None):
     if device.type != "cuda" or not torch.cuda.is_available() or torch.version.hip is not None:
         return _FusedLinearPPOFallbackFunction
 
     capability = torch.cuda.get_device_capability(device)
     if capability == (9, 0):
         return _load_sm90_function()
+    if capability in ((10, 0), (10, 3)) and dtype == torch.bfloat16:
+        implementation = _load_sm100_function()
+        if implementation is not None:
+            return implementation
     return _FusedLinearPPOFallbackFunction
 
 
@@ -399,7 +415,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
         if not isinstance(return_entropy, bool):
             raise TypeError("return_entropy must be a bool")
 
-        implementation = _resolve_implementation(_input.device)
+        implementation = _resolve_implementation(_input.device, _input.dtype)
         selected_args = (selected_token_ids,) if selected_token_ids is not None else ()
         if implementation is _FusedLinearPPOFallbackFunction:
             return implementation.apply(
