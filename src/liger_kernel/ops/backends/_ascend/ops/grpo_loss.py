@@ -1022,8 +1022,9 @@ def grpo_loss_backward_triton(ctx, *args):
     elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
         dloss = dloss_input * mask / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
     elif loss_type == "luspo":
+        # A (B, 1) scale has stride 1 on the token axis, so the kernel reads off the row.
         seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
-        dloss = dloss_input * seq_lens_bwd / (B * L)
+        dloss = (dloss_input * seq_lens_bwd / (B * L)).expand(B, L).contiguous()
     else:
         raise ValueError(f"Unknown loss_type: {loss_type}")
 
