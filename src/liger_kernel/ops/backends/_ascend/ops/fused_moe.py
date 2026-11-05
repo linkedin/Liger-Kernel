@@ -85,9 +85,11 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
                 E,
             )
 
-    num_m_tiles = int(expert_tile_offset[-1].item())
-    tile_row_start = torch.empty(num_m_tiles, dtype=torch.int32, device=device)
-    tile_expert = torch.empty(num_m_tiles, dtype=torch.int32, device=device)
+    # Exact tile count stays on device. This is a host upper bound (slack < E).
+    # Padding tiles start at row TK, past every expert, so the existing row mask drops them.
+    num_m_tiles = 0 if TK <= 0 or E <= 0 else min(TK, (TK + E * (block_m_token - 1)) // block_m_token)
+    tile_row_start = torch.full((num_m_tiles,), TK, dtype=torch.int32, device=device)
+    tile_expert = torch.zeros(num_m_tiles, dtype=torch.int32, device=device)
     if num_m_tiles > 0:
         _moe_router_tile_kernel[(E,)](
             expert_start_idx,
