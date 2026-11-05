@@ -86,6 +86,7 @@ _compile_cache = {}
 class ScaledCEForwardFragmentConfig:
     """Vocabulary-split tuning for the fixed M128xN320 fragment kernel.
 
+    Split tuning is resolved on the host and passed to kernels at runtime.
     ``return_entropy`` compile-time enables weighted softmax statistics.
     """
 
@@ -110,9 +111,6 @@ class _ScaledCEForwardFragmentSM90:
         self.fast_math = config.fast_math
         self.return_entropy = config.return_entropy
         self.num_selected = config.num_selected
-        self.split_n = config.split_n
-        self.base_split_n = config.base_split_n
-        self.extra_m_pairs = config.extra_m_pairs
         self.a_tile_shape = (TILE_M, ACCUMULATOR_N, TILE_K)
         self.b_tile_shape = (TILE_M, ACCUMULATOR_N, TILE_K)
         self.buffer_align = 1024
@@ -149,6 +147,9 @@ class _ScaledCEForwardFragmentSM90:
         partial_weighted: cute.Tensor,
         selected_token_ids: cute.Tensor,
         selected_log_probs: cute.Tensor,
+        split_n: Int32,
+        base_split_n: Int32,
+        extra_m_pairs: Int32,
         inverse_temperature: Float32,
         stream: cuda.CUstream,
     ):
@@ -216,7 +217,7 @@ class _ScaledCEForwardFragmentSM90:
         self.shared_storage = SharedStorage
         num_m_tiles = cute.ceil_div(x.shape[0], TILE_M)
         num_m_pairs = cute.ceil_div(num_m_tiles, CLUSTER_M)
-        num_cluster_pairs = num_m_pairs * self.base_split_n + self.extra_m_pairs
+        num_cluster_pairs = num_m_pairs * base_split_n + extra_m_pairs
         grid = (CLUSTER_M, 1, num_cluster_pairs)
         self.kernel(
             tma_x,
@@ -230,6 +231,9 @@ class _ScaledCEForwardFragmentSM90:
             partial_weighted,
             selected_token_ids,
             selected_log_probs,
+            split_n,
+            base_split_n,
+            extra_m_pairs,
             inverse_temperature,
             tiled_mma,
             a_smem_layout,
@@ -360,6 +364,9 @@ class _ScaledCEForwardFragmentSM90:
         output_partial_weighted: cute.Tensor,
         selected_token_ids: cute.Tensor,
         selected_log_probs: cute.Tensor,
+        split_n: Int32,
+        base_split_n: Int32,
+        extra_m_pairs: Int32,
         inverse_temperature: Float32,
         tiled_mma: cute.TiledMma,
         a_smem_layout: cute.ComposedLayout,
@@ -375,28 +382,22 @@ class _ScaledCEForwardFragmentSM90:
         _, _, cluster_work = cute.arch.block_idx()
 
         num_m_tiles = cute.ceil_div(target.shape[0], TILE_M)
-        if cutlass.const_expr(self.extra_m_pairs == 0):
-            m_pair = cluster_work // self.base_split_n
-            split_id = cluster_work % self.base_split_n
-            split_count = self.base_split_n
+        extra_work = extra_m_pairs * split_n
+        m_pair = Int32(0)
+        split_id = Int32(0)
+        split_count = base_split_n
+        if cluster_work < extra_work:
+            m_pair = cluster_work // split_n
+            split_id = cluster_work % split_n
+            split_count = split_n
         else:
-            extra_work = self.extra_m_pairs * self.split_n
-            m_pair = Int32(0)
-            split_id = Int32(0)
-            split_count = Int32(self.base_split_n)
-            if cluster_work < extra_work:
-                m_pair = cluster_work // self.split_n
-                split_id = cluster_work % self.split_n
-                split_count = Int32(self.split_n)
-            else:
-                normal_work = cluster_work - extra_work
-                m_pair = self.extra_m_pairs + normal_work // self.base_split_n
-                split_id = normal_work % self.base_split_n
-                split_count = Int32(self.base_split_n)
+            normal_work = cluster_work - extra_work
+            m_pair = extra_m_pairs + normal_work // base_split_n
+            split_id = normal_work % base_split_n
         raw_pid_m = m_pair * CLUSTER_M + cluster_rank
         store_enabled = raw_pid_m < num_m_tiles
         pid_m = cutlass.min(raw_pid_m, num_m_tiles - 1)
-        output_work = raw_pid_m * self.split_n + split_id
+        output_work = raw_pid_m * split_n + split_id
 
         if warp == 0:
             cute.nvgpu.cpasync.prefetch_descriptor(tma_x)
@@ -767,10 +768,7 @@ class _ScaledCEForwardFragmentSM90:
 class _ScaledCEForwardFragmentFinalizeSM90:
     """Combine split vocabulary statistics into final NLL/LSE/entropy."""
 
-    def __init__(self, split_n, base_split_n, extra_m_pairs, fast_math, return_entropy, num_selected=0):
-        self.split_n = split_n
-        self.base_split_n = base_split_n
-        self.extra_m_pairs = extra_m_pairs
+    def __init__(self, fast_math, return_entropy, num_selected=0):
         self.fast_math = fast_math
         self.return_entropy = return_entropy
         self.num_selected = num_selected
@@ -787,6 +785,9 @@ class _ScaledCEForwardFragmentFinalizeSM90:
         token_loss: cute.Tensor,
         entropy: cute.Tensor,
         selected_log_probs: cute.Tensor,
+        split_n: Int32,
+        base_split_n: Int32,
+        extra_m_pairs: Int32,
         ignore_index: Int32,
         stream: cuda.CUstream,
     ):
@@ -801,6 +802,9 @@ class _ScaledCEForwardFragmentFinalizeSM90:
             token_loss,
             entropy,
             selected_log_probs,
+            split_n,
+            base_split_n,
+            extra_m_pairs,
             ignore_index,
         ).launch(
             grid=(num_m_tiles, 1, 1),
@@ -821,43 +825,40 @@ class _ScaledCEForwardFragmentFinalizeSM90:
         token_loss: cute.Tensor,
         entropy: cute.Tensor,
         selected_log_probs: cute.Tensor,
+        split_n: Int32,
+        base_split_n: Int32,
+        extra_m_pairs: Int32,
         ignore_index: Int32,
     ):
         tid, _, _ = cute.arch.thread_idx()
         pid_m, _, _ = cute.arch.block_idx()
         row = pid_m * TILE_M + tid
-        if cutlass.const_expr(self.extra_m_pairs == 0):
-            split_count = self.base_split_n
-        else:
-            m_pair = pid_m // CLUSTER_M
-            split_count = Int32(self.base_split_n)
-            if m_pair < self.extra_m_pairs:
-                split_count = Int32(self.split_n)
+        split_count = base_split_n
+        if pid_m // CLUSTER_M < extra_m_pairs:
+            split_count = split_n
         row_max = Float32(NEG_INF_F32)
         row_target = Float32(0.0)
-        for split_id in cutlass.range_constexpr(self.split_n):
-            if split_id < split_count:
-                work_id = pid_m * self.split_n + split_id
-                row_max = _fmax(row_max, partial_max[work_id, tid])
-                row_target += partial_target[work_id, tid]
+        for split_id in range(split_count):
+            work_id = pid_m * split_n + split_id
+            row_max = _fmax(row_max, partial_max[work_id, tid])
+            row_target += partial_target[work_id, tid]
 
         row_sum = Float32(0.0)
         row_weighted = Float32(0.0)
-        for split_id in cutlass.range_constexpr(self.split_n):
-            if split_id < split_count:
-                work_id = pid_m * self.split_n + split_id
-                if cutlass.const_expr(self.return_entropy):
-                    split_scale = cute.math.exp2(
-                        (partial_max[work_id, tid] - row_max) * LOG2_E,
-                        fastmath=self.fast_math,
-                    )
-                    row_sum += partial_sum[work_id, tid] * split_scale
-                    row_weighted += partial_weighted[work_id, tid] * split_scale
-                else:
-                    row_sum += partial_sum[work_id, tid] * cute.math.exp2(
-                        (partial_max[work_id, tid] - row_max) * LOG2_E,
-                        fastmath=self.fast_math,
-                    )
+        for split_id in range(split_count):
+            work_id = pid_m * split_n + split_id
+            if cutlass.const_expr(self.return_entropy):
+                split_scale = cute.math.exp2(
+                    (partial_max[work_id, tid] - row_max) * LOG2_E,
+                    fastmath=self.fast_math,
+                )
+                row_sum += partial_sum[work_id, tid] * split_scale
+                row_weighted += partial_weighted[work_id, tid] * split_scale
+            else:
+                row_sum += partial_sum[work_id, tid] * cute.math.exp2(
+                    (partial_max[work_id, tid] - row_max) * LOG2_E,
+                    fastmath=self.fast_math,
+                )
 
         if row < target.shape[0]:
             row_lse = row_max + cute.math.log2(row_sum, fastmath=self.fast_math) * LN2
@@ -951,13 +952,6 @@ def scaled_ce_forward_fragment(
     num_m_pairs = (num_m_tiles + CLUSTER_M - 1) // CLUSTER_M
     if extra_m_pairs >= num_m_pairs or split_n != base_split_n + int(extra_m_pairs != 0):
         raise ValueError("uneven split tuning must use split_n=base_split_n+1 for a proper subset of M pairs")
-    config = replace(
-        config,
-        split_n=split_n,
-        base_split_n=base_split_n,
-        extra_m_pairs=extra_m_pairs,
-    )
-
     partial_shape = (num_m_tiles * split_n, TILE_M)
     partial_max = torch.empty(partial_shape, device=_input.device, dtype=torch.float32)
     partial_sum = torch.empty_like(partial_max)
@@ -1001,7 +995,7 @@ def scaled_ce_forward_fragment(
     stream = _cute_stream()
     inverse_temperature = Float32(1.0 / temperature)
 
-    key = ("scaled_ce_forward_fragment", config)
+    key = ("scaled_ce_forward_fragment", config.fast_math, config.return_entropy, num_selected)
     compiled = _compile_cache.get(key)
     if compiled is None:
         compiled = cute.compile(
@@ -1015,6 +1009,9 @@ def scaled_ce_forward_fragment(
             partial_weighted_cute,
             selected_ids_cute,
             selected_cute,
+            Int32(split_n),
+            Int32(base_split_n),
+            Int32(extra_m_pairs),
             inverse_temperature,
             stream,
         )
@@ -1029,15 +1026,15 @@ def scaled_ce_forward_fragment(
         partial_weighted_cute,
         selected_ids_cute,
         selected_cute,
+        Int32(split_n),
+        Int32(base_split_n),
+        Int32(extra_m_pairs),
         inverse_temperature,
         stream,
     )
 
     finalize_key = (
         "scaled_ce_forward_fragment_finalize",
-        split_n,
-        base_split_n,
-        extra_m_pairs,
         config.fast_math,
         config.return_entropy,
         num_selected,
@@ -1046,9 +1043,6 @@ def scaled_ce_forward_fragment(
     if finalize is None:
         finalize = cute.compile(
             _ScaledCEForwardFragmentFinalizeSM90(
-                split_n,
-                base_split_n,
-                extra_m_pairs,
                 config.fast_math,
                 config.return_entropy,
                 num_selected,
@@ -1062,6 +1056,9 @@ def scaled_ce_forward_fragment(
             token_loss_cute,
             entropy_cute,
             selected_cute,
+            Int32(split_n),
+            Int32(base_split_n),
+            Int32(extra_m_pairs),
             Int32(ignore_index),
             stream,
         )
@@ -1076,6 +1073,9 @@ def scaled_ce_forward_fragment(
         token_loss_cute,
         entropy_cute,
         selected_cute,
+        Int32(split_n),
+        Int32(base_split_n),
+        Int32(extra_m_pairs),
         Int32(ignore_index),
         stream,
     )
