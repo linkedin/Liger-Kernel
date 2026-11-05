@@ -25,8 +25,10 @@ _SOFTMAX_MIN_FREE_BYTES = 4 * _SOFTMAX_OVERFLOW_ROWS * _SOFTMAX_OVERFLOW_COLS * 
         (4, 16),
         (1, 1023),  # Large single row single-block dispatch
         (3, 7, 256),  # 3D input
-        (1, 4096),  # test multi-block dispatch
-        (1, 2, 4096),  # test multi-block dispatch on 3D input
+        (1, 4096),  # single-block dispatch (4096 <= MAX_FUSED_SIZE)
+        (1, 2, 4096),  # single-block dispatch on 3D input
+        (2, 70000),  # > MAX_FUSED_SIZE: exercises the multi-block dispatch
+        (1, 3, 70000),  # multi-block dispatch on 3D input
     ],
 )
 @pytest.mark.parametrize(
@@ -73,6 +75,8 @@ def test_liger_softmax(shape, dtype, atol, rtol):
         (3, 7, 256),
         (1, 4096),
         (1, 2, 4096),
+        (2, 70000),  # > MAX_FUSED_SIZE: exercises the multi-block dispatch
+        (1, 3, 70000),
     ],
 )
 @pytest.mark.parametrize(
