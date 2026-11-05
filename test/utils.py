@@ -1,5 +1,6 @@
 import importlib
 import json
+import math
 import os
 import random
 
@@ -94,6 +95,9 @@ def get_qwen3_vl_rope_config() -> dict:
 # probability to exactly 1, so `p - 1` and `lse - x_target` collapse to 0 (arXiv 2610.31642). Negative margins
 # cover a target that is not the argmax.
 COLLAPSE_MARGINS = [-5.0, 0.0, 5.0, 12.0, 17.0, 25.0, 40.0]
+# Below fp64's own cliff (~36.7), so plain fp64 autograd is a valid reference.
+FP64_SAFE_COLLAPSE_MARGINS = [m for m in COLLAPSE_MARGINS if m < 30]
+JSD_BETAS = (0.0, 0.1, 0.5, 0.9, 1.0)
 
 
 def dominant_target_logits(margins, V, dtype=torch.float32, device="cpu", target=None):
@@ -115,6 +119,94 @@ def reference_cross_entropy(logits, target, reduction="none"):
     others = logits.masked_fill(torch.nn.functional.one_hot(target, logits.shape[-1]).bool(), float("-inf"))
     nll = torch.nn.functional.softplus(others.logsumexp(-1) - logits[rows, target])
     return {"none": nll, "sum": nll.sum(), "mean": nll.mean()}[reduction]
+
+
+def assert_rows_sum_to_zero(grad):
+    """
+    Softmax is invariant to shifting a row's logits, so each row of a gradient w.r.t. them must sum to zero. Tighter than
+    the entrywise fp64 comparisons, which alone would allow an argmax entry inconsistent with the rest of its row.
+    """
+    tol = {torch.float32: 1e-5, torch.bfloat16: 5e-3}[grad.dtype]
+    grad = grad.double()
+    row_sum, row_abs = grad.sum(-1).abs(), grad.abs().sum(-1)
+    assert (row_sum <= tol * row_abs).all(), f"worst |sum| / sum|.|: {(row_sum / row_abs.clamp_min(1e-300)).max():.3e}"
+
+
+def assert_matches_reference(loss, _input, ref, _ref, rtol):
+    """Backward both losses through the same non-uniform upstream gradient, then compare values and input gradients."""
+    upstream_grad = torch.randn_like(loss)
+    loss.backward(upstream_grad)
+    ref.backward(upstream_grad.double())
+    torch.testing.assert_close(loss.double(), ref.detach(), rtol=rtol, atol=0)
+    torch.testing.assert_close(_input.grad.double(), _ref.grad, rtol=rtol, atol=0)
+    assert_rows_sum_to_zero(_input.grad)
+
+
+def assert_grad_close_per_row(grad, ref_grad, rtol=1e-4, msg=""):
+    """Off-argmax entries are differences of two tiny probabilities, accurate only to the row's scale."""
+    row_scale = ref_grad.abs().amax(-1, keepdim=True)
+    torch.testing.assert_close(grad.double() / row_scale, ref_grad / row_scale, rtol=rtol, atol=rtol, msg=msg)
+    assert_rows_sum_to_zero(grad)
+
+
+def assert_near_teacher_grad(grad, ref_grad, msg=""):
+    """Row 0 of `near_teacher_logits` matches its teacher exactly; the others must keep their small gradients."""
+    assert torch.count_nonzero(grad[0]) == 0, msg
+    torch.testing.assert_close(grad.double(), ref_grad, rtol=1e-4, atol=1e-12, msg=msg)
+    assert_rows_sum_to_zero(grad)
+
+
+def near_teacher_logits(device):
+    """Student rows equal to the teacher, off by 1e-8, and shifted by 32 while off by 2^-20."""
+    teacher = torch.tensor([[2.0, 1.0, 0.0], [2.0, 0.01, 0.0], [2.0**-20, 0.0, -(2.0**-20)]], device=device)
+    student = teacher.clone()
+    student[1, 1] += 1e-8
+    student[2] = 32.0
+    return student, teacher
+
+
+def dominant_student_teacher_logits(V=4096, dtype=torch.float32, device="cpu"):
+    """Student and an fp64 CPU teacher that both put almost all mass on the same token of each row."""
+    student, target = dominant_target_logits(FP64_SAFE_COLLAPSE_MARGINS, V=V, dtype=dtype, device=device)
+    teacher, _ = dominant_target_logits(
+        [m + 3 for m in FP64_SAFE_COLLAPSE_MARGINS], V=V, dtype=torch.float64, target=target
+    )
+    return student, teacher
+
+
+def reference_jsd(student_logits, teacher_logits, beta):
+    """fp64 generalized JSD, mean over rows, with forward and reverse KL at beta 0 and 1."""
+    log_q, log_p = student_logits.log_softmax(-1), teacher_logits.log_softmax(-1)
+    if beta == 0.0:
+        loss = (log_p.exp() * (log_p - log_q)).sum(-1)
+    elif beta == 1.0:
+        loss = (log_q.exp() * (log_q - log_p)).sum(-1)
+    else:
+        log_m = torch.logaddexp(log_p + math.log(beta), log_q + math.log1p(-beta))
+        loss = beta * (log_p.exp() * (log_p - log_m)).sum(-1) + (1 - beta) * (log_q.exp() * (log_q - log_m)).sum(-1)
+    return loss.mean()
+
+
+def assert_jsd_edge_cases(jsd, device):
+    """
+    `jsd(student, weight, teacher, beta)` must take its gradients from the logit gap, not from rounded probabilities
+    (arXiv 2610.31642, Eq. 9): near a teacher they stay accurate and are exactly 0 at a match, and at a token both put
+    almost all mass on they keep what fp32 softmax rounds away.
+    """
+    set_seed()
+    dominant_student, dominant_teacher = dominant_student_teacher_logits(device=device)
+    cases = (
+        (*near_teacher_logits(device), assert_near_teacher_grad),
+        (dominant_student, dominant_teacher.to(dominant_student), assert_grad_close_per_row),
+    )
+    for beta in JSD_BETAS:
+        for student, teacher, assert_grad in cases:
+            weight = torch.eye(student.shape[-1], device=device)
+            _input = student.clone().requires_grad_(True)
+            _ref = student.double().requires_grad_(True)
+            jsd(_input, weight, teacher, beta).backward()
+            reference_jsd(_ref, teacher.double(), beta).backward()
+            assert_grad(_input.grad, _ref.grad, msg=f"beta={beta}")
 
 
 def set_seed(seed=42):

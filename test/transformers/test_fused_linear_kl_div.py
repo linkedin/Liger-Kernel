@@ -1,9 +1,9 @@
 import pytest
 import torch
 
-from test.utils import COLLAPSE_MARGINS
+from test.utils import assert_grad_close_per_row
 from test.utils import assert_verbose_allclose
-from test.utils import dominant_target_logits
+from test.utils import dominant_student_teacher_logits
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
@@ -587,24 +587,21 @@ def test_dominant_token_does_not_collapse(dtype, rtol):
     # stay below fp64's own cliff (~36.7) so autograd in fp64 is a valid reference.
     set_seed()
     V = 4096
-    margins = [m for m in COLLAPSE_MARGINS if m < 30]
-    student, target = dominant_target_logits(margins, V=V, dtype=dtype, device=device)
-    teacher, _ = dominant_target_logits([m + 3 for m in margins], V=V, dtype=torch.float64, target=target)
+    student, teacher = dominant_student_teacher_logits(V, dtype, device)
     q = teacher.softmax(-1).float().to(device)
     weight = torch.eye(V, dtype=dtype, device=device)
+    _input = student.clone().requires_grad_(True)
+    _ref = student.double().requires_grad_(True)
+
+    liger_fused_linear_kl_div(_input, weight, q, reduction="batchmean").backward()
+    torch.nn.functional.kl_div(_ref.log_softmax(-1), q.double(), reduction="batchmean").backward()
+
+    assert_grad_close_per_row(_input.grad, _ref.grad, rtol)
+
     # A near-teacher row at a typical logit level: its small loss must not come from subtracting lse-sized terms.
     near = torch.randn(1, V, dtype=torch.float64) * 3 + 30
     near_q = (near + 1e-3 * torch.randn_like(near)).softmax(-1).float().to(device)
-    for student, q in ((student, q), (near.to(device=device, dtype=dtype), near_q)):
-        _input = student.clone().requires_grad_(True)
-        _ref = student.double().requires_grad_(True)
-
-        loss = liger_fused_linear_kl_div(_input, weight, q, reduction="batchmean")
-        loss.backward()
-        ref_loss = torch.nn.functional.kl_div(_ref.log_softmax(-1), q.double(), reduction="batchmean")
-        ref_loss.backward()
-
-        torch.testing.assert_close(loss.double(), ref_loss, rtol=rtol * 10, atol=0)
-        # Per-row scale: off-argmax entries are differences of two tiny probabilities, accurate only to the row's scale.
-        row_scale = _ref.grad.abs().amax(-1, keepdim=True)
-        torch.testing.assert_close(_input.grad.double() / row_scale, _ref.grad / row_scale, rtol=rtol, atol=rtol)
+    near = near.to(device=device, dtype=dtype)
+    loss = liger_fused_linear_kl_div(near, weight, near_q, reduction="batchmean")
+    ref_loss = torch.nn.functional.kl_div(near.double().log_softmax(-1), near_q.double(), reduction="batchmean")
+    torch.testing.assert_close(loss.double(), ref_loss, rtol=rtol * 10, atol=0)

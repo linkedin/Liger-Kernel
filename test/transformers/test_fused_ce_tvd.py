@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from test.utils import COLLAPSE_MARGINS
+from test.utils import assert_matches_reference
 from test.utils import dominant_target_logits
 from test.utils import reference_cross_entropy
 from test.utils import supports_bfloat16
@@ -229,8 +230,4 @@ def test_dominant_target_does_not_collapse(dtype, rtol):
 
     ce, _ = LigerFusedCETVDFunction.apply(student_liger, teacher, target)
     ref = reference_cross_entropy(student_ref, target)
-    ce.sum().backward()
-    ref.sum().backward()
-
-    torch.testing.assert_close(ce.double(), ref.detach(), rtol=rtol, atol=0)
-    torch.testing.assert_close(student_liger.grad.double(), student_ref.grad, rtol=rtol, atol=0)
+    assert_matches_reference(ce, student_liger, ref, student_ref, rtol)

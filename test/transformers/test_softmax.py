@@ -1,7 +1,8 @@
 import pytest
 import torch
 
-from test.utils import COLLAPSE_MARGINS
+from test.utils import FP64_SAFE_COLLAPSE_MARGINS
+from test.utils import assert_grad_close_per_row
 from test.utils import assert_verbose_allclose
 from test.utils import dominant_target_logits
 from test.utils import set_seed
@@ -164,15 +165,12 @@ def test_dominant_entry_does_not_collapse(V, dtype, rtol):
     # non-zero; it must still match fp64 (arXiv 2610.31642). Margins stay below fp64's own cliff (~36.7) so
     # autograd in fp64 is a valid reference.
     set_seed()
-    margins = [m for m in COLLAPSE_MARGINS if m < 30]
-    x, _ = dominant_target_logits(margins, V=V, dtype=dtype, device=device)
-    dy = torch.randn(len(margins), V, device=device, dtype=dtype)
+    x, _ = dominant_target_logits(FP64_SAFE_COLLAPSE_MARGINS, V=V, dtype=dtype, device=device)
+    dy = torch.randn_like(x)
     _ref = x.double().requires_grad_(True)
     torch.softmax(_ref, -1).backward(dy.double())
 
     _input = x.clone().requires_grad_(True)
     liger_softmax(_input).backward(dy)
 
-    # Per-row scale: off-max entries are y_j * (dy_j - sum(dy * y)), accurate only to the row's scale.
-    row_scale = _ref.grad.abs().amax(-1, keepdim=True)
-    torch.testing.assert_close(_input.grad.double() / row_scale, _ref.grad / row_scale, rtol=rtol, atol=rtol)
+    assert_grad_close_per_row(_input.grad, _ref.grad, rtol)

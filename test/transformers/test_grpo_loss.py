@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from test.utils import COLLAPSE_MARGINS
+from test.utils import assert_rows_sum_to_zero
 from test.utils import assert_verbose_allclose
 from test.utils import dominant_target_logits
 from test.utils import infer_device
@@ -1517,7 +1518,8 @@ def test_dominant_target_does_not_collapse(importance_sampling_level, dtype, rto
     coef_1 = log_ratio.exp()
     coef_2 = coef_1.clamp(1 - 0.2, 1 + 0.2)
     ref_loss = -torch.min(coef_1 * advantages.double()[:, None], coef_2 * advantages.double()[:, None])
-    ref_loss.sum().backward()
+    upstream_grad = torch.randn_like(ref_loss).float()
+    ref_loss.backward(upstream_grad.double())
 
     _logits = logits.clone().requires_grad_(True)
     loss, _, _ = triton_grpo_loss(
@@ -1535,6 +1537,7 @@ def test_dominant_target_does_not_collapse(importance_sampling_level, dtype, rto
         importance_sampling_level=importance_sampling_level,
         reduce=False,
     )
-    loss.sum().backward()
+    loss.backward(upstream_grad)
 
     torch.testing.assert_close(_logits.grad[:, :-1].double(), ref_logits.grad[:, :-1], rtol=rtol, atol=0)
+    assert_rows_sum_to_zero(_logits.grad)

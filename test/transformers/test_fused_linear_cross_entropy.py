@@ -5,6 +5,7 @@ import torch
 
 from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
 from test.utils import COLLAPSE_MARGINS
+from test.utils import assert_matches_reference
 from test.utils import assert_verbose_allclose
 from test.utils import dominant_target_logits
 from test.utils import reference_cross_entropy
@@ -1138,8 +1139,4 @@ def test_dominant_target_does_not_collapse(reduction, dtype, rtol):
 
     loss = liger_fused_linear_cross_entropy(_input, weight, target, reduction=reduction)
     ref = reference_cross_entropy(_ref, target, reduction=reduction)
-    loss.backward(torch.ones_like(loss))
-    ref.backward(torch.ones_like(ref))
-
-    torch.testing.assert_close(loss.double(), ref.detach(), rtol=rtol, atol=0)
-    torch.testing.assert_close(_input.grad.double(), _ref.grad, rtol=rtol, atol=0)
+    assert_matches_reference(loss, _input, ref, _ref, rtol)
