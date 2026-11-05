@@ -1349,8 +1349,8 @@ def test_dominant_target_does_not_collapse(reduction, dtype, rtol):
 
     loss = liger_cross_entropy(_input, target, reduction=reduction)
     ref = reference_cross_entropy(_ref, target, reduction=reduction)
-    loss.backward(torch.ones_like(loss))
-    ref.backward(torch.ones_like(ref))
+    loss.backward(torch.randn_like(loss))
+    ref.backward(torch.randn_like(ref))
 
     torch.testing.assert_close(loss.double(), ref.detach(), rtol=rtol, atol=0)
     torch.testing.assert_close(_input.grad.double(), _ref.grad, rtol=rtol, atol=0)
