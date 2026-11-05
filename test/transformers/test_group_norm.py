@@ -1,6 +1,8 @@
 import pytest
 import torch
 
+from test.utils import supports_bfloat16
+
 from liger_kernel.transformers.group_norm import LigerGroupNorm
 from liger_kernel.utils import infer_device
 
@@ -72,3 +74,38 @@ def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dty
 )
 def test_liger_group_norm_spatial_dims(shape, num_channels, num_groups, dtype, atol, rtol):
     _test_liger_group_norm(shape, num_channels, num_groups, dtype, atol, rtol)
+
+
+@pytest.mark.parametrize(
+    "shape, num_groups, offset, dtype, atol, rtol",
+    [
+        # fp16: sum(x * x) over a 65536-element group exceeds the fp16 max (65504)
+        ((1, 512, 64, 64), 32, 0.0, torch.float16, 2e-3, 2e-3),
+        ((1, 512, 64, 64), 32, 1.0, torch.float16, 2e-3, 2e-3),
+        # bf16: E[x^2] - E[x]^2 cancels when the mean is large relative to the spread
+        pytest.param(
+            (1, 64, 8),
+            8,
+            16.0,
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_liger_group_norm_low_precision_statistics(shape, num_groups, offset, dtype, atol, rtol):
+    # the group mean and variance must be accumulated in fp32 even for fp16/bf16 inputs
+    torch.manual_seed(0)
+    x = (torch.randn(*shape, device=device) + offset).to(dtype)
+    num_channels = shape[1]
+
+    liger_gn = LigerGroupNorm(num_channels, num_groups, eps=1e-6).to(dtype).to(device)
+    with torch.no_grad():
+        liger_output = liger_gn(x)
+        torch_output = torch.nn.functional.group_norm(
+            x.float(), num_groups, liger_gn.weight.float(), liger_gn.bias.float(), eps=1e-6
+        )
+
+    assert torch.isfinite(liger_output).all()
+    assert torch.allclose(liger_output.float(), torch_output, atol=atol, rtol=rtol)

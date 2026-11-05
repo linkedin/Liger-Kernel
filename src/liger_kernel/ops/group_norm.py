@@ -64,7 +64,8 @@ def _group_norm_forward_kernel(
     for i in tl.range(0, hidden_size, BLOCK_SIZE):
         hidden_size_offsets = i + block_range
         mask = hidden_size_offsets < hidden_size
-        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
+        # upcast before the sums: fp16 sum(X * X) overflows and bf16 E[X^2] - E[X]^2 cancels
+        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0).to(tl.float32)
         s += tl.sum(X)
         # X**2
         squared_sum += tl.sum(X * X)

@@ -125,8 +125,12 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
 
     n_non_ignore = (shift_labels != ignore_index).sum().item() if has_label else BT
 
-    # Pre-compute gradient scale factor (fused into kernel to avoid separate division)
-    if reduction == _REDUCTION_MODE_BATCHMEAN.value:
+    # Pre-compute gradient scale factor (fused into kernel to avoid separate division).
+    # Match the fused linear KL loss: an all-ignored batch contributes zero loss and
+    # zero gradients instead of dividing by zero.
+    if n_non_ignore == 0:
+        scale = 0.0
+    elif reduction == _REDUCTION_MODE_BATCHMEAN.value:
         scale = 1.0 / n_non_ignore
     elif reduction == _REDUCTION_MODE_MEAN.value:
         scale = 1.0 / (n_non_ignore * V)
