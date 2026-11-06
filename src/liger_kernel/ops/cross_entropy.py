@@ -349,6 +349,11 @@ else:
     MAX_FUSED_SIZE = 65536 // 2
 
 
+def check_loss_dtype(loss_dtype):
+    if loss_dtype is not None and loss_dtype != torch.float32:
+        raise ValueError(f"loss_dtype must be None (the input dtype) or torch.float32. Got: {loss_dtype}")
+
+
 def cross_entropy_forward(
     _input,
     target,
@@ -361,7 +366,9 @@ def cross_entropy_forward(
     return_z_loss,
     return_token_accuracy=False,
     return_predicted_tokens=False,
+    loss_dtype=None,
 ):
+    check_loss_dtype(loss_dtype)
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
         f"return_token_accuracy must be True or False. Got: {return_token_accuracy}"
@@ -375,9 +382,9 @@ def cross_entropy_forward(
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-    # unreduced loss
-    loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
-    z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device) if return_z_loss else None
+    # unreduced loss, kept in fp32 so that the reduction below does not accumulate bf16/fp16 rounding errors
+    loss_1d = torch.zeros(n_rows, dtype=torch.float32, device=_input.device)
+    z_loss_1d = torch.zeros(n_rows, dtype=torch.float32, device=_input.device) if return_z_loss else None
     token_accuracy_1d = (
         torch.zeros(n_rows, dtype=torch.float32, device=_input.device) if return_token_accuracy else None
     )
@@ -470,18 +477,67 @@ def cross_entropy_forward(
         # For accuracy, we compute the mean across all non-ignored tokens
         token_accuracy = torch.sum(token_accuracy_1d) / n_non_ignore if return_token_accuracy else None
 
+    if loss_dtype is None:
+        loss = loss.to(_input.dtype)
+        z_loss = z_loss.to(_input.dtype) if return_z_loss else None
+
     predicted_tokens = predicted_tokens_1d if return_predicted_tokens else None
 
     return loss, z_loss, token_accuracy, predicted_tokens, _input
 
 
-def cross_entropy_backward(_input, grad_output):
+@triton.jit
+def rowwise_element_mul_kernel(
+    X_ptr,
+    X_stride,
+    grad_output_ptr,
+    grad_output_stride,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """
+    Multiplies row i of the tensor pointed by X_ptr in-place with the i-th value of grad_output.
+    The product is computed in fp32 and rounded once to the dtype of X, like ``X * grad_output.unsqueeze(1)``.
+    """
+    program_id = tl.program_id(0).to(tl.int64)
+    X_ptr += program_id * X_stride
+    grad_output = tl.load(grad_output_ptr + program_id * grad_output_stride).to(tl.float32)
+
+    for i in range(0, n_cols, BLOCK_SIZE):
+        X_offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = X_offsets < n_cols
+        X_block = tl.load(X_ptr + X_offsets, mask=mask)
+        tl.store(X_ptr + X_offsets, (X_block.to(tl.float32) * grad_output).to(X_block.dtype), mask=mask)
+
+
+def _cross_entropy_backward(_input, grad_output, in_place=False):
+    """Returns (grad, scaled_in_place): whether the saved buffer was modified by this call."""
+    scaled_in_place = True
+    # If reduction is 'none', grad_output holds one value per row. By default the product is out of place, so the
+    # saved gradient survives and retain_graph=True keeps working. in_place=True skips the BT x V temporary.
+    if grad_output.ndim > 0:
+        if in_place:
+            n_rows, V = _input.shape
+            BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+
+            rowwise_element_mul_kernel[(n_rows,)](
+                _input,
+                _input.stride(-2),
+                grad_output,
+                grad_output.stride(0),
+                V,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=32 if not is_hip() else 16,
+            )
+        else:
+            scaled_in_place = False
+            # The product is computed in the promoted dtype and rounded once into the input dtype.
+            grad = torch.empty_like(_input)
+            torch.mul(_input, grad_output.unsqueeze(dim=1), out=grad)
+            _input = grad
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
-    if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        pass
-    # If reduction is 'none'
-    elif grad_output.ndim > 0:
-        _input = _input * grad_output.unsqueeze(dim=1)
+    elif torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
+        scaled_in_place = False
     # If reduction is ['mean', 'sum'], grad_output is just a scalar
     # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
     # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
@@ -499,7 +555,11 @@ def cross_entropy_backward(_input, grad_output):
             num_warps=32 if not is_hip() else 16,
         )
 
-    return _input
+    return _input, scaled_in_place
+
+
+def cross_entropy_backward(_input, grad_output, in_place=False):
+    return _cross_entropy_backward(_input, grad_output, in_place)[0]
 
 
 class LigerCrossEntropyFunction(torch.autograd.Function):
@@ -522,6 +582,8 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         return_z_loss: bool = False,
         return_token_accuracy: bool = False,
         return_predicted_tokens: bool = False,
+        loss_dtype: Optional[torch.dtype] = None,
+        in_place: bool = False,
     ):
         """
         The forward pass of the Liger Cross Entropy loss.
@@ -539,11 +601,14 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         return_z_loss (bool): When `return_z_loss` is `True`, returns (loss, z_loss, token_accuracy, predicted_tokens) instead of (loss, None, None, None). Default: `False`
         return_token_accuracy (bool): When `return_token_accuracy` is `True`, computes and returns per-token accuracy without materializing logits. Default: `False`
         return_predicted_tokens (bool): When `return_predicted_tokens` is `True`, returns per-token predicted class indices (argmax) without materializing logits. Default: `False`
+        loss_dtype (Optional[torch.dtype]): `None` returns loss and z_loss in the input dtype. `torch.float32` returns them in fp32 for any reduction. Per-token losses are always reduced in fp32 and cast once. Other values raise `ValueError`. Default: `None`
+        in_place (bool): Only affects `reduction="none"`. `False` multiplies the saved gradient by the per-token upstream gradient out of place (one extra BT x V tensor), so `retain_graph=True` and backward through different slices of the loss keep working. `True` scales the saved gradient in place, which removes that tensor and is faster but makes the graph single-use: a second backward raises `RuntimeError`. Default: `False`
 
         Returns:
         tuple: A tuple with the computed losses, accuracy, and predicted tokens: (loss, z_loss, token_accuracy, predicted_tokens). z_loss, token_accuracy, and predicted_tokens are None if not requested.
         """
         input_requires_grad = _input.requires_grad
+        assert isinstance(in_place, bool), f"in_place must be a bool. Got: {in_place}"
 
         loss, z_loss, token_accuracy, predicted_tokens, _input = cross_entropy_forward(
             _input,
@@ -557,6 +622,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             return_z_loss,
             return_token_accuracy,
             return_predicted_tokens,
+            loss_dtype,
         )
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
@@ -566,6 +632,8 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ctx.return_z_loss = return_z_loss
         ctx.return_token_accuracy = return_token_accuracy
         ctx.return_predicted_tokens = return_predicted_tokens
+        ctx.grad_scaled_in_place = False
+        ctx.in_place = in_place
 
         return loss, z_loss, token_accuracy, predicted_tokens
 
@@ -590,10 +658,18 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         if ctx.return_predicted_tokens:
             del grad_output4  # predicted_tokens is only for metrics
 
+        if ctx.grad_scaled_in_place:
+            raise RuntimeError(
+                "LigerCrossEntropyFunction computes the gradient in place and does not support a second backward "
+                "(retain_graph=True) once the saved gradient has been scaled in place (in_place=True with reduction='none', "
+                "or a 0-D upstream gradient other than 1.0)."
+            )
         (_input,) = ctx.saved_tensors
-        _input = cross_entropy_backward(_input, grad_output)
+        _input, ctx.grad_scaled_in_place = _cross_entropy_backward(_input, grad_output, ctx.in_place)
         return (
             _input,
+            None,
+            None,
             None,
             None,
             None,

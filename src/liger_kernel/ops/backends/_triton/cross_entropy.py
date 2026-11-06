@@ -55,13 +55,15 @@ def cross_entropy_triton(
     return_z_loss: bool = False,
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
+    loss_dtype: Optional[torch.dtype] = None,
+    in_place: bool = False,
     *,
     mode: Optional[str] = None,
 ):
     """Triton cross-entropy via the existing ``LigerCrossEntropyFunction``.
 
     ``mode`` is accepted for API parity with the other backends; the only valid
-    value is ``"default"`` (or ``None``).
+    value is ``"default"`` (or ``None``). ``loss_dtype`` and ``in_place`` are only supported by this backend.
     """
     if mode not in (None, "default"):
         raise ValueError(
@@ -80,6 +82,8 @@ def cross_entropy_triton(
         return_z_loss,
         return_token_accuracy,
         return_predicted_tokens,
+        loss_dtype,
+        in_place,
     )
 
 
