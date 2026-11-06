@@ -82,11 +82,7 @@ def _kl_div_kernel(
         x = tl.where(mask, x / temperature, float("-inf"))
         m = tl.maximum(m, tl.max(x, axis=0))
 
-    # Pass 2: softmax denominator, plus the loss pieces that don't need lse yet.
-    # KL(Q || P) = sum(Q * (log(Q) - Y))
-    #            = sum(Q * (log(max(Q, eps)) - x / T)) + lse * sum(Q)   (= a1 + lse * a2)
-    # 0 * log 0 is treated as 0 by clamping Q to eps before the log.
-    a1 = 0.0
+    # Pass 2: softmax denominator and raw target mass (Q need not sum to one).
     a2 = 0.0
     s = 0.0
     for i in range(0, n_cols, BLOCK_SIZE):
@@ -96,13 +92,16 @@ def _kl_div_kernel(
         x = tl.where(mask, x / temperature, float("-inf"))
         q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         s += tl.sum(tl.exp(x - m), axis=0)
-        a1 += tl.sum(tl.where(mask, q * (tl.log(tl.maximum(q, eps)) - x), 0.0), axis=0)
         a2 += tl.sum(q, axis=0)
 
-    lse = m + tl.log(s)
-    tl.store(loss_ptr, (a1 + lse * a2) * scale)
+    log_s = tl.log(s)
+    loss = 0.0
 
-    # Pass 3: gradient w.r.t. the logits, stored in place over X. Backprop
+    # Pass 3: accumulate KL from centered log-probabilities. Forming lse = m + log(s)
+    # and then adding lse * sum(Q) to sum(Q * (log(Q) - x / T)) would cancel
+    # large terms when all logits share an offset, losing a small KL in fp32.
+    # Clamp Q only inside the log so zero targets contribute zero loss.
+    # Gradient w.r.t. the logits is stored in place over X. Backprop
     # through log-softmax with g = dL/dY = -Q * scale:
     #   dL/dlogits = (g - softmax(x/T) * sum(g)) / T = -scale * (Q - softmax * a2) / T
     for i in range(0, n_cols, BLOCK_SIZE):
@@ -111,9 +110,13 @@ def _kl_div_kernel(
         x = tl.load(X_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         x = tl.where(mask, x / temperature, float("-inf"))
         q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        log_p = (x - m) - log_s
+        loss += tl.sum(tl.where(mask, q * (tl.log(tl.maximum(q, eps)) - log_p), 0.0), axis=0)
         softmax = tl.exp(x - m) / s
         d = -scale * (q - softmax * a2) / temperature
         tl.store(X_ptr + offsets, d, mask=mask)
+
+    tl.store(loss_ptr, loss * scale)
 
 
 def fused_linear_kl_div_forward(

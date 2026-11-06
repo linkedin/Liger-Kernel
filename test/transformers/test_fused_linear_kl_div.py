@@ -533,6 +533,29 @@ def test_amp(autocast_dtype, atol, rtol):
     )
 
 
+@pytest.mark.parametrize("offset", [0.0, 100.0, -100.0])
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean"])
+def test_fp32_common_logit_offset(offset, reduction):
+    # FP32 operands and an exact projection isolate kernel loss cancellation
+    # from low-precision projection rounding (handled separately in #1539).
+    BT, V = 4, 4097
+    index = torch.arange(V, device=device)
+    base_logits = ((index % 65).float() - 32.0) / 8.0
+    student_input = torch.ones(BT, 1, device=device)
+    student_weight = (base_logits + offset).unsqueeze(-1)
+    target = torch.softmax(base_logits.double() + 0.03 * index.double().sin(), dim=-1).float()
+    target = target.expand(BT, V).contiguous()
+
+    expected = torch.nn.functional.kl_div(
+        (student_input.double() @ student_weight.double().t()).log_softmax(-1),
+        target.double(),
+        reduction=reduction,
+    )
+    got = liger_fused_linear_kl_div(student_input, student_weight, target, reduction=reduction)
+
+    torch.testing.assert_close(got.double(), expected, atol=1e-7 / V if reduction == "mean" else 1e-7, rtol=5e-3)
+
+
 def test_torch_kl_div_parity():
     # cross-check the fused kernel against torch.nn.functional.kl_div in fp32
     B = 2

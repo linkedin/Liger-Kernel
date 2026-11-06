@@ -27,6 +27,7 @@ import liger_kernel.ops.fused_linear_kl_div as flkl_ops
 
 from liger_kernel.backends.dispatch import available_backends
 from liger_kernel.backends.dispatch import dispatch
+from liger_kernel.ops.backends._triton.kl_div import kl_loss_and_grad_triton
 
 from .conftest import get_available_backends_for_op
 
@@ -144,6 +145,55 @@ def test_kl_loss_and_grad_available_backends_includes_triton():
     """Sanity: the Triton implementation should always be available."""
     impls = available_backends("kl_loss_and_grad")
     assert any(b in ("triton", "nvidia-triton") for b in impls), f"expected 'triton' / 'nvidia-triton' in {impls}"
+
+
+@pytest.mark.parametrize("V", [257, 4096, 65537])
+@pytest.mark.parametrize("temperature", [0.5, 1.0, 2.0])
+@pytest.mark.parametrize("offset", [20.0, 100.0, -100.0, 10000.0])
+def test_kl_loss_and_grad_common_logit_offset(V, temperature, offset):
+    # Dyadic logits and temperatures make each translation exact in fp32:
+    # this isolates loss cancellation from input rounding / GEMM precision (#1539).
+    index = torch.arange(V, device="cuda")
+    logits = ((index % 65).float() - 32.0).unsqueeze(0) / 8.0
+    target = torch.softmax(logits.double() / temperature + 0.03 * index.double().sin(), dim=-1).float()
+    q = target.double()
+    expected = (q * (q.log() - (logits.double() / temperature).log_softmax(-1))).sum(-1)
+
+    loss, dx = kl_loss_and_grad_triton(logits.clone(), target, None, -100, temperature, 1e-10, 1.0)
+    shifted_loss, shifted_dx = kl_loss_and_grad_triton(logits + offset, target, None, -100, temperature, 1e-10, 1.0)
+
+    torch.testing.assert_close(loss.double(), expected, atol=1e-7, rtol=5e-3)
+    torch.testing.assert_close(shifted_loss.double(), expected, atol=1e-7, rtol=5e-3)
+    torch.testing.assert_close(shifted_loss, loss, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(shifted_dx, dx, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.parametrize("temperature", [0.5, 2.0, -1.0])
+@pytest.mark.parametrize("scale", [0.0, 0.125, 1.0])
+def test_kl_loss_and_grad_shifted_target_semantics(temperature, scale):
+    # Targets need not sum to one. Preserve raw target mass, zero targets,
+    # epsilon clamping, ignored rows, and in-place gradients after centering.
+    V = 257
+    logits = ((torch.arange(4 * V, device="cuda") % 65).float().reshape(4, V) - 32.0) / 8.0 + 100.0
+    target = torch.softmax(logits.double() / temperature, dim=-1).float()
+    target *= torch.tensor([0.75, 1.0, 1.25, 0.0], device="cuda").unsqueeze(-1)
+    target[:, ::7] = 0.0
+    labels = torch.tensor([0, -100, 0, 0], device="cuda")
+    eps = 1e-3
+
+    x = logits.double().requires_grad_(True)
+    q = target.double()
+    expected = (q * (q.clamp_min(eps).log() - (x / temperature).log_softmax(-1))).sum(-1) * scale
+    expected = expected.masked_fill(labels == -100, 0.0)
+    expected.sum().backward()
+
+    loss, dx = kl_loss_and_grad_triton(logits, target, labels, -100, temperature, eps, scale)
+
+    assert dx is logits
+    torch.testing.assert_close(loss.double(), expected, atol=5e-7, rtol=1e-5)
+    torch.testing.assert_close(dx.double(), x.grad, atol=1e-7, rtol=1e-5)
+    assert torch.count_nonzero(loss[labels == -100]) == 0
+    assert torch.count_nonzero(dx[labels == -100]) == 0
 
 
 def test_fused_linear_kl_default_path_dispatches_inner_kl(monkeypatch):
