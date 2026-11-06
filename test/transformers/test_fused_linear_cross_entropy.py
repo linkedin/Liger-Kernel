@@ -1108,3 +1108,167 @@ def test_correctness_reduction_none_per_token_grad_output(B, T, H, V, bias, dtyp
     assert_verbose_allclose(lig_gw, ref_gw, atol=atol, rtol=rtol)
     if bias:
         assert_verbose_allclose(lig_gb, ref_gb, atol=atol, rtol=rtol)
+
+
+#############################################################################
+# Rows whose target is ignore_index skip the projection GEMMs
+#############################################################################
+
+
+def _ignored_rows(kind, B, T):
+    """Boolean mask over the B * T rows marking the rows to set to ignore_index."""
+    if kind == "prompt":  # masked prompt first, completion after, as in SFT
+        mask = torch.zeros(B, T, dtype=torch.bool)
+        mask[:, : T * 3 // 4] = True
+        return mask.view(-1).to(device)
+    if kind == "scattered":
+        return (torch.rand(B * T) < 0.6).to(device)
+    if kind == "all":
+        return torch.ones(B * T, dtype=torch.bool, device=device)
+    return torch.zeros(B * T, dtype=torch.bool, device=device)
+
+
+def _flce_loss(out):
+    return out.loss if isinstance(out, CrossEntropyOutput) else out
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (2, 512, 64, 4096),  # 64 chunks of 16 rows: masks drop whole chunks and leave partial ones
+        (3, 37, 31, 123),  # random shape
+    ],
+)
+@pytest.mark.parametrize("mask_kind", ["prompt", "scattered", "all", "none"])
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+@pytest.mark.parametrize("bias", [True, False])
+def test_correctness_ignored_rows(B, T, H, V, mask_kind, reduction, bias):
+    """Skipping ignore_index rows in the projections must not change loss or gradients."""
+    set_seed(42)
+    BT = B * T
+    atol, rtol = 1e-5, 5e-4
+
+    _input = torch.randn(BT, H, device=device)
+    weight = torch.randn(V, H, device=device) * 0.1
+    bias_t = torch.randn(V, device=device) * 0.1 if bias else None
+    target = torch.randint(0, V, (BT,), device=device, dtype=torch.long)
+    ignored = _ignored_rows(mask_kind, B, T)
+    target[ignored] = -100
+    # reduction="none" re-enters the forward from backward with a per-token gradient
+    grad_output = torch.rand(BT, device=device) + 0.5 if reduction == "none" else None
+
+    def run(loss_fn):
+        x = _input.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        b = bias_t.clone().requires_grad_(True) if bias else None
+        loss = loss_fn(x, w, b)
+        loss.backward(grad_output)
+        return loss.detach(), x.grad, w.grad, (b.grad if bias else None)
+
+    lig_loss, lig_gx, lig_gw, lig_gb = run(
+        lambda x, w, b: _flce_loss(liger_fused_linear_cross_entropy(x, w, target, b, reduction=reduction))
+    )
+
+    # ignored rows get exactly zero input gradient (and zero per-token loss)
+    assert torch.all(lig_gx[ignored] == 0)
+    if reduction == "none":
+        assert torch.all(lig_loss[ignored] == 0)
+
+    if mask_kind == "all" and reduction == "mean":
+        # torch returns nan (0 / 0) here; Liger returns a zero loss and zero gradients
+        assert lig_loss.item() == 0.0
+        assert torch.all(lig_gw == 0)
+        if bias:
+            assert torch.all(lig_gb == 0)
+        return
+
+    ref_loss, ref_gx, ref_gw, ref_gb = run(
+        lambda x, w, b: torch.nn.functional.cross_entropy(
+            torch.nn.functional.linear(x, w, b), target, reduction=reduction
+        )
+    )
+    assert_verbose_allclose(lig_loss, ref_loss, atol=atol, rtol=rtol)
+    assert_verbose_allclose(lig_gx, ref_gx, atol=atol, rtol=rtol)
+    assert_verbose_allclose(lig_gw, ref_gw, atol=atol, rtol=rtol)
+    if bias:
+        assert_verbose_allclose(lig_gb, ref_gb, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+def test_ignored_rows_do_not_enter_projection(reduction):
+    """Inputs of ignore_index rows are never read: NaN there must not reach the results."""
+    set_seed(42)
+    B, T, H, V = 2, 256, 64, 2048
+    BT = B * T
+
+    _input = torch.randn(BT, H, device=device)
+    weight = torch.randn(V, H, device=device) * 0.1
+    target = torch.randint(0, V, (BT,), device=device, dtype=torch.long)
+    ignored = _ignored_rows("prompt", B, T)
+    kept = ~ignored
+    target[ignored] = -100
+    input_with_nan = _input.clone()
+    input_with_nan[ignored] = float("nan")
+    grad_output = torch.rand(BT, device=device) + 0.5 if reduction == "none" else None
+
+    def run(inp, tgt, go):
+        x = inp.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        loss = liger_fused_linear_cross_entropy(x, w, tgt, reduction=reduction)
+        loss.backward(go)
+        return loss.detach(), x.grad, w.grad
+
+    loss, gx, gw = run(input_with_nan, target, grad_output)
+    # reference: the kept rows alone
+    ref_loss, ref_gx, ref_gw = run(_input[kept], target[kept], grad_output[kept] if grad_output is not None else None)
+
+    assert torch.all(gx[ignored] == 0)
+    assert_verbose_allclose(gx[kept], ref_gx, atol=1e-5, rtol=5e-4)
+    assert_verbose_allclose(gw, ref_gw, atol=1e-5, rtol=5e-4)
+    if reduction == "none":
+        assert torch.all(loss[ignored] == 0)
+        assert_verbose_allclose(loss[kept], ref_loss, atol=1e-5, rtol=5e-4)
+    else:
+        assert_verbose_allclose(loss, ref_loss, atol=1e-5, rtol=5e-4)
+
+
+@pytest.mark.parametrize("mask_kind", ["prompt", "scattered", "all"])
+def test_per_token_outputs_with_ignored_rows(mask_kind):
+    """Per-token outputs are scattered back to all rows; ignored rows keep the kernel's values."""
+    set_seed(42)
+    B, T, H, V = 2, 256, 64, 2048
+    BT = B * T
+
+    _input = torch.randn(BT, H, device=device)
+    weight = torch.randn(V, H, device=device) * 0.1
+    target = torch.randint(0, V, (BT,), device=device, dtype=torch.long)
+    ignored = _ignored_rows(mask_kind, B, T)
+    kept = ~ignored
+    target[ignored] = -100
+
+    def run(inp, tgt):
+        return liger_fused_linear_cross_entropy(
+            inp,
+            weight,
+            tgt,
+            lse_square_scale=1e-4,
+            reduction="none",
+            return_z_loss=True,
+            return_token_accuracy=True,
+            return_predicted_tokens=True,
+        )
+
+    out = run(_input, target)
+    for t in (out.loss, out.z_loss, out.token_accuracy, out.predicted_tokens):
+        assert t.shape == (BT,)
+    assert torch.all(out.loss[ignored] == 0)
+    assert torch.all(out.z_loss[ignored] == 0)
+    assert torch.all(out.token_accuracy[ignored] == 0)
+    assert torch.all(out.predicted_tokens[ignored] == -1)
+
+    if kept.any():
+        ref = run(_input[kept], target[kept])
+        assert_verbose_allclose(out.loss[kept], ref.loss, atol=1e-5, rtol=5e-4)
+        assert_verbose_allclose(out.z_loss[kept], ref.z_loss, atol=1e-5, rtol=5e-4)
+        assert torch.equal(out.token_accuracy[kept], ref.token_accuracy)
+        assert torch.equal(out.predicted_tokens[kept], ref.predicted_tokens)

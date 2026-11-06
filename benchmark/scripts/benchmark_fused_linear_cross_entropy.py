@@ -7,6 +7,10 @@ in the shared benchmark CSV. Chunk sweeps use longer warmup and repetition
 windows because a single FLCE iteration can exceed the shared benchmark
 default's entire measurement budget. Override the repetition window with
 ``LIGER_FLCE_BENCH_REP_MS`` for especially long-running shapes.
+
+Set ``LIGER_FLCE_BENCH_IGNORE_FRACTION`` (for example, ``0.5``) to give that share
+of the targets ``ignore_index``, like masked prompt tokens in SFT. The value is
+recorded in the extra benchmark config, so these rows stay distinct in the CSV.
 """
 
 import os
@@ -31,6 +35,7 @@ device = infer_device()
 
 _CHUNK_SWEEP_ENV = "LIGER_FLCE_BENCH_CHUNK_MEM_CONSTS"
 _CHUNK_SWEEP_REP_ENV = "LIGER_FLCE_BENCH_REP_MS"
+_IGNORE_FRACTION_ENV = "LIGER_FLCE_BENCH_IGNORE_FRACTION"
 _CHUNK_PROVIDER_PREFIX = "liger-chunk-c"
 _CHUNK_SWEEP_WARMUP_MS = 100
 _CHUNK_SWEEP_REP_MS = 400
@@ -74,6 +79,19 @@ def _parse_positive_int(raw_value: str, env_name: str, default: int) -> int:
         raise ValueError(f"{env_name} must be a positive integer. Got: {raw_value!r}") from exc
     if value < 1:
         raise ValueError(f"{env_name} must be positive. Got: {value}")
+    return value
+
+
+def _parse_ignore_fraction(raw_value: str) -> float:
+    """Parse the share of targets set to ignore_index; 0 when unset."""
+    if not raw_value.strip():
+        return 0.0
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{_IGNORE_FRACTION_ENV} must be a number in [0, 1). Got: {raw_value!r}") from exc
+    if not 0.0 <= value < 1.0:
+        raise ValueError(f"{_IGNORE_FRACTION_ENV} must be in [0, 1). Got: {value}")
     return value
 
 
@@ -146,6 +164,8 @@ def setup_fused_linear_cross_entropy(input: SingleBenchmarkRunInput):
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
+    # Leading targets play the masked prompt; ignore_index is the modules' default -100.
+    target[: int(BT * cfg.get("ignore_fraction", 0.0))] = -100
 
     chunk_mem_const = _chunk_mem_const_from_provider(input.kernel_provider)
     if chunk_mem_const is not None:
@@ -167,6 +187,9 @@ if __name__ == "__main__":
         raise ValueError(
             f"{_CHUNK_SWEEP_ENV} benchmarks Triton chunk budgets and cannot be combined with LIGER_KERNEL_IMPL=cutile"
         )
+    ignore_fraction = _parse_ignore_fraction(os.environ.get(_IGNORE_FRACTION_ENV, ""))
+    # Only add the key when set, so default runs keep their existing CSV keys.
+    extra_configs = {"eps": 1e-6, **({"ignore_fraction": ignore_fraction} if ignore_fraction else {})}
     chunk_sweep_rep_ms = _parse_positive_int(
         os.environ.get(_CHUNK_SWEEP_REP_ENV, ""),
         _CHUNK_SWEEP_REP_ENV,
@@ -179,9 +202,7 @@ if __name__ == "__main__":
             setup_fn=setup_fused_linear_cross_entropy,
             model_keys=["hidden_size", "vocab_size", "dtype"],
             probe_provider="torch",
-            extra_configs={
-                "eps": 1e-6,
-            },
+            extra_configs=extra_configs,
             probe_dim="BT",
             bt=args.bt,
             overwrite=args.overwrite,
@@ -196,9 +217,7 @@ if __name__ == "__main__":
             model=model,
             setup_fn=setup_fused_linear_cross_entropy,
             model_keys=["hidden_size", "vocab_size", "dtype"],
-            extra_configs={
-                "eps": 1e-6,
-            },
+            extra_configs=extra_configs,
             scale_dim="BT",
             x_label="total tokens",
             probe_provider="torch",

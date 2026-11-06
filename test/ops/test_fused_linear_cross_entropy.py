@@ -921,14 +921,16 @@ class TestFusedLinearCrossEntropyAddmm:
         rec = _BufferRecorder(BT, V, H)
         with torch.no_grad(), torch.autocast("cuda", enabled=promoted_bias, dtype=torch.bfloat16), rec:
             actual = fused_linear_cross_entropy_forward(_input, weight, target, **kwargs)
-        assert rec.logits_gemms == triton.cdiv(BT, cs)
+        # The ignored first chunk is never projected.
+        n_chunks = triton.cdiv(BT - cs, cs)
+        assert rec.logits_gemms == n_chunks
         assert rec.final_casts == (0 if forward_only else 1)
         assert bool(rec.mm_out) == reuse
         rec.assert_released()
         if forward_only:
             assert actual[5] is None and actual[6] is None
             assert torch.count_nonzero(actual[4]) == 0
-            assert len(rec.mm_out) == (triton.cdiv(BT, cs) if reuse else 0)
+            assert len(rec.mm_out) == (n_chunks if reuse else 0)
 
         monkeypatch.setattr(flce_ops, "_can_use_mm_out", lambda *args: False)
         with torch.no_grad(), torch.autocast("cuda", enabled=promoted_bias, dtype=torch.bfloat16):
@@ -1065,9 +1067,11 @@ class TestFusedLinearCrossEntropyAddmm:
         rec = _BufferRecorder(BT, V, H)
         with rec:
             actual = run()
-        assert rec.logits_gemms == 2 * triton.cdiv(BT, cs)
+        # The ignored first chunk is never projected.
+        n_chunks = triton.cdiv(BT - cs, cs)
+        assert rec.logits_gemms == 2 * n_chunks
         assert rec.final_casts == int(weight_requires_grad)
-        expected_mm_out = 0 if flce_ops.is_hip() else 3 * triton.cdiv(BT, cs)
+        expected_mm_out = 0 if flce_ops.is_hip() else 3 * n_chunks
         assert len(rec.mm_out) == expected_mm_out  # logits twice, dX only during backward
         rec.assert_released()
         assert torch.count_nonzero(actual[1][:cs]) == 0
@@ -1080,6 +1084,31 @@ class TestFusedLinearCrossEntropyAddmm:
         monkeypatch.setattr(flce_ops, "_can_use_mm_out", lambda *args: False)
         expected = run()
         torch.testing.assert_close(actual, expected)
+
+    @pytest.mark.parametrize(
+        "n_ignored, n_chunks",
+        [
+            (0, 3),
+            (1, 3),  # e.g. the shifted last label: no chunk is freed, keep the contiguous path
+            (8, 2),
+            (24, 1),
+            (40, 0),
+        ],
+    )
+    def test_ignored_rows_skip_whole_chunks_only(self, n_ignored, n_chunks):
+        BT, V, H = 40, 128, 32  # C=1 -> chunk_size 16 -> 3 chunks (16,16,8)
+        _input, weight, b, cw, target = _mk_inputs(BT, V, H, torch.bfloat16, bias=False, ce_weight=False, seed=19)
+        target[BT - n_ignored :] = -100
+        rec = _BufferRecorder(BT, V, H)
+        with torch.no_grad(), rec:
+            _, _, _, _, gi, gw, _ = fused_linear_cross_entropy_forward(_input, weight, target)
+        assert rec.logits_gemms == n_chunks
+        assert torch.count_nonzero(gi[BT - n_ignored :]) == 0
+        if n_ignored < BT:
+            _, ref_gi, ref_gw, _ = _addmm_reference_grads(_input, weight, target)
+            tol = _ADDMM_TOLS[torch.bfloat16]
+            torch.testing.assert_close(gw.float(), ref_gw, **tol)
+            torch.testing.assert_close(gi.float(), ref_gi, **tol)
 
     # -----------------------------------------------------------------------
     # 8. AMP: in-place out ops are not autocast, so _input_chunk must be aligned
