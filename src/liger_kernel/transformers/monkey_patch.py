@@ -3920,6 +3920,14 @@ def _apply_liger_kernel(model_type: str, **kwargs) -> None:
     # Filter out the keyword arguments that are not supported by the apply function
     applicable_kwargs = {key: value for key, value in kwargs.items() if key in apply_fn_signature.parameters}
 
+    # Warn about dropped kwargs (typos or unsupported flags)
+    dropped_kwargs = {key: value for key, value in kwargs.items() if key not in apply_fn_signature.parameters}
+    if dropped_kwargs:
+        logger.warning(
+            f"The following kwargs were dropped (not supported by apply_liger_kernel_to_{model_type}): {dropped_kwargs}. "
+            f"Supported kwargs: {list(apply_fn_signature.parameters.keys())}"
+        )
+
     logger.info(f"Applying Liger kernels for model type: {model_type} with kwargs: {applicable_kwargs}")
 
     # Assume this is invoked pre-model initialization, so we only need to patch transformers code
@@ -3949,6 +3957,15 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
 
     # Filter out the keyword arguments that are not supported by the apply function
     applicable_kwargs = {key: value for key, value in kwargs.items() if key in apply_fn_signature.parameters}
+
+    # Warn about dropped kwargs (typos or unsupported flags)
+    dropped_kwargs = {key: value for key, value in kwargs.items() if key not in apply_fn_signature.parameters}
+    if dropped_kwargs:
+        logger.warning(
+            f"The following kwargs were dropped (not supported by apply_liger_kernel_to_{model_type}): {dropped_kwargs}. "
+            f"Supported kwargs: {list(apply_fn_signature.parameters.keys())}"
+        )
+
     logger.info(
         f"Applying Liger kernels to model instance with model type: {model_type} with kwargs: {applicable_kwargs}"
     )
