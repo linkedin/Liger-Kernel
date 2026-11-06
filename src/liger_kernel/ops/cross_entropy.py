@@ -9,6 +9,7 @@ import triton.language as tl
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import element_mul_kernel
 from liger_kernel.ops.utils import is_hip
+from liger_kernel.ops.utils import target_nll
 from liger_kernel.utils import infer_device
 from liger_kernel.utils import infer_device_arch
 from liger_kernel.utils import is_npu_available
@@ -138,6 +139,7 @@ def liger_cross_entropy_kernel(
     # 3. [Online softmax] first pass: find max + sum
     m = float("-inf")  # m is the max value. use the notation from the paper
     d = 0.0  # d is the sum. use the notation from the paper
+    d_others = 0.0  # d without the target term, which keeps the loss and dx_y exact once softmax(x_y) rounds to 1
     argmax_idx = 0  # Track the index of the maximum value for token accuracy / predicted tokens computation
     ori_X_y = tl.load(X_ptr + y).cast(tl.float32)  # we need to store the original value of X_y for the loss calculation
     if HAS_SOFTCAPPING:
@@ -181,7 +183,10 @@ def liger_cross_entropy_kernel(
             else:
                 scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block, 0.0))
         m_new = tl.maximum(m, block_max)
-        d = d * tl.exp2((m - m_new) * LOG2_E) + tl.sum(tl.exp2((X_block - m_new) * LOG2_E))
+        scale = tl.exp2((m - m_new) * LOG2_E)
+        exp_block = tl.exp2((X_block - m_new) * LOG2_E)
+        d = d * scale + tl.sum(exp_block)
+        d_others = d_others * scale + tl.sum(tl.where(X_offsets != y, exp_block, 0.0))
         m = m_new
 
     # log (sum(e^(X_i))) = log (sum(e ^ (max(X) * e ^ (X_i - max(X)))))
@@ -261,15 +266,17 @@ def liger_cross_entropy_kernel(
         # Barrier first so the loop's in-place store to X[y] cannot land after this store.
         tl.debug_barrier()
         softmax_X_y = tl.exp2((ori_X_y - m) * LOG2_E) / d
+        # softmax(x_y) - 1 == -d_others / d, without the cancellation
+        softmax_X_y_m1 = -d_others / d
         if not HAS_WEIGHT:
-            dx_y = softmax_X_y
-            dx_y += 2 * lse_square_scale * lse * dx_y
+            dx_y = softmax_X_y_m1
+            dx_y += 2 * lse_square_scale * lse * softmax_X_y
             dx_y += -eps
-            dx_y += -(1 - label_smoothing)
+            dx_y += label_smoothing
             if reduction == "mean":
                 dx_y = dx_y / n_non_ignore
         else:
-            dloss_ori_y = (1 - label_smoothing) * softmax_X_y - (1 - label_smoothing)
+            dloss_ori_y = (1 - label_smoothing) * softmax_X_y_m1
             dloss_ori_y = dloss_ori_y * weight_y
             dloss_smooth_y = eps * (-weight_y + softmax_X_y * weight_sum)
             dz_loss_y = 2 * lse_square_scale * lse * softmax_X_y
@@ -292,9 +299,8 @@ def liger_cross_entropy_kernel(
     # loss = log (softmax(X_y)) = log ((e ^ (X_y - max(X)) / sum(e ^ (X - max(X))))
     #      = (X_y - max(X)) - log(sum(e ^ (X - max(X))))
     #      = X_y - m - log d = X_y - lse
-    # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
-    # So we can safely calculate log (softmax(X_y)) without overflow
-    loss = lse - ori_X_y
+    # lse - X_y rounds to 0 once softmax(X_y) rounds to 1, so it is evaluated from d_others instead
+    loss = target_nll(ori_X_y, m, d_others)
     if HAS_WEIGHT:
         loss = weight_y * loss
 

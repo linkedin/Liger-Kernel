@@ -22,6 +22,8 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import expm1
+from liger_kernel.ops.utils import target_nll
 
 # Vocabularies are streamed in tiles, so this bounds the tile rather than the
 # row. Matching ops/tvd.py keeps register pressure comparable.
@@ -82,6 +84,8 @@ def _fused_ce_tvd_forward_kernel(
     # Pass 1: online max / sum-exp for both rows at once.
     student_max = -float("inf")
     student_sumexp = 0.0
+    # Without the target term, so the CE survives once p_target rounds to 1.
+    student_sumexp_others = 0.0
     teacher_max = -float("inf")
     teacher_sumexp = 0.0
 
@@ -94,8 +98,11 @@ def _fused_ce_tvd_forward_kernel(
 
         student_block_max = tl.max(student, axis=0)
         new_student_max = tl.maximum(student_max, student_block_max)
-        student_sumexp = student_sumexp * tl.exp(student_max - new_student_max) + tl.sum(
-            tl.exp(student - new_student_max), axis=0
+        student_scale = tl.exp(student_max - new_student_max)
+        student_exp = tl.exp(student - new_student_max)
+        student_sumexp = student_sumexp * student_scale + tl.sum(student_exp, axis=0)
+        student_sumexp_others = student_sumexp_others * student_scale + tl.sum(
+            tl.where(offsets != target, student_exp, 0.0), axis=0
         )
         student_max = new_student_max
 
@@ -134,7 +141,7 @@ def _fused_ce_tvd_forward_kernel(
 
     student_at_target = tl.load(student_ptr + target).to(tl.float32)
 
-    tl.store(ce_ptr + pid, student_lse - student_at_target)
+    tl.store(ce_ptr + pid, target_nll(student_at_target, student_max, student_sumexp_others))
     tl.store(tvd_ptr + pid, 0.5 * abs_diff_sum)
     tl.store(student_lse_ptr + pid, student_lse)
     tl.store(teacher_lse_ptr + pid, teacher_lse)
@@ -148,6 +155,7 @@ def _fused_ce_tvd_backward_kernel(
     teacher_ptr,
     teacher_stride,
     target_ptr,
+    ce_ptr,
     grad_ce_ptr,
     grad_tvd_ptr,
     student_lse_ptr,
@@ -188,6 +196,8 @@ def _fused_ce_tvd_backward_kernel(
     student_lse = tl.load(student_lse_ptr + pid)
     teacher_lse = tl.load(teacher_lse_ptr + pid)
     sigma = tl.load(sigma_ptr + pid)
+    # 1 - p_target from the CE, since p - 1 cancels to 0 once p_target rounds to 1
+    one_minus_p_target = -expm1(-tl.load(ce_ptr + pid))
 
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + base_offsets
@@ -202,8 +212,7 @@ def _fused_ce_tvd_backward_kernel(
         diff = p - q
         sign = tl.where(diff > 0, 1.0, tl.where(diff < 0, -1.0, 0.0))
 
-        grad = grad_ce * p + grad_tvd * 0.5 * p * (sign - sigma)
-        grad = grad - tl.where(offsets == target, grad_ce, 0.0)
+        grad = tl.where(offsets == target, -one_minus_p_target, p) * grad_ce + grad_tvd * 0.5 * p * (sign - sigma)
 
         tl.store(grad_student_ptr + offsets, grad, mask=mask)
 
@@ -252,6 +261,7 @@ def fused_ce_tvd_backward(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
     target: torch.Tensor,
+    ce: torch.Tensor,
     student_lse: torch.Tensor,
     teacher_lse: torch.Tensor,
     sigma: torch.Tensor,
@@ -271,6 +281,7 @@ def fused_ce_tvd_backward(
             teacher_logits,
             teacher_logits.stride(0),
             target,
+            ce,
             grad_ce,
             grad_tvd,
             student_lse,
@@ -328,7 +339,7 @@ class LigerFusedCETVDFunction(torch.autograd.Function):
 
         # Only O(BT) state is retained; the distributions are rebuilt in the
         # backward pass from logits the caller already keeps alive.
-        ctx.save_for_backward(student_logits, teacher_logits, target, student_lse, teacher_lse, sigma)
+        ctx.save_for_backward(student_logits, teacher_logits, target, ce, student_lse, teacher_lse, sigma)
         ctx.ignore_index = ignore_index
 
         return ce, tvd
@@ -340,7 +351,7 @@ class LigerFusedCETVDFunction(torch.autograd.Function):
         grad_ce: torch.Tensor,
         grad_tvd: torch.Tensor,
     ) -> Tuple[Optional[torch.Tensor], None, None, None]:
-        student_logits, teacher_logits, target, student_lse, teacher_lse, sigma = ctx.saved_tensors
+        student_logits, teacher_logits, target, ce, student_lse, teacher_lse, sigma = ctx.saved_tensors
 
         grad_student = fused_ce_tvd_backward(
             grad_ce,
@@ -348,6 +359,7 @@ class LigerFusedCETVDFunction(torch.autograd.Function):
             student_logits,
             teacher_logits,
             target,
+            ce,
             student_lse,
             teacher_lse,
             sigma,
