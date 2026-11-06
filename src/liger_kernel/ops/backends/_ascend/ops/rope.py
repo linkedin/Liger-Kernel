@@ -972,26 +972,89 @@ def _launch_rope(q, k, cos, sin, backward: bool, q_out=None, k_out=None):
     return _launch_bnsd(q, k, cos, sin, backward, q_out=q_out, k_out=k_out)
 
 
-def rope_forward(q, k, cos, sin):
+def _resolved_rotary_dim(q, k, cos, rotary_dim):
+    """None uses the cos/sin width. An explicit width is not inferred from a narrower table."""
+    ref = q if q is not None else k
+    head_dim = ref.shape[-1]
+    if rotary_dim is None:
+        rotary_dim = min(int(cos.shape[-1]), head_dim)
+    rotary_dim = int(rotary_dim)
+    if rotary_dim % 2 != 0 or not 0 < rotary_dim <= head_dim:
+        raise ValueError(f"rotary_dim must be even and in (0, head_dim={head_dim}]; got {rotary_dim}")
+    if cos.shape[-1] < rotary_dim // 2:
+        raise ValueError(
+            f"cos/sin need at least rotary_dim / 2 = {rotary_dim // 2} entries in the last dimension; "
+            f"got {cos.shape[-1]}"
+        )
+    return rotary_dim, head_dim
+
+
+def _keep_last_stride(x):
+    if x is None or x.stride(-1) == 1:
+        return x
+    return x.contiguous()
+
+
+def _partial_rope(q, k, cos, sin, backward, rotary_dim):
+    """Rotate the leading ``rotary_dim`` entries. The tail is unchanged."""
+    if cos.shape[-1] > rotary_dim:
+        cos = _keep_last_stride(cos[..., :rotary_dim])
+        sin = _keep_last_stride(sin[..., :rotary_dim])
+
+    def _prefix(x):
+        if x is None:
+            return None
+        return _keep_last_stride(x[..., :rotary_dim])
+
+    q_out, k_out, cos, sin = _launch_rope(_prefix(q), _prefix(k), cos, sin, backward)
+
+    def _merge(full, rotated):
+        if full is None:
+            return None
+        if backward:
+            out = full.clone()
+            out[..., :rotary_dim] = rotated
+            return out
+        return torch.cat((rotated, full[..., rotary_dim:]), dim=-1)
+
+    return _merge(q, q_out), _merge(k, k_out), cos, sin
+
+
+def _rope_with_width(q, k, cos, sin, backward, rotary_dim, head_dim):
+    if rotary_dim < head_dim:
+        return _partial_rope(q, k, cos, sin, backward, rotary_dim)
+    if backward:
+        return _launch_rope(q, k, cos, sin, backward=True, q_out=q, k_out=k)
     return _launch_rope(q, k, cos, sin, backward=False)
 
 
-def rope_backward(dq, dk, cos, sin):
-    dq_out, dk_out, _, _ = _launch_rope(dq, dk, cos, sin, backward=True, q_out=dq, k_out=dk)
+def rope_forward(q, k, cos, sin, rotary_dim=None):
+    rotary_dim, head_dim = _resolved_rotary_dim(q, k, cos, rotary_dim)
+    return _rope_with_width(q, k, cos, sin, False, rotary_dim, head_dim)
+
+
+def rope_backward(dq, dk, cos, sin, rotary_dim=None):
+    rotary_dim, head_dim = _resolved_rotary_dim(dq, dk, cos, rotary_dim)
+    dq_out, dk_out, _, _ = _rope_with_width(dq, dk, cos, sin, True, rotary_dim, head_dim)
     return dq_out, dk_out
 
 
 class LigerRopeFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    def forward(ctx, q, k, cos, sin, position_ids=None, unsqueeze_dim=1, rotary_dim=None):
         """
         q size: (bsz, n_q_head, seq_len, head_dim)
         k size: (bsz, n_kv_head, seq_len, head_dim)
         cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
         sin size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
+        rotary_dim: leading entries to rotate. None uses the cos/sin width.
+            Pass it explicitly when the table is only rotary_dim / 2 wide.
         """
         ctx.set_materialize_grads(False)
-        q, k, cos, sin = rope_forward(q, k, cos, sin)
+        rotary_dim, head_dim = _resolved_rotary_dim(q, k, cos, rotary_dim)
+        ctx.rotary_dim = rotary_dim
+        ctx.head_dim = head_dim
+        q, k, cos, sin = _rope_with_width(q, k, cos, sin, False, rotary_dim, head_dim)
         ctx.save_for_backward(cos, sin)
         return q, k
 
@@ -1001,10 +1064,9 @@ class LigerRopeFunction(torch.autograd.Function):
         dq size: (bsz, n_q_head, seq_len, head_dim)
         dk size: (bsz, n_kv_head, seq_len, head_dim)
         """
-        # set_materialize_grads(False) passes None for unused outputs. Both-None
-        # is the unused-outputs guard; a single None is handled by _launch_rope.
+        # Both outputs unused. The last None is rotary_dim.
         if dq is None and dk is None:
-            return None, None, None, None, None, None
+            return None, None, None, None, None, None, None
         cos, sin = ctx.saved_tensors
-        dq, dk = rope_backward(dq, dk, cos, sin)
-        return dq, dk, None, None, None, None
+        dq_out, dk_out, _, _ = _rope_with_width(dq, dk, cos, sin, True, ctx.rotary_dim, ctx.head_dim)
+        return dq_out, dk_out, None, None, None, None, None
