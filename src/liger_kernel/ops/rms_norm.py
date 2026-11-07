@@ -191,7 +191,7 @@ def _rms_norm_backward_kernel(
     if elementwise_affine:
         W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
         # Pin the fp64 scalar Inductor passes to fp32 (see _rms_norm_forward_kernel).
-        W_row = W_row + offset.to(tl.float32)
+        W_row = W_row + tl.cast(offset, tl.float32)
 
     for row_idx in range(row_start, row_end):
         dy_base = dY_ptr + row_idx * dY_row_stride
@@ -375,7 +375,7 @@ def _block_rms_norm_backward_kernel(
     if elementwise_affine:
         W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
         # Pin the fp64 scalar Inductor passes to fp32 (see _rms_norm_forward_kernel).
-        W_row = W_row + offset.to(tl.float32)
+        W_row = W_row + tl.cast(offset, tl.float32)
 
     for start in range(pid * BLOCK_ROW, n_rows, NUM_SMS * BLOCK_ROW):
         row_idx = start + tl.arange(0, BLOCK_ROW)

@@ -70,7 +70,7 @@ def _poly_norm_forward_kernel(
 
     # Compute norm(x³): norm(u) = u * rsqrt(mean(u²) + eps)
     # Force fp32 eps: Inductor may use fp64 under torch.compile and tank throughput.
-    eps = eps.to(tl.float32)
+    eps = tl.cast(eps, tl.float32)
 
     mean_square_3 = tl.sum(X_pow3 * X_pow3, axis=0) / n_cols
     rstd_3 = rsqrt(mean_square_3 + eps)

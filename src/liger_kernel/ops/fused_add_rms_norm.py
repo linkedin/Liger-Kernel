@@ -174,7 +174,7 @@ def _fused_add_rms_norm_backward_kernel(
         dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
-    W_row = W_row + offset.to(tl.float32)
+    W_row = W_row + tl.cast(offset, tl.float32)
 
     for row_idx in range(row_start, row_end):
         dy_base = dY_ptr + row_idx * dY_row_stride
