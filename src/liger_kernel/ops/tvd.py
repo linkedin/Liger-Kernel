@@ -69,7 +69,7 @@ def _tv_distance_kernel(
     # fp32, but Inductor specializes it to fp64; mixing an fp64 scalar into the loop body
     # promotes the gradient expression to float64 on every iteration and makes the
     # compiled path disagree with eager. This cast is a no-op on the eager path.
-    scale = scale.to(tl.float32)
+    scale = tl.cast(scale, tl.float32)
 
     if HAS_LABEL:
         label = tl.load(label_ptr)

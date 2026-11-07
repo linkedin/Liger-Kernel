@@ -91,12 +91,12 @@ def _fused_add_rms_norm_forward_kernel(
         S_row = S_row.to(tl.float32)
 
     if casting_mode == _CASTING_MODE_NONE:
-        eps = eps.to(S_row_dtype)
-        offset = offset.to(S_row_dtype)
+        eps = tl.cast(eps, S_row_dtype)
+        offset = tl.cast(offset, S_row_dtype)
     else:
         # Force fp32 scalars: Inductor may use fp64 under torch.compile and tank throughput.
-        eps = eps.to(tl.float32)
-        offset = offset.to(tl.float32)
+        eps = tl.cast(eps, tl.float32)
+        offset = tl.cast(offset, tl.float32)
 
     mean_square = tl.sum(S_row * S_row, axis=0) / n_cols
     rstd = rsqrt(mean_square + eps)
@@ -174,7 +174,7 @@ def _fused_add_rms_norm_backward_kernel(
         dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
-    W_row = W_row + offset.to(tl.float32)
+    W_row = W_row + tl.cast(offset, tl.float32)
 
     for row_idx in range(row_start, row_end):
         dy_base = dY_ptr + row_idx * dY_row_stride

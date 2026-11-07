@@ -124,10 +124,10 @@ def liger_cross_entropy_kernel(
         predicted_tokens_ptr += program_id * predicted_tokens_stride
 
     if HAS_SOFTCAPPING:
-        softcap = softcap.to(tl.float32)
+        softcap = tl.cast(softcap, tl.float32)
     if HAS_WEIGHT:
-        sum_non_ignore_weight = sum_non_ignore_weight.to(tl.float32)
-        weight_sum = weight_sum.to(tl.float32)
+        sum_non_ignore_weight = tl.cast(sum_non_ignore_weight, tl.float32)
+        weight_sum = tl.cast(weight_sum, tl.float32)
 
     if HAS_WEIGHT:
         weight_y = tl.load(weight_ptr + y).cast(tl.float32)
