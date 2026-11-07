@@ -139,6 +139,7 @@ Functional APIs are also available:
 
 | **Kernel**                      | **API**                                                     |
 |---------------------------------|-------------------------------------------------------------|
+| Fused Linear BCO Loss           | `liger_kernel.chunked_loss.LigerFusedLinearBCOLoss`       |
 | Fused Linear CPO Loss           | `liger_kernel.chunked_loss.LigerFusedLinearCPOLoss`       |
 | Fused Linear DPO Loss           | `liger_kernel.chunked_loss.LigerFusedLinearDPOLoss`       |
 | Fused Linear ORPO Loss          | `liger_kernel.chunked_loss.LigerFusedLinearORPOLoss`      |
