@@ -1,3 +1,4 @@
+import logging
 import os
 import subprocess
 import sys
@@ -1045,11 +1046,101 @@ def test_flce_target_negative_non_ignore_raises():
         _run_or_skip(lambda: _apply(_cutedsl_flce(), _input, weight, target))
 
 
+# =============================================================================
+# Triton fallback for capability misses
+#
+# The native path only covers SM100 + FP16/BF16 + mean/sum. Anything outside that is a
+# *capability* miss, not a user error, so the dispatcher routes to Triton instead of
+# raising. Each test below forces one miss, makes a native dispatch impossible to
+# overlook, and then checks the result still matches Triton exactly.
+# =============================================================================
+def _flce_module():
+    """The cutedsl FLCE module itself, or skip when CUTLASS is not installed."""
+    try:
+        import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
+    except ImportError as exc:
+        pytest.skip(f"cutedsl backend not importable (cutlass.cute missing?): {exc}")
+    return flce
+
+
+def _fwd_bwd(fn, _input, weight, target, **opts):
+    """Forward + backward on private clones, so both backends see identical inputs."""
+    x = _input.detach().clone().requires_grad_(True)
+    w = weight.detach().clone().requires_grad_(True)
+    loss = _apply(fn, x, w, target, **opts)[0]
+    loss.sum().backward()
+    return loss.detach(), x.grad, w.grad
+
+
+def _assert_falls_back_to_triton(monkeypatch, caplog, *, dtype=torch.bfloat16, reduction="mean", force_sm90=False):
+    flce = _flce_module()
+    _input, weight, target = _basic_args(dtype=dtype)
+
+    if force_sm90:
+        monkeypatch.setattr(flce, "_native_sm100_supported", lambda _: False)
+
+    # Choosing the native path here is exactly the bug under test; a numeric-only
+    # assertion would pass either way on real SM100 hardware, so make it explicit.
+    def _native_must_not_run(*args, **kwargs):
+        raise AssertionError("dispatcher chose the native SM100 path; expected the Triton fallback")
+
+    monkeypatch.setattr(flce._NativeFusedLinearCrossEntropyFunction, "apply", staticmethod(_native_must_not_run))
+    flce._warn_triton_fallback_once.cache_clear()
+
+    with caplog.at_level(logging.WARNING, logger=flce.__name__):
+        got = _fwd_bwd(_cutedsl_flce(), _input, weight, target, reduction=reduction)
+    want = _fwd_bwd(_triton_flce(), _input, weight, target, reduction=reduction)
+
+    # Both sides ran the same Triton kernel, so this is equality, not approximation.
+    for tensor_got, tensor_want, what in zip(got, want, ("loss", "grad_input", "grad_weight")):
+        torch.testing.assert_close(tensor_got, tensor_want, rtol=0, atol=0, msg=f"{what} mismatch vs Triton")
+
+    assert any("Falling back to the Triton kernel" in record.getMessage() for record in caplog.records), (
+        "the fallback must announce itself, so a user who opted into cutedsl is not "
+        "left believing they are on the accelerated path"
+    )
+
+
 @cuda_required
-def test_flce_reduction_none_is_rejected():
+def test_flce_falls_back_to_triton_on_non_sm100(monkeypatch, caplog):
+    _assert_falls_back_to_triton(monkeypatch, caplog, force_sm90=True)
+
+
+@cuda_required
+def test_flce_falls_back_to_triton_for_fp32(monkeypatch, caplog):
+    _assert_falls_back_to_triton(monkeypatch, caplog, dtype=torch.float32)
+
+
+@cuda_required
+def test_flce_falls_back_to_triton_for_reduction_none(monkeypatch, caplog):
+    _assert_falls_back_to_triton(monkeypatch, caplog, reduction="none")
+
+
+@sm100_required
+def test_flce_uses_native_path_when_supported(monkeypatch):
+    """Ensures supported calls use the native path instead of always falling back."""
+    flce = _flce_module()
+    called = []
+    native_apply = flce._NativeFusedLinearCrossEntropyFunction.apply
+
+    def _spy(*args, **kwargs):
+        called.append(True)
+        return native_apply(*args, **kwargs)
+
+    monkeypatch.setattr(flce._NativeFusedLinearCrossEntropyFunction, "apply", staticmethod(_spy))
+    _input, weight, target = _basic_args(dtype=torch.bfloat16)
+    _apply(_cutedsl_flce(), _input, weight, target)
+    assert called, "SM100 + bf16 + mean is fully supported; the native path must be used"
+
+
+@cuda_required
+def test_flce_native_forward_still_raises_on_capability_miss(monkeypatch):
+    """The low-level entry point keeps failing loudly; only the dispatcher degrades."""
+    flce = _flce_module()
+    monkeypatch.setattr(flce, "_native_sm100_supported", lambda _: False)
     _input, weight, target = _basic_args()
-    with pytest.raises(RuntimeError, match="mean/sum reduction"):
-        _apply(_cutedsl_flce(), _input, weight, target, reduction="none")
+    with pytest.raises(RuntimeError, match="exact SM100"):
+        flce.fused_linear_cross_entropy_forward(_input, weight, target)
 
 
 @cuda_required
@@ -1138,23 +1229,6 @@ def test_flce_native_support_requires_exact_sm100(monkeypatch):
     assert seen == [tensor.device]
 
 
-@cuda_required
-def test_flce_native_function_rejects_fp32_inputs():
-    _input, weight, target = _basic_args(dtype=torch.float32)
-    with pytest.raises(RuntimeError, match="FP16/BF16"):
-        _apply(_cutedsl_flce(), _input, weight, target)
-
-
-@cuda_required
-def test_flce_native_function_rejects_non_sm100(monkeypatch):
-    import liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy as flce
-
-    monkeypatch.setattr(flce, "_native_sm100_supported", lambda _: False)
-    _input, weight, target = _basic_args()
-    with pytest.raises(RuntimeError, match="exact SM100"):
-        _apply(_cutedsl_flce(), _input, weight, target)
-
-
 def test_flce_native_gemm_guards_noncurrent_device(monkeypatch):
     try:
         import liger_kernel.ops.cutedsl.ops._sm100_gemm as gemm
@@ -1222,3 +1296,59 @@ def test_liger_kernel_impl_cutedsl_selects_cutedsl_flce():
     if proc.returncode == 77:
         pytest.skip(proc.stderr.strip() or "cutedsl FLCE not wired yet")
     assert proc.returncode == 0, f"cutedsl FLCE dispatch check failed:\n{proc.stderr}"
+
+
+def _cutedsl_installed():
+    try:
+        import cutlass.cute  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(not _cutedsl_installed(), reason="cutedsl backend not installed")
+def test_cutedsl_flce_integration_does_not_raise_on_capability_miss():
+    """End-to-end regression: ensures a capability miss in FLCE falls back instead of raising.
+
+    Tests real dispatch by requiring a new interpreter. Uses FP32 (which is unsupported on all GPUs)
+    as the trigger, so the test never quietly passes on any hardware.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    pythonpath = os.pathsep.join([str(repo_root / "src"), str(repo_root), os.environ.get("PYTHONPATH", "")])
+    env = {**os.environ, "LIGER_KERNEL_IMPL": "cutedsl", "PYTHONPATH": pythonpath}
+    script = textwrap.dedent(
+        """
+        import sys
+        import torch
+
+        from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
+        from liger_kernel.transformers.functional import liger_fused_linear_cross_entropy
+
+        expected = "liger_kernel.ops.cutedsl.ops.fused_linear_cross_entropy"
+        mod = LigerFusedLinearCrossEntropyFunction.__module__
+        if mod != expected:
+            print(f"cutedsl FLCE not selected (module={mod}); skipping", file=sys.stderr)
+            sys.exit(77)
+
+        torch.manual_seed(0)
+        BT, H, V = 8, 16, 128
+        x = torch.randn(BT, H, device="cuda", dtype=torch.float32, requires_grad=True)
+        w = torch.randn(V, H, device="cuda", dtype=torch.float32, requires_grad=True)
+        target = torch.randint(0, V, (BT,), device="cuda")
+
+        loss = liger_fused_linear_cross_entropy(x, w, target)
+        loss.backward()
+
+        assert torch.isfinite(loss), loss
+        assert x.grad is not None and torch.isfinite(x.grad).all()
+        assert w.grad is not None and torch.isfinite(w.grad).all()
+        """
+    )
+    proc = subprocess.run([sys.executable, "-c", script], env=env, cwd=repo_root, capture_output=True, text=True)
+    if proc.returncode == 77:
+        pytest.skip(proc.stderr.strip() or "cutedsl FLCE not selected")
+    assert proc.returncode == 0, (
+        "FLCE must fall back to Triton instead of raising when the native CuTe DSL path "
+        f"cannot serve the call:\n{proc.stderr}"
+    )
