@@ -224,16 +224,19 @@ def _run_umma_mainloop(
 
 
 @cute.jit
-def _make_tma_epilogue_partitions(tidx, t_acc, t_cg_c, s_out, io_dtype):
+def _make_tma_epilogue_partitions(tidx, t_acc, t_cg_c, s_out, io_dtype, row_reduction=False):
     """Partition accumulator fragments for fused conversion and TMA output."""
-    copy_atom_t2r = get_tmem_load_op(
-        _CTA_TILE,
-        utils.LayoutEnum.ROW_MAJOR,
-        io_dtype,
-        Float32,
-        _EPI_TILE,
-        True,
-    )
+    if const_expr(row_reduction):
+        copy_atom_t2r = cute.make_copy_atom(tcgen05.Ld32x32bOp(tcgen05.Repetition.x32), Float32)
+    else:
+        copy_atom_t2r = get_tmem_load_op(
+            _CTA_TILE,
+            utils.LayoutEnum.ROW_MAJOR,
+            io_dtype,
+            Float32,
+            _EPI_TILE,
+            True,
+        )
     t_acc_epi = cute.flat_divide(t_acc[((None, None), 0, 0, None)], _EPI_TILE)
     tiled_copy_t2r = tcgen05.make_tmem_copy(
         copy_atom_t2r,
@@ -292,6 +295,7 @@ def _kernel(
     epilogue: cutlass.Constexpr,
     epilogue_fragments: cutlass.Constexpr,
     use_tma_output: cutlass.Constexpr,
+    epilogue_args: tuple = (),
 ):
     warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
     tidx, _, _ = cute.arch.thread_idx()
@@ -520,7 +524,9 @@ def _kernel(
             t_rs_r_acc,
             t_rs_r_out,
             t_rs_s_out,
-        ) = _make_tma_epilogue_partitions(tidx, t_ct_acc_base, t_cg_c, s_out, io_dtype)
+        ) = _make_tma_epilogue_partitions(
+            tidx, t_ct_acc_base, t_cg_c, s_out, io_dtype, row_reduction=epilogue_fragments == 0
+        )
         if const_expr(epilogue_fragments == 2):
             t_tr_r_lhs = cute.make_rmem_tensor(t_tr_r_acc.shape, Float32)
             t_rs_r_lhs = tiled_copy_r2s.retile(t_tr_r_lhs)
@@ -572,6 +578,14 @@ def _kernel(
             t_tr_t_acc = t_tr_t_acc_base[(None, None, None, None, None, acc_consumer_state.index)]
             acc_pipeline.consumer_wait(acc_consumer_state)
             t_tr_t_acc = cute.group_modes(t_tr_t_acc, 3, cute.rank(t_tr_t_acc))
+
+            if const_expr(epilogue_fragments == 0):
+                # A matrix-free epilogue owns its stores and consumes the whole
+                # tile before releasing TMEM to the producer.
+                epilogue(t_tr_t_acc, t_tr_g_c, t_tr_r_acc, tiled_copy_t2r, epilogue_args)
+                with cute.arch.elect_one():
+                    acc_pipeline.consumer_release(acc_consumer_state)
+                acc_consumer_state.advance()
 
             if const_expr(epilogue_fragments == 1):
                 fragment_count = _MMA_N // _EPI_N
@@ -693,6 +707,9 @@ def _host(
     swizzle_size: cutlass.Constexpr,
     max_active_clusters: cutlass.Constexpr,
     stream: cuda.CUstream,
+    epilogue_args: tuple = (),
+    a_k_major: cutlass.Constexpr = True,
+    b_k_major: cutlass.Constexpr = True,
 ):
     m_a_mkl = cute.make_tensor(
         m_a.iterator,
@@ -730,8 +747,8 @@ def _host(
         (_MMA_M, _MMA_N, 16),
         tcgen05.CtaGroup.TWO,
         tcgen05.OperandSource.SMEM,
-        cute.nvgpu.OperandMajorMode.K,
-        cute.nvgpu.OperandMajorMode.K,
+        cute.nvgpu.OperandMajorMode.K if a_k_major else cute.nvgpu.OperandMajorMode.MN,
+        cute.nvgpu.OperandMajorMode.K if b_k_major else cute.nvgpu.OperandMajorMode.MN,
     )
     tiled_mma = cute.make_tiled_mma(mma_op)
     cluster_layout_vmnk = cute.tiled_divide(
@@ -827,6 +844,7 @@ def _host(
         epilogue,
         epilogue_fragments,
         use_tma_output,
+        epilogue_args,
     ).launch(
         grid=grid,
         block=(_THREADS, 1, 1),

@@ -79,7 +79,7 @@ def test_frontend_uses_fallback_for_unsupported_nvidia_compute_capability(monkey
 
 def test_frontend_dispatches_sm90_and_forwards_arguments(monkeypatch):
     device = torch.device("cuda:3")
-    _input = SimpleNamespace(device=device)
+    _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
     weight = object()
     target = object()
     calls = []
@@ -107,6 +107,59 @@ def test_frontend_dispatches_sm90_and_forwards_arguments(monkeypatch):
 
     assert result == "sm90-result"
     assert calls == [(_input, weight, target, 0.7, -1, 3, True)]
+
+
+@pytest.mark.parametrize("capability", [(10, 0), (10, 3)])
+def test_frontend_dispatches_blackwell_without_global_override(monkeypatch, capability):
+    device = torch.device("cuda:2")
+    x = SimpleNamespace(device=device, dtype=torch.bfloat16)
+    weight, target, selected_ids = object(), object(), object()
+    calls = []
+    seen_devices = []
+
+    class NativeFunction:
+        @staticmethod
+        def apply(*args):
+            calls.append(args)
+            return "blackwell"
+
+    monkeypatch.delenv("LIGER_KERNEL_IMPL", raising=False)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(
+        _FRONTEND.torch.cuda, "get_device_capability", lambda actual: seen_devices.append(actual) or capability
+    )
+    monkeypatch.setattr(_FRONTEND, "_load_sm100_function", lambda: NativeFunction)
+
+    result = _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction.apply(
+        x, weight, target, 0.7, -1, 2, True, selected_ids
+    )
+
+    assert result == "blackwell"
+    assert calls == [(x, weight, target, 0.7, -1, 2, True, selected_ids)]
+    assert seen_devices == [device]
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_frontend_blackwell_retains_fallback_for_unsupported_dtype(monkeypatch, dtype):
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda _: (10, 0))
+    monkeypatch.setattr(_FRONTEND, "_load_sm100_function", lambda: pytest.fail("unsupported dtype must not load CuTe"))
+
+    assert _FRONTEND._resolve_implementation(torch.device("cuda:0"), dtype) is _FRONTEND._FusedLinearPPOFallbackFunction
+
+
+def test_frontend_blackwell_retains_fallback_without_cute(monkeypatch):
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda _: (10, 0))
+    monkeypatch.setattr(_FRONTEND, "_load_sm100_function", lambda: None)
+
+    assert (
+        _FRONTEND._resolve_implementation(torch.device("cuda:0"), torch.bfloat16)
+        is _FRONTEND._FusedLinearPPOFallbackFunction
+    )
 
 
 def test_frontend_fallback_matches_torch_with_entropy_and_ignored_rows():
