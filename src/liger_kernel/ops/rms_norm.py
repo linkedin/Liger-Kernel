@@ -114,8 +114,8 @@ def _rms_norm_forward_kernel(
         X_row = X_row.to(tl.float32)
 
     if casting_mode == _CASTING_MODE_NONE:
-        eps = eps.to(X_row_dtype)
-        offset = offset.to(X_row_dtype)
+        eps = tl.cast(eps, X_row_dtype)
+        offset = tl.cast(offset, X_row_dtype)
     else:
         # Scalar kernel params are specialized to fp32 by eager Triton but to
         # fp64 by Inductor when this kernel is launched from inside
@@ -298,8 +298,8 @@ def _block_rms_norm_forward_kernel(
         X_row = X_row.to(tl.float32)
 
     if casting_mode == _CASTING_MODE_NONE:
-        eps = eps.to(X_row_dtype)
-        offset = offset.to(X_row_dtype)
+        eps = tl.cast(eps, X_row_dtype)
+        offset = tl.cast(offset, X_row_dtype)
     else:
         # See _rms_norm_forward_kernel: pin fp64 scalars from Inductor to fp32.
         eps = tl.cast(eps, tl.float32)

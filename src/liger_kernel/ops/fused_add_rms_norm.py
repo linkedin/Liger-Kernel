@@ -91,8 +91,8 @@ def _fused_add_rms_norm_forward_kernel(
         S_row = S_row.to(tl.float32)
 
     if casting_mode == _CASTING_MODE_NONE:
-        eps = eps.to(S_row_dtype)
-        offset = offset.to(S_row_dtype)
+        eps = tl.cast(eps, S_row_dtype)
+        offset = tl.cast(offset, S_row_dtype)
     else:
         # Force fp32 scalars: Inductor may use fp64 under torch.compile and tank throughput.
         eps = tl.cast(eps, tl.float32)
