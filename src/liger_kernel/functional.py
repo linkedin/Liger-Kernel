@@ -38,6 +38,7 @@ declare_op_locations(
         "liger_kernel.ops.backends._cutedsl.rms_norm",
         "liger_kernel.ops.backends._ascend.rms_norm",
         "liger_kernel.ops.backends._cutile.rms_norm",
+        "liger_kernel.ops.tilelang.ascend.rms_norm",
     ),
 )
 
@@ -210,8 +211,8 @@ def rms_norm(
             as ``(offset + weight)`` inside the kernel).
         casting_mode: ``"llama"`` (cast to fp32 only inside reduction),
             ``"gemma"`` (cast everything to fp32), or ``"none"`` (no casting).
-        in_place: if True, the gradient computation reuses ``x``'s storage.
-            Has no effect on the forward output.
+        in_place: if True, reuse the upstream gradient buffer for the input
+            gradient during backward. Has no effect on the forward output.
         row_mode: legacy Liger Triton kernel knob; passed through unchanged.
         impl: explicit implementation name in the new hyphenated form,
             e.g. ``"nvidia-cutile"``, ``"nvidia-cutedsl"``, ``"nvidia-triton"``.
