@@ -9,6 +9,7 @@ from liger_kernel.chunked_loss.functional import liger_fused_linear_jsd
 from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
 from liger_kernel.utils import infer_device
 from test.utils import HFDistillationLoss
+from test.utils import assert_jsd_edge_cases
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 
@@ -484,3 +485,13 @@ def test_jsd_hard_loss_computed_only_when_used(monkeypatch, weight_hard_loss, re
             (student_input @ student_weight.t()).float(), target, ignore_index=-100
         )
         assert_verbose_allclose(hard_loss, reference, atol=1e-5, rtol=1e-5)
+
+
+def test_student_near_teacher_and_dominant_token():
+    def jsd(student, weight, teacher, beta):
+        labels = torch.zeros(student.shape[0], dtype=torch.long, device=device)
+        return LigerFusedLinearJSDFunction.apply(
+            student, weight, teacher, weight, labels, None, None, 0.0, 1.0, beta, -100, 1.0, False
+        )
+
+    assert_jsd_edge_cases(jsd, device)
