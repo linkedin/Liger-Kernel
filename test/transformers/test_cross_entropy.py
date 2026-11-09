@@ -1136,6 +1136,26 @@ def test_correctness_with_forward_only(B, T, V, ignore_index, reduction, dtype, 
     _test_correctness_with_forward_only(liger_ce, B, T, V, reduction, dtype, scalar, atol, rtol)
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_forward_only_preserves_ignored_logits(dtype):
+    if dtype == torch.bfloat16 and not supports_bfloat16():
+        pytest.skip("bfloat16 not supported on this GPU")
+
+    logits = torch.randn(6, 16, device=device, dtype=dtype)
+    original_logits = logits.clone()
+    targets = torch.tensor([1, -100, 3, -100, 5, -100], device=device, dtype=torch.long)
+    liger_ce = LigerCrossEntropyLoss(ignore_index=-100, reduction="none")
+
+    with torch.no_grad():
+        actual = liger_ce(logits, targets)
+
+    assert torch.equal(logits, original_logits)
+
+    expected = F.cross_entropy(original_logits, targets, ignore_index=-100, reduction="none")
+    non_ignored = targets != -100
+    assert torch.allclose(actual[non_ignored], expected[non_ignored], atol=1e-5, rtol=1e-5)
+
+
 @pytest.mark.parametrize(
     "return_z_loss, return_token_accuracy, return_predicted_tokens",
     [

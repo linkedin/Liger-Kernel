@@ -1,6 +1,4 @@
 # Triton kernels for fused MoE on Ascend.
-# Routing metadata kernels are adapted from SonicMoE:
-# https://github.com/linkedin/sonic-moe
 
 import triton
 import triton.language as tl
@@ -24,181 +22,86 @@ ASCEND_DW_BLOCK_K = 32
 
 
 # ---------------------------------------------------------------------------
-# Routing metadata: histogram → prefix sum → scatter
+# Routing metadata: histogram → exclusive prefix → per-row rank → tile bounds
+# A wide masked cumsum does not assign unique ranks.
 # ---------------------------------------------------------------------------
 
 
 @triton.jit
 def _moe_router_histogram_kernel(
-    topk_indices_ptr,  # (T, K) int32
-    partial_sum_ptr,  # (E, n_tiles) int32 — output; partial_sum[e, tile] = count
-    T,
-    E: tl.constexpr,
-    n_tiles,
-    TOKENS_PER_TILE: tl.constexpr,
-    K_POW2: tl.constexpr,
-    K: tl.constexpr,
-    E_POW2: tl.constexpr,
+    topk_ptr,  # (TK,) int32, flat (token, k)
+    count_ptr,  # (E,) int32, zeroed by the host
+    TK,
+    E,
 ):
-    """Count per-expert assignments for each token tile.
-
-    Ascend: 2-D block loads + batched atomic_add with safe expert indices.
-    A 1-D flatten path can fault on vector-core UB/D-cache under long MoE runs.
-    Pad the K inner dim to 8 i32 so 2-D reductions do not drop lanes.
-    """
-    tile_id = tl.program_id(0)
-    HIST_K_POW2: tl.constexpr = 8 if K_POW2 < 8 else K_POW2
-
-    e_offs = tl.arange(0, E_POW2)
-    tl.store(
-        partial_sum_ptr + e_offs * n_tiles + tile_id,
-        tl.zeros([E_POW2], tl.int32),
-        mask=e_offs < E,
-    )
-
-    tok_offs = tile_id * TOKENS_PER_TILE + tl.arange(0, TOKENS_PER_TILE)
-    k_offs = tl.arange(0, HIST_K_POW2)
-    tok_mask = tok_offs < T
-    load_mask = tok_mask[:, None] & (k_offs[None, :] < K)
-    safe_k = tl.minimum(k_offs, K - 1)
-    expert_ids = tl.load(
-        topk_indices_ptr + tok_offs[:, None] * K + safe_k[None, :],
-        mask=load_mask,
-        other=-1,
-    )
-
-    flat_experts = tl.reshape(expert_ids, [TOKENS_PER_TILE * HIST_K_POW2])
-    flat_mask = tl.reshape(load_mask, [TOKENS_PER_TILE * HIST_K_POW2])
-    in_bounds = (flat_experts >= 0) & (flat_experts < E)
-    valid = flat_mask & in_bounds
-    safe_experts = tl.where(valid, flat_experts, 0)
-
-    tl.atomic_add(
-        partial_sum_ptr + safe_experts * n_tiles + tile_id,
-        tl.full([TOKENS_PER_TILE * HIST_K_POW2], 1, dtype=tl.int32),
-        mask=valid,
-    )
+    pid = tl.program_id(0)
+    nprog = tl.num_programs(0)
+    for i in tl.range(pid, TK, nprog):
+        expert = tl.load(topk_ptr + i)
+        if (expert >= 0) & (expert < E):
+            tl.atomic_add(count_ptr + expert, 1)
 
 
 @triton.jit
 def _moe_router_prefix_sum_kernel(
-    expert_freq_ptr,  # (E,) int32 — total tokens assigned to each expert
-    expert_freq_offs_ptr,  # (E+1,) int32 — output: exclusive cumsum of expert_frequency
-    expert_tile_offset_ptr,  # (E+1,) int32 — output: exclusive cumsum of ceil(freq/BLOCK_M_TOKEN)
-    E: tl.constexpr,
-    partial_sum_ptr,  # (E, n_tiles) int32 — in-place: raw tile counts → tile prefix sums
-    n_tiles,
-    TK,  # T * K, written as sentinel into expert_freq_offs[E]
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    count_ptr,  # (E,) int32
+    start_ptr,  # (E+1,) int32 exclusive prefix of counts
+    tile_ptr,  # (E+1,) int32 exclusive prefix of ceil(count / BLOCK_M_TOKEN)
+    E,
     BLOCK_M_TOKEN: tl.constexpr,
 ):
-    """Build expert offsets and per-tile prefix sums used by scatter."""
-    pid = tl.program_id(0)
-    if pid < E:
-        expert_partial_sum_ptr = partial_sum_ptr + pid * n_tiles
-        curr_sum = 0
-        for start in range(0, n_tiles, BLOCK_M):
-            offs = start + tl.arange(0, BLOCK_M)
-            tile_counts = tl.load(expert_partial_sum_ptr + offs, mask=offs < n_tiles, other=0)
-            excl_cumsum = tl.cumsum(tile_counts, 0) - tile_counts + curr_sum
-            curr_sum += tl.sum(tile_counts, 0)
-            tl.store(expert_partial_sum_ptr + offs, excl_cumsum, mask=offs < n_tiles)
-    elif pid == E:
-        curr_freq_sum = 0
-        curr_tile_sum = 0
-        for start in tl.static_range(0, E, BLOCK_N):
-            offs = start + tl.arange(0, BLOCK_N)
-            expert_freq = tl.load(expert_freq_ptr + offs, mask=offs < E, other=0)
-
-            excl_freq = tl.cumsum(expert_freq, 0) - expert_freq + curr_freq_sum
-            curr_freq_sum += tl.sum(expert_freq, 0)
-            tl.store(expert_freq_offs_ptr + offs, excl_freq, mask=offs < E)
-
-            expert_m_tiles = (expert_freq + BLOCK_M_TOKEN - 1) // BLOCK_M_TOKEN
-            excl_tile = tl.cumsum(expert_m_tiles, 0) - expert_m_tiles + curr_tile_sum
-            curr_tile_sum += tl.sum(expert_m_tiles, 0)
-            tl.store(expert_tile_offset_ptr + offs, excl_tile, mask=offs < E)
-
-        tl.store(expert_tile_offset_ptr + E, curr_tile_sum)
-    elif pid == E + 1:
-        tl.store(expert_freq_offs_ptr + E, TK)
+    running = 0
+    tiles = 0
+    for e in tl.range(0, E):
+        count = tl.load(count_ptr + e)
+        tl.store(start_ptr + e, running)
+        tl.store(tile_ptr + e, tiles)
+        running += count
+        tiles += (count + BLOCK_M_TOKEN - 1) // BLOCK_M_TOKEN
+    tl.store(start_ptr + E, running)
+    tl.store(tile_ptr + E, tiles)
 
 
 @triton.jit
 def _moe_router_scatter_kernel(
-    s_scatter_idx_ptr,  # (TK,) int32 — output: sorted_pos → flat (t,k) index
-    s_reverse_scatter_idx_ptr,  # (TK,) int32 — output: flat (t,k) → sorted pos
-    x_gather_idx_ptr,  # (TK,) int32 — output: sorted_pos → token index t
-    tile_row_start_ptr,  # (num_m_tiles,) int32 — output: absolute row_start per M-tile
-    tile_expert_ptr,  # (num_m_tiles,) int32 — output: expert index per M-tile
-    topk_indices_ptr,  # (T, K) int32
-    T,
+    topk_ptr,
+    cursor_ptr,  # (E,) int32, zeroed; atomic_add returns the previous rank
+    start_ptr,  # (E+1,) int32
+    s_scatter_ptr,  # sorted_pos → flat (t, k)
+    s_reverse_ptr,  # flat (t, k) → sorted_pos
+    x_gather_ptr,  # sorted_pos → token index
     TK,
-    partial_sum_ptr,  # (E, n_tiles) int32 — tile prefix sums from K2 (read-only here)
-    n_tiles,
-    expert_offs_ptr,  # (E,) int32 — expert_start_idx[0:E] from K2
-    expert_tile_offset_ptr,  # (E,) int32 — expert_tile_offset[0:E] from K2
-    E: tl.constexpr,
-    K_POW2: tl.constexpr,
-    K: tl.constexpr,
-    TOKENS_PER_BLOCK: tl.constexpr,
+    K,
+    E,
+):
+    pid = tl.program_id(0)
+    nprog = tl.num_programs(0)
+    for i in tl.range(pid, TK, nprog):
+        expert = tl.load(topk_ptr + i)
+        if (expert >= 0) & (expert < E):
+            rank = tl.atomic_add(cursor_ptr + expert, 1).to(tl.int32)
+            slot = (tl.load(start_ptr + expert) + rank).to(tl.int32)
+            token = (i // K).to(tl.int32)
+            tl.store(s_reverse_ptr + i, slot)
+            tl.store(s_scatter_ptr + slot, i.to(tl.int32))
+            tl.store(x_gather_ptr + slot, token)
+
+
+@triton.jit
+def _moe_router_tile_kernel(
+    start_ptr,  # (E+1,) int32
+    tile_ptr,  # (E+1,) int32
+    tile_row_ptr,  # (num_m_tiles,) int32
+    tile_expert_ptr,  # (num_m_tiles,) int32
     BLOCK_M_TOKEN: tl.constexpr,
 ):
-    """Scatter routing indices into expert-sorted order.
-
-    Ascend: tl.sort is unavailable, so ranks are assigned via vectorized
-    per-expert cumsum instead of per-element atomic ranks.
-    """
-    BLOCK_SIZE: tl.constexpr = TOKENS_PER_BLOCK * K_POW2
-    BLOCK_E: tl.constexpr = 8
-    IS_POW2_K: tl.constexpr = K == K_POW2
-    tl.static_assert(BLOCK_SIZE <= 32768)
-
-    pid_m = tl.program_id(0)
-    base = pid_m * BLOCK_SIZE
-    local_offs = tl.arange(0, BLOCK_SIZE)
-
-    if IS_POW2_K:
-        gi = base + local_offs
-        valid = gi < TK
-        expert_i = tl.load(topk_indices_ptr + gi, mask=valid, other=-1).to(tl.int32)
-        entry_idx = gi.to(tl.int32)
-        token_i = (gi // K).to(tl.int32)
-    else:
-        token_i_local = local_offs // K_POW2
-        k_slot = local_offs % K_POW2
-        token_i = (pid_m * TOKENS_PER_BLOCK + token_i_local).to(tl.int32)
-        valid = (token_i < T) & (k_slot < K)
-        sk = tl.minimum(k_slot, K - 1)
-        expert_i = tl.load(topk_indices_ptr + token_i * K + sk, mask=valid, other=-1).to(tl.int32)
-        entry_idx = (token_i * K + sk).to(tl.int32)
-
-    in_bounds = (expert_i >= 0) & (expert_i < E)
-    valid = valid & in_bounds
-
-    n_e_blocks = (E + BLOCK_E - 1) // BLOCK_E
-    for e_block in tl.range(n_e_blocks):
-        for e_local in tl.static_range(BLOCK_E):
-            e = e_block * BLOCK_E + e_local
-            if e < E:
-                e_mask = valid & (expert_i == e)
-                within_expert_rank = tl.cumsum(e_mask.to(tl.int32), 0) - 1
-                tile_prefix = tl.load(partial_sum_ptr + pid_m + e * n_tiles)
-                expert_start = tl.load(expert_offs_ptr + e).to(tl.int32)
-                within_expert = tile_prefix + within_expert_rank
-                s_rev = expert_start + within_expert
-
-                is_tile_start = (within_expert % BLOCK_M_TOKEN) == 0
-                t_within = within_expert // BLOCK_M_TOKEN
-                tile_base = tl.load(expert_tile_offset_ptr + e).to(tl.int32)
-                flat_tile_idx = tile_base + t_within
-                tl.store(tile_row_start_ptr + flat_tile_idx, s_rev, mask=e_mask & is_tile_start)
-                tl.store(tile_expert_ptr + flat_tile_idx, e, mask=e_mask & is_tile_start)
-
-                tl.store(s_reverse_scatter_idx_ptr + entry_idx, s_rev, mask=e_mask)
-                tl.store(s_scatter_idx_ptr + s_rev, entry_idx, mask=e_mask)
-                tl.store(x_gather_idx_ptr + s_rev, token_i, mask=e_mask)
+    expert = tl.program_id(0)
+    row0 = tl.load(start_ptr + expert)
+    tile0 = tl.load(tile_ptr + expert)
+    n_tiles = tl.load(tile_ptr + expert + 1) - tile0
+    for tile in tl.range(0, n_tiles):
+        tl.store(tile_row_ptr + tile0 + tile, row0 + tile * BLOCK_M_TOKEN)
+        tl.store(tile_expert_ptr + tile0 + tile, expert)
 
 
 # ---------------------------------------------------------------------------

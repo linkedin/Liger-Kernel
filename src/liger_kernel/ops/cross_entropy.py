@@ -102,10 +102,12 @@ def liger_cross_entropy_kernel(
     X_ptr += program_id * X_stride
 
     if y == ignore_index:
-        # set all X_ptr as 0
-        for i in range(0, n_cols, BLOCK_SIZE):
-            X_offsets = i + tl.arange(0, BLOCK_SIZE)
-            tl.store(X_ptr + X_offsets, 0.0, mask=X_offsets < n_cols)
+        # The forward pass reuses X as gradient storage. If no gradient is
+        # needed, preserving X avoids mutating caller-owned logits.
+        if HAS_GRADIENTS:
+            for i in range(0, n_cols, BLOCK_SIZE):
+                X_offsets = i + tl.arange(0, BLOCK_SIZE)
+                tl.store(X_ptr + X_offsets, 0.0, mask=X_offsets < n_cols)
         # For ignored tokens, set token accuracy to 0
         if RETURN_TOKEN_ACCURACY:
             token_accuracy_ptr += program_id * token_accuracy_stride
