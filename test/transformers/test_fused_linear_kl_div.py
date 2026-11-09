@@ -566,3 +566,29 @@ def test_invalid_reduction():
 
     with pytest.raises(ValueError, match="reduction must be one of"):
         liger_fused_linear_kl_div(_input, _weight, target, reduction="none")
+
+
+@pytest.mark.parametrize("layout", ["weight", "input"])
+def test_scaled_gradient_respects_column_stride(layout):
+    # the cached gradients keep the layout of the parameter they were zeros_like'd from, so a transposed
+    # parameter has a non-unit column stride and every element must still be scaled
+    set_seed(42)
+    H, V = 4, 3
+    x = (
+        torch.randn(H, 2, device=device).t().requires_grad_(True)
+        if layout == "input"
+        else torch.randn(2, H, device=device, requires_grad=True)
+    )
+    weight = (
+        torch.randn(H, V, device=device).t().requires_grad_(True)
+        if layout == "weight"
+        else torch.randn(V, H, device=device, requires_grad=True)
+    )
+    target = torch.softmax(torch.randn(2, V, device=device), dim=-1)
+    assert (x.stride(-1) if layout == "input" else weight.stride(-1)) != 1
+
+    loss = LigerFusedLinearKLDivFunction.apply(x, weight, target, None, "batchmean", -100, 1.0, 1e-10, None)
+    (0.0 * loss).backward()
+
+    assert_verbose_allclose(x.grad, torch.zeros_like(x.grad))
+    assert_verbose_allclose(weight.grad, torch.zeros_like(weight.grad))
