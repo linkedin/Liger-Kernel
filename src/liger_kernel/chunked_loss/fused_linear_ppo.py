@@ -46,9 +46,15 @@ def _selective_logprob_forward(
         for vocab_start in range(0, vocab_size, vocab_chunk_size):
             vocab_end = min(vocab_start + vocab_chunk_size, vocab_size)
             weight_chunk = weight[vocab_start:vocab_end]
-            logits_chunk = (hidden_chunk @ weight_chunk.to(hidden.dtype).t()).float()
+            # Keep the projection and bias addition in the input/weight dtype,
+            # matching the reference linear path for BF16/FP16.  Casting the
+            # matmul to FP32 before adding a BF16 bias changes logits by a
+            # representable half-precision ulp and can amplify through the
+            # large-vocabulary softmax.
+            logits_chunk = hidden_chunk @ weight_chunk.to(hidden.dtype).t()
             if bias is not None:
-                logits_chunk.add_(bias[vocab_start:vocab_end].to(torch.float32))
+                logits_chunk.add_(bias[vocab_start:vocab_end])
+            logits_chunk = logits_chunk.float()
             logits_chunk.mul_(inv_t)
 
             chunk_max = logits_chunk.amax(dim=-1)
@@ -111,9 +117,10 @@ def _selective_logprob_backward(
         for vocab_start in range(0, vocab_size, vocab_chunk_size):
             vocab_end = min(vocab_start + vocab_chunk_size, vocab_size)
             weight_chunk = weight[vocab_start:vocab_end]
-            logits_chunk = (hidden_chunk @ weight_chunk.to(hidden.dtype).t()).float()
+            logits_chunk = hidden_chunk @ weight_chunk.to(hidden.dtype).t()
             if has_bias:
-                logits_chunk.add_(bias[vocab_start:vocab_end].to(torch.float32))
+                logits_chunk.add_(bias[vocab_start:vocab_end])
+            logits_chunk = logits_chunk.float()
             logits_chunk.mul_(inv_t)
 
             probs = torch.exp(logits_chunk - logz_chunk.unsqueeze(-1))
