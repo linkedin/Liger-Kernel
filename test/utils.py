@@ -27,6 +27,7 @@ from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
 
+from liger_kernel.transformers.monkey_patch import revert_liger_cross_entropy_patches
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -341,6 +342,7 @@ def revert_liger_kernel_to_granite(model_config: MiniModelConfig):
 
     importlib.reload(modeling_granite)
     model_config.model_class = modeling_granite.GraniteForCausalLM
+    revert_liger_cross_entropy_patches()
     print("Liger kernel patches have been reverted.")
 
 
@@ -353,6 +355,7 @@ def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
 
     importlib.reload(modeling_llama)
     model_config.model_class = modeling_llama.LlamaForCausalLM
+    revert_liger_cross_entropy_patches()
     print("Liger kernel patches have been reverted.")
 
 
@@ -365,6 +368,7 @@ def revert_liger_kernel_to_smollm3(model_config: MiniModelConfig):
 
     importlib.reload(modeling_smollm3)
     model_config.model_class = modeling_smollm3.SmolLM3ForCausalLM
+    revert_liger_cross_entropy_patches()
     print("Liger kernel patches have been reverted.")
 
 
@@ -387,6 +391,8 @@ def revert_liger_kernel_to_mllama(model_config: MiniModelConfig, model_type: str
         model_config.model_class = modeling_mllama.MllamaForCausalLM
     else:
         model_config.model_class = modeling_mllama.MllamaForConditionalGeneration
+
+    revert_liger_cross_entropy_patches()
 
     print("Liger kernel patches have been reverted.")
 
@@ -411,6 +417,8 @@ def revert_liger_kernel_to_llama4(model_config: MiniModelConfig, model_type: str
     else:
         model_config.model_class = modeling_llama4.Llama4ForConditionalGeneration
 
+    revert_liger_cross_entropy_patches(modeling_llama4)
+
     print("Liger kernel patches have been reverted.")
 
 
@@ -423,6 +431,7 @@ def revert_liger_kernel_to_ministral(model_config: MiniModelConfig):
 
     importlib.reload(modeling_ministral)
     model_config.model_class = modeling_ministral.MinistralForCausalLM
+    revert_liger_cross_entropy_patches(modeling_ministral)
     print("Liger kernel patches have been reverted.")
 
 
@@ -435,6 +444,7 @@ def revert_liger_kernel_to_mistral(model_config: MiniModelConfig):
 
     importlib.reload(modeling_mistral)
     model_config.model_class = modeling_mistral.MistralForCausalLM
+    revert_liger_cross_entropy_patches(modeling_mistral)
     print("Liger kernel patches have been reverted.")
 
 
@@ -447,6 +457,7 @@ def revert_liger_kernel_to_mixtral(model_config: MiniModelConfig):
 
     importlib.reload(modeling_mixtral)
     model_config.model_class = modeling_mixtral.MixtralForCausalLM
+    revert_liger_cross_entropy_patches()
     print("Liger kernel patches have been reverted.")
 
 
@@ -459,6 +470,7 @@ def revert_liger_kernel_to_muse_glimmer(model_config: MiniModelConfig):
 
     importlib.reload(modeling_muse_glimmer)
     model_config.model_class = modeling_muse_glimmer.MuseGlimmerForConditionalGeneration
+    revert_liger_cross_entropy_patches()
     print("Liger kernel patches have been reverted.")
 
 
@@ -471,6 +483,8 @@ def revert_liger_kernel_to_gemma(model_config: MiniModelConfig):
 
     importlib.reload(modeling_gemma)
     model_config.model_class = modeling_gemma.GemmaForCausalLM
+    revert_liger_cross_entropy_patches()
+
     print("Liger kernel patches have been reverted.")
 
 
@@ -939,6 +953,7 @@ def revert_liger_kernel_to_nemotron(model_config: MiniModelConfig):
 
     importlib.reload(modeling_nemotron)
     model_config.model_class = modeling_nemotron.NemotronForCausalLM
+    revert_liger_cross_entropy_patches(modeling_nemotron)
     print("Liger kernel patches have been reverted.")
 
 

@@ -1,6 +1,8 @@
 import inspect
 import logging
 
+import torch
+
 from functools import partial
 from types import MethodType
 from typing import Callable
@@ -53,6 +55,11 @@ transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
 
+# Capture the original torch.nn.functional.cross_entropy before any Liger
+# patching can replace it. Used by revert_liger_cross_entropy_patches() to
+# restore the unpatched state (see #1587).
+_ORIGINAL_TORCH_CROSS_ENTROPY = torch.nn.functional.cross_entropy
+
 MIN_SUPPORTED_TRANSFORMERS_VERSION = version.parse("5.0.0")
 if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
     raise ImportError(
@@ -64,6 +71,35 @@ if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
     # Binds a new method to a module instance so that self is passed as the first argument
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
+
+
+def revert_liger_cross_entropy_patches(modeling_module=None):
+    """
+    Restore torch.nn.functional.cross_entropy to its original unpatched state
+    and reload torch.nn so that any Liger cross entropy patches are fully
+    reverted (see #1587).
+
+    Args:
+        modeling_module: Optional modeling module whose CrossEntropyLoss class
+            attribute may have been swapped to LigerCrossEntropyLoss. If
+            provided and the attribute is bound to LigerCrossEntropyLoss, it
+            is removed so a subsequent module reload restores the original
+            class.
+    """
+    import importlib
+
+    # Restore F.cross_entropy to the original torch implementation.
+    torch.nn.functional.cross_entropy = _ORIGINAL_TORCH_CROSS_ENTROPY
+
+    # Reload torch.nn to reset any submodule-level patches.
+    importlib.reload(torch.nn)
+
+    # If a modeling module had its CrossEntropyLoss swapped to
+    # LigerCrossEntropyLoss, remove the attribute so the module reload
+    # restores the original class.
+    if modeling_module is not None:
+        if getattr(modeling_module, "CrossEntropyLoss", None) is LigerCrossEntropyLoss:
+            del modeling_module.CrossEntropyLoss
 
 
 def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True, row_mode=None):

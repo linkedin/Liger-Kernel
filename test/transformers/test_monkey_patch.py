@@ -4443,3 +4443,39 @@ def test_apply_liger_kernel_to_instance_for_exaone4():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+def test_revert_liger_cross_entropy_patches():
+    """Test that revert_liger_cross_entropy_patches restores F.cross_entropy (#1587)."""
+    import torch.nn.functional as F
+
+    from liger_kernel.transformers.functional import liger_cross_entropy
+    from liger_kernel.transformers.monkey_patch import (
+        _ORIGINAL_TORCH_CROSS_ENTROPY,
+        revert_liger_cross_entropy_patches,
+    )
+
+    # Save the current state
+    original_f_cross_entropy = F.cross_entropy
+
+    # Apply the Liger patch (simulating what apply_liger_kernel_to_* does)
+    F.cross_entropy = liger_cross_entropy
+    assert F.cross_entropy is liger_cross_entropy, "F.cross_entropy should be patched"
+
+    # Call the revert function
+    revert_liger_cross_entropy_patches()
+
+    # Verify F.cross_entropy is restored to the original
+    assert F.cross_entropy is _ORIGINAL_TORCH_CROSS_ENTROPY, (
+        "F.cross_entropy should be restored to the original torch implementation "
+        f"after revert, got {F.cross_entropy}"
+    )
+    # Also verify it's the same as what was there before we started patching
+    assert F.cross_entropy is original_f_cross_entropy, (
+        "F.cross_entropy should match the pre-test state"
+    )
+
+    # Verify the module-level constant matches the original torch function
+    assert _ORIGINAL_TORCH_CROSS_ENTROPY is torch.nn.functional.cross_entropy, (
+        "_ORIGINAL_TORCH_CROSS_ENTROPY should match torch.nn.functional.cross_entropy"
+    )
