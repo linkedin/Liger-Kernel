@@ -35,8 +35,15 @@ def device_context(device):
     device = torch.device(device)
     backend = getattr(torch, device.type, None)
     if backend is not None and hasattr(backend, "device"):
-        with backend.device(device):
+        # Skip the device guard under torch.compile: Dynamo emits incorrect
+        # device-restore nodes for torch.cuda.device()/torch.xpu.device()
+        # context managers during tracing, which leads to wrong output or
+        # illegal memory access (see #1590).
+        if getattr(torch, "is_compiling", lambda: False)():
             yield
+        else:
+            with backend.device(device):
+                yield
     else:
         yield
 
