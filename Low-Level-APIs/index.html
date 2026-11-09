@@ -25,7 +25,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
     
     
       
@@ -1001,6 +1001,9 @@ implementations in PyTorch.</p>
 <h3 id="crossentropy">CrossEntropy<a class="headerlink" href="#crossentropy" title="Permanent link">&para;</a></h3>
 <p>This kernel is optimized for calculating the loss function used in classification tasks. </p>
 <p>The  kernel achieves a ~3x execution speed increase and a ~5x reduction in memory usage for substantial vocabulary sizes compared to implementations in PyTorch.</p>
+<p>The per-token losses are kept in fp32 and reduced (<code>mean</code> / <code>sum</code>) in fp32, then cast once to the input dtype. For bf16/fp16 inputs the default <code>mean</code> and <code>sum</code> values can therefore differ slightly from earlier releases (they are closer to an fp32 reference); the returned dtype does not change.</p>
+<p>Pass <code>loss_dtype=torch.float32</code> to <code>LigerCrossEntropyLoss</code> or <code>liger_cross_entropy</code> to also get <code>loss</code> and <code>z_loss</code> back in fp32 for any reduction (<code>None</code>, the default, keeps the input dtype; other values raise <code>ValueError</code>). This option is only available with the Triton backend.</p>
+<p>By default <code>reduction="none"</code> keeps a non-destructive per-row multiply (it allocates a second gradient-sized tensor), so <code>retain_graph=True</code> and backward through different slices of the per-token losses keep working. <code>in_place=True</code> (Triton backend only) scales the saved gradient in place instead, which removes that tensor and is faster but makes the graph single-use: a second backward raises <code>RuntimeError</code>. <code>mean</code> and <code>sum</code> apply an upstream gradient other than 1.0 in place as before; such a graph raises <code>RuntimeError</code> on a second backward, while with an upstream gradient of exactly 1.0 they still support <code>retain_graph=True</code>.</p>
 <div class="admonition example">
 <p class="admonition-title">Try it out</p>
 <p>You can experiment as shown in this example <a href="https://colab.research.google.com/drive/1WgaU_cmaxVzx8PcdKB5P9yHB6_WyGd4T?usp=sharing">here</a>.</p>
@@ -1245,7 +1248,7 @@ implementations in PyTorch.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.footer", "toc.follow", "navigation.top", "navigation.sections"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
   </body>
