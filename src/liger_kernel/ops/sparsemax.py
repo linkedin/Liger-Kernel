@@ -105,7 +105,7 @@ def _sparsemax_backward_kernel(
         supp = o_val > 0.0
         gi_val = tl.where(
             supp,
-            go_val - tl.cast(go_sum / tl.maximum(supp_cnt, 1e-6), gi_row.dtype.element_ty).to(tl.float32),
+            go_val - go_sum / tl.maximum(supp_cnt, 1e-6),
             0.0,
         )
         tl.store(gi_row + offs_iter, gi_val.to(gi_row.dtype.element_ty), mask=mask_iter, cache_modifier=".wb")
