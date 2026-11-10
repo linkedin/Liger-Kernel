@@ -29,6 +29,18 @@ _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
+def _is_compiling():
+    # torch.compiler.is_compiling() needs torch >= 2.3; CUDA installs allow torch >= 2.1.2.
+    if hasattr(torch, "compiler") and hasattr(torch.compiler, "is_compiling"):
+        return torch.compiler.is_compiling()
+    return torch._dynamo.is_compiling()
+
+
+def _scatter_rows(values, rows, n_rows, fill):
+    """Expand values computed for ``rows`` to all ``n_rows`` rows; the others get ``fill``."""
+    return torch.full((n_rows,), fill, dtype=values.dtype, device=values.device).index_copy_(0, rows, values)
+
+
 def _can_use_mm_out(_input, weight):
     # out= bypasses autocast. Only use it when @ would use these exact operands
     # and return their dtype; keep AMP casts/rounding on the original path.
@@ -103,7 +115,6 @@ def fused_linear_cross_entropy_forward(
     inc_factor = triton.cdiv(V, chunk_mem_const * H)
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
     chunk_size = min(chunk_size, BT)  # a single chunk covers BT when the budget allows; never exceed BT
-    num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
     grad_input = torch.zeros_like(_input, device=device)
 
@@ -122,14 +133,33 @@ def fused_linear_cross_entropy_forward(
         grad_weight = None
         grad_bias = None
 
-    loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
-    z_loss_1d = torch.zeros(BT, dtype=_input.dtype, device=_input.device) if return_z_loss else None
-    token_accuracy_1d = torch.zeros(BT, dtype=torch.float32, device=device) if return_token_accuracy else None
-    predicted_tokens_1d = torch.full((BT,), -1, dtype=torch.int64, device=device) if return_predicted_tokens else None
-
     # TODO: evaluate how CUDA synchronization caused by .item() affects the speed
     target_mask = target != ignore_index
-    total_n_non_ignore = target_mask.sum().item()
+    # Rows whose target is ignore_index add neither loss nor gradient, so only the other
+    # rows go through the projections. nonzero() syncs once, like the .item() it replaces.
+    # Under torch.compile keep the static-shape path: nonzero has a data-dependent size.
+    valid_rows = None
+    if _is_compiling():
+        total_n_non_ignore = target_mask.sum().item()
+    else:
+        valid_rows = target_mask.nonzero().squeeze(-1)
+        total_n_non_ignore = valid_rows.numel()
+        # chunk_size keeps the logits budget of all BT rows, so skipped rows remove whole
+        # chunks, each of which reads the full weight. Skip rows only when that removes a
+        # chunk; otherwise keep the contiguous slices (and their exact results).
+        if triton.cdiv(total_n_non_ignore, chunk_size) == triton.cdiv(BT, chunk_size):
+            valid_rows = None
+    n_rows = BT if valid_rows is None else total_n_non_ignore
+    num_chunks = triton.cdiv(n_rows, chunk_size)
+    if token_grad_output is not None and valid_rows is not None:
+        token_grad_output = token_grad_output.index_select(0, valid_rows)
+
+    loss_1d = torch.zeros(n_rows, dtype=torch.float32, device=device)
+    z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device) if return_z_loss else None
+    token_accuracy_1d = torch.zeros(n_rows, dtype=torch.float32, device=device) if return_token_accuracy else None
+    predicted_tokens_1d = (
+        torch.full((n_rows,), -1, dtype=torch.int64, device=device) if return_predicted_tokens else None
+    )
     total_sum_non_ignore_ce_weight = total_n_non_ignore
     ce_weight_sum = 0.0
     if ce_weight is not None:
@@ -148,15 +178,28 @@ def fused_linear_cross_entropy_forward(
     # A promoted bias needs the original out-of-place add. Do not reserve an
     # unused low-precision buffer alongside those promoted logits.
     logits_storage = (
-        torch.empty((chunk_size, V), dtype=_input.dtype, device=device)
+        torch.empty((min(chunk_size, n_rows), V), dtype=_input.dtype, device=device)
         if use_mm_out and (bias is None or bias.dtype == _input.dtype)
+        else None
+    )
+    # Skipped rows make the grad_input rows of a chunk non-contiguous: project into a
+    # reused buffer and copy the rows over.
+    grad_input_storage = (
+        torch.empty((min(chunk_size, n_rows), H), dtype=grad_input.dtype, device=device)
+        if valid_rows is not None and use_mm_out and input_requires_grad
         else None
     )
 
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
-        end_idx = min((chunk_id + 1) * chunk_size, BT)
-        _input_chunk = _input[start_idx:end_idx]  # chunk_size x H
+        end_idx = min((chunk_id + 1) * chunk_size, n_rows)
+        if valid_rows is None:
+            _input_chunk = _input[start_idx:end_idx]  # chunk_size x H
+            target_chunk = target[start_idx:end_idx]  # chunk_size,
+        else:
+            rows = valid_rows[start_idx:end_idx]
+            _input_chunk = _input.index_select(0, rows)
+            target_chunk = target.index_select(0, rows)
 
         # when doing matmul, use the original precision
         if logits_storage is not None:
@@ -168,8 +211,6 @@ def fused_linear_cross_entropy_forward(
             logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
             if bias is not None:
                 logits_chunk = logits_chunk + bias
-
-        target_chunk = target[start_idx:end_idx]  # chunk_size,
 
         # Compute predicted probabilities for token scaling if needed
         if use_token_scaling:
@@ -316,7 +357,15 @@ def fused_linear_cross_entropy_forward(
             )
 
         if input_requires_grad:
-            if use_mm_out and grad_logits_chunk.dtype == grad_input.dtype:
+            if valid_rows is not None:
+                if grad_input_storage is not None and grad_logits_chunk.dtype == grad_input.dtype:
+                    grad_input_chunk = grad_input_storage[: end_idx - start_idx]
+                    torch.mm(grad_logits_chunk, weight, out=grad_input_chunk)
+                else:
+                    grad_input_chunk = (grad_logits_chunk @ weight).to(grad_input.dtype)
+                grad_input.index_copy_(0, rows, grad_input_chunk)
+                del grad_input_chunk
+            elif use_mm_out and grad_logits_chunk.dtype == grad_input.dtype:
                 torch.mm(grad_logits_chunk, weight, out=grad_input[start_idx:end_idx])
             else:
                 grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
@@ -387,13 +436,22 @@ def fused_linear_cross_entropy_forward(
         # keep the previous chunk alive when the fallback allocates new logits.
         del grad_logits_chunk, _input_chunk, target_chunk
 
-    # Release even the persistent buffer before allocating a dtype-converted dW.
-    del logits_storage
+    # Release even the persistent buffers before allocating a dtype-converted dW.
+    del logits_storage, grad_input_storage
 
     # Need extra calculations for backward if reduction=='none'. Not supporting reduction='none' now.
     # if reduction == "none":
     #     loss = loss_1d
     #     z_loss = z_loss_1d if return_z_loss else None
+
+    if valid_rows is not None:
+        # Ignored rows keep what the CE kernel writes for them: 0 loss and accuracy, token -1.
+        if reduction == "none":
+            loss_1d = _scatter_rows(loss_1d, valid_rows, BT, 0)
+            z_loss_1d = _scatter_rows(z_loss_1d, valid_rows, BT, 0) if return_z_loss else None
+            token_accuracy_1d = _scatter_rows(token_accuracy_1d, valid_rows, BT, 0) if return_token_accuracy else None
+        if return_predicted_tokens:
+            predicted_tokens_1d = _scatter_rows(predicted_tokens_1d, valid_rows, BT, -1)
 
     if reduction == "none":
         # Return per-token losses
