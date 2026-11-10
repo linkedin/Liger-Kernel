@@ -582,6 +582,9 @@ def _kernel(
                         t_tr_r_acc,
                     )
                     if fragment_idx == fragment_count - 1:
+                        # tcgen05.ld is asynchronous: wait for the last fragment's
+                        # load before the stage is handed back to the MMA warp.
+                        cute.arch.fence_view_async_tmem_load()
                         with cute.arch.elect_one():
                             acc_pipeline.consumer_release(acc_consumer_state)
                         acc_consumer_state.advance()
@@ -634,6 +637,9 @@ def _kernel(
                         t_tr_r_lhs,
                     )
                     if pair_idx == pair_count - 1:
+                        # tcgen05.ld is asynchronous: wait for the last fragment's
+                        # load before the stage is handed back to the MMA warp.
+                        cute.arch.fence_view_async_tmem_load()
                         with cute.arch.elect_one():
                             acc_pipeline.consumer_release(acc_consumer_state)
                         acc_consumer_state.advance()
