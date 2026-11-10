@@ -1,4 +1,5 @@
 import inspect
+import logging
 
 from inspect import signature
 from unittest.mock import MagicMock
@@ -418,6 +419,58 @@ def test_apply_liger_kernel_only_passes_valid_kwargs():
         )
 
 
+def _dummy_llama_sig():
+    def dummy_apply_liger_kernel_to_llama(
+        rope=False,
+        cross_entropy=False,
+        fused_linear_cross_entropy=True,
+        rms_norm=True,
+        swiglu=True,
+    ):
+        pass
+
+    return signature(dummy_apply_liger_kernel_to_llama)
+
+
+def _dropped_kwargs_warnings(caplog):
+    return [r for r in caplog.records if r.levelno == logging.WARNING and "not supported" in r.getMessage()]
+
+
+def test_apply_liger_kernel_warns_on_typo_kwarg(caplog):
+    mock_llama = Mock()
+    with patch.dict(MODEL_TYPE_TO_APPLY_LIGER_FN, {"llama": mock_llama}):
+        mock_llama.__signature__ = _dummy_llama_sig()
+        with caplog.at_level(logging.WARNING, logger="liger_kernel.transformers.monkey_patch"):
+            _apply_liger_kernel("llama", cross_entrop=True)
+        warnings = _dropped_kwargs_warnings(caplog)
+        assert len(warnings) == 1
+        assert "cross_entrop" in warnings[0].getMessage()
+        assert "llama" in warnings[0].getMessage()
+
+
+def test_apply_liger_kernel_no_warning_for_valid_kwargs(caplog):
+    mock_llama = Mock()
+    with patch.dict(MODEL_TYPE_TO_APPLY_LIGER_FN, {"llama": mock_llama}):
+        mock_llama.__signature__ = _dummy_llama_sig()
+        with caplog.at_level(logging.WARNING, logger="liger_kernel.transformers.monkey_patch"):
+            _apply_liger_kernel("llama", rope=False, cross_entropy=True)
+        assert _dropped_kwargs_warnings(caplog) == []
+        mock_llama.assert_called_once_with(rope=False, cross_entropy=True)
+
+
+def test_apply_liger_kernel_superset_still_applies_and_warns_only_about_bogus(caplog):
+    mock_llama = Mock()
+    with patch.dict(MODEL_TYPE_TO_APPLY_LIGER_FN, {"llama": mock_llama}):
+        mock_llama.__signature__ = _dummy_llama_sig()
+        with caplog.at_level(logging.WARNING, logger="liger_kernel.transformers.monkey_patch"):
+            _apply_liger_kernel("llama", cross_entropy=True, totally_bogus_flag=True)
+        warnings = _dropped_kwargs_warnings(caplog)
+        assert len(warnings) == 1
+        assert "totally_bogus_flag" in warnings[0].getMessage()
+        assert "cross_entropy" not in warnings[0].getMessage()
+        mock_llama.assert_called_once_with(cross_entropy=True)
+
+
 def test_apply_liger_kernel_to_instance_no_supported_model_type():
     # Test that calling _apply_liger_kernel_to_instance with an unsupported model type is a no-op
     mock_mistral = Mock()
@@ -488,6 +541,65 @@ def test_apply_liger_kernel_to_instance_only_passes_valid_kwargs():
             fused_linear_cross_entropy=False,
             cross_entropy=True,
         )
+
+
+def _mock_llama_instance():
+    mock_llama_model_instance = MagicMock(spec=PreTrainedModel)
+    mock_llama_model_instance.config = MagicMock(spec=PretrainedConfig)
+    mock_llama_model_instance.config.model_type = "llama"
+    return mock_llama_model_instance
+
+
+def _dummy_llama_instance_sig():
+    def dummy_apply_liger_kernel_to_llama(
+        rope=False,
+        cross_entropy=False,
+        fused_linear_cross_entropy=True,
+        rms_norm=True,
+        swiglu=True,
+        model=None,
+    ):
+        pass
+
+    return signature(dummy_apply_liger_kernel_to_llama)
+
+
+def test_apply_liger_kernel_to_instance_warns_on_typo_kwarg(caplog):
+    mock_llama = Mock()
+    instance = _mock_llama_instance()
+    with patch.dict(MODEL_TYPE_TO_APPLY_LIGER_FN, {"llama": mock_llama}):
+        mock_llama.__signature__ = _dummy_llama_instance_sig()
+        with caplog.at_level(logging.WARNING, logger="liger_kernel.transformers.monkey_patch"):
+            _apply_liger_kernel_to_instance(model=instance, cross_entrop=True)
+        warnings = _dropped_kwargs_warnings(caplog)
+        assert len(warnings) == 1
+        assert "cross_entrop" in warnings[0].getMessage()
+        assert "llama" in warnings[0].getMessage()
+
+
+def test_apply_liger_kernel_to_instance_no_warning_for_valid_kwargs(caplog):
+    mock_llama = Mock()
+    instance = _mock_llama_instance()
+    with patch.dict(MODEL_TYPE_TO_APPLY_LIGER_FN, {"llama": mock_llama}):
+        mock_llama.__signature__ = _dummy_llama_instance_sig()
+        with caplog.at_level(logging.WARNING, logger="liger_kernel.transformers.monkey_patch"):
+            _apply_liger_kernel_to_instance(model=instance, rope=False, cross_entropy=True)
+        assert _dropped_kwargs_warnings(caplog) == []
+        mock_llama.assert_called_once_with(model=instance, rope=False, cross_entropy=True)
+
+
+def test_apply_liger_kernel_to_instance_superset_still_applies_and_warns_only_about_bogus(caplog):
+    mock_llama = Mock()
+    instance = _mock_llama_instance()
+    with patch.dict(MODEL_TYPE_TO_APPLY_LIGER_FN, {"llama": mock_llama}):
+        mock_llama.__signature__ = _dummy_llama_instance_sig()
+        with caplog.at_level(logging.WARNING, logger="liger_kernel.transformers.monkey_patch"):
+            _apply_liger_kernel_to_instance(model=instance, cross_entropy=True, totally_bogus_flag=True)
+        warnings = _dropped_kwargs_warnings(caplog)
+        assert len(warnings) == 1
+        assert "totally_bogus_flag" in warnings[0].getMessage()
+        assert "cross_entropy" not in warnings[0].getMessage()
+        mock_llama.assert_called_once_with(model=instance, cross_entropy=True)
 
 
 def test_patching_apis_match_auto_mapping():
