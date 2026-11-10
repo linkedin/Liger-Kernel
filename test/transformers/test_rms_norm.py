@@ -358,3 +358,41 @@ def test_dtensor_rms_norm(world_size, bs, sl, hd, dtype, atol, rtol, offset, cas
             nprocs=world_size,
             join=True,
         )
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_torch_compile_matches_eager(dtype):
+    """Compiled RMSNorm must match eager for both low-precision dtypes.
+
+    Companion coverage to the kl_div/tvd compile tests: the scalar ``eps`` is
+    passed to the Triton kernel and must survive Inductor's specialization.
+    """
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    hidden = 1024
+    model = LigerRMSNorm(hidden).to(device=device, dtype=dtype)
+    x = torch.randn(64, hidden, device=device, dtype=dtype)
+    with torch.no_grad():
+        expected = model(x)
+        actual = torch.compile(model)(x)
+    torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_torch_compile_backward_matches_eager(dtype):
+    """The backward kernel must also survive torch.compile.
+
+    Its scalar parameters are passed separately from the forward ones, so a
+    forward-only fix leaves the backward kernel compiling with `.to()` on a
+    plain float and falling back.
+    """
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    hidden = 1024
+    model = LigerRMSNorm(hidden).to(device=device).to(dtype)
+    compiled = torch.compile(model)
+    x1 = torch.randn(8, hidden, device=device, dtype=dtype, requires_grad=True)
+    x2 = x1.detach().clone().requires_grad_(True)
+    model(x1).sum().backward()
+    compiled(x2).sum().backward()
+    torch.testing.assert_close(x2.grad, x1.grad, atol=1e-2, rtol=1e-2)
