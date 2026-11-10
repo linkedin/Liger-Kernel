@@ -5,6 +5,9 @@ import torch.nn.functional as F
 from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_grpo
 from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
+from liger_kernel.chunked_loss.fused_linear_ppo import _compute_high_entropy_mask
+from liger_kernel.chunked_loss.fused_linear_ppo import _quantile_large_safe
+from liger_kernel.chunked_loss.fused_linear_ppo import _selective_entropy_forward
 from liger_kernel.chunked_loss.grpo_loss import LigerFusedLinearGRPOFunction
 from liger_kernel.transformers.grpo_loss import _reduce_grpo_loss
 from liger_kernel.transformers.grpo_loss import triton_grpo_loss
@@ -31,6 +34,19 @@ def sapo_loss_fn(importance_ratio: torch.Tensor, temperature: float) -> torch.Te
     return sigmoid_smoothed_loss * 4 / temperature
 
 
+def torch_high_entropy_mask(entropies: torch.Tensor, mask: torch.Tensor, threshold: float) -> torch.Tensor:
+    """Single-process port of TRL's ``GRPOTrainer.get_high_entropy_mask`` for the torch reference.
+
+    ``threshold`` is the quantile below which tokens are dropped, i.e. ``1 - top_entropy_quantile``.
+    """
+    local = entropies[mask.bool()].float()
+    if local.numel() == 0:
+        return torch.zeros_like(entropies, dtype=torch.bool)
+    entropy_threshold = torch.quantile(local, threshold)
+    masked_entropies = entropies * mask.float()
+    return masked_entropies >= entropy_threshold
+
+
 class TorchLMHeadGRPO(torch.nn.Module):
     def __init__(
         self,
@@ -54,10 +70,12 @@ class TorchLMHeadGRPO(torch.nn.Module):
         vespo_lambda_pos: float = 3.0,
         vespo_k_neg: float = 3.0,
         vespo_lambda_neg: float = 2.0,
+        top_entropy_quantile: float = 1.0,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.top_entropy_quantile = top_entropy_quantile
         self.beta = beta
         self.epsilon_low = epsilon_low
         self.epsilon_high = epsilon_high
@@ -98,6 +116,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         vespo_lambda_pos: float = 3.0,
         vespo_k_neg: float = 3.0,
         vespo_lambda_neg: float = 2.0,
+        entropy_mask=None,
     ):
         attention_mask = attention_mask.to(per_token_logps.dtype)
         old_per_token_logps = (
@@ -177,6 +196,10 @@ class TorchLMHeadGRPO(torch.nn.Module):
             per_token_loss2 = coef_2 * expanded_advantages
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
 
+        # TRL order: high-entropy token mask, then vLLM IS correction, then the KL penalty.
+        if entropy_mask is not None:
+            per_token_loss = per_token_loss * entropy_mask.to(per_token_loss.dtype)
+
         # Apply vLLM importance sampling correction BEFORE KL penalty.
         # VESPO folds this into phi_seq in log space, so we skip it here.
         if vllm_is_ratio is not None and loss_type != "vespo":
@@ -222,6 +245,13 @@ class TorchLMHeadGRPO(torch.nn.Module):
         # Get chosen token probabilities
         per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
 
+        # High-entropy token mask from the full-vocab entropy, as TRL computes it
+        entropy_mask = None
+        if self.top_entropy_quantile < 1.0:
+            with torch.no_grad():
+                entropies = torch.logsumexp(logits.float(), dim=-1) - (log_probs.exp() * logits.float()).sum(-1)
+            entropy_mask = torch_high_entropy_mask(entropies, attention_mask, 1.0 - self.top_entropy_quantile)
+
         # Get reference model probabilities,
         if ref_per_token_logps is None:
             if self.use_ref_model:
@@ -258,6 +288,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
             vespo_lambda_pos=self.vespo_lambda_pos,
             vespo_k_neg=self.vespo_k_neg,
             vespo_lambda_neg=self.vespo_lambda_neg,
+            entropy_mask=entropy_mask,
         )
 
         # Apply masking and calculate loss based on loss_type
@@ -313,6 +344,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
         vespo_lambda_pos: float = 3.0,
         vespo_k_neg: float = 3.0,
         vespo_lambda_neg: float = 2.0,
+        top_entropy_quantile: float = 1.0,
+        chunk_size: int = 1,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -335,6 +368,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
             vespo_lambda_pos=vespo_lambda_pos,
             vespo_k_neg=vespo_k_neg,
             vespo_lambda_neg=vespo_lambda_neg,
+            top_entropy_quantile=top_entropy_quantile,
+            chunk_size=chunk_size,
         )
 
     def forward(
@@ -1340,3 +1375,308 @@ def test_ref_per_token_logps_preferred_over_ref_input():
     with pytest.warns(UserWarning, match="Using ref_per_token_logps"):
         loss, _ = loss_fn(*args, ref_per_token_logps=ref_per_token_logps, ref_input=_input, ref_weight=weight)
     assert_verbose_allclose(loss, expected)
+
+
+@pytest.mark.parametrize("dtype, atol, rtol", [(torch.float32, 1e-4, 1e-5), (torch.bfloat16, 1e-1, 1e-1)])
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("temperature", [1.0, 0.9])
+@pytest.mark.parametrize(
+    "N, H, V",
+    [
+        (17, 31, 123),  # small: a single vocab chunk
+        (2100, 64, 4096 + 37),  # exceeds both the sequence chunk (2048) and the vocab chunk (4096)
+    ],
+)
+def test_selective_entropy_forward_matches_reference(N, H, V, temperature, bias, dtype, atol, rtol):
+    """The streaming entropy accumulator matches the full-vocab softmax entropy across chunk boundaries."""
+    set_seed()
+    hidden = torch.randn(N, H, device=device, dtype=dtype)
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias_tensor = torch.randn(V, device=device, dtype=dtype) if bias else None
+
+    out = _selective_entropy_forward(hidden, weight, bias=bias_tensor, temperature=temperature)
+
+    logits = hidden @ weight.t()
+    if bias_tensor is not None:
+        logits = logits + bias_tensor
+    ref = torch.distributions.Categorical(logits=logits.float() / temperature).entropy()
+
+    assert out.dtype == torch.float32
+    assert out.shape == (N,)
+    assert (out >= 0).all()
+    assert_verbose_allclose(out, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("q", [0.0, 0.2, 0.5, 0.8, 1.0])
+def test_quantile_large_safe_matches_torch_quantile(q):
+    """The sort-based fallback used past torch.quantile's element cap interpolates exactly like torch.quantile."""
+    set_seed()
+    values = torch.randn(37, device=device)
+    expected = torch.quantile(values, q)
+    assert_verbose_allclose(_quantile_large_safe(values, q), expected, atol=1e-6, rtol=1e-6)
+    # Force the fallback by lowering the cap below the input size
+    assert_verbose_allclose(
+        _quantile_large_safe(values, q, max_torch_quantile_numel=10), expected, atol=1e-6, rtol=1e-6
+    )
+
+
+@pytest.mark.parametrize("top_entropy_quantile", [0.2, 0.5, 0.8])
+def test_high_entropy_mask_matches_reference(top_entropy_quantile):
+    """The fused path's high-entropy mask reproduces TRL's get_high_entropy_mask (single process)."""
+    set_seed()
+    B, T = 4, 32
+    entropies = torch.rand(B, T, device=device) * 5
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[0, -7:] = 0
+    attention_mask[2, :3] = 0
+
+    mask = _compute_high_entropy_mask(entropies, attention_mask, top_entropy_quantile)
+    ref = torch_high_entropy_mask(entropies, attention_mask, 1.0 - top_entropy_quantile)
+
+    assert mask.dtype == torch.float32
+    assert torch.equal(mask.bool(), ref)
+    # the mask is non-trivial: it keeps some but not all active tokens
+    kept = (mask * attention_mask).sum()
+    assert 0 < kept < attention_mask.sum()
+
+    # no active token at all: all-False mask, like TRL
+    empty = _compute_high_entropy_mask(entropies, torch.zeros_like(attention_mask), top_entropy_quantile)
+    assert not empty.bool().any()
+
+
+@pytest.mark.parametrize("top_entropy_quantile", [0.2, 0.5, 0.8])
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dapo", "cispo", "sapo", "vespo", "luspo"])
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+@pytest.mark.parametrize("beta", [0.0, 0.04])
+@pytest.mark.parametrize("bias", [False, True])
+def test_correctness_with_top_entropy_quantile(top_entropy_quantile, loss_type, importance_sampling_level, beta, bias):
+    """With top_entropy_quantile < 1 the fused loss matches a full-logits reference that masks the policy term to the
+    highest-entropy tokens exactly like TRL (mask before the vLLM correction and the KL penalty)."""
+    if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo", "vespo"):
+        pytest.skip(f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'")
+    if importance_sampling_level == "token" and loss_type == "luspo":
+        pytest.skip("Token-level importance sampling is not supported for loss_type='luspo'")
+    if importance_sampling_level == "sequence" and loss_type not in ("grpo", "dapo", "luspo"):
+        pytest.skip("sequence-level coverage is limited to grpo/dapo/luspo")
+
+    torch.compiler.reset()
+    set_seed()
+    B, T, H, V = 4, 32, 32, 128
+    dtype, atol, rtol = torch.float32, 1e-5, 5e-4
+
+    common = dict(
+        H=H,
+        V=V,
+        dtype=dtype,
+        bias=bias,
+        beta=beta,
+        use_ref_model=beta != 0.0,
+        loss_type=loss_type,
+        importance_sampling_level=importance_sampling_level,
+        top_entropy_quantile=top_entropy_quantile,
+    )
+    torch_lm_head_grpo = TorchLMHeadGRPO(**common)
+    liger_lm_head_grpo = LigerLMHeadGRPO(**common)
+
+    torch_lm_head_grpo.lin.weight.data = liger_lm_head_grpo.lin.weight.data = torch.randn(
+        V, H, device=device, dtype=dtype
+    )
+    if bias:
+        torch_lm_head_grpo.lin.bias.data = liger_lm_head_grpo.lin.bias.data = torch.randn(V, device=device, dtype=dtype)
+
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    input1 = _input.detach().clone().requires_grad_(True)
+    input2 = _input.detach().clone().requires_grad_(True)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[0, -5:] = 0
+    attention_mask[2, :4] = 0
+
+    # mixed-sign advantages (SAPO / VESPO branch on the sign)
+    advantages = torch.randn(B, device=device, dtype=dtype)
+    advantages[0] = -advantages[0].abs()
+    advantages[1] = advantages[1].abs()
+
+    with torch.no_grad():
+        logits = _input @ torch_lm_head_grpo.lin.weight.t()
+        if bias:
+            logits = logits + torch_lm_head_grpo.lin.bias
+        per_token_logps = (
+            F.log_softmax(logits, dim=-1).gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
+        )
+        # The mask under test must drop some, but not all, active tokens
+        entropies = torch.distributions.Categorical(logits=logits).entropy()
+        ref_mask = torch_high_entropy_mask(entropies, attention_mask, 1.0 - top_entropy_quantile)
+        kept = (ref_mask.float() * attention_mask).sum()
+        assert 0 < kept < attention_mask.sum()
+    old_per_token_logps = per_token_logps + torch.randn(B, T, device=device) * 0.05
+    ref_per_token_logps = per_token_logps + torch.randn(B, T, device=device) * 0.01 if beta != 0.0 else None
+
+    loss1, aux1 = torch_lm_head_grpo(
+        input1,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        ref_per_token_logps=ref_per_token_logps,
+        old_per_token_logps=old_per_token_logps,
+    )
+    loss2, aux2 = liger_lm_head_grpo(
+        input2,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        ref_per_token_logps=ref_per_token_logps,
+        old_per_token_logps=old_per_token_logps,
+    )
+
+    assert not torch.isnan(loss1) and not torch.isnan(loss2)
+    assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+    assert len(aux1) == len(aux2)
+    for metric1, metric2 in zip(aux1, aux2):
+        assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
+
+    loss1.backward()
+    loss2.backward()
+    assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(
+        torch_lm_head_grpo.lin.weight.grad, liger_lm_head_grpo.lin.weight.grad, atol=atol, rtol=rtol
+    )
+    if bias:
+        assert_verbose_allclose(
+            torch_lm_head_grpo.lin.bias.grad, liger_lm_head_grpo.lin.bias.grad, atol=atol, rtol=rtol
+        )
+
+    # The mask really changed the loss: without it, the result differs
+    torch_lm_head_grpo.top_entropy_quantile = 1.0
+    loss_unmasked, _ = torch_lm_head_grpo(
+        _input.detach().clone().requires_grad_(True),
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        ref_per_token_logps=ref_per_token_logps,
+        old_per_token_logps=old_per_token_logps,
+    )
+    assert not torch.allclose(loss_unmasked, loss1)
+
+
+def test_top_entropy_quantile_default_is_noop():
+    """top_entropy_quantile=1.0 is bit-identical to leaving it out: the default path is untouched."""
+    set_seed()
+    B, T, H, V = 3, 16, 16, 64
+    _input = torch.randn(B, T, H, device=device)
+    weight = torch.randn(V, H, device=device)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[:, -3:] = 0
+    advantages = torch.randn(B, device=device)
+
+    def run(**kwargs):
+        x = _input.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        loss_fn = LigerFusedLinearGRPOLoss(beta=0.0, use_ref_model=False, compiled=False, **kwargs)
+        loss, _ = loss_fn(x, w, selected_token_ids, attention_mask, advantages)
+        loss.backward()
+        return loss, x.grad, w.grad
+
+    loss_default, x_grad_default, w_grad_default = run()
+    loss_explicit, x_grad_explicit, w_grad_explicit = run(top_entropy_quantile=1.0)
+    assert torch.equal(loss_default, loss_explicit)
+    assert torch.equal(x_grad_default, x_grad_explicit)
+    assert torch.equal(w_grad_default, w_grad_explicit)
+
+
+@pytest.mark.parametrize("top_entropy_quantile", [-0.1, 1.5])
+def test_top_entropy_quantile_validation(top_entropy_quantile):
+    with pytest.raises(ValueError, match="top_entropy_quantile"):
+        LigerFusedLinearGRPOLoss(top_entropy_quantile=top_entropy_quantile)
+
+    B, T, H, V = 2, 8, 16, 32
+    _input = torch.randn(B, T, H, device=device, requires_grad=True)
+    weight = torch.randn(V, H, device=device, requires_grad=True)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    advantages = torch.randn(B, device=device)
+    with pytest.raises(ValueError, match="top_entropy_quantile"):
+        LigerFusedLinearGRPOFunction.apply(
+            _input,
+            weight,
+            selected_token_ids,
+            attention_mask,
+            advantages,
+            None,  # bias
+            None,  # ref_per_token_logps
+            None,  # old_per_token_logps
+            None,  # ref_input
+            None,  # ref_weight
+            None,  # ref_bias
+            0.0,  # beta
+            0.2,  # epsilon_low
+            0.2,  # epsilon_high
+            "dapo",  # loss_type
+            None,  # max_completion_length
+            "token",  # importance_sampling_level
+            1.0,  # sapo_temperature_pos
+            1.05,  # sapo_temperature_neg
+            1.0,  # temperature
+            False,  # compiled
+            False,  # use_ref_model
+            1,  # chunk_size
+            None,  # vllm_is_ratio
+            None,  # delta
+            False,  # use_bias_correction_kl
+            2.0,  # vespo_k_pos
+            3.0,  # vespo_lambda_pos
+            3.0,  # vespo_k_neg
+            2.0,  # vespo_lambda_neg
+            None,  # num_items_in_batch
+            top_entropy_quantile,
+        )
+
+
+@pytest.mark.parametrize("loss_type", ["dapo", "grpo"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_top_entropy_quantile_chunk_size_invariant(loss_type, compiled):
+    """The entropy quantile is taken over the whole batch, not per chunk: chunk_size=1 and chunk_size=B agree."""
+    torch.compiler.reset()
+    set_seed()
+    B, T, H, V = 4, 24, 32, 96
+    weight = torch.randn(V, H, device=device)
+    _input = torch.randn(B, T, H, device=device)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[1, -6:] = 0
+    advantages = torch.randn(B, device=device)
+
+    def run(chunk_size):
+        x = _input.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        loss_fn = LigerFusedLinearGRPOLoss(
+            beta=0.0,
+            use_ref_model=False,
+            compiled=compiled,
+            loss_type=loss_type,
+            chunk_size=chunk_size,
+            top_entropy_quantile=0.3,
+        )
+        loss, _ = loss_fn(x, w, selected_token_ids, attention_mask, advantages)
+        loss.backward()
+        return loss, x.grad, w.grad
+
+    loss_1, x_grad_1, w_grad_1 = run(1)
+    loss_b, x_grad_b, w_grad_b = run(B)
+    assert_verbose_allclose(loss_1, loss_b, atol=1e-6, rtol=1e-5)
+    assert_verbose_allclose(x_grad_1, x_grad_b, atol=1e-6, rtol=1e-5)
+    assert_verbose_allclose(w_grad_1, w_grad_b, atol=1e-6, rtol=1e-5)
+
+    # A per-chunk quantile would select different tokens for chunk_size=1: the per-sequence kept counts differ
+    with torch.no_grad():
+        entropies = torch.distributions.Categorical(logits=_input @ weight.t()).entropy()
+    global_mask = torch_high_entropy_mask(entropies, attention_mask, 0.7).float() * attention_mask
+    per_seq_mask = (
+        torch.stack(
+            [torch_high_entropy_mask(entropies[i : i + 1], attention_mask[i : i + 1], 0.7)[0] for i in range(B)]
+        ).float()
+        * attention_mask
+    )
+    assert not torch.equal(global_mask, per_seq_mask)
