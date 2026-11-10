@@ -157,7 +157,15 @@ def _run_moe(rank: int, world_size: int):
     assert torch.isfinite(output).all()
 
 
-def _worker(rank: int, world_size: int, init_file: str, layout: str, implementation: str, run_moe: bool):
+def _worker(
+    rank: int,
+    world_size: int,
+    init_file: str,
+    layout: str,
+    implementation: str,
+    run_moe: bool,
+    local_vocab: int,
+):
     if implementation == "fallback":
         import liger_kernel.ops.fused_linear_scaled_cross_entropy as frontend
 
@@ -192,7 +200,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
                 flsce=FusedLinearCrossEntropyConfig(
                     max_tokens=_TOKENS + 128,
                     hidden_size=_HIDDEN,
-                    local_vocab_size=_LOCAL_VOCAB,
+                    local_vocab_size=local_vocab,
                     group="tp",
                 ),
             )
@@ -203,7 +211,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
                 flsce=FusedLinearCrossEntropyConfig(
                     max_tokens=_TOKENS,
                     hidden_size=_HIDDEN,
-                    local_vocab_size=_LOCAL_VOCAB,
+                    local_vocab_size=local_vocab,
                     group="tp",
                 ),
             )
@@ -221,7 +229,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         weight_generator = torch.Generator(device="cpu")
         weight_generator.manual_seed(3100 + 17 * group_index + tp_rank)
         weight = (
-            torch.randn(_LOCAL_VOCAB, _HIDDEN, generator=weight_generator)
+            torch.randn(local_vocab, _HIDDEN, generator=weight_generator)
             .mul_(0.05)
             .to(device="cuda", dtype=torch.bfloat16)
             .requires_grad_(True)
@@ -230,7 +238,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         gathered_weights = [torch.empty_like(weight) for _ in range(tp_size)]
         dist.all_gather(gathered_weights, weight.detach(), group=tp_group)
         global_weight = torch.cat(gathered_weights, dim=0)
-        global_vocab = tp_size * _LOCAL_VOCAB
+        global_vocab = tp_size * local_vocab
 
         target = (torch.arange(_TOKENS, device="cuda", dtype=torch.int64) * 17 + 3) % global_vocab
         target[::19] = _IGNORE_INDEX
@@ -244,8 +252,8 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
             grad_nll,
             grad_entropy,
         )
-        local_start = tp_rank * _LOCAL_VOCAB
-        expected_dw = dz[:, local_start : local_start + _LOCAL_VOCAB].t() @ x.detach().float()
+        local_start = tp_rank * local_vocab
+        expected_dw = dz[:, local_start : local_start + local_vocab].t() @ x.detach().float()
 
         actual_nll, actual_entropy = LigerFusedLinearScaledCrossEntropyTPFunction.apply(
             x,
@@ -262,7 +270,13 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
 
         torch.testing.assert_close(actual_nll, expected_nll, atol=3e-4, rtol=3e-4)
         torch.testing.assert_close(actual_entropy, expected_entropy, atol=3e-4, rtol=3e-4)
-        torch.testing.assert_close(x.grad.float(), expected_dx, atol=8e-3, rtol=4e-2)
+        torch.testing.assert_close(
+            x.grad.float(),
+            expected_dx,
+            atol=8e-3,
+            rtol=4e-2,
+            msg=lambda message: "FLSCE dH numerical mismatch: " + message,
+        )
         torch.testing.assert_close(weight.grad.float(), expected_dw, atol=8e-3, rtol=4e-2)
 
         if implementation == "native":
@@ -304,6 +318,7 @@ def _run(
     implementation: str,
     run_moe: bool = False,
     disable_nvls: bool = False,
+    local_vocab: int = _LOCAL_VOCAB,
 ):
     rendezvous = tempfile.mkdtemp(prefix=f"liger_fslce_tp_{layout}_")
     init_file = os.path.join(rendezvous, "store")
@@ -318,7 +333,7 @@ def _run(
     try:
         mp.spawn(
             _worker,
-            args=(world_size, init_file, layout, implementation, run_moe),
+            args=(world_size, init_file, layout, implementation, run_moe, local_vocab),
             nprocs=world_size,
             join=True,
         )
@@ -559,12 +574,13 @@ def test_native_multiple_tp_contexts(world_size, bootstrap_subgroups, partial_ov
 
 
 @pytest.mark.parametrize("world_size", [1, 2, 4, 8])
-def test_tp_frontend_world_process_group(world_size):
+@pytest.mark.parametrize("local_vocab", [256, 320, 512])
+def test_tp_frontend_world_process_group(world_size, local_vocab):
     if not _NATIVE_AVAILABLE:
         pytest.skip("requires a matching liger_cute_kernels wheel")
     if _NDEV < world_size:
         pytest.skip(f"requires at least {world_size} CUDA devices")
-    _run(world_size, "world", "native")
+    _run(world_size, "world", "native", local_vocab=local_vocab)
 
 
 @pytest.mark.parametrize("layout", ["contiguous", "strided"])

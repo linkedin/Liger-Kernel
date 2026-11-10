@@ -1669,7 +1669,7 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 							mapping.size);
 					} else {
 						liger_cute::detail::nvls_sum_reduce_scatter_warp(
-							mapping.multicast_reduced +
+							comm.reduced +
 								base + segment_begin,
 							mapping.multicast_partial +
 								base + segment_begin,
@@ -1685,7 +1685,7 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 								element += Traits::kWarpSize) {
 							atomicAdd(
 								durable + element,
-								mapping.multicast_reduced[
+								comm.reduced[
 									base + segment_begin + element]);
 						}
 						__syncwarp();
