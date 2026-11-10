@@ -30,8 +30,20 @@ def is_hip() -> bool:
     return torch.version.hip is not None
 
 
+def _is_compiling() -> bool:
+    is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+    return bool(is_compiling is not None and is_compiling())
+
+
 @contextmanager
 def device_context(device):
+    # Only guard eager launches. Tracing ``torch.<backend>.device`` inside an
+    # autograd.Function makes Dynamo emit the device-restore node outside the
+    # function's subgraph, which fails graph linting under torch.compile
+    # ("'_cuda_exchange_device' ... does not belong to this Graph").
+    if _is_compiling():
+        yield
+        return
     device = torch.device(device)
     backend = getattr(torch, device.type, None)
     if backend is not None and hasattr(backend, "device"):
