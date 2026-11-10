@@ -134,6 +134,8 @@ def liger_dyt_bwd(dy, x, alpha, gamma, beta):
         NUM_SMS = torch.xpu.get_device_properties(x.device).gpu_subslice_count
     elif device == "npu":
         NUM_SMS = get_npu_core_count()
+    elif device == "mps":
+        NUM_SMS = torch.backends.mps.get_core_count()
     da = torch.zeros(NUM_SMS, triton.cdiv(N, 512), dtype=torch.float32, device=x.device)
     dg = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device)
     db = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device) if HAVE_BETA else None
