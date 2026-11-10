@@ -258,24 +258,25 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
         # only for genuinely off-rank targets at TP>1. A globally invalid
         # target (e.g. == V_global, or negative but != ignore_index) would
         # otherwise take that branch on every rank and silently return
-        # log(sum_exp_global) with the predicted-logit term missing. Checking
-        # here, on the host, turns that into an explicit error; positions
-        # equal to ignore_index are excluded, mirroring target_mask in
-        # LigerCrossEntropy (ops/cross_entropy.py).
+        # log(sum_exp_global) with the predicted-logit term missing.
+        # torch's cross_entropy rejects such targets (IndexError on CPU,
+        # device-side assert on CUDA), so reject them here too. The check is
+        # a device-side torch._assert_async: it reads no values back to the
+        # host, so it adds no host synchronization to the forward path, and
+        # surfaces at the next sync point like torch's own CUDA assert.
+        # Positions equal to ignore_index are excluded, mirroring
+        # target_mask in LigerCrossEntropy (ops/cross_entropy.py).
         v_global = v_local * world
         if ignore_index is None:
             target_mask = torch.ones_like(flat_target, dtype=torch.bool)
         else:
             target_mask = flat_target != ignore_index
-        if target_mask.any():
-            checked_min = torch.where(target_mask, flat_target, torch.full_like(flat_target, v_global)).min()
-            checked_max = torch.where(target_mask, flat_target, torch.full_like(flat_target, -1)).max()
-            if checked_min < 0 or checked_max >= v_global:
-                raise ValueError(
-                    f"target values are out of range: expected values in [0, {v_global}) "
-                    f"or equal to ignore_index ({ignore_index}), "
-                    f"got min={checked_min.item()}, max={checked_max.item()}."
-                )
+        valid_target = ~target_mask | ((flat_target >= 0) & (flat_target < v_global))
+        torch._assert_async(
+            valid_target.all(),
+            f"target values are out of range: expected values in [0, {v_global}) "
+            f"or equal to ignore_index ({ignore_index})",
+        )
 
         # --- 3. Kernel 1: shift, exp, sum_exp, predicted_local ---
         # exp_buf is fp32 for precision — matches Megatron's vocab-parallel CE,
