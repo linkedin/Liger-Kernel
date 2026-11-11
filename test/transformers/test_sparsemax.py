@@ -119,6 +119,25 @@ def test_liger_sparsemax_functional_correctness(batch_size, seq_len, features, d
     assert_verbose_allclose(lx.grad, tx.grad, atol=atol, rtol=rtol)
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("dim", [-1, 0])
+def test_sparsemax_backward_preserves_small_gradient_differences(dtype, dim):
+    """Subtract the support mean before rounding low-precision gradients."""
+    x = torch.tensor([[0.0, 0.0, -2.0], [0.0, 0.0, -2.0]], device=device, dtype=dtype)
+    grad = torch.tensor([[1.0, 1.0 + torch.finfo(dtype).eps, 3.0]] * 2, device=device, dtype=dtype)
+    if dim == 0:
+        x = x.t().contiguous()
+        grad = grad.t().contiguous()
+    x.requires_grad_(True)
+    reference = x.detach().float().requires_grad_(True)
+
+    LigerSparsemax(dim=dim)(x).backward(grad)
+    torch_sparsemax(reference, dim=dim).backward(grad.float())
+
+    torch.testing.assert_close(x.grad, reference.grad.to(dtype), atol=0, rtol=0)
+    torch.testing.assert_close(x.grad.float().sum(dim=dim), torch.zeros(2, device=device), atol=0, rtol=0)
+
+
 def test_sparsemax_int32_row_offset_wraps():
     """The first overflowing row offset wraps in int32."""
     row = torch.tensor(2**16, dtype=torch.int32)
