@@ -114,3 +114,59 @@ def test_liger_layer_norm_functional(
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
     assert torch.allclose(w1.grad, w2.grad, atol=atol, rtol=rtol)
     assert torch.allclose(b1.grad, b2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "n_rows, hidden_size",
+    [
+        (4096, 16),
+        (4103, 61),  # ragged row blocks + odd hidden size
+        (32771, 123),
+        (65537, 256),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-4),
+        (torch.bfloat16, 2e-2, 2e-2),
+    ],
+)
+def test_liger_layer_norm_block_row(
+    n_rows: int,
+    hidden_size: int,
+    dtype: torch.dtype,
+    atol: float,
+    rtol: float,
+) -> None:
+    """Exercise the block-row LayerNorm kernels (BLOCK_SIZE <= 256 and n_rows >= 4096)."""
+    torch.manual_seed(0)
+
+    x = torch.randn(n_rows, hidden_size, dtype=dtype, device=device)
+    dy = torch.randn_like(x)
+
+    x_blk = x.clone().requires_grad_(True)
+    x_ref = x.detach().to(torch.float32).clone().requires_grad_(True)
+
+    w = torch.randn(hidden_size, dtype=dtype, device=device)
+    w_blk = w.clone().requires_grad_(True)
+    w_ref = w.detach().to(torch.float32).clone().requires_grad_(True)
+
+    b = torch.randn(hidden_size, dtype=dtype, device=device)
+    b_blk = b.clone().requires_grad_(True)
+    b_ref = b.detach().to(torch.float32).clone().requires_grad_(True)
+
+    y_blk = liger_layer_norm(x_blk, w_blk, b_blk, eps=1e-6, row_mode=None)
+    y_ref = torch.nn.functional.layer_norm(x_ref, (hidden_size,), w_ref, b_ref, eps=1e-6)
+
+    assert torch.allclose(y_blk, y_ref.to(dtype), atol=atol, rtol=rtol)
+
+    y_blk.backward(dy)
+    y_ref.backward(dy.to(torch.float32))
+
+    param_atol = 5e-2 if dtype == torch.bfloat16 else 5e-3
+    param_rtol = 2e-2 if dtype == torch.bfloat16 else 1e-4
+
+    assert torch.allclose(x_blk.grad, x_ref.grad.to(dtype), atol=atol, rtol=rtol)
+    assert torch.allclose(w_blk.grad, w_ref.grad.to(dtype), atol=param_atol, rtol=param_rtol)
+    assert torch.allclose(b_blk.grad, b_ref.grad.to(dtype), atol=param_atol, rtol=param_rtol)

@@ -380,8 +380,8 @@ def liger_tvd(
     )
 
 
-def liger_layer_norm(X, W, B, eps):
-    return LigerLayerNormFunction.apply(X, W, B, eps)
+def liger_layer_norm(X, W, B, eps, row_mode=None):
+    return LigerLayerNormFunction.apply(X, W, B, eps, row_mode)
 
 
 def liger_qwen2vl_mrope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
