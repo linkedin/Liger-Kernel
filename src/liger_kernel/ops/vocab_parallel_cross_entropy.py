@@ -5,6 +5,7 @@ Python-level AllReduce that vocab-parallel CE needs:
 
     Kernel 1 (forward stats): raw logits + global max -> exp(shifted) buffer
                               + sum_exp_local + predicted_logit_local
+                              (+ sum_shifted_local with label smoothing)
     Python:                   AllReduce(SUM) x2 (no-op at TP=1)
                               loss = log(sum_exp_global) - predicted_global
                               optional label-smoothing adjustment
@@ -62,6 +63,8 @@ def liger_vocab_parallel_ce_forward_kernel(
     Y_ptr,  # [BT] int64 GLOBAL target indices in [0, V_global)
     pred_ptr,  # [BT] OUT: predicted_logit_local (= X[masked_target] - max,
     # 0 if off-rank / ignored)
+    sum_shifted_ptr,  # [BT] OUT: sum over V_local of (X - max); written only with
+    # label smoothing (None otherwise)
     sum_exp_ptr,  # [BT] OUT: sum_exp_local
     vocab_start,  # int — first global vocab index owned by this rank
     n_cols,  # V_local
@@ -84,9 +87,7 @@ def liger_vocab_parallel_ce_forward_kernel(
         tl.store(pred_ptr + program_id, 0.0)
         tl.store(sum_exp_ptr + program_id, 1.0)
         if HAS_LABEL_SMOOTHING:
-            for i in range(0, n_cols, BLOCK_SIZE):
-                X_offsets = i + tl.arange(0, BLOCK_SIZE)
-                tl.store(EXP_ptr + X_offsets, 1.0, mask=X_offsets < n_cols)
+            tl.store(sum_shifted_ptr + program_id, 0.0)
         return
 
     m = tl.load(logits_max_ptr + program_id).cast(tl.float32)
@@ -101,6 +102,11 @@ def liger_vocab_parallel_ce_forward_kernel(
     else:
         pred_local = tl.load(X_ptr + y_local).cast(tl.float32) - m
 
+    # With label smoothing the shifted logits are summed too: they are the
+    # log-probabilities up to the log(sum_exp_global) term, and unlike
+    # log(exp(shifted)) they stay finite when exp() underflows to 0.
+    sum_shifted = 0.0
+
     # Single pass over V_local: shift inside, exp, accumulate sum_exp,
     # store exp(shifted) to the fp32 output buffer. Shifted logits are <= 0 so
     # exp() is in (0, 1] — no overflow possible.
@@ -109,12 +115,17 @@ def liger_vocab_parallel_ce_forward_kernel(
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         col_mask = X_offsets < n_cols
         X_block = tl.load(X_ptr + X_offsets, mask=col_mask, other=0.0).cast(tl.float32)
-        exp_block = tl.exp(X_block - m)
+        shifted_block = X_block - m
+        if HAS_LABEL_SMOOTHING:
+            sum_shifted += tl.sum(tl.where(col_mask, shifted_block, 0.0))
+        exp_block = tl.exp(shifted_block)
         exp_block = tl.where(col_mask, exp_block, 0.0)
         sum_exp += tl.sum(exp_block)
         tl.store(EXP_ptr + X_offsets, exp_block, mask=col_mask)
 
     tl.store(pred_ptr + program_id, pred_local)
+    if HAS_LABEL_SMOOTHING:
+        tl.store(sum_shifted_ptr + program_id, sum_shifted)
     tl.store(sum_exp_ptr + program_id, sum_exp)
 
 
@@ -197,9 +208,11 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
       1. Per-token global max (cheap reduction on input dtype, cast result to fp32)
       2. AllReduce(MAX) (no-op at TP=1)
       3. Kernel 1: shift internally, write exp(shifted) to a fp32 output buffer,
-         compute sum_exp_local and predicted_logit_local in one pass
+         compute sum_exp_local and predicted_logit_local in one pass (and the sum
+         of the shifted logits when label smoothing is on)
       4. AllReduce(SUM) × 2
       5. Loss = log(sum_exp_global) - predicted_global, then optional label smoothing
+         from the summed shifted logits (one more AllReduce(SUM) in "global" mode)
       6. Save the exp buffer for backward
 
     Backward layout:
@@ -264,6 +277,8 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
 
         block_size = _select_block_size(v_local)
         num_warps = _get_num_warps(block_size)
+        # Kernel 1 writes the per-token sum of shifted logits here, only with label smoothing.
+        sum_shifted_local = torch.empty(BT, device=x.device, dtype=torch.float32) if label_smoothing > 0 else None
 
         x_2d = x.view(BT, v_local)
         liger_vocab_parallel_ce_forward_kernel[(BT,)](
@@ -274,6 +289,7 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
             logits_max_ptr=logits_max,
             Y_ptr=flat_target,
             pred_ptr=predicted_local,
+            sum_shifted_ptr=sum_shifted_local,
             sum_exp_ptr=sum_exp_local,
             vocab_start=vocab_start,
             n_cols=v_local,
@@ -300,15 +316,13 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
                 alpha_eff = label_smoothing
             eps_eff = alpha_eff / v_for_K
 
-            # log_softmax_i = log(exp_i / sum_exp_global) = log(exp_i) - log(sum_exp_global)
-            log_probs_local = torch.log(exp_buf) - torch.log(sum_exp_local).unsqueeze(-1)
-            if label_smoothing_mode == "global":
-                sum_log_probs = log_probs_local.sum(dim=-1)
-                if tp_distributed:
-                    dist.all_reduce(sum_log_probs, op=dist.ReduceOp.SUM, group=tp_group)
-                mean_log_probs = sum_log_probs / v_for_K
-            else:  # "partition"
-                mean_log_probs = log_probs_local.mean(dim=-1)
+            # log_softmax_i = (x_i - max) - log(sum_exp_global), so its mean over K classes is
+            # sum_i(x_i - max) / K - log(sum_exp_global). The kernel already summed the shifted
+            # logits: no [BT, V_local] temporaries, and no log(0) where exp(x_i - max) underflowed.
+            # "global" averages over V_global (one AllReduce); "partition" over this rank's V_local.
+            if label_smoothing_mode == "global" and tp_distributed:
+                dist.all_reduce(sum_shifted_local, op=dist.ReduceOp.SUM, group=tp_group)
+            mean_log_probs = sum_shifted_local / v_for_K - torch.log(sum_exp_local)
 
             loss = (1.0 - alpha_eff) * loss + alpha_eff * (-mean_log_probs)
         else:
