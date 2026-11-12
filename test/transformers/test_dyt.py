@@ -49,6 +49,9 @@ device = infer_device()
         (4, 16, 2048),
         (1, 1, 1023),  # Minimal batch/seq with near power-of-2 hidden
         (3, 7, 256),  # Prime numbers for batch/seq
+        (2, 4099, 16),  # Small hidden, several rows per program
+        (1, 1001, 61),  # Small odd hidden, ragged row blocks
+        (1, 65537, 16),  # More rows than CUDA grid dimension 1 allows
     ],
 )
 @pytest.mark.parametrize(
@@ -108,6 +111,9 @@ def test_liger_dyt_correctness(B, T, hidden_size, beta, init_alpha, dtype, atol,
         (4, 16, 2048),
         (1, 1, 1023),  # Minimal batch/seq with near power-of-2 hidden
         (3, 7, 256),  # Prime numbers for batch/seq
+        (2, 4099, 16),  # Small hidden, several rows per program
+        (1, 1001, 61),  # Small odd hidden, ragged row blocks
+        (1, 65537, 16),  # More rows than CUDA grid dimension 1 allows
     ],
 )
 @pytest.mark.parametrize(
@@ -158,3 +164,39 @@ def test_liger_dyt_functional(B, T, hidden_size, beta, dtype, atol, rtol):
     assert_verbose_allclose(gamma1.grad, gamma2.grad, rtol=rtol, atol=atol)
     if beta:
         assert_verbose_allclose(beta1.grad, beta2.grad, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize("rows", [1, 257])
+def test_liger_dyt_ragged_rows_with_infinite_alpha(rows):
+    # 257 rows tile raggedly when several rows share a program. Padded rows
+    # must not poison the parameter gradients: tanh(inf * 0) is NaN.
+    x = torch.ones(rows, 16, device=device)
+    alpha = torch.full((1,), float("inf"), device=device, requires_grad=True)
+    gamma = torch.ones(16, device=device, requires_grad=True)
+    beta = torch.zeros(16, device=device, requires_grad=True)
+    output = LigerDyTFunction.apply(x, alpha, gamma, beta)
+    dalpha, dgamma, dbeta = torch.autograd.grad(output, (alpha, gamma, beta), torch.ones_like(output))
+    assert_verbose_allclose(dalpha, torch.zeros_like(alpha))
+    assert_verbose_allclose(dgamma, torch.full_like(gamma, rows))
+    assert_verbose_allclose(dbeta, torch.full_like(beta, rows))
+
+
+@pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
+def test_liger_dyt_bfloat16_input_float32_parameters():
+    # 257 is not representable in bfloat16 (rounds to 256), so rounding
+    # dalpha or dbeta through x.dtype loses integer precision on float32
+    # parameters.
+    rows, channels = 257, 16
+    x = torch.ones(rows, channels, device=device, dtype=torch.bfloat16, requires_grad=True)
+    alpha = torch.zeros(1, device=device, dtype=torch.float32, requires_grad=True)
+    gamma = torch.ones(channels, device=device, dtype=torch.float32, requires_grad=True)
+    beta = torch.zeros(channels, device=device, dtype=torch.float32, requires_grad=True)
+    output = LigerDyTFunction.apply(x, alpha, gamma, beta)
+    assert output.dtype == torch.bfloat16
+    dalpha, dgamma, dbeta = torch.autograd.grad(output, (alpha, gamma, beta), torch.ones_like(output))
+    assert dalpha.dtype == torch.float32
+    assert dgamma.dtype == torch.float32
+    assert dbeta.dtype == torch.float32
+    assert_verbose_allclose(dalpha, torch.full_like(alpha, rows * channels))
+    assert_verbose_allclose(dgamma, torch.zeros_like(gamma))
+    assert_verbose_allclose(dbeta, torch.full_like(beta, rows))
