@@ -14,6 +14,10 @@ REDUCE_BATCH_CHUNK = 32
 MAX_GRID_SIZE = 65535
 
 
+def _is_pow2(n: int) -> bool:
+    return n > 0 and (n & (n - 1)) == 0
+
+
 def _select_reduce_block_size(hidden_size: int) -> int:
     if hidden_size >= 2048:
         return 1024
@@ -373,6 +377,61 @@ def _group_norm_reduce_param_grads_kernel(
     tl.store(DB_ptr + ch_offsets, dB_acc, mask=ch_mask)
 
 
+@triton.jit
+def _group_norm_backward_fused_kernel(
+    X_ptr,
+    W_ptr,
+    Mean_ptr,
+    RSTD_ptr,
+    DX_ptr,
+    DW_ptr,
+    DB_ptr,
+    DY_ptr,
+    X_row_stride,
+    X_col_stride,
+    B,  # batch size (loop bound)
+    NG: tl.constexpr,  # group-flat size, must be a power of two
+    G: tl.constexpr,
+    CPG: tl.constexpr,
+    HP: tl.constexpr,
+    GPB: tl.constexpr,
+):
+    """Fused backward for the pow2 group-flat case.
+
+    1D grid over group chunks; each program loops over the batch so that the
+    dW/dB channel reductions accumulate in registers and are stored once. No
+    partial buffers and no separate reduce kernel are needed: a single launch
+    produces DX, DW and DB.
+    """
+    g0 = tl.program_id(0) * GPB
+    rg = tl.arange(0, GPB)
+    rr = tl.arange(0, NG)
+    cc = tl.arange(0, CPG)
+    W4 = tl.load(W_ptr + (g0 + rg)[:, None] * CPG + cc[None, :]).to(tl.float32)
+    W3 = tl.reshape(tl.broadcast_to(W4[:, :, None], (GPB, CPG, HP)), (GPB, NG))
+    dW_acc = tl.zeros([GPB, CPG], tl.float32)
+    dB_acc = tl.zeros([GPB, CPG], tl.float32)
+    for b in tl.range(0, B):
+        rows = b * G + g0 + rg
+        ptrs = b * X_row_stride + (g0 + rg)[:, None] * (CPG * X_col_stride) + rr[None, :]
+        mean = tl.load(Mean_ptr + rows)
+        rstd = tl.load(RSTD_ptr + rows)
+        Xv = tl.load(X_ptr + ptrs).to(tl.float32)
+        dYv = tl.load(DY_ptr + ptrs).to(tl.float32)
+        x_hat = (Xv - mean[:, None]) * rstd[:, None]
+        # segmented per-channel reductions via reshape (no where-select chains)
+        dW_acc += tl.sum(tl.reshape(dYv * x_hat, (GPB, CPG, HP)), axis=2)
+        dB_acc += tl.sum(tl.reshape(dYv, (GPB, CPG, HP)), axis=2)
+        wdy = W3 * dYv
+        c1 = tl.sum(x_hat * wdy, axis=1) / NG
+        c2 = tl.sum(wdy, axis=1) / NG
+        dx = (wdy - (x_hat * c1[:, None] + c2[:, None])) * rstd[:, None]
+        tl.store(DX_ptr + ptrs, dx.to(DX_ptr.dtype.element_ty))
+    outs = (g0 + rg)[:, None] * CPG + cc[None, :]
+    tl.store(DW_ptr + outs, dW_acc.to(DW_ptr.dtype.element_ty))
+    tl.store(DB_ptr + outs, dB_acc.to(DB_ptr.dtype.element_ty))
+
+
 def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     shape = X.shape
     batch_size = shape[0]
@@ -457,10 +516,44 @@ def group_norm_backward(dY, X, W, Mean, RSTD, num_channels, num_groups, bias_dty
     batch_size = shape[0]
     channels_per_group = num_channels // num_groups
 
+    # Original (un-flattened) strides: the fused kernel indexes X/dY/DX in their
+    # original (B, C, *) layout.
+    x_row_stride = X.stride(0)
+    x_col_stride = X.stride(1)
+
     dY = dY.view(batch_size, num_groups, -1)
     X = X.view(batch_size, num_groups, -1)
     hidden_size = dY.shape[-1]
     hidden_size_per_channel = hidden_size // channels_per_group
+
+    # Fused single-launch backward for power-of-two group sizes: dW/dB are
+    # accumulated across the batch in registers and stored once, so no partial
+    # buffers and no separate reduce kernel are needed. Non-pow2 / large groups
+    # keep the split path (it scales the grid over the batch for more parallelism).
+    if _is_pow2(hidden_size) and hidden_size <= MAX_FUSED_FORWARD_SIZE:
+        gpb = 2 if num_groups % 2 == 0 else 1
+        DX = torch.empty_like(dY)
+        DW_fused = torch.empty(num_channels, dtype=torch.float32, device=W.device)
+        DB_fused = torch.empty(num_channels, dtype=torch.float32, device=W.device)
+        _group_norm_backward_fused_kernel[(num_groups // gpb,)](
+            X,
+            W,
+            Mean,
+            RSTD,
+            DX,
+            DW_fused,
+            DB_fused,
+            dY,
+            x_row_stride,
+            x_col_stride,
+            batch_size,
+            NG=hidden_size,
+            G=num_groups,
+            CPG=channels_per_group,
+            HP=hidden_size_per_channel,
+            GPB=gpb,
+        )
+        return DX.view(*shape), DW_fused.to(W.dtype), DB_fused.to(bias_dtype)
 
     DX = torch.empty_like(dY)
     block_h = _group_norm_backward_spatial_block_size(hidden_size_per_channel)
