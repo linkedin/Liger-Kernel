@@ -110,6 +110,7 @@ declare_op_locations(
         "liger_kernel.ops.backends._triton.cross_entropy",
         "liger_kernel.ops.backends._cutedsl.cross_entropy",
         "liger_kernel.ops.backends._ascend.cross_entropy",
+        "liger_kernel.ops.tilelang.ascend.cross_entropy",
     ),
 )
 

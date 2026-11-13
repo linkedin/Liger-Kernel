@@ -1,5 +1,6 @@
 """Ascend TileLang operator implementations."""
 
+from liger_kernel.ops.tilelang.ascend.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.tilelang.ascend.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.tilelang.ascend.ops.rms_norm import rms_norm_backward
 from liger_kernel.ops.tilelang.ascend.ops.rms_norm import rms_norm_forward
@@ -8,6 +9,7 @@ from liger_kernel.ops.tilelang.ascend.ops.swiglu import swiglu_backward
 from liger_kernel.ops.tilelang.ascend.ops.swiglu import swiglu_forward
 
 __all__ = [
+    "LigerCrossEntropyFunction",
     "LigerRMSNormFunction",
     "LigerSiLUMulFunction",
     "rms_norm_backward",

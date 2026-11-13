@@ -3,8 +3,9 @@ from typing import Optional
 
 import torch
 
+from liger_kernel.backends import dispatch
 from liger_kernel.ops import LigerAttnResFunction
-from liger_kernel.ops import LigerCrossEntropyFunction
+from liger_kernel.ops import LigerCrossEntropyFunction  # noqa: F401 - legacy re-export
 from liger_kernel.ops import LigerDyTFunction
 from liger_kernel.ops import LigerFusedAddRMSNormFunction
 from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
@@ -59,7 +60,8 @@ def liger_cross_entropy(
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
 ):
-    loss, z_loss, token_accuracy, predicted_tokens = LigerCrossEntropyFunction.apply(
+    loss, z_loss, token_accuracy, predicted_tokens = dispatch(
+        "cross_entropy",
         input,
         target,
         weight,

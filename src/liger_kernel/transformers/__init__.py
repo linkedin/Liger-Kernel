@@ -10,8 +10,6 @@ from liger_kernel.transformers.fused_ce_tvd import LigerFusedCETVDLoss  # noqa: 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.fused_linear_kl_div import LigerFusedLinearKLDivLoss  # noqa: F401
-from liger_kernel.transformers.fused_linear_score_centering import ISCorrection  # noqa: F401
-from liger_kernel.transformers.fused_linear_score_centering import LigerFusedLinearScoreCenteringLoss  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
 from liger_kernel.transformers.kl_div import LigerKLDIVLoss  # noqa: F401
@@ -41,7 +39,6 @@ from liger_kernel.transformers.swiglu import LigerSwiGLUMLPForMuseGlimmer  # noq
 from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
-from liger_kernel.transformers.vocab_parallel_cross_entropy import LigerVocabParallelCrossEntropy  # noqa: F401
 
 # Static-only imports for IDEs and type checkers
 if TYPE_CHECKING:
@@ -117,6 +114,14 @@ def __getattr__(name: str):
     Handles lazy access to transformer-dependent attributes.
     If 'transformers' is not installed, raises a user-friendly ImportError.
     """
+    if name in {"ISCorrection", "LigerFusedLinearScoreCenteringLoss"}:
+        module = importlib.import_module("liger_kernel.transformers.fused_linear_score_centering")
+        return getattr(module, name)
+
+    if name == "LigerVocabParallelCrossEntropy":
+        module = importlib.import_module("liger_kernel.transformers.vocab_parallel_cross_entropy")
+        return getattr(module, name)
+
     if not _TRANSFORMERS_AVAILABLE:
         raise ImportError(
             f"The attribute '{name}' requires the 'transformers' library, which is not installed.\n"
