@@ -1,14 +1,23 @@
 """Shared capability, rank and tolerances for Ascend TileLang implementations."""
 
+import importlib.util
+
 import torch
 
 from liger_kernel.backends import Capability
 from liger_kernel.utils import is_npu_available
 
-ASCEND_TILELANG_CAPABILITY = Capability(
-    modules=["tilelang.ascend.language"],
-    predicate=lambda: is_npu_available() and "950" in torch.npu.get_device_name(),
-)
+
+def _is_available():
+    # Discovery must not import TileLang's TVM before a Triton/TBE call.
+    return (
+        is_npu_available()
+        and torch.npu.get_device_name().startswith("Ascend950")
+        and importlib.util.find_spec("tilelang") is not None
+    )
+
+
+ASCEND_TILELANG_CAPABILITY = Capability(predicate=_is_available)
 ASCEND_TILELANG_RANK = 20
 
 DEFAULT_TOLERANCES = {

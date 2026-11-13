@@ -8,7 +8,6 @@ from liger_kernel.backends import register_op
 from liger_kernel.ops.tilelang.ascend.dispatch_common import ASCEND_TILELANG_CAPABILITY
 from liger_kernel.ops.tilelang.ascend.dispatch_common import ASCEND_TILELANG_RANK
 from liger_kernel.ops.tilelang.ascend.dispatch_common import DEFAULT_TOLERANCES
-from liger_kernel.ops.tilelang.ascend.ops.rms_norm import LigerRMSNormFunction
 
 
 @register_op(
@@ -34,4 +33,7 @@ def rms_norm_ascend_tilelang(
 ) -> torch.Tensor:
     if mode not in (None, "default"):
         raise ValueError(f"ascend-tilelang RMSNorm only supports mode='default', got {mode!r}")
+    # Import the numerical implementation only after this backend is selected.
+    from liger_kernel.ops.tilelang.ascend.ops.rms_norm import LigerRMSNormFunction
+
     return LigerRMSNormFunction.apply(x, weight, eps, offset, casting_mode, in_place, row_mode)
