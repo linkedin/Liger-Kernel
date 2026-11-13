@@ -14,177 +14,31 @@ from liger_kernel.ops.tilelang.ascend.ops._cross_entropy_metadata import prepare
 
 
 @tilelang.jit
-def baseline_cross_entropy_kernel(
-    V, dtype, cores, tile, has_weight, smoothing, softcap, z_scale, need_grad, return_z_loss=True
-):
-    """Compute per-row loss and optionally its input gradient without changing logits."""
-    N = T.dynamic("rows", "int64")
-    blocks = tilelang.cdiv(V, tile)
-
-    @T.prim_func
-    def main(
-        X: T.Tensor((N, V), dtype),
-        Target: T.Tensor((N,), "int32"),
-        W: T.Tensor((V if has_weight else 0,), "float32"),
-        Loss: T.Tensor((N,), dtype),
-        ZLoss: T.Tensor((N,), dtype),
-        DX: T.Tensor((N, V), dtype),
-        ignore_index: T.int32,
-        denominator: T.float32,
-        valid_count: T.float32,
-        weight_sum: T.float32,
-    ):
-        with T.Kernel(cores) as core:
-            x = T.alloc_shared((tile,), dtype)
-            w = T.alloc_shared((tile,), "float32")
-            dx = T.alloc_shared((tile,), dtype)
-            target = T.alloc_shared((8,), "int32")
-            state = T.alloc_shared((8,), "float32")
-            loss = T.alloc_shared((8,), dtype)
-            zloss = T.alloc_shared((8,), dtype)
-            for step in T.serial(tilelang.cdiv(N, cores)):
-                row = step * cores + core
-                if row < N:
-                    T.copy(Target[row : row + 1], target[:1])
-                    with T.SimtVF(threads=128):
-                        for i in T.Parallel(8):
-                            state[i] = T.if_then_else(i == 0, -T.infinity("float32"), T.float32(0))
-                    for block in T.serial(blocks):
-                        start = block * tile
-                        valid = T.min(tile, V - start)
-                        T.copy(X[row, start : start + valid], x[:valid], l2_cache_ctrl="NORMAL_PERS")
-                        if has_weight:
-                            T.copy(W[start : start + valid], w[:valid])
-                        with T.SimtVF(threads=128):
-                            a = T.alloc_fragment((tile,), "float32")
-                            e = T.alloc_fragment((tile,), "float32")
-                            wx = T.alloc_fragment((tile,), "float32")
-                            ww = T.alloc_fragment((tile,), "float32")
-                            bw = T.alloc_fragment((1,), "float32")
-                            xy = T.alloc_fragment((tile,), "float32")
-                            wy = T.alloc_fragment((tile,), "float32")
-                            m = T.alloc_fragment((1,), "float32")
-                            d = T.alloc_fragment((1,), "float32")
-                            sx = T.alloc_fragment((1,), "float32")
-                            sy = T.alloc_fragment((1,), "float32")
-                            sw = T.alloc_fragment((1,), "float32")
-                            for i in T.Parallel(tile):
-                                if i < valid:
-                                    value = T.cast(x[i], "float32")
-                                    if softcap > 0:
-                                        scaled = value / softcap
-                                        magnitude = T.if_then_else(scaled < 0, -scaled, scaled)
-                                        decay = T.exp(-2 * magnitude)
-                                        tanh_abs = (1 - decay) / (1 + decay)
-                                        value = softcap * T.if_then_else(scaled < 0, -tanh_abs, tanh_abs)
-                                    a[i] = value
-                                    if has_weight:
-                                        wx[i] = value * w[i]
-                                        ww[i] = w[i]
-                                        wy[i] = T.if_then_else(start + i == target[0], w[i], T.float32(0))
-                                    else:
-                                        wx[i] = value
-                                        ww[i] = T.float32(1)
-                                        wy[i] = T.if_then_else(start + i == target[0], T.float32(1), T.float32(0))
-                                    xy[i] = T.if_then_else(start + i == target[0], value, T.float32(0))
-                                else:
-                                    a[i] = -T.infinity("float32")
-                                    wx[i] = T.float32(0)
-                                    ww[i] = T.float32(0)
-                                    xy[i] = T.float32(0)
-                                    wy[i] = T.float32(0)
-                            T.reduce_max(a, m, dim=0)
-                            for i in T.Parallel(tile):
-                                e[i] = T.exp(a[i] - m[0])
-                                if smoothing > 0:
-                                    wx[i] = T.if_then_else(i < valid, (a[i] - m[0]) * ww[i], T.float32(0))
-                            T.reduce_sum(e, d, dim=0)
-                            T.reduce_sum(wx, sx, dim=0)
-                            T.reduce_sum(xy, sy, dim=0)
-                            T.reduce_sum(wy, sw, dim=0)
-                            if has_weight and smoothing > 0:
-                                T.reduce_sum(ww, bw, dim=0)
-                            for i in T.Parallel(1):
-                                new_max = T.max(state[0], m[0])
-                                state[1] = state[1] * T.exp(state[0] - new_max) + d[0] * T.exp(m[0] - new_max)
-                                if smoothing > 0:
-                                    block_weight = bw[0] if has_weight else T.cast(valid, "float32")
-                                    previous = T.if_then_else(
-                                        state[0] == -T.infinity("float32"),
-                                        T.float32(0),
-                                        state[2] + state[6] * (state[0] - new_max),
-                                    )
-                                    state[2] = previous + sx[0] + block_weight * (m[0] - new_max)
-                                    state[6] = state[6] + block_weight
-                                state[0] = new_max
-                                state[3] = state[3] + sy[0]
-                                state[4] = state[4] + sw[0]
-                    with T.SimtVF(threads=128):
-                        for i in T.Parallel(1):
-                            lse = state[0] + T.log(state[1])
-                            # Subtract before adding log(sum), preserving shift invariance.
-                            ce = (1 - smoothing) * state[4] * (T.log(state[1]) + (state[0] - state[3]))
-                            if smoothing > 0:
-                                ce = ce + smoothing / V * (T.log(state[1]) * weight_sum - state[2])
-                            z = z_scale * lse * lse / valid_count
-                            loss[0] = T.cast(
-                                T.if_then_else(target[0] == ignore_index, T.float32(0), ce / denominator + z), dtype
-                            )
-                            zloss[0] = T.cast(T.if_then_else(target[0] == ignore_index, T.float32(0), z), dtype)
-                            state[5] = lse
-                    T.copy(loss[:1], Loss[row : row + 1])
-                    if return_z_loss:
-                        T.copy(zloss[:1], ZLoss[row : row + 1])
-                    if need_grad:
-                        for block in T.serial(blocks):
-                            start = block * tile
-                            valid = T.min(tile, V - start)
-                            T.copy(X[row, start : start + valid], x[:valid], l2_cache_ctrl="NORMAL_PERS")
-                            if has_weight:
-                                T.copy(W[start : start + valid], w[:valid])
-                            with T.SimtVF(threads=128):
-                                for i in T.Parallel(tile):
-                                    if i < valid:
-                                        value = T.cast(x[i], "float32")
-                                        chain = T.float32(1)
-                                        if softcap > 0:
-                                            scaled = value / softcap
-                                            magnitude = T.if_then_else(scaled < 0, -scaled, scaled)
-                                            decay = T.exp(-2 * magnitude)
-                                            tanh_abs = (1 - decay) / (1 + decay)
-                                            t = T.if_then_else(scaled < 0, -tanh_abs, tanh_abs)
-                                            value = softcap * t
-                                            chain = 1 - t * t
-                                        # Avoid log/exp round trips when the true-class probability is near one.
-                                        p = T.exp(value - state[0]) / state[1]
-                                        wi = w[i] if has_weight else T.float32(1)
-                                        g = p * ((1 - smoothing) * state[4] + smoothing / V * weight_sum)
-                                        g = g - smoothing / V * wi
-                                        g = g - T.if_then_else(
-                                            start + i == target[0], (1 - smoothing) * state[4], T.float32(0)
-                                        )
-                                        g = g / denominator + 2 * z_scale * state[5] * p / valid_count
-                                        dx[i] = T.cast(
-                                            T.if_then_else(target[0] == ignore_index, T.float32(0), g * chain), dtype
-                                        )
-                            T.copy(dx[:valid], DX[row, start : start + valid])
-
-    return main
-
-
-@tilelang.jit
 def simd_cross_entropy_kernel(
-    V, dtype, cores, need_grad, stages=2, storage="auto", save_stats=False, return_z_loss=True
+    V,
+    dtype,
+    cores,
+    need_grad,
+    stages=2,
+    storage="auto",
+    save_stats=False,
+    return_z_loss=True,
+    has_weight=False,
+    smoothing=0.0,
+    softcap=0.0,
+    z_scale=0.0,
 ):
-    """Compute unweighted CE using one row per core at a time.
+    """Compute CE using one row per core and compile-time optional features.
 
     Small rows stay in UB; larger rows stream through tiles while accumulating
     the row maximum and shifted exponential sum. Optionally save these
     statistics for backward instead of materializing the input gradient.
     """
     narrow = dtype == "bfloat16"
-    resident = V <= 32000
-    tile = tilelang.cdiv(V, 64) * 64 if resident else (31680 if narrow else 15808)
+    # Class weights need an additional FP32 tile in each pipeline stage.
+    resident_limit = 8192 if has_weight else 32000
+    resident = V <= resident_limit
+    tile = tilelang.cdiv(V, 64) * 64 if resident else (8192 if has_weight else (31680 if narrow else 15808))
     full_blocks, tail = divmod(V, tile)
     manual = storage == "manual" and not resident and stages == 2
     active_stages = 1 if resident else stages
@@ -204,8 +58,30 @@ def simd_cross_entropy_kernel(
         else:
             return S.vsts(buf[offset], converted, mask, store_dist)
 
+    def weight_value(w, offset, slot):
+        return S.vld(w[slot, offset] if manual else w[offset], dist="NORM")
+
+    def tanh(value, mask, return_derivative=False):
+        # This form avoids overflow for large positive or negative logits.
+        decay = S.vexp(S.vmuls(S.vabs(value, mask), -2.0 / softcap, mask), mask)
+        one = S.vdup(1.0, T.float32, mask)
+        divisor = S.vadd(one, decay, mask)
+        magnitude = S.vdiv(S.vsub(one, decay, mask), divisor, mask, precision="exact")
+        signed = S.vsel(S.vmuls(magnitude, -1.0, mask), magnitude, S.vcmps(value, 0.0, mask, "lt"))
+        if return_derivative:
+            # sech²(x/c) = 4e / (1+e)² avoids cancellation near saturation.
+            derivative = S.vdiv(S.vmuls(decay, 4.0, mask), S.vmul(divisor, divisor, mask), mask, precision="exact")
+            return signed, derivative
+        return signed
+
+    def cap(value, mask):
+        return S.vmuls(tanh(value, mask), softcap, mask) if softcap > 0 else value
+
+    # Row state: max, exponential sum, target logit, two reciprocals,
+    # target weight, shifted weighted-logit sum, cumulative weight.
+    # Slots 8:10 hold aligned statistics for deferred backward.
     @T.macro
-    def fold(x, state, target, start, length, slot):
+    def fold(x, w, state, target, start, length, slot):
         with T.SimdVF():
             mask = S.pset(32)
             S.mem_bar("VST_VLD")
@@ -219,22 +95,42 @@ def simd_cross_entropy_kernel(
             lane_max = run_max
             lane_target = S.alloc_var(T.float32)
             lane_target = zero
+            if has_weight:
+                lane_target_weight = S.alloc_var(T.float32)
+                lane_target_weight = zero
             for vec in T.serial(tilelang.cdiv(length, 64)):
                 lane = S.vci(T.int32(0), T.int32)
                 live = S.vcmps(lane, length - vec * 64, mask, "lt")
-                value = S.vsel(load(x, vec * 64, slot), negative, live)
+                value = S.vsel(cap(load(x, vec * 64, slot), mask), negative, live)
                 lane_max = S.vmax(lane_max, value, mask)
                 columns = S.vadds(lane, start + vec * 64, mask)
                 chosen = S.vcmp(columns, label, live, "eq")
                 lane_target = S.vadd(lane_target, S.vsel(value, zero, chosen), mask)
+                if has_weight:
+                    lane_target_weight = S.vadd(
+                        lane_target_weight, S.vsel(weight_value(w, vec * 64, slot), zero, chosen), mask
+                    )
             new_max = S.vdupv(S.vcmax(lane_max, mask), mask)
             lane_sum = S.alloc_var(T.float32)
             lane_sum = zero
+            if smoothing > 0:
+                lane_smooth = S.alloc_var(T.float32)
+                lane_smooth = zero
+                if has_weight:
+                    lane_weights = S.alloc_var(T.float32)
+                    lane_weights = zero
             for vec in T.serial(tilelang.cdiv(length, 64)):
                 lane2 = S.vci(T.int32(0), T.int32)
                 live2 = S.vcmps(lane2, length - vec * 64, mask, "lt")
-                value2 = S.vsel(load(x, vec * 64, slot), negative, live2)
+                value2 = S.vsel(cap(load(x, vec * 64, slot), mask), negative, live2)
                 lane_sum = S.vadd(lane_sum, S.vexp(S.vsub(value2, new_max, mask), mask), mask)
+                if smoothing > 0:
+                    shifted = S.vsel(S.vsub(value2, new_max, mask), zero, live2)
+                    if has_weight:
+                        wi = S.vsel(weight_value(w, vec * 64, slot), zero, live2)
+                        shifted = S.vmul(shifted, wi, mask)
+                        lane_weights = S.vadd(lane_weights, wi, mask)
+                    lane_smooth = S.vadd(lane_smooth, shifted, mask)
             block_sum = S.vdupv(S.vcadd(lane_sum, mask), mask)
             merged = S.vadd(S.vmul(S.vexp(S.vsub(run_max, new_max, mask), mask), run_sum, mask), block_sum, mask)
             # Only the target lane can be nonzero; select it directly to avoid
@@ -244,9 +140,29 @@ def simd_cross_entropy_kernel(
             S.vsts(state[0], new_max, mask, "ONEPT_B32")
             S.vsts(state[1], merged, mask, "ONEPT_B32")
             S.vsts(state[2], merged_target, mask, "ONEPT_B32")
+            if has_weight:
+                target_weight = S.vadd(S.vld(state[5], dist="BRC_B32"), S.vselr(lane_target_weight, target_lane), mask)
+                S.vsts(state[5], target_weight, mask, "ONEPT_B32")
+            if smoothing > 0:
+                # Keep weighted logits relative to the running maximum, including
+                # the correction when a later tile raises that maximum.
+                previous_weights = S.vld(state[7], dist="BRC_B32")
+                previous_smooth = S.vld(state[6], dist="BRC_B32")
+                shift = S.vsel(
+                    zero, S.vsub(run_max, new_max, mask), S.vcmps(run_max, -T.infinity("float32"), mask, "eq")
+                )
+                previous_smooth = S.vadd(previous_smooth, S.vmul(previous_weights, shift, mask), mask)
+                block_smooth = S.vdupv(S.vcadd(lane_smooth, mask), mask)
+                block_weights = (
+                    S.vdupv(S.vcadd(lane_weights, mask), mask)
+                    if has_weight
+                    else S.vdup(T.cast(length, "float32"), T.float32, mask)
+                )
+                S.vsts(state[6], S.vadd(previous_smooth, block_smooth, mask), mask, "ONEPT_B32")
+                S.vsts(state[7], S.vadd(previous_weights, block_weights, mask), mask, "ONEPT_B32")
 
     @T.macro
-    def apply(x, dx, state, target, start, length, slot, ignore_index, denominator):
+    def apply(x, dx, w, state, target, start, length, slot, ignore_index, denominator, valid_count, weight_sum):
         with T.SimdVF():
             mask = S.pset(32)
             S.mem_bar("VST_VLD")
@@ -269,43 +185,111 @@ def simd_cross_entropy_kernel(
                 lane = S.vci(T.int32(0), T.int32)
                 live = S.vcmps(lane, length - vec * 64, mask, "lt")
                 columns = S.vadds(lane, start + vec * 64, mask)
-                p = S.vmul(S.vexp(S.vsub(load(x, vec * 64, slot), max_value, mask), mask), apply_inv_sum, mask)
-                g = S.vmul(
-                    S.vsub(p, S.vsel(one, zero, S.vcmp(columns, label, mask, "eq")), mask),
-                    apply_inv_den,
-                    mask,
-                )
+                value = load(x, vec * 64, slot)
+                if softcap > 0:
+                    cap_tanh, cap_derivative = tanh(value, mask, return_derivative=True)
+                    value = S.vmuls(cap_tanh, softcap, mask)
+                p = S.vmul(S.vexp(S.vsub(value, max_value, mask), mask), apply_inv_sum, mask)
+                if has_weight or smoothing > 0 or z_scale > 0 or softcap > 0:
+                    target_weight = S.vld(state[5], dist="BRC_B32") if has_weight else one
+                    coefficient = S.vadds(
+                        S.vmuls(target_weight, 1.0 - smoothing, mask), smoothing / V * weight_sum, mask
+                    )
+                    g = S.vmul(p, coefficient, mask)
+                    if smoothing > 0:
+                        wi = weight_value(w, vec * 64, slot) if has_weight else one
+                        g = S.vsub(g, S.vmuls(wi, smoothing / V, mask), mask)
+                    g = S.vsub(
+                        g,
+                        S.vsel(S.vmuls(target_weight, 1.0 - smoothing, mask), zero, S.vcmp(columns, label, mask, "eq")),
+                        mask,
+                    )
+                    g = S.vmul(g, apply_inv_den, mask)
+                    if z_scale > 0:
+                        lse = S.vadd(max_value, S.vln(S.vld(state[1], dist="BRC_B32"), mask), mask)
+                        z_derivative = S.vdiv(
+                            S.vmuls(lse, 2.0 * z_scale, mask),
+                            S.vdup(valid_count, T.float32, mask),
+                            mask,
+                            precision="exact",
+                        )
+                        g = S.vadd(g, S.vmul(z_derivative, p, mask), mask)
+                    if softcap > 0:
+                        g = S.vmul(g, cap_derivative, mask)
+                else:
+                    g = S.vmul(
+                        S.vsub(p, S.vsel(one, zero, S.vcmp(columns, label, mask, "eq")), mask),
+                        apply_inv_den,
+                        mask,
+                    )
                 store(dx, vec * 64, S.vsel(zero, g, ignored), slot, live)
 
     @T.macro
-    def row_body(row, x, dx, target, state, loss, zloss, X, Target, Loss, ZLoss, DX, Stats, ignore_index, denominator):
+    def row_body(
+        row,
+        x,
+        dx,
+        w,
+        target,
+        state,
+        loss,
+        zloss,
+        X,
+        Target,
+        W,
+        Loss,
+        ZLoss,
+        DX,
+        Stats,
+        ignore_index,
+        denominator,
+        valid_count,
+        weight_sum,
+    ):
         T.copy(Target[row : row + 1], target[:1])
         with T.SimdVF():
             mask = S.pset(32)
             S.vsts(state[0], S.vdup(-T.infinity("float32"), T.float32, mask), mask, "ONEPT_B32")
             S.vsts(state[1], S.vdup(0.0, T.float32, mask), mask, "ONEPT_B32")
             S.vsts(state[2], S.vdup(0.0, T.float32, mask), mask, "ONEPT_B32")
+            if has_weight:
+                S.vsts(state[5], S.vdup(0.0, T.float32, mask), mask, "ONEPT_B32")
+            if smoothing > 0:
+                S.vsts(state[6], S.vdup(0.0, T.float32, mask), mask, "ONEPT_B32")
+                S.vsts(state[7], S.vdup(0.0, T.float32, mask), mask, "ONEPT_B32")
         if resident:
             T.copy(X[row, :V], x[:V], l2_cache_ctrl="NORMAL_PERS")
-            fold(x, state, target, 0, V, 0)
+            if has_weight:
+                T.copy(W[:V], w[:V])
+            fold(x, w, state, target, 0, V, 0)
         else:
             for block in T.Pipelined(full_blocks, num_stages=active_stages):
                 if manual:
                     if block % 2 == 0:
                         T.copy(X[row, block * tile : (block + 1) * tile], x[0, :], l2_cache_ctrl="NORMAL_PERS")
-                        fold(x, state, target, block * tile, tile, 0)
+                        if has_weight:
+                            T.copy(W[block * tile : (block + 1) * tile], w[0, :])
+                        fold(x, w, state, target, block * tile, tile, 0)
                     else:
                         T.copy(X[row, block * tile : (block + 1) * tile], x[1, :], l2_cache_ctrl="NORMAL_PERS")
-                        fold(x, state, target, block * tile, tile, 1)
+                        if has_weight:
+                            T.copy(W[block * tile : (block + 1) * tile], w[1, :])
+                        fold(x, w, state, target, block * tile, tile, 1)
                 else:
                     T.copy(X[row, block * tile : (block + 1) * tile], x, l2_cache_ctrl="NORMAL_PERS")
-                    fold(x, state, target, block * tile, tile, 0)
+                    if has_weight:
+                        T.copy(W[block * tile : (block + 1) * tile], w)
+                    fold(x, w, state, target, block * tile, tile, 0)
             if tail > 0:
                 if manual:
                     T.copy(X[row, full_blocks * tile : V], x[0, :tail], l2_cache_ctrl="NORMAL_PERS")
+                    if has_weight:
+                        T.copy(W[full_blocks * tile : V], w[0, :tail])
                 else:
                     T.copy(X[row, full_blocks * tile : V], x[:tail], l2_cache_ctrl="NORMAL_PERS")
-                fold(x, state, target, full_blocks * tile, tail, 0)
+                    if has_weight:
+                        T.copy(W[full_blocks * tile : V], w[:tail])
+                fold(x, w, state, target, full_blocks * tile, tail, 0)
         with T.SimdVF():
             mask = S.pset(32)
             S.mem_bar("VST_VLD")
@@ -314,9 +298,18 @@ def simd_cross_entropy_kernel(
             chosen = S.vld(state[2], dist="BRC_B32")
             label = S.vld(target[0], dist="BRC_B32")
             zero = S.vdup(0.0, T.float32, mask)
-            result = S.vdiv(
-                S.vadd(S.vsub(m, chosen, mask), S.vln(d, mask), mask), S.vdup(denominator, T.float32, mask), mask
-            )
+            ce = S.vadd(S.vsub(m, chosen, mask), S.vln(d, mask), mask)
+            if has_weight:
+                ce = S.vmul(ce, S.vld(state[5], dist="BRC_B32"), mask)
+            if smoothing > 0:
+                smooth = S.vsub(S.vmuls(S.vln(d, mask), weight_sum, mask), S.vld(state[6], dist="BRC_B32"), mask)
+                ce = S.vadd(S.vmuls(ce, 1.0 - smoothing, mask), S.vmuls(smooth, smoothing / V, mask), mask)
+            result = S.vdiv(ce, S.vdup(denominator, T.float32, mask), mask)
+            z = zero
+            if z_scale > 0:
+                lse = S.vadd(m, S.vln(d, mask), mask)
+                z = S.vdiv(S.vmuls(S.vmul(lse, lse, mask), z_scale, mask), S.vdup(valid_count, T.float32, mask), mask)
+                result = S.vadd(result, z, mask)
             selected = S.vsel(zero, result, S.vcmps(label, ignore_index, mask, "eq"))
             S.vsts(
                 loss[0],
@@ -325,7 +318,15 @@ def simd_cross_entropy_kernel(
                 store_dist,
                 extent=1,
             )
-            S.vsts(zloss[0], S.vcvt(zero, T.bfloat16) if narrow else zero, S.pset(32, "PAT_VL1"), store_dist, extent=1)
+            if return_z_loss:
+                logged_z = S.vsel(zero, z, S.vcmps(label, ignore_index, mask, "eq"))
+                S.vsts(
+                    zloss[0],
+                    S.vcvt(logged_z, T.bfloat16) if narrow else logged_z,
+                    S.pset(32, "PAT_VL1"),
+                    store_dist,
+                    extent=1,
+                )
             if save_stats:
                 S.vsts(state[8], m, S.pset(32, "PAT_VL1"), "ONEPT_B32", extent=1)
                 inv_sum = S.vdiv(S.vdup(1.0, T.float32, mask), d, mask, precision="exact")
@@ -337,7 +338,7 @@ def simd_cross_entropy_kernel(
             T.copy(state[8:10], Stats[row, :2])
         if need_grad:
             if resident:
-                apply(x, x, state, target, 0, V, 0, ignore_index, denominator)
+                apply(x, x, w, state, target, 0, V, 0, ignore_index, denominator, valid_count, weight_sum)
                 T.copy(x[:V], DX[row, :V])
             else:
                 # Compute row reciprocals once for reuse across all gradient tiles.
@@ -353,22 +354,84 @@ def simd_cross_entropy_kernel(
                     if manual:
                         if block % 2 == 0:
                             T.copy(X[row, block * tile : (block + 1) * tile], x[0, :], l2_cache_ctrl="NORMAL_PERS")
-                            apply(x, dx, state, target, block * tile, tile, 0, ignore_index, denominator)
+                            if has_weight:
+                                T.copy(W[block * tile : (block + 1) * tile], w[0, :])
+                            apply(
+                                x,
+                                dx,
+                                w,
+                                state,
+                                target,
+                                block * tile,
+                                tile,
+                                0,
+                                ignore_index,
+                                denominator,
+                                valid_count,
+                                weight_sum,
+                            )
                             T.copy(dx[0, :], DX[row, block * tile : (block + 1) * tile])
                         else:
                             T.copy(X[row, block * tile : (block + 1) * tile], x[1, :], l2_cache_ctrl="NORMAL_PERS")
-                            apply(x, dx, state, target, block * tile, tile, 1, ignore_index, denominator)
+                            if has_weight:
+                                T.copy(W[block * tile : (block + 1) * tile], w[1, :])
+                            apply(
+                                x,
+                                dx,
+                                w,
+                                state,
+                                target,
+                                block * tile,
+                                tile,
+                                1,
+                                ignore_index,
+                                denominator,
+                                valid_count,
+                                weight_sum,
+                            )
                             T.copy(dx[1, :], DX[row, block * tile : (block + 1) * tile])
                     else:
                         T.copy(X[row, block * tile : (block + 1) * tile], x, l2_cache_ctrl="NORMAL_PERS")
-                        apply(x, dx, state, target, block * tile, tile, 0, ignore_index, denominator)
+                        if has_weight:
+                            T.copy(W[block * tile : (block + 1) * tile], w)
+                        apply(
+                            x,
+                            dx,
+                            w,
+                            state,
+                            target,
+                            block * tile,
+                            tile,
+                            0,
+                            ignore_index,
+                            denominator,
+                            valid_count,
+                            weight_sum,
+                        )
                         T.copy(dx, DX[row, block * tile : (block + 1) * tile])
                 if tail > 0:
                     if manual:
                         T.copy(X[row, full_blocks * tile : V], x[0, :tail], l2_cache_ctrl="NORMAL_PERS")
+                        if has_weight:
+                            T.copy(W[full_blocks * tile : V], w[0, :tail])
                     else:
                         T.copy(X[row, full_blocks * tile : V], x[:tail], l2_cache_ctrl="NORMAL_PERS")
-                    apply(x, dx, state, target, full_blocks * tile, tail, 0, ignore_index, denominator)
+                        if has_weight:
+                            T.copy(W[full_blocks * tile : V], w[:tail])
+                    apply(
+                        x,
+                        dx,
+                        w,
+                        state,
+                        target,
+                        full_blocks * tile,
+                        tail,
+                        0,
+                        ignore_index,
+                        denominator,
+                        valid_count,
+                        weight_sum,
+                    )
                     if manual:
                         T.copy(dx[0, :tail], DX[row, full_blocks * tile : V])
                     else:
@@ -391,13 +454,18 @@ def simd_cross_entropy_kernel(
     ):
         X = T.match_buffer(X_handle, (N, V), dtype)
         Target = T.match_buffer(Target_handle, (N,), "int32")
-        _W = T.match_buffer(W_handle, (0,), "float32")
+        W = T.match_buffer(W_handle, (V if has_weight else 0,), "float32")
         Loss = T.match_buffer(Loss_handle, (N,), dtype)
         ZLoss = T.match_buffer(ZLoss_handle, (N,), dtype)
         DX = T.match_buffer(DX_handle, (N, V), dtype)
         Stats = T.match_buffer(Stats_handle, (N, 8) if save_stats else (0, 8), "float32")
         with T.Kernel(cores) as core:
             x = T.alloc_shared((2, tile) if manual else (tile,), dtype)
+            w = (
+                T.alloc_shared((2, tile) if manual else (tile,), "float32")
+                if has_weight
+                else T.alloc_shared((0,), "float32")
+            )
             if not resident:
                 dx = T.alloc_shared((2, tile) if manual else (tile,), dtype)
             target = T.alloc_shared((8,), "int32")
@@ -408,44 +476,56 @@ def simd_cross_entropy_kernel(
             if not resident:
                 if manual:
                     T.annotate_manual_multi_buffer(x, dx)
+                    if has_weight:
+                        T.annotate_manual_multi_buffer(w)
                 else:
                     T.annotate_buffer_versions({x: active_stages, dx: active_stages})
+                    if has_weight:
+                        T.annotate_buffer_versions({w: active_stages})
 
             for wave in T.serial(N // cores):
                 row_body(
                     wave * cores + core,
                     x,
                     x if resident else dx,
+                    w,
                     target,
                     state,
                     loss,
                     zloss,
                     X,
                     Target,
+                    W,
                     Loss,
                     ZLoss,
                     DX,
                     Stats,
                     ignore_index,
                     denominator,
+                    valid_count,
+                    weight_sum,
                 )
             if core < N % cores:
                 row_body(
                     (N // cores) * cores + core,
                     x,
                     x if resident else dx,
+                    w,
                     target,
                     state,
                     loss,
                     zloss,
                     X,
                     Target,
+                    W,
                     Loss,
                     ZLoss,
                     DX,
                     Stats,
                     ignore_index,
                     denominator,
+                    valid_count,
+                    weight_sum,
                 )
 
     return main
@@ -698,19 +778,19 @@ def cross_entropy_kernel(
     save_stats=False,
     return_z_loss=True,
 ):
-    if not has_weight and smoothing == 0 and softcap == 0 and z_scale == 0:
-        return simd_cross_entropy_kernel(
-            V,
-            dtype,
-            cores,
-            need_grad,
-            stages=pipeline_stages,
-            storage=pipeline_storage,
-            save_stats=save_stats,
-            return_z_loss=return_z_loss,
-        )
-    return baseline_cross_entropy_kernel(
-        V, dtype, cores, tile, has_weight, smoothing, softcap, z_scale, need_grad, return_z_loss
+    return simd_cross_entropy_kernel(
+        V,
+        dtype,
+        cores,
+        need_grad,
+        stages=pipeline_stages,
+        storage=pipeline_storage,
+        save_stats=save_stats,
+        return_z_loss=return_z_loss,
+        has_weight=has_weight,
+        smoothing=smoothing,
+        softcap=softcap,
+        z_scale=z_scale,
     )
 
 
@@ -726,39 +806,6 @@ def scale_gradient_kernel(N, V, dtype, cores, vector_grad, tile=8192, pipeline_s
         stages=pipeline_stages,
         storage=pipeline_storage,
     )
-
-
-@tilelang.jit
-def baseline_scale_gradient_kernel(V, dtype, cores, vector_grad, tile=8192):
-    """Apply the autograd upstream gradient without mutating saved gradients."""
-    N = T.dynamic("rows", "int64")
-
-    @T.prim_func
-    def main(
-        DX: T.Tensor((N, V), dtype),
-        Grad: T.Tensor((N if vector_grad else 1,), dtype),
-        Out: T.Tensor((N, V), dtype),
-    ):
-        with T.Kernel(cores) as core:
-            x = T.alloc_shared((tile,), dtype)
-            y = T.alloc_shared((tile,), dtype)
-            grad = T.alloc_shared((8,), dtype)
-            for step in T.serial(tilelang.cdiv(N, cores)):
-                row = step * cores + core
-                if row < N:
-                    gr = row if vector_grad else 0
-                    T.copy(Grad[gr : gr + 1], grad[:1])
-                    for block in T.serial(tilelang.cdiv(V, tile)):
-                        start = block * tile
-                        valid = T.min(tile, V - start)
-                        T.copy(DX[row, start : start + valid], x[:valid])
-                        with T.SimtVF(threads=128):
-                            for i in T.Parallel(tile):
-                                if i < valid:
-                                    y[i] = T.cast(T.cast(x[i], "float32") * T.cast(grad[0], "float32"), dtype)
-                        T.copy(y[:valid], Out[row, start : start + valid])
-
-    return main
 
 
 DTYPES = (torch.bfloat16, torch.float32)
@@ -830,8 +877,7 @@ def _forward(
     if count == 0:
         denominator = 1.0
     x = input.contiguous()
-    simple_path = weight is None and smoothing == 0 and softcap is None and z_scale == 0
-    stats = torch.empty((N if defer_grad else 0, 8), device=input.device, dtype=torch.float32) if simple_path else None
+    stats = torch.empty((N if defer_grad else 0, 8), device=input.device, dtype=torch.float32)
     loss = torch.empty((N,), device=input.device, dtype=input.dtype)
     zloss = torch.empty_like(loss) if return_z_loss else loss
     # The forward-only specialization never accesses DX; alias X to satisfy its static ABI.
@@ -866,10 +912,7 @@ def _forward(
             float(normalizer),
             float(weight_sum),
         )
-        if simple_path:
-            kernel(*args, stats, N)
-        else:
-            kernel(*args)
+        kernel(*args, stats, N)
     if reduction != "none":
         loss = loss.sum()
         if return_z_loss:
