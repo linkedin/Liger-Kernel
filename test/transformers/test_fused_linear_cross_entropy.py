@@ -1108,3 +1108,63 @@ def test_correctness_reduction_none_per_token_grad_output(B, T, H, V, bias, dtyp
     assert_verbose_allclose(lig_gw, ref_gw, atol=atol, rtol=rtol)
     if bias:
         assert_verbose_allclose(lig_gb, ref_gb, atol=atol, rtol=rtol)
+
+
+@pytest.mark.skipif(device != "cuda", reason="torch.cuda.set_sync_debug_mode is CUDA-only")
+@pytest.mark.parametrize("reduction", ["sum", "none"])
+@pytest.mark.parametrize("grad_scale", [1.0, 0.37])
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize(
+    "class_weight, label_smoothing",
+    [(False, 0.0), (False, 0.1), (True, 0.0)],
+    ids=["plain", "label_smoothing", "class_weight"],
+)
+def test_no_host_sync_without_mean_reduction(reduction, grad_scale, bias, class_weight, label_smoothing):
+    """Forward and backward must not synchronize the host when no value has to be read back.
+
+    A host sync waits for everything queued on the device, e.g. activation-offload copies, so it stalls training.
+    Only reduction="mean" needs the non-ignored count, and only label smoothing needs the class-weight sum.
+    grad_scale=1.0 covers the backward path that skips the multiply, 0.37 the path that scales the saved gradients.
+    """
+    set_seed(42)
+    BT, H, V = 64, 128, 256
+    _input = torch.randn(BT, H, device=device)
+    weight = torch.randn(V, H, device=device)
+    bias_t = torch.randn(V, device=device) if bias else None
+    ce_weight = torch.rand(V, device=device) + 0.5 if class_weight else None
+    target = torch.randint(0, V, (BT,), device=device)
+    target[::5] = -100
+
+    def leaves():
+        x = _input.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        b = bias_t.clone().requires_grad_(True) if bias else None
+        return x, w, b
+
+    x, w, b = leaves()
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        loss, _, accuracy, _ = LigerFusedLinearCrossEntropyFunction.apply(
+            x, w, target, b, ce_weight, -100, 0.0, label_smoothing, reduction, None, False, None, False, True
+        )
+        (loss * grad_scale).sum().backward()
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+
+    xr, wr, br = leaves()
+    logits = torch.nn.functional.linear(xr, wr, br)
+    ref = torch.nn.functional.cross_entropy(
+        logits, target, weight=ce_weight, ignore_index=-100, label_smoothing=label_smoothing, reduction=reduction
+    )
+    (ref * grad_scale).sum().backward()
+    mask = target != -100
+    ref_accuracy = (logits.argmax(-1) == target)[mask].float().mean()
+
+    assert_verbose_allclose(loss, ref, atol=1e-4, rtol=1e-4)
+    if reduction == "sum":
+        assert_verbose_allclose(accuracy, ref_accuracy, atol=1e-6, rtol=1e-6)
+    assert_verbose_allclose(x.grad, xr.grad, atol=1e-4, rtol=1e-4)
+    assert_verbose_allclose(w.grad, wr.grad, atol=1e-4, rtol=1e-4)
+    if bias:
+        assert_verbose_allclose(b.grad, br.grad, atol=1e-4, rtol=1e-4)
