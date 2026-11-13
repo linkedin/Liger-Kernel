@@ -4,6 +4,7 @@ from typing import Optional
 import torch
 
 from liger_kernel.backends import dispatch
+from liger_kernel.backends import resolve_impl
 from liger_kernel.ops import LigerAttnResFunction
 from liger_kernel.ops import LigerCrossEntropyFunction  # noqa: F401 - legacy re-export
 from liger_kernel.ops import LigerDyTFunction
@@ -59,7 +60,22 @@ def liger_cross_entropy(
     return_z_loss: bool = False,
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
+    loss_dtype: Optional[torch.dtype] = None,
+    in_place: bool = False,
 ):
+    # Keep Triton-only options out of other backends' default calls.
+    extra = {}
+    if loss_dtype is not None or in_place:
+        device = input.device if input.is_cuda else None
+        impl_name = resolve_impl("cross_entropy", device=device).impl_name
+        if impl_name != "nvidia-triton":
+            raise ValueError(
+                f"loss_dtype and in_place are only supported by the Triton cross_entropy backend, but '{impl_name}' was selected."
+            )
+        if loss_dtype is not None:
+            extra["loss_dtype"] = loss_dtype
+        if in_place:
+            extra["in_place"] = True
     loss, z_loss, token_accuracy, predicted_tokens = dispatch(
         "cross_entropy",
         input,
@@ -73,6 +89,7 @@ def liger_cross_entropy(
         return_z_loss,
         return_token_accuracy,
         return_predicted_tokens,
+        **extra,
     )
 
     if not return_z_loss and not return_token_accuracy and not return_predicted_tokens:

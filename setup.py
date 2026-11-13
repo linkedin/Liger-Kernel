@@ -33,7 +33,11 @@ def get_default_dependencies(platform):
             "torch>=2.6.0",
         ]
     elif platform == "npu":
-        return ["torch==2.9.0", "torch_npu==2.9.0"]
+        return [
+            "torch==2.10.0",
+            "torch_npu==2.10.0.post7",
+            "torchvision==0.25.0",
+        ]
 
 
 def get_triton_dependencies(platform):
@@ -43,7 +47,7 @@ def get_triton_dependencies(platform):
     if platform == "rocm":
         return ["triton>=3.0.0"]
     if platform == "npu":
-        return ["triton-ascend==3.2.2"]
+        return ["triton-ascend==3.6.0"]
     # XPU PyTorch provides its own Triton distribution.
     return []
 

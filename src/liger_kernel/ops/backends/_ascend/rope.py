@@ -36,6 +36,4 @@ def rope_ascend(
 ):
     if mode not in (None, "default"):
         raise ValueError(f"Ascend rope has only mode='default'; got mode={mode!r}.")
-    if rotary_dim not in (None, q.shape[-1]):
-        raise ValueError(f"Ascend rope rotates the whole head; got rotary_dim={rotary_dim} for head_dim={q.shape[-1]}.")
-    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim, rotary_dim)
