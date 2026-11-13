@@ -113,6 +113,7 @@ def element_mul_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
     X_col_stride: tl.constexpr = 1,
+    SKIP_IF_ONE: tl.constexpr = False,
 ):
     """
     This function multiplies each element of the tensor pointed by X_ptr with the value pointed by grad_output_ptr.
@@ -125,6 +126,8 @@ def element_mul_kernel(
     n_cols (int): The number of columns in the input tensor.
     BLOCK_SIZE (int): The block size for Triton operations.
     X_col_stride (int): The stride between columns of the input tensor.
+    SKIP_IF_ONE (bool): Leave the tensor untouched when the gradient output is 1.0. Callers use this instead of
+        comparing the gradient output with 1.0 on the host, which would synchronize the device.
     """
 
     # Get the program ID and convert it to int64 to avoid overflow
@@ -135,6 +138,9 @@ def element_mul_kernel(
 
     # Load the gradient output value
     grad_output = tl.load(grad_output_ptr)
+    if SKIP_IF_ONE:
+        if grad_output == 1.0:
+            return
 
     # Perform the element-wise multiplication
     for i in range(0, n_cols, BLOCK_SIZE):
