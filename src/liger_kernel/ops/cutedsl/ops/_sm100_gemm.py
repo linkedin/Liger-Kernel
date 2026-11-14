@@ -395,7 +395,7 @@ def _kernel(
         swizzle=b_smem_layout_staged.inner,
     )
     s_out = smem.allocate_tensor(
-        element_type=io_dtype,
+        element_type=m_out_direct_mnl.element_type,
         layout=out_smem_layout_staged.outer,
         byte_alignment=128,
         swizzle=out_smem_layout_staged.inner,
@@ -525,7 +525,7 @@ def _kernel(
             t_rs_r_out,
             t_rs_s_out,
         ) = _make_tma_epilogue_partitions(
-            tidx, t_ct_acc_base, t_cg_c, s_out, io_dtype, row_reduction=epilogue_fragments == 0
+            tidx, t_ct_acc_base, t_cg_c, s_out, s_out.element_type, row_reduction=epilogue_fragments == 0
         )
         if const_expr(epilogue_fragments == 2):
             t_tr_r_lhs = cute.make_rmem_tensor(t_tr_r_acc.shape, Float32)
@@ -710,6 +710,7 @@ def _host(
     epilogue_args: tuple = (),
     a_k_major: cutlass.Constexpr = True,
     b_k_major: cutlass.Constexpr = True,
+    reduce_add_output: cutlass.Constexpr = False,
 ):
     m_a_mkl = cute.make_tensor(
         m_a.iterator,
@@ -769,7 +770,7 @@ def _host(
         num_ab_stages,
     )
     out_smem_layout_staged = utils.sm100.make_smem_layout_epi(
-        io_dtype,
+        m_out_mnl.element_type,
         utils.LayoutEnum.ROW_MAJOR,
         _EPI_TILE,
         _NUM_OUT_STAGES,
@@ -803,8 +804,12 @@ def _host(
         cluster_layout_vmnk.shape,
     )
     out_smem_layout = cute.select(out_smem_layout_staged, mode=[0, 1])
+    if const_expr(reduce_add_output):
+        out_op = cpasync.CopyReduceBulkTensorTileS2GOp(cute.ReductionKind.ADD)
+    else:
+        out_op = cpasync.CopyBulkTensorTileS2GOp()
     tma_atom_out, tma_tensor_out = cpasync.make_tiled_tma_atom(
-        cpasync.CopyBulkTensorTileS2GOp(),
+        out_op,
         m_out_mnl,
         out_smem_layout,
         _EPI_TILE,

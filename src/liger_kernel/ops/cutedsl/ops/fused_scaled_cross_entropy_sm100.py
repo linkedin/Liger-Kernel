@@ -155,13 +155,9 @@ class _BackwardEpilogue:
 
 
 class _GradientEpilogue:
-    def __init__(self, accumulate):
-        self.accumulate = accumulate
-
     @cute.jit
     def __call__(self, accumulator, coordinates, registers, copy, args):
         (output,) = args
-        previous = cute.make_rmem_tensor((_FRAGMENT_N,), Float32)
         result = cute.make_rmem_tensor((_FRAGMENT_N,), output.element_type)
         for fragment in cutlass.range_constexpr(_TILE_N // _FRAGMENT_N):
             cute.copy(copy, accumulator[None, None, None, fragment], registers)
@@ -172,14 +168,14 @@ class _GradientEpilogue:
                     output.iterator + cute.crd2idx((row, col), output.layout),
                     cute.make_layout((_FRAGMENT_N,)),
                 )
-                if const_expr(self.accumulate):
-                    cute.autovec_copy(destination, previous)
                 for element in cutlass.range_constexpr(_FRAGMENT_N):
-                    value = registers[element]
-                    if const_expr(self.accumulate):
-                        value += previous[element]
-                    result[element] = value.to(output.element_type)
+                    result[element] = registers[element].to(output.element_type)
                 cute.autovec_copy(result, destination)
+
+
+@cute.jit
+def _weight_gradient_epilogue(accumulator, output):
+    output.store(accumulator.load())
 
 
 @cute.kernel
@@ -274,16 +270,16 @@ def _arguments(args):
     )
 
 
-def _gemm(a, b, epilogue, args, key):
-    # The shared mainloop constructs an output descriptor, but this epilogue
-    # never stores the matrix. Only its row-statistics/gradient stores execute.
-    dummy = a.new_empty((a.shape[0], 8))
+def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False):
+    use_tma_output = tma_output is not None
+    # Matrix-free epilogues need a descriptor, but never store its dummy matrix.
+    output = tma_output if use_tma_output else a.new_empty((a.shape[0], 8))
     m_a, m_b = _matrix(a), _matrix(b)
-    m_dummy = to_cute_tensor(dummy, assumed_align=16)
+    m_output = _matrix(output) if use_tma_output else to_cute_tensor(output, assumed_align=16)
     stream = _driver_stream(_current_stream(a.device))
     cute_args = (_matrix(args[0]),) if isinstance(epilogue, _GradientEpilogue) else _arguments(args)
     a_k_major, b_k_major = a.stride(1) == 1, b.stride(1) == 1
-    cache_key = (a.device, a.dtype, a_k_major, b_k_major, *key)
+    cache_key = (a.device, a.dtype, a_k_major, b_k_major, output.dtype, use_tma_output, reduce_add_output, *key)
     compiled = _COMPILE_CACHE.get(cache_key)
     if compiled is None:
         with _compile_guard():
@@ -291,21 +287,22 @@ def _gemm(a, b, epilogue, args, key):
                 _host,
                 m_a,
                 m_b,
-                m_dummy,
+                m_output,
                 6,
                 epilogue,
-                0,
+                1 if use_tma_output else 0,
                 False,
-                False,
+                use_tma_output,
                 1,
                 _max_active_clusters(a.device.index),
                 stream,
                 cute_args,
                 a_k_major,
                 b_k_major,
+                reduce_add_output,
             )
         _COMPILE_CACHE[cache_key] = compiled
-    compiled(m_a, m_b, m_dummy, stream, cute_args)
+    compiled(m_a, m_b, m_output, stream, cute_args)
 
 
 def _pad_matrix(tensor, rows, cols):
@@ -482,7 +479,7 @@ class LigerFusedScaledCrossEntropySM100Function(torch.autograd.Function):
                     _gemm(
                         dz,
                         weight.t(),
-                        _GradientEpilogue(False),
+                        _GradientEpilogue(),
                         (grad_input[start:end],),
                         ("dx", False),
                     )
@@ -490,9 +487,11 @@ class LigerFusedScaledCrossEntropySM100Function(torch.autograd.Function):
                     _gemm(
                         dz.t(),
                         x[start:end].t(),
-                        _GradientEpilogue(start != 0),
-                        (grad_weight,),
+                        _weight_gradient_epilogue,
+                        (),
                         ("dw", start != 0),
+                        tma_output=grad_weight,
+                        reduce_add_output=start != 0,
                     )
             if grad_input is not None:
                 grad_input = grad_input[:tokens, :hidden]

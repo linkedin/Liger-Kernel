@@ -109,11 +109,13 @@ def test_sm100_noncontiguous_inputs_and_empty_selection(needs_grad):
     _assert_gradients(x, weight, xr, wr, projection_gradients[0])
 
 
-def test_sm100_all_ignored_outputs_and_gradients_are_zero():
+@pytest.mark.parametrize("tokens", [17, 513])
+def test_sm100_all_ignored_outputs_and_gradients_are_zero(tokens, monkeypatch):
     module = _module()
-    x = torch.randn(17, 70, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    monkeypatch.setattr(module, "_BACKWARD_WORKSPACE_BYTES", 256 * module._align(97) * 2)
+    x = torch.randn(tokens, 70, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     weight = torch.randn(97, 70, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    target = torch.full((17,), -100, device="cuda")
+    target = torch.full((tokens,), -100, device="cuda")
     ids = torch.tensor([0, 96], device="cuda")
 
     outputs = module.LigerFusedScaledCrossEntropySM100Function.apply(x, weight, target, 0.7, -100, 1, True, ids)
@@ -121,6 +123,33 @@ def test_sm100_all_ignored_outputs_and_gradients_are_zero():
 
     for value in (*outputs, x.grad, weight.grad):
         torch.testing.assert_close(value, torch.zeros_like(value), atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("vocab,hidden", [(64, 64), (320, 192)])
+def test_sm100_weight_gradient_tma_preserves_fp32_accumulation(vocab, hidden):
+    module = _module()
+    dz = torch.ones(256, vocab, device="cuda", dtype=torch.bfloat16)
+    first_dz = dz.clone()
+    first_dz[0] += 2**-7
+    x = torch.ones(256, hidden, device="cuda", dtype=torch.bfloat16)
+    storage = torch.full((vocab + 64, hidden), float("nan"), device="cuda", dtype=torch.float32)
+    actual = storage[:vocab]
+    module.ensure_cuda_context()
+
+    # Preserve low bits in both the GEMM partial and the accumulated destination.
+    for index, partial in enumerate((first_dz, dz * 2**-10, -dz)):
+        module._gemm(
+            partial.t(),
+            x.t(),
+            module._weight_gradient_epilogue,
+            (),
+            ("dw", index != 0),
+            tma_output=actual,
+            reduce_add_output=index != 0,
+        )
+
+    torch.testing.assert_close(actual, torch.full_like(actual, 0.25 + 2**-7), atol=0, rtol=0)
+    assert torch.isnan(storage[vocab:]).all()
 
 
 def test_sm100_public_frontend_uses_native_without_override(monkeypatch):
