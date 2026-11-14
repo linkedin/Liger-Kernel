@@ -9,6 +9,9 @@ from triton.language.math import tanh
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 from liger_kernel.ops.utils import get_npu_core_count
 
+# log2(e): e^x = 2^(x * LOG2_E)
+LOG2_E = tl.constexpr(1.4426950408889634)
+
 
 @triton.jit
 def liger_cross_entropy_forward_kernel(
@@ -151,7 +154,7 @@ def liger_cross_entropy_forward_kernel(
                     # do not produce NaNs (0 * (-inf)); out-of-range weights are already 0 from load.
                     if HAS_WEIGHT:
                         weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols, other=0.0)
-                        scaled_x_sum += tl.sum(-ls_eps * X_block * weight_block)
+                        scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -ls_eps * X_block * weight_block, 0.0))
                     else:
                         scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -ls_eps * X_block, 0.0))
 
@@ -650,6 +653,7 @@ def cross_entropy_forward(
     return_lse=False,
     return_token_accuracy=False,
     return_predicted_tokens=False,
+    loss_dtype=None,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
@@ -673,12 +677,13 @@ def cross_entropy_forward(
         return_token_accuracy,
         return_predicted_tokens,
     )
+    # Accumulate in fp32 and cast the returned loss back to the input dtype unless loss_dtype is set.
     loss_1d = (
-        torch.empty(n_rows, dtype=_input.dtype, device=_input.device)
+        torch.empty(n_rows, dtype=torch.float32, device=_input.device)
         if plain_lm
-        else torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
+        else torch.zeros(n_rows, dtype=torch.float32, device=_input.device)
     )
-    z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device) if return_z_loss else None
+    z_loss_1d = torch.zeros(n_rows, dtype=torch.float32, device=_input.device) if return_z_loss else None
     # Triton requires a tensor pointer; when ``return_lse`` is False the kernel never reads/writes LSE
     # (``RETURN_LSE`` false), so we pass ``loss_1d`` as the unused binding (``None`` is not supported).
     lse_buffer_fp32 = torch.empty(n_rows, dtype=torch.float32, device=_input.device) if return_lse else None
@@ -773,6 +778,11 @@ def cross_entropy_forward(
         )
 
     predicted_tokens = predicted_tokens_1d if return_predicted_tokens else None
+    if loss_dtype is None:
+        if loss.dtype != _input.dtype:
+            loss = loss.to(_input.dtype)
+        if z_loss is not None and z_loss.dtype != _input.dtype:
+            z_loss = z_loss.to(_input.dtype)
 
     return (
         loss,
@@ -784,6 +794,84 @@ def cross_entropy_forward(
         ce_stats,
         loss_1d,
     )
+
+
+@triton.jit
+def _plain_none_grad_kernel(
+    X_ptr,
+    X_stride,
+    Y_ptr,
+    grad_output_ptr,
+    grad_output_stride,
+    dX_ptr,
+    dX_stride,
+    n_cols,
+    n_rows,
+    ignore_index,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """Plain reduction='none' gradient. Online softmax and the stored row stay in one program."""
+    pid = tl.program_id(0)
+    nprog = tl.num_programs(0)
+    row_chunk = (n_rows + nprog - 1) // nprog
+    row_start = pid * row_chunk
+    row_end = tl.minimum(row_start + row_chunk, n_rows)
+    for row in range(row_start, row_end):
+        row_i64 = tl.cast(row, tl.int64)
+        y = tl.load(Y_ptr + row_i64)
+        dX_row_ptr = dX_ptr + row_i64 * dX_stride
+        scale = tl.load(grad_output_ptr + row_i64 * grad_output_stride).cast(tl.float32)
+        if y == ignore_index:
+            for i in range(0, n_cols, BLOCK_SIZE):
+                offs = i + tl.arange(0, BLOCK_SIZE)
+                tl.store(dX_row_ptr + offs, 0.0, mask=offs < n_cols)
+        else:
+            logits_row_ptr = X_ptr + row_i64 * X_stride
+            x_y = tl.load(logits_row_ptr + y).cast(tl.float32)
+            m = float("-inf")
+            d = 0.0
+            for i in range(0, n_cols, BLOCK_SIZE):
+                offs = i + tl.arange(0, BLOCK_SIZE)
+                x = tl.load(logits_row_ptr + offs, mask=offs < n_cols, other=float("-inf")).cast(tl.float32)
+                block_max = tl.max(x)
+                m_new = tl.maximum(m, block_max)
+                d = d * tl.exp2((m - m_new) * LOG2_E) + tl.sum(tl.exp2((x - m_new) * LOG2_E))
+                m = m_new
+            for i in range(0, n_cols, BLOCK_SIZE):
+                offs = i + tl.arange(0, BLOCK_SIZE)
+                x = tl.load(logits_row_ptr + offs, mask=offs < n_cols, other=float("-inf")).cast(tl.float32)
+                tl.store(dX_row_ptr + offs, tl.exp2((x - m) * LOG2_E) / d, mask=offs < n_cols)
+            tl.debug_barrier()
+            tl.store(dX_row_ptr + y, tl.exp2((x_y - m) * LOG2_E) / d - 1.0)
+            if scale != 1.0:
+                tl.debug_barrier()
+                for i in range(0, n_cols, BLOCK_SIZE):
+                    offs = i + tl.arange(0, BLOCK_SIZE)
+                    mask = offs < n_cols
+                    stored = tl.load(dX_row_ptr + offs, mask=mask)
+                    tl.store(dX_row_ptr + offs, (stored.cast(tl.float32) * scale).to(stored.dtype), mask=mask)
+
+
+def _plain_none_grad(_input, target, grad_output, ignore_index):
+    n_rows, n_cols = _input.shape
+    if grad_output.stride(-1) != 1:
+        grad_output = grad_output.contiguous()
+    grad = torch.empty_like(_input)
+    block = min(2048, triton.next_power_of_2(n_cols))
+    _plain_none_grad_kernel[(min(get_npu_core_count(), n_rows),)](
+        _input,
+        _input.stride(-2),
+        target,
+        grad_output,
+        grad_output.stride(0),
+        grad,
+        grad.stride(-2),
+        n_cols,
+        n_rows,
+        ignore_index,
+        BLOCK_SIZE=block,
+    )
+    return grad
 
 
 def cross_entropy_backward(
@@ -920,10 +1008,8 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         Returns:
         tuple: A tuple with the computed losses, accuracy, and predicted tokens: (loss, z_loss, token_accuracy, predicted_tokens). z_loss, token_accuracy, and predicted_tokens are None if not requested.
         """
-        if loss_dtype is not None:
-            raise ValueError("loss_dtype is only supported by the Triton cross_entropy backend")
-        if in_place:
-            raise ValueError("in_place is only supported by the Triton cross_entropy backend")
+        if loss_dtype is not None and loss_dtype != torch.float32:
+            raise ValueError(f"loss_dtype must be None (the input dtype) or torch.float32. Got: {loss_dtype}")
         input_requires_grad = _input.requires_grad
         return_lse = _forward_returns_fp32_lse_rows(
             input_requires_grad,
@@ -956,6 +1042,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             return_lse=return_lse,
             return_token_accuracy=return_token_accuracy,
             return_predicted_tokens=return_predicted_tokens,
+            loss_dtype=loss_dtype,
         )
         if input_requires_grad:
             if not return_lse:
@@ -965,6 +1052,8 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             if weight is not None:
                 saved_tensors.append(weight.detach())
             ctx.save_for_backward(*saved_tensors)
+        ctx.in_place = in_place
+        ctx.grad_scaled_in_place = False
         ctx.derive_lse_from_loss = bool(input_requires_grad and not return_lse)
         ctx.ce_stats = ce_stats
         ctx.has_weight = weight is not None
@@ -1000,29 +1089,50 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         if ctx.return_predicted_tokens:
             del grad_output4  # predicted_tokens is only for metrics
 
-        if ctx.has_weight:
-            _input, target, lse_or_loss, weight = ctx.saved_tensors
+        if ctx.grad_scaled_in_place:
+            raise RuntimeError(
+                "LigerCrossEntropyFunction computes the gradient in place and does not support a second backward "
+                "(retain_graph=True) once the saved gradient has been scaled in place (in_place=True with reduction='none', "
+                "or a 0-D upstream gradient other than 1.0)."
+            )
+
+        plain_none = (
+            not ctx.has_weight
+            and ctx.softcap is None
+            and ctx.label_smoothing == 0.0
+            and ctx.lse_square_scale == 0.0
+            and ctx.reduction == "none"
+        )
+        if plain_none:
+            _input, target = ctx.saved_tensors[:2]
+            _input = _plain_none_grad(_input, target, grad_output, ctx.ignore_index)
         else:
-            _input, target, lse_or_loss = ctx.saved_tensors
-            weight = None
-        go_ptr = grad_output.data_ptr() if grad_output is not None else None
-        if getattr(ctx, "_last_layer_ptr", None) != go_ptr:
-            ctx._last_layer_ptr = go_ptr
-            ctx._last_layer = ctx.reduction != "none" and grad_output.ndim == 0 and grad_output.item() == 1.0
-        _input = cross_entropy_backward(
-            _input,
-            target,
-            weight,
-            lse_or_loss,
-            grad_output,
-            ctx.ignore_index,
-            ctx.lse_square_scale,
-            ctx.label_smoothing,
-            ctx.reduction,
-            ctx.softcap,
-            ctx.ce_stats,
-            derive_lse_from_loss=ctx.derive_lse_from_loss,
-            out=_input if ctx._last_layer else None,
+            if ctx.has_weight:
+                _input, target, lse_or_loss, weight = ctx.saved_tensors
+            else:
+                _input, target, lse_or_loss = ctx.saved_tensors
+                weight = None
+            _input = cross_entropy_backward(
+                _input,
+                target,
+                weight,
+                lse_or_loss,
+                grad_output,
+                ctx.ignore_index,
+                ctx.lse_square_scale,
+                ctx.label_smoothing,
+                ctx.reduction,
+                ctx.softcap,
+                ctx.ce_stats,
+                derive_lse_from_loss=ctx.derive_lse_from_loss,
+            )
+        unit_scalar = (
+            grad_output is not None
+            and grad_output.ndim == 0
+            and torch.equal(grad_output, torch.ones((), dtype=grad_output.dtype, device=grad_output.device))
+        )
+        ctx.grad_scaled_in_place = (ctx.reduction == "none" and ctx.in_place) or (
+            grad_output is not None and grad_output.ndim == 0 and not unit_scalar
         )
         return (
             _input,
