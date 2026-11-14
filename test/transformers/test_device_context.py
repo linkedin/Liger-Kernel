@@ -1,67 +1,88 @@
 import pytest
 import torch
+import triton
+import triton.language as tl
 
-from liger_kernel.transformers.functional import liger_geglu
-from liger_kernel.transformers.functional import liger_rms_norm
-from liger_kernel.transformers.functional import liger_swiglu
+from liger_kernel.ops.utils import device_context
 from liger_kernel.utils import infer_device
 
 device = infer_device()
 
 
-def _gated_inputs(dtype, device=device):
-    a = torch.randn(4, 64, 512, device=device, dtype=dtype)
-    return a, torch.randn_like(a)
+@triton.jit
+def _scale_rows_kernel(x_ptr, y_ptr, stride, scale, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr):
+    row = tl.program_id(0).to(tl.int64)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
+    x = tl.load(x_ptr + row * stride + cols, mask=mask)
+    tl.store(y_ptr + row * stride + cols, x * scale, mask=mask)
 
 
-def _rms_norm_inputs(dtype, device=device):
-    return torch.randn(4, 64, 512, device=device, dtype=dtype), torch.randn(512, device=device, dtype=dtype)
+def _scale_rows(x, scale):
+    n_cols = x.shape[-1]
+    x_2d = x.contiguous().view(-1, n_cols)
+    y = torch.empty_like(x_2d)
+    # Launched like the Liger ops: the grid and the row stride are read from the tensors
+    # inside device_context. In backward these are symbolic under torch.compile.
+    with device_context(x.device):
+        _scale_rows_kernel[(x_2d.shape[0],)](
+            x_2d,
+            y,
+            y.stride(-2),
+            scale,
+            n_cols=n_cols,
+            BLOCK_SIZE=triton.next_power_of_2(n_cols),
+        )
+    return y.view(x.shape)
 
 
-OPS = {
-    "swiglu": (liger_swiglu, _gated_inputs),
-    "geglu": (liger_geglu, _gated_inputs),
-    "rms_norm": (lambda x, w: liger_rms_norm(x, w, 1e-6, in_place=False), _rms_norm_inputs),
-}
+class _ScaleFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.scale = scale
+        return _scale_rows(x, scale)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return _scale_rows(grad_output, ctx.scale), None
 
 
-def _run(fn, inputs):
-    # Fresh leaves per call: the SwiGLU/GeGLU backward writes its gradients into the saved inputs.
-    leaves = [t.detach().clone().requires_grad_(True) for t in inputs]
-    out = fn(*leaves)
-    out.backward(torch.ones_like(out))
-    return out.detach(), [t.grad for t in leaves]
+def _fn(x):
+    return _ScaleFunction.apply(x, 3.0)
 
 
-@pytest.mark.parametrize("name", list(OPS))
+def _run(fn, x, grad_output):
+    x = x.detach().clone().requires_grad_(True)
+    out = fn(x)
+    out.backward(grad_output)
+    return out.detach(), x.grad
+
+
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_torch_compile_matches_eager(name, dtype):
+def test_device_context_under_torch_compile(dtype):
     torch._dynamo.reset()
-    fn, make_inputs = OPS[name]
-    inputs = make_inputs(dtype)
+    x = torch.randn(4, 64, 512, device=device, dtype=dtype)
+    grad_output = torch.randn_like(x)
 
-    eager_out, eager_grads = _run(fn, inputs)
-    compiled_out, compiled_grads = _run(torch.compile(fn), inputs)
+    eager_out, eager_grad = _run(_fn, x, grad_output)
+    compiled_out, compiled_grad = _run(torch.compile(_fn, fullgraph=True), x, grad_output)
 
-    torch.testing.assert_close(compiled_out, eager_out)
-    for compiled_grad, eager_grad in zip(compiled_grads, eager_grads):
-        torch.testing.assert_close(compiled_grad, eager_grad)
+    torch.testing.assert_close(compiled_out, eager_out, atol=0, rtol=0)
+    torch.testing.assert_close(compiled_grad, eager_grad, atol=0, rtol=0)
 
 
 @pytest.mark.skipif(device != "cuda" or torch.cuda.device_count() < 2, reason="needs two CUDA devices")
 @pytest.mark.parametrize("compiled", [False, True], ids=["eager", "compiled"])
-@pytest.mark.parametrize("name", list(OPS))
-def test_launch_on_non_current_device(name, compiled):
+def test_device_context_on_non_current_device(compiled):
     torch._dynamo.reset()
-    fn, make_inputs = OPS[name]
-    inputs = make_inputs(torch.float32, device="cuda:1")
+    x = torch.randn(4, 64, 512, device="cuda:1")
+    grad_output = torch.randn_like(x)
 
     with torch.cuda.device(1):
-        expected_out, expected_grads = _run(fn, inputs)
+        expected_out, expected_grad = _run(_fn, x, grad_output)
     with torch.cuda.device(0):
-        out, grads = _run(torch.compile(fn) if compiled else fn, inputs)
+        out, grad = _run(torch.compile(_fn, fullgraph=True) if compiled else _fn, x, grad_output)
 
     assert out.device == torch.device("cuda:1")
-    torch.testing.assert_close(out, expected_out)
-    for grad, expected_grad in zip(grads, expected_grads):
-        torch.testing.assert_close(grad, expected_grad)
+    torch.testing.assert_close(out, expected_out, atol=0, rtol=0)
+    torch.testing.assert_close(grad, expected_grad, atol=0, rtol=0)
