@@ -39,14 +39,6 @@ def _pad_features_aligned(V: torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.pad(V, (0, pad)) if pad else V
 
 
-def _get_max_blocks(n_blocks: int) -> int:
-    """Round block count up to a constexpr-friendly upper bound."""
-    for mb in (4, 8, 16, 32):
-        if n_blocks <= mb:
-            return mb
-    return 32
-
-
 def _get_optimal_block_d(D: int, is_forward: bool) -> int:
     """Pick tile size along D to stay within UB limits."""
     if D <= 1024:
@@ -235,7 +227,6 @@ def _attn_res_bwd_kernel(
     D,
     d_stride,
     BLOCK_D: tl.constexpr,
-    MAX_BLOCKS: tl.constexpr,
 ):
     """Backward (small D): one program per token."""
     tok = tl.program_id(0)
@@ -248,34 +239,32 @@ def _attn_res_bwd_kernel(
 
     # Softmax backward: d_score_i = alpha_i * (d_alpha_i - sum_j alpha_j * d_alpha_j)
     sum_a_da = 0.0
-    for i in tl.static_range(0, MAX_BLOCKS):
-        if i < n_blocks:
-            v_off = i * n_tokens * d_stride + tok * d_stride
-            v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
-            a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
-            sum_a_da += a_i * tl.sum(dh * v, axis=0)
+    for i in tl.range(0, n_blocks):
+        v_off = i * n_tokens * d_stride + tok * d_stride
+        v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
+        a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
+        sum_a_da += a_i * tl.sum(dh * v, axis=0)
 
     dw_query_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
     dw_norm_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
 
-    for i in tl.static_range(0, MAX_BLOCKS):
-        if i < n_blocks:
-            v_off = i * n_tokens * d_stride + tok * d_stride
-            v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
-            a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
-            da_i = tl.sum(dh * v, axis=0)
-            ds_i = a_i * (da_i - sum_a_da)
-            rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
+    for i in tl.range(0, n_blocks):
+        v_off = i * n_tokens * d_stride + tok * d_stride
+        v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
+        a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
+        da_i = tl.sum(dh * v, axis=0)
+        ds_i = a_i * (da_i - sum_a_da)
+        rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
 
-            dv_from_sum = a_i * dh
-            dk = ds_i * w_query * w_norm
-            sum_dk_v = tl.sum(dk * v, axis=0)
-            dv_from_score = rstd * dk - rstd * rstd * rstd * (sum_dk_v / D) * v
-            tl.store(dV_ptr + v_off + cols, dv_from_sum + dv_from_score, mask=d_mask)
+        dv_from_sum = a_i * dh
+        dk = ds_i * w_query * w_norm
+        sum_dk_v = tl.sum(dk * v, axis=0)
+        dv_from_score = rstd * dk - rstd * rstd * rstd * (sum_dk_v / D) * v
+        tl.store(dV_ptr + v_off + cols, dv_from_sum + dv_from_score, mask=d_mask)
 
-            v_norm = v * rstd
-            dw_query_acc += ds_i * v_norm * w_norm
-            dw_norm_acc += ds_i * w_query * v_norm
+        v_norm = v * rstd
+        dw_query_acc += ds_i * v_norm * w_norm
+        dw_norm_acc += ds_i * w_query * v_norm
 
     tl.atomic_add(dW_query_ptr + cols, dw_query_acc, mask=d_mask)
     tl.atomic_add(dW_norm_ptr + cols, dw_norm_acc, mask=d_mask)
@@ -297,77 +286,66 @@ def _attn_res_bwd_kernel_tiled(
     D,
     d_stride,
     BLOCK_D: tl.constexpr,
-    MAX_BLOCKS: tl.constexpr,
 ):
     """Backward (large D): tile along feature dim to fit in UB."""
     tok = tl.program_id(0)
 
     sum_a_da = 0.0
-    for i in tl.static_range(0, MAX_BLOCKS):
-        if i < n_blocks:
-            a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
-            da_i = 0.0
-            for d in range(0, D, BLOCK_D):
-                cols = d + tl.arange(0, BLOCK_D)
-                mask = cols < D
-                dh = tl.load(dOut_ptr + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
-                v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(
-                    tl.float32
-                )
-                da_i += tl.sum(dh * v, axis=0)
-            sum_a_da += a_i * da_i
+    for i in tl.range(0, n_blocks):
+        a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
+        da_i = 0.0
+        for d in range(0, D, BLOCK_D):
+            cols = d + tl.arange(0, BLOCK_D)
+            mask = cols < D
+            dh = tl.load(dOut_ptr + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
+            v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
+            da_i += tl.sum(dh * v, axis=0)
+        sum_a_da += a_i * da_i
 
-    for i in tl.static_range(0, MAX_BLOCKS):
-        if i < n_blocks:
-            a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
-            da_i = 0.0
-            for d in range(0, D, BLOCK_D):
-                cols = d + tl.arange(0, BLOCK_D)
-                mask = cols < D
-                dh = tl.load(dOut_ptr + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
-                v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(
-                    tl.float32
-                )
-                da_i += tl.sum(dh * v, axis=0)
+    for i in tl.range(0, n_blocks):
+        a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
+        da_i = 0.0
+        for d in range(0, D, BLOCK_D):
+            cols = d + tl.arange(0, BLOCK_D)
+            mask = cols < D
+            dh = tl.load(dOut_ptr + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
+            v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
+            da_i += tl.sum(dh * v, axis=0)
 
-            ds_i = a_i * (da_i - sum_a_da)
-            rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
+        ds_i = a_i * (da_i - sum_a_da)
+        rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
 
-            sum_dk_v = 0.0
-            for d in range(0, D, BLOCK_D):
-                cols = d + tl.arange(0, BLOCK_D)
-                mask = cols < D
-                v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(
-                    tl.float32
-                )
-                wq = tl.load(W_query_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-                wn = tl.load(W_norm_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-                sum_dk_v += tl.sum(ds_i * wq * wn * v, axis=0)
+        sum_dk_v = 0.0
+        for d in range(0, D, BLOCK_D):
+            cols = d + tl.arange(0, BLOCK_D)
+            mask = cols < D
+            v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
+            wq = tl.load(W_query_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+            wn = tl.load(W_norm_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+            sum_dk_v += tl.sum(ds_i * wq * wn * v, axis=0)
 
-            # Compute per-D outputs
-            for d in range(0, D, BLOCK_D):
-                cols = d + tl.arange(0, BLOCK_D)
-                mask = cols < D
+        # Compute per-D outputs
+        for d in range(0, D, BLOCK_D):
+            cols = d + tl.arange(0, BLOCK_D)
+            mask = cols < D
 
-                dh = tl.load(dOut_ptr + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
-                v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(
-                    tl.float32
-                )
+            dh = tl.load(dOut_ptr + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
+            v = tl.load(V_ptr + i * n_tokens * d_stride + tok * d_stride + cols, mask=mask, other=0.0).to(tl.float32)
 
-                wq = tl.load(W_query_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-                wn = tl.load(W_norm_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+            wq = tl.load(W_query_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+            wn = tl.load(W_norm_ptr + cols, mask=mask, other=0.0).to(tl.float32)
 
-                dk = ds_i * wq * wn
-                dv_from_score = rstd * dk - (rstd * rstd * rstd) * (sum_dk_v / D) * v
-                tl.store(
-                    dV_ptr + i * n_tokens * d_stride + tok * d_stride + cols,
-                    a_i * dh + dv_from_score,
-                    mask=mask,
-                )
+            dk = ds_i * wq * wn
+            dv_from_score = rstd * dk - (rstd * rstd * rstd) * (sum_dk_v / D) * v
+            tl.store(
+                dV_ptr + i * n_tokens * d_stride + tok * d_stride + cols,
+                a_i * dh + dv_from_score,
+                mask=mask,
+            )
 
-                v_norm = v * rstd
-                tl.atomic_add(dW_query_ptr + cols, ds_i * v_norm * wn, mask=mask)
-                tl.atomic_add(dW_norm_ptr + cols, ds_i * wq * v_norm, mask=mask)
+            v_norm = v * rstd
+            tl.atomic_add(dW_query_ptr + cols, ds_i * v_norm * wn, mask=mask)
+            tl.atomic_add(dW_norm_ptr + cols, ds_i * wq * v_norm, mask=mask)
 
 
 def _stack_blocks(blocks):
@@ -389,7 +367,8 @@ def _launch_fwd_kernel(V_3d, w_query, w_norm, Out, Alpha, RSTD, n_tokens, D, d_s
 def _launch_bwd_kernel(dh_2d, V_3d, w_query, w_norm, Alpha, RSTD, dV, dW_query, dW_norm, n_blocks, D, block_d):
     _, n_tokens, d_stride = V_3d.shape
     args = (dh_2d, V_3d, w_query, w_norm, Alpha, RSTD, dV, dW_query, dW_norm, n_blocks, n_tokens, D, d_stride)
-    constexpr = dict(BLOCK_D=block_d, MAX_BLOCKS=_get_max_blocks(n_blocks))
+    # tl.range: static_range unrolls into a UB overflow.
+    constexpr = dict(BLOCK_D=block_d)
     if block_d >= D:
         _attn_res_bwd_kernel[(n_tokens,)](*args, **constexpr)
     else:

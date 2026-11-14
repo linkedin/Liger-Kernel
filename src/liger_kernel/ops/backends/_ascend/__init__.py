@@ -1,5 +1,8 @@
+from liger_kernel.ops.backends._ascend.compile_kwargs import install_ascend_compile_kwargs
 from liger_kernel.ops.backends.registry import ImplInfo
 from liger_kernel.ops.backends.registry import register_impl
+
+install_ascend_compile_kwargs()
 
 # Ascend NPU backend — default on NPU devices.
 # Future: when tilelang-ascend lands, this can be renamed to "ascend-triton"

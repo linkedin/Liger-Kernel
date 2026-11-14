@@ -17,6 +17,12 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+if device == "npu":
+    pytest.skip(
+        "NPU does not provide this kernel yet.",
+        allow_module_level=True,
+    )
+
 set_seed()
 
 # Token-level points of the reference implementation's rl.is.* grid (README table of the score centering repo).

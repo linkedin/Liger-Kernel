@@ -70,7 +70,7 @@ def _kldiv_kernel_forward(
     # fp32, but Inductor specializes it to fp64; mixing an fp64 scalar into the loop body
     # promotes the whole expression -- including tl.log -- to float64, and re-assigns the
     # fp32 loop-carried `loss_sum` to fp64. This cast is a no-op on the eager path.
-    eps = eps.to(tl.float32)
+    eps = tl.cast(eps, tl.float32)
 
     loss_sum = 0.0
     for i in range(0, n_cols, BLOCK_SIZE):

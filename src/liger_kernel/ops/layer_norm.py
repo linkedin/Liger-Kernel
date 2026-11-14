@@ -72,7 +72,7 @@ def _layer_norm_forward_kernel(
     # Apply mask to variance calculation to exclude contributions from masked elements
     X_centered_masked = tl.where(mask, X_centered, 0.0)
     var = tl.sum(X_centered_masked * X_centered_masked, axis=0) / n_cols
-    rstd = rsqrt(var + eps.to(tl.float32))
+    rstd = rsqrt(var + tl.cast(eps, tl.float32))
 
     # Preserve the fp32 statistics used by forward for the backward pass.
     tl.store(row_Mean_ptr, mean)
