@@ -70,6 +70,7 @@ def fused_linear_cross_entropy_forward(
     compute_gradients=None,
     weight_requires_grad=None,
     chunk_mem_const: int = _CHUNK_MEM_CONST,
+    normalization_cache=None,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
@@ -128,21 +129,30 @@ def fused_linear_cross_entropy_forward(
     predicted_tokens_1d = torch.full((BT,), -1, dtype=torch.int64, device=device) if return_predicted_tokens else None
 
     # TODO: evaluate how CUDA synchronization caused by .item() affects the speed
-    target_mask = target != ignore_index
-    total_n_non_ignore = target_mask.sum().item()
-    total_sum_non_ignore_ce_weight = total_n_non_ignore
-    ce_weight_sum = 0.0
+    # Deferred backward uses the same labels and class weights. Reuse the
+    # forward statistics to avoid repeating reductions and host synchronizations.
+    if normalization_cache:
+        total_n_non_ignore, total_sum_non_ignore_ce_weight, ce_weight_sum = normalization_cache
+    else:
+        target_mask = target != ignore_index
+        total_n_non_ignore = target_mask.sum().item()
+        total_sum_non_ignore_ce_weight = total_n_non_ignore
+        ce_weight_sum = 0.0
     if ce_weight is not None:
         assert ce_weight.shape[0] == V, f"If given, weight has to be a Tensor of size V. Got: {ce_weight.shape}"
         assert torch.is_floating_point(ce_weight), (
             f"If given, weight has to be a Tensor of floating point dtype. Got: {ce_weight.dtype}"
         )
-        total_sum_non_ignore_ce_weight = (
-            torch.gather(ce_weight, dim=0, index=target.masked_select(target_mask)).sum().item()
-        )
-        ce_weight_sum = ce_weight.sum().item()
+        if not normalization_cache:
+            total_sum_non_ignore_ce_weight = (
+                torch.gather(ce_weight, dim=0, index=target.masked_select(target_mask)).sum().item()
+            )
+            ce_weight_sum = ce_weight.sum().item()
         if ce_weight.stride(-1) != 1:
             ce_weight = ce_weight.contiguous()
+
+    if normalization_cache is not None and not normalization_cache:
+        normalization_cache.extend((total_n_non_ignore, total_sum_non_ignore_ce_weight, ce_weight_sum))
 
     use_mm_out = _can_use_mm_out(_input, weight)
     # A promoted bias needs the original out-of-place add. Do not reserve an
@@ -209,6 +219,15 @@ def fused_linear_cross_entropy_forward(
         logits_chunk = logits_chunk.contiguous()
         target_chunk = target_chunk.contiguous()
 
+        # FP16 gradients must not be rounded before the upstream loss scale is applied.
+        # The direct Triton path scales in registers, avoiding FP32 chunk buffers and
+        # separate cast/multiply kernels. Other paths retain the FP32 fallback.
+        logits_dtype = logits_chunk.dtype
+        scale_fp16 = token_grad_output is not None and logits_dtype == torch.float16
+        scale_in_ce = scale_fp16 and ce_impl is None and not use_token_scaling
+        if scale_fp16 and not scale_in_ce:
+            logits_chunk = logits_chunk.float()
+
         if ce_impl is None:
             loss_1d_slice = loss_1d[start_idx:end_idx]
             z_loss_1d_slice = z_loss_1d[start_idx:end_idx] if return_z_loss else None
@@ -244,6 +263,8 @@ def fused_linear_cross_entropy_forward(
                 HAS_WEIGHT=ce_weight is not None,
                 HAS_SOFTCAPPING=softcap is not None,
                 HAS_GRADIENTS=input_requires_grad,
+                grad_output_ptr=token_grad_output[start_idx:end_idx] if scale_in_ce else None,
+                grad_output_stride=token_grad_output.stride(0) if scale_in_ce else 0,
                 BLOCK_SIZE=block_size,
                 num_warps=32 if not is_hip() else 16,
             )
@@ -310,10 +331,11 @@ def fused_linear_cross_entropy_forward(
         # sum_i go_i * (g_i outer x_i); once the sum has happened the per-token
         # weights can no longer be recovered, so scaling grad_weight afterwards
         # (as element_mul_kernel does) is mathematically incapable of being correct.
-        if token_grad_output is not None:
+        if token_grad_output is not None and not scale_in_ce:
             grad_logits_chunk = grad_logits_chunk * token_grad_output[start_idx:end_idx].unsqueeze(-1).to(
                 grad_logits_chunk.dtype
             )
+            grad_logits_chunk = grad_logits_chunk.to(logits_dtype)
 
         if input_requires_grad:
             if use_mm_out and grad_logits_chunk.dtype == grad_input.dtype:
@@ -523,9 +545,18 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         # it is summed into grad_weight/grad_bias. That weight is not known yet here,
         # so defer the gradient computation to backward (recomputing the chunked
         # logits there) instead of producing an unscaled gradient we could never
-        # correctly rescale. mean/sum keep the original compute-in-forward fast path.
+        # correctly rescale. FP16 also defers gradients so loss scaling precedes rounding.
         needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
-        ctx.defer_grads = reduction == "none" and needs_grad
+        fp16 = _input.dtype == torch.float16
+        if not fp16 and torch.is_autocast_enabled():
+            autocast_dtype = (
+                torch.get_autocast_dtype("cuda")
+                if _TORCH_VERSION >= Version("2.4.0")
+                else torch.get_autocast_gpu_dtype()
+            )
+            fp16 = autocast_dtype == torch.float16
+        ctx.defer_grads = needs_grad and (reduction == "none" or fp16)
+        normalization_cache = [] if ctx.defer_grads else None
 
         loss, z_loss, token_accuracy, predicted_tokens, grad_input, grad_weight, grad_bias = (
             fused_linear_cross_entropy_forward(
@@ -548,6 +579,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 ce_mode=ce_mode,
                 compute_gradients=False if ctx.defer_grads else None,
                 chunk_mem_const=chunk_mem_const,
+                normalization_cache=normalization_cache,
             )
         )
 
@@ -567,6 +599,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 ce_impl=ce_impl,
                 ce_mode=ce_mode,
                 chunk_mem_const=chunk_mem_const,
+                normalization_cache=normalization_cache,
             )
             ctx.weight_requires_grad = weight.requires_grad
         else:
@@ -601,7 +634,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 weight=weight,
                 target=target,
                 bias=bias,
-                token_grad_output=grad_output,
+                token_grad_output=grad_output.expand(_input.shape[0]),
                 compute_gradients=True,
                 weight_requires_grad=ctx.weight_requires_grad,
                 **ctx.fwd_kwargs,
