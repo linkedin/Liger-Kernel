@@ -209,13 +209,17 @@ def _grpo_loss_fwd_kernel(
         is_clipped = 0.0  # VESPO has no clipping concept
 
     # Apply vLLM importance sampling correction BEFORE adding KL penalty
-    # VESPO folds this into phi_seq (in log space), so we skip it here.
-    if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
+    # VESPO folds this into phi_seq (in log space) and only drops tokens whose ratio is 0
+    # (e.g. rejected by TRL's token_mask mode).
+    if VLLM_IS_RATIO is not None:
         # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
         vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
             tl.float32
         )
-        per_token_loss = per_token_loss * vllm_is_ratio
+        if LOSS_TYPE == 3:
+            per_token_loss = tl.where(vllm_is_ratio > 0.0, per_token_loss, 0.0)
+        else:
+            per_token_loss = per_token_loss * vllm_is_ratio
 
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
@@ -510,13 +514,16 @@ def _grpo_loss_bwd_kernel(
         dlogp = -phi_seq * advantage
 
     # Apply vLLM IS ratio to PPO gradient (before KL gradient)
-    # VESPO folds vllm correction into phi_seq, so we skip it here.
-    if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
+    # VESPO folds vllm correction into phi_seq and only drops tokens whose ratio is 0.
+    if VLLM_IS_RATIO is not None:
         # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
         vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
             tl.float32
         )
-        dlogp = dlogp * vllm_is_ratio
+        if LOSS_TYPE == 3:
+            dlogp = tl.where(vllm_is_ratio > 0.0, dlogp, 0.0)
+        else:
+            dlogp = dlogp * vllm_is_ratio
 
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l

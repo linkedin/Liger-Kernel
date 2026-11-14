@@ -710,6 +710,59 @@ def test_triton_num_items_in_batch_normalizer(loss_type):
     assert_verbose_allclose(grad_double * 2, grad_default, atol=1e-5, rtol=1e-5)
 
 
+def test_triton_vespo_zero_vllm_is_ratio_drops_only_that_token():
+    """A token whose vLLM IS ratio is 0 (TRL ``token_mask`` mode) is dropped from the VESPO sequence
+    weight and from the loss, exactly as if it were masked out, instead of vetoing its whole sequence.
+
+    Mirrors the chunked-loss test. Reference: TRL GRPOTrainer (huggingface/trl#8108).
+    """
+    torch.manual_seed(0)
+    B, T, V = 3, 16, 64
+
+    completion_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.ones(B, T, device=device, dtype=torch.float32)
+    completion_mask[2, -4:] = 0
+    advantages = torch.tensor([0.7, -0.4, 1.1], device=device, dtype=torch.float32)
+    base_logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32)
+    with torch.no_grad():
+        logps = fused_selective_log_softmax(base_logits, completion_ids, 0.9)
+    old_logp = logps + 0.05 * torch.randn(B, T, device=device, dtype=torch.float32)
+    num_items_in_batch = completion_mask.sum().item()
+
+    vllm_is_ratio = torch.ones(B, T, device=device, dtype=torch.float32)
+    vllm_is_ratio[0, 2] = 0.0  # rejected token
+    dropped_mask = completion_mask.clone()
+    dropped_mask[0, 2] = 0.0  # the same token removed from the loss mask instead
+
+    def _run(mask, ratio):
+        logits = base_logits.clone().requires_grad_(True)
+        loss, _ = triton_grpo_loss(
+            logits,
+            old_logp,
+            None,
+            completion_ids,
+            advantages,
+            mask,
+            temperature=0.9,
+            beta=0.0,
+            inplace=False,
+            loss_type="vespo",
+            reduce=True,
+            vllm_is_ratio=ratio,
+            num_items_in_batch=num_items_in_batch,
+        )
+        loss.backward()
+        return loss.detach(), logits.grad.detach().clone()
+
+    loss_rejected, grad_rejected = _run(completion_mask, vllm_is_ratio)
+    loss_dropped, grad_dropped = _run(dropped_mask, torch.ones(B, T, device=device, dtype=torch.float32))
+
+    assert_verbose_allclose(loss_rejected, loss_dropped, atol=1e-6, rtol=1e-5)
+    assert_verbose_allclose(grad_rejected, grad_dropped, atol=1e-6, rtol=1e-5)
+    # The other tokens of the sequence keep their gradient.
+    assert grad_rejected[0, [0, 1, 3, 4, 5]].abs().sum() > 1e-3
+
+
 def trl_reference_grpo_loss_with_vllm_is(
     logits,
     old_logp,
