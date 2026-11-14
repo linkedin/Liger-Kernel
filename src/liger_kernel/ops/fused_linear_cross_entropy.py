@@ -223,13 +223,9 @@ def fused_linear_cross_entropy_forward(
         # The direct Triton path scales in registers, avoiding FP32 chunk buffers and
         # separate cast/multiply kernels. Other paths retain the FP32 fallback.
         logits_dtype = logits_chunk.dtype
-        scale_in_ce = (
-            token_grad_output is not None
-            and logits_dtype == torch.float16
-            and ce_impl is None
-            and not use_token_scaling
-        )
-        if token_grad_output is not None and logits_dtype == torch.float16 and not scale_in_ce:
+        scale_fp16 = token_grad_output is not None and logits_dtype == torch.float16
+        scale_in_ce = scale_fp16 and ce_impl is None and not use_token_scaling
+        if scale_fp16 and not scale_in_ce:
             logits_chunk = logits_chunk.float()
 
         if ce_impl is None:
@@ -552,15 +548,14 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         # correctly rescale. FP16 also needs grad_output before rounding the CE
         # gradients, otherwise loss scaling cannot prevent underflow.
         needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
-        fp16 = _input.dtype == torch.float16 or (
-            torch.is_autocast_enabled()
-            and (
+        fp16 = _input.dtype == torch.float16
+        if not fp16 and torch.is_autocast_enabled():
+            autocast_dtype = (
                 torch.get_autocast_dtype("cuda")
                 if _TORCH_VERSION >= Version("2.4.0")
                 else torch.get_autocast_gpu_dtype()
             )
-            == torch.float16
-        )
+            fp16 = autocast_dtype == torch.float16
         ctx.defer_grads = needs_grad and (reduction == "none" or fp16)
         normalization_cache = [] if ctx.defer_grads else None
 
