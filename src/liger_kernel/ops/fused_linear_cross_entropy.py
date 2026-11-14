@@ -209,6 +209,12 @@ def fused_linear_cross_entropy_forward(
         logits_chunk = logits_chunk.contiguous()
         target_chunk = target_chunk.contiguous()
 
+        # FP16 gradients must not be rounded before the upstream loss scale is applied.
+        # Keep only this chunk in FP32, including when CE uses a dispatched backend.
+        logits_dtype = logits_chunk.dtype
+        if token_grad_output is not None and logits_dtype == torch.float16:
+            logits_chunk = logits_chunk.float()
+
         if ce_impl is None:
             loss_1d_slice = loss_1d[start_idx:end_idx]
             z_loss_1d_slice = z_loss_1d[start_idx:end_idx] if return_z_loss else None
@@ -314,6 +320,7 @@ def fused_linear_cross_entropy_forward(
             grad_logits_chunk = grad_logits_chunk * token_grad_output[start_idx:end_idx].unsqueeze(-1).to(
                 grad_logits_chunk.dtype
             )
+            grad_logits_chunk = grad_logits_chunk.to(logits_dtype)
 
         if input_requires_grad:
             if use_mm_out and grad_logits_chunk.dtype == grad_input.dtype:
@@ -523,9 +530,19 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         # it is summed into grad_weight/grad_bias. That weight is not known yet here,
         # so defer the gradient computation to backward (recomputing the chunked
         # logits there) instead of producing an unscaled gradient we could never
-        # correctly rescale. mean/sum keep the original compute-in-forward fast path.
+        # correctly rescale. FP16 also needs grad_output before rounding the CE
+        # gradients, otherwise loss scaling cannot prevent underflow.
         needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
-        ctx.defer_grads = reduction == "none" and needs_grad
+        fp16 = _input.dtype == torch.float16 or (
+            torch.is_autocast_enabled()
+            and (
+                torch.get_autocast_dtype("cuda")
+                if _TORCH_VERSION >= Version("2.4.0")
+                else torch.get_autocast_gpu_dtype()
+            )
+            == torch.float16
+        )
+        ctx.defer_grads = needs_grad and (reduction == "none" or fp16)
 
         loss, z_loss, token_accuracy, predicted_tokens, grad_input, grad_weight, grad_bias = (
             fused_linear_cross_entropy_forward(
@@ -592,16 +609,15 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             del grad_output4  # predicted_tokens is only for metrics
 
         if ctx.defer_grads:
-            # reduction="none": grad_output is per-token. Recompute the chunked
-            # logits gradient and fold grad_output into each row before projecting,
-            # which is the only point at which the per-token weights can be applied.
+            # Recompute chunked gradients with the upstream scale before projecting.
+            # expand also handles scalar grad_output for FP16 mean/sum reductions.
             _input, weight, target, bias = ctx.saved_tensors
             _, _, _, _, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
                 _input=_input,
                 weight=weight,
                 target=target,
                 bias=bias,
-                token_grad_output=grad_output,
+                token_grad_output=grad_output.expand(_input.shape[0]),
                 compute_gradients=True,
                 weight_requires_grad=ctx.weight_requires_grad,
                 **ctx.fwd_kwargs,
