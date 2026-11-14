@@ -70,6 +70,7 @@ def fused_linear_cross_entropy_forward(
     compute_gradients=None,
     weight_requires_grad=None,
     chunk_mem_const: int = _CHUNK_MEM_CONST,
+    normalization_cache=None,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
@@ -128,21 +129,30 @@ def fused_linear_cross_entropy_forward(
     predicted_tokens_1d = torch.full((BT,), -1, dtype=torch.int64, device=device) if return_predicted_tokens else None
 
     # TODO: evaluate how CUDA synchronization caused by .item() affects the speed
-    target_mask = target != ignore_index
-    total_n_non_ignore = target_mask.sum().item()
-    total_sum_non_ignore_ce_weight = total_n_non_ignore
-    ce_weight_sum = 0.0
+    # Deferred backward uses the same labels and class weights. Reuse the
+    # forward statistics to avoid repeating reductions and host synchronizations.
+    if normalization_cache:
+        total_n_non_ignore, total_sum_non_ignore_ce_weight, ce_weight_sum = normalization_cache
+    else:
+        target_mask = target != ignore_index
+        total_n_non_ignore = target_mask.sum().item()
+        total_sum_non_ignore_ce_weight = total_n_non_ignore
+        ce_weight_sum = 0.0
     if ce_weight is not None:
         assert ce_weight.shape[0] == V, f"If given, weight has to be a Tensor of size V. Got: {ce_weight.shape}"
         assert torch.is_floating_point(ce_weight), (
             f"If given, weight has to be a Tensor of floating point dtype. Got: {ce_weight.dtype}"
         )
-        total_sum_non_ignore_ce_weight = (
-            torch.gather(ce_weight, dim=0, index=target.masked_select(target_mask)).sum().item()
-        )
-        ce_weight_sum = ce_weight.sum().item()
+        if not normalization_cache:
+            total_sum_non_ignore_ce_weight = (
+                torch.gather(ce_weight, dim=0, index=target.masked_select(target_mask)).sum().item()
+            )
+            ce_weight_sum = ce_weight.sum().item()
         if ce_weight.stride(-1) != 1:
             ce_weight = ce_weight.contiguous()
+
+    if normalization_cache is not None and not normalization_cache:
+        normalization_cache.extend((total_n_non_ignore, total_sum_non_ignore_ce_weight, ce_weight_sum))
 
     use_mm_out = _can_use_mm_out(_input, weight)
     # A promoted bias needs the original out-of-place add. Do not reserve an
@@ -552,6 +562,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             == torch.float16
         )
         ctx.defer_grads = needs_grad and (reduction == "none" or fp16)
+        normalization_cache = [] if ctx.defer_grads else None
 
         loss, z_loss, token_accuracy, predicted_tokens, grad_input, grad_weight, grad_bias = (
             fused_linear_cross_entropy_forward(
@@ -574,6 +585,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 ce_mode=ce_mode,
                 compute_gradients=False if ctx.defer_grads else None,
                 chunk_mem_const=chunk_mem_const,
+                normalization_cache=normalization_cache,
             )
         )
 
@@ -593,6 +605,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 ce_impl=ce_impl,
                 ce_mode=ce_mode,
                 chunk_mem_const=chunk_mem_const,
+                normalization_cache=normalization_cache,
             )
             ctx.weight_requires_grad = weight.requires_grad
         else:
