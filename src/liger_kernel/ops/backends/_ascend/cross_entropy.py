@@ -41,6 +41,8 @@ def cross_entropy_ascend(
     return_z_loss: bool = False,
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
+    loss_dtype: Optional[torch.dtype] = None,
+    in_place: bool = False,
     *,
     mode: Optional[str] = None,
 ):
@@ -58,4 +60,6 @@ def cross_entropy_ascend(
         return_z_loss,
         return_token_accuracy,
         return_predicted_tokens,
+        loss_dtype,
+        in_place,
     )
