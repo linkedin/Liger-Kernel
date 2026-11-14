@@ -677,7 +677,7 @@ def cross_entropy_forward(
         return_token_accuracy,
         return_predicted_tokens,
     )
-    # Accumulate in fp32 and cast the returned loss back to the input dtype unless loss_dtype is set.
+    # Always accumulate in fp32 and cast the returned loss back to the input dtype or `loss_dtype` if set.
     loss_1d = (
         torch.empty(n_rows, dtype=torch.float32, device=_input.device)
         if plain_lm
