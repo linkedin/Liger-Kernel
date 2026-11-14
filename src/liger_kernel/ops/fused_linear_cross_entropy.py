@@ -545,8 +545,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         # it is summed into grad_weight/grad_bias. That weight is not known yet here,
         # so defer the gradient computation to backward (recomputing the chunked
         # logits there) instead of producing an unscaled gradient we could never
-        # correctly rescale. FP16 also needs grad_output before rounding the CE
-        # gradients, otherwise loss scaling cannot prevent underflow.
+        # correctly rescale. FP16 also defers gradients so loss scaling precedes rounding.
         needs_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
         fp16 = _input.dtype == torch.float16
         if not fp16 and torch.is_autocast_enabled():
@@ -557,22 +556,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             )
             fp16 = autocast_dtype == torch.float16
         ctx.defer_grads = needs_grad and (reduction == "none" or fp16)
-        fwd_kwargs = dict(
-            ce_weight=ce_weight,
-            ignore_index=ignore_index,
-            lse_square_scale=lse_square_scale,
-            label_smoothing=label_smoothing,
-            reduction=reduction,
-            softcap=softcap,
-            accum_dtype=accum_dtype,
-            use_token_scaling=use_token_scaling,
-            # Preserve the linkedin-managed multi-backend dispatch selection when the
-            # reduction="none" path re-enters forward from backward to recompute grads.
-            ce_impl=ce_impl,
-            ce_mode=ce_mode,
-            chunk_mem_const=chunk_mem_const,
-            normalization_cache=[] if ctx.defer_grads else None,
-        )
+        normalization_cache = [] if ctx.defer_grads else None
 
         loss, z_loss, token_accuracy, predicted_tokens, grad_input, grad_weight, grad_bias = (
             fused_linear_cross_entropy_forward(
@@ -580,17 +564,43 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 weight=weight,
                 target=target,
                 bias=bias,
+                ce_weight=ce_weight,
+                ignore_index=ignore_index,
+                lse_square_scale=lse_square_scale,
+                label_smoothing=label_smoothing,
+                reduction=reduction,
+                softcap=softcap,
                 return_z_loss=return_z_loss,
+                accum_dtype=accum_dtype,
+                use_token_scaling=use_token_scaling,
                 return_token_accuracy=return_token_accuracy,
                 return_predicted_tokens=return_predicted_tokens,
+                ce_impl=ce_impl,
+                ce_mode=ce_mode,
                 compute_gradients=False if ctx.defer_grads else None,
-                **fwd_kwargs,
+                chunk_mem_const=chunk_mem_const,
+                normalization_cache=normalization_cache,
             )
         )
 
         if ctx.defer_grads:
             ctx.save_for_backward(_input.detach(), weight.detach(), target, bias.detach() if bias is not None else None)
-            ctx.fwd_kwargs = fwd_kwargs
+            ctx.fwd_kwargs = dict(
+                ce_weight=ce_weight,
+                ignore_index=ignore_index,
+                lse_square_scale=lse_square_scale,
+                label_smoothing=label_smoothing,
+                reduction=reduction,
+                softcap=softcap,
+                accum_dtype=accum_dtype,
+                use_token_scaling=use_token_scaling,
+                # Preserve the linkedin-managed multi-backend dispatch selection when the
+                # reduction="none" path re-enters forward from backward to recompute grads.
+                ce_impl=ce_impl,
+                ce_mode=ce_mode,
+                chunk_mem_const=chunk_mem_const,
+                normalization_cache=normalization_cache,
+            )
             ctx.weight_requires_grad = weight.requires_grad
         else:
             # downcast to dtype and store for backward
@@ -615,8 +625,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             del grad_output4  # predicted_tokens is only for metrics
 
         if ctx.defer_grads:
-            # Recompute chunked gradients with the upstream scale before projecting.
-            # expand also handles scalar grad_output for FP16 mean/sum reductions.
+            # reduction="none": grad_output is per-token. Recompute the chunked
+            # logits gradient and fold grad_output into each row before projecting,
+            # which is the only point at which the per-token weights can be applied.
             _input, weight, target, bias = ctx.saved_tensors
             _, _, _, _, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
                 _input=_input,
