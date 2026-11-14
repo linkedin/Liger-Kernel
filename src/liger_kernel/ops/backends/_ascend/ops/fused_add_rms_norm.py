@@ -45,7 +45,6 @@ def _fused_add_rms_norm_forward_kernel_no_tiling(
     eps,
     offset,
     casting_mode: tl.constexpr,
-    X_DTYPE: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
 ):
@@ -64,9 +63,11 @@ def _fused_add_rms_norm_forward_kernel_no_tiling(
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
 
+    # constexpr scalars have no .to(); read the tensor dtype from the pointer.
+    x_dtype = X_ptr.dtype.element_ty
     if casting_mode == _CASTING_MODE_NONE:
-        eps = eps.to(X_DTYPE)
-        offset = offset.to(X_DTYPE)
+        eps = tl.cast(eps, x_dtype)
+        offset = tl.cast(offset, x_dtype)
 
     # Grid-stride loop setup for 2D blocks
     grid_stride = num_progs * BLOCK_SIZE_M
@@ -117,9 +118,9 @@ def _fused_add_rms_norm_forward_kernel_no_tiling(
 
         # Normalize and apply weight - optimized for each casting mode
         if casting_mode == _CASTING_MODE_GEMMA:
-            Y_rows = ((S_rows * rstd_rows[:, None]) * (offset + W_row[None, :])).to(X_DTYPE)
+            Y_rows = ((S_rows * rstd_rows[:, None]) * (offset + W_row[None, :])).to(x_dtype)
         elif casting_mode == _CASTING_MODE_LLAMA:
-            S_normalized = (S_rows * rstd_rows[:, None]).to(X_DTYPE)
+            S_normalized = (S_rows * rstd_rows[:, None]).to(x_dtype)
             Y_rows = S_normalized * (offset + W_row[None, :])
         else:
             Y_rows = (S_rows * rstd_rows[:, None]) * (offset + W_row[None, :])
@@ -613,7 +614,6 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
             eps,
             offset,
             casting_mode,
-            X_DTYPE,
             BLOCK_SIZE_M=BLOCK_SIZE_M,
             BLOCK_SIZE_N=BLOCK_SIZE,
         )

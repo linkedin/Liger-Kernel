@@ -121,7 +121,6 @@ def _rms_norm_forward_fused_2d(
     offset,
     casting_mode: tl.constexpr,
     elementwise_affine: tl.constexpr,
-    X_DTYPE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     ROWS_PER_BLOCK: tl.constexpr,
 ):
@@ -132,12 +131,14 @@ def _rms_norm_forward_fused_2d(
     row_offsets = tl.arange(0, ROWS_PER_BLOCK)
     col_mask = col_offsets < n_cols
     n_cols_inv = 1.0 / n_cols
+    # constexpr scalars have no .to(); read the tensor dtype from the pointer.
+    x_dtype = X_ptr.dtype.element_ty
     if casting_mode == _CASTING_MODE_NONE:
-        eps = eps.to(X_DTYPE)
-        offset = offset.to(X_DTYPE)
+        eps = tl.cast(eps, x_dtype)
+        offset = tl.cast(offset, x_dtype)
     else:
-        eps = eps.to(tl.float32)
-        offset = offset.to(tl.float32)
+        eps = tl.cast(eps, tl.float32)
+        offset = tl.cast(offset, tl.float32)
 
     if elementwise_affine:
         W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
@@ -168,7 +169,7 @@ def _rms_norm_forward_fused_2d(
 
         X_hat = X_f32 * rstd[:, None]
         if casting_mode == _CASTING_MODE_LLAMA:
-            X_hat = X_hat.to(X_DTYPE)
+            X_hat = X_hat.to(x_dtype)
         if elementwise_affine:
             if casting_mode == _CASTING_MODE_GEMMA:
                 Y_rows = X_hat * (offset + W_row.to(tl.float32))[None, :]
@@ -177,7 +178,7 @@ def _rms_norm_forward_fused_2d(
         else:
             Y_rows = X_hat
         if casting_mode == _CASTING_MODE_GEMMA:
-            Y_rows = Y_rows.to(X_DTYPE)
+            Y_rows = Y_rows.to(x_dtype)
         tl.store(
             Y_ptr + row_idx[:, None] * Y_row_stride + col_offsets[None, :],
             Y_rows,
@@ -645,21 +646,20 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
         offset=offset,
         casting_mode=casting_mode,
         elementwise_affine=elementwise_affine,
-        X_DTYPE=X_DTYPE,
         BLOCK_SIZE=col_block,
     )
 
     if use_fused:
         if rows_per_block <= 1:
             grid_size = _forward_grid_size(n_rows, num_cores)
-            _rms_norm_forward_row[(grid_size,)](**common)
+            _rms_norm_forward_row[(grid_size,)](**common, X_DTYPE=X_DTYPE)
         else:
             num_row_blocks = triton.cdiv(n_rows, rows_per_block)
             grid_size = min(num_cores, num_row_blocks)
             _rms_norm_forward_fused_2d[(grid_size,)](**common, ROWS_PER_BLOCK=rows_per_block)
     else:
         grid_size = min(num_cores * 2, n_rows)
-        _rms_norm_forward_tiled[(grid_size,)](**common)
+        _rms_norm_forward_tiled[(grid_size,)](**common, X_DTYPE=X_DTYPE)
 
     return Y.view(*shape), X, RSTD, casting_mode
 
