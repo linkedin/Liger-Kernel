@@ -210,9 +210,16 @@ def fused_linear_cross_entropy_forward(
         target_chunk = target_chunk.contiguous()
 
         # FP16 gradients must not be rounded before the upstream loss scale is applied.
-        # Keep only this chunk in FP32, including when CE uses a dispatched backend.
+        # The direct Triton path scales in registers, avoiding FP32 chunk buffers and
+        # separate cast/multiply kernels. Other paths retain the FP32 fallback.
         logits_dtype = logits_chunk.dtype
-        if token_grad_output is not None and logits_dtype == torch.float16:
+        scale_in_ce = (
+            token_grad_output is not None
+            and logits_dtype == torch.float16
+            and ce_impl is None
+            and not use_token_scaling
+        )
+        if token_grad_output is not None and logits_dtype == torch.float16 and not scale_in_ce:
             logits_chunk = logits_chunk.float()
 
         if ce_impl is None:
@@ -250,6 +257,8 @@ def fused_linear_cross_entropy_forward(
                 HAS_WEIGHT=ce_weight is not None,
                 HAS_SOFTCAPPING=softcap is not None,
                 HAS_GRADIENTS=input_requires_grad,
+                grad_output_ptr=token_grad_output[start_idx:end_idx] if scale_in_ce else None,
+                grad_output_stride=token_grad_output.stride(0) if scale_in_ce else 0,
                 BLOCK_SIZE=block_size,
                 num_warps=32 if not is_hip() else 16,
             )
@@ -316,7 +325,7 @@ def fused_linear_cross_entropy_forward(
         # sum_i go_i * (g_i outer x_i); once the sum has happened the per-token
         # weights can no longer be recovered, so scaling grad_weight afterwards
         # (as element_mul_kernel does) is mathematically incapable of being correct.
-        if token_grad_output is not None:
+        if token_grad_output is not None and not scale_in_ce:
             grad_logits_chunk = grad_logits_chunk * token_grad_output[start_idx:end_idx].unsqueeze(-1).to(
                 grad_logits_chunk.dtype
             )
