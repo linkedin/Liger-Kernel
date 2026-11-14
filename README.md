@@ -2,6 +2,10 @@
 
 # Liger Kernel: Efficient Triton Kernels for LLM Training
 
+<p align="center">
+  <b>English</b> · <a href="https://github.com/linkedin/Liger-Kernel/blob/main/README.zh.md">简体中文</a>
+</p>
+
 
 <table style="width: 100%; text-align: center; border-collapse: collapse;">
     <tr>
