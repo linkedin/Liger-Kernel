@@ -136,9 +136,10 @@ def _modulated_rms_norm_backward_kernel(
     dScale_row_stride,
     dShift_ptr,
     dShift_row_stride,
-    n_rows,
     n_cols,
     offset: tl.constexpr,
+    rows_per_group,
+    programs_per_group,
     rows_per_program,
     casting_mode: tl.constexpr,
     elementwise_affine: tl.constexpr,
@@ -146,9 +147,12 @@ def _modulated_rms_norm_backward_kernel(
     rows_per_modulation: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
+    # a group is the rows sharing one modulation row (the whole input if modulation is per-row)
     row_block_id = tl.program_id(0).to(tl.int64)
-    row_start = row_block_id * rows_per_program
-    row_end = min((row_block_id + 1) * rows_per_program, n_rows)
+    group_idx = row_block_id // programs_per_group
+    group_start = group_idx * rows_per_group
+    row_start = group_start + (row_block_id % programs_per_group) * rows_per_program
+    row_end = min(row_start + rows_per_program, group_start + rows_per_group)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -157,18 +161,22 @@ def _modulated_rms_norm_backward_kernel(
         W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
         W_row = W_row + offset
 
+    if rows_per_modulation != 1:
+        Scale_row = tl.load(Scale_ptr + group_idx * Scale_row_stride + col_offsets, mask=mask, other=0.0)
+        dScale_acc = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+        if has_shift:
+            dShift_acc = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+
     for row_idx in range(row_start, row_end):
-        mod_row_idx = row_idx // rows_per_modulation
         dy_base = dY_ptr + row_idx * dY_row_stride
         dx_base = dX_ptr + row_idx * dX_row_stride
         x_base = X_ptr + row_idx * X_row_stride
-        scale_base = Scale_ptr + mod_row_idx * Scale_row_stride
         rstd_base = RSTD_ptr + row_idx * RSTD_row_stride
-        dscale_base = dScale_ptr + mod_row_idx * dScale_row_stride
 
         dY_row = tl.load(dy_base + col_offsets, mask=mask, other=0.0)
         X_row = tl.load(x_base + col_offsets, mask=mask, other=0.0)
-        Scale_row = tl.load(scale_base + col_offsets, mask=mask, other=0.0)
+        if rows_per_modulation == 1:
+            Scale_row = tl.load(Scale_ptr + row_idx * Scale_row_stride + col_offsets, mask=mask, other=0.0)
         rstd_row = tl.load(rstd_base)
 
         X_row = X_row.to(tl.float32)
@@ -213,20 +221,22 @@ def _modulated_rms_norm_backward_kernel(
 
         dScale_row = dY_row * rms_output
         if rows_per_modulation == 1:
-            tl.store(dscale_base + col_offsets, dScale_row, mask=mask)
+            tl.store(dScale_ptr + row_idx * dScale_row_stride + col_offsets, dScale_row, mask=mask)
+            if has_shift:
+                tl.store(dShift_ptr + row_idx * dShift_row_stride + col_offsets, dY_row, mask=mask)
         else:
-            tl.atomic_add(dscale_base + col_offsets, dScale_row, sem="relaxed", mask=mask)
-        if has_shift:
-            dshift_base = dShift_ptr + mod_row_idx * dShift_row_stride
-            if rows_per_modulation == 1:
-                tl.store(dshift_base + col_offsets, dY_row, mask=mask)
-            else:
-                tl.atomic_add(dshift_base + col_offsets, dY_row, sem="relaxed", mask=mask)
+            dScale_acc += dScale_row.to(tl.float32)
+            if has_shift:
+                dShift_acc += dY_row.to(tl.float32)
 
         tl.store(dx_base + col_offsets, dX_row.to(X_dtype), mask=mask)
 
     if elementwise_affine:
         tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
+    if rows_per_modulation != 1:
+        tl.store(dScale_ptr + row_block_id * dScale_row_stride + col_offsets, dScale_acc, mask=mask)
+        if has_shift:
+            tl.store(dShift_ptr + row_block_id * dShift_row_stride + col_offsets, dShift_acc, mask=mask)
 
 
 _str_to_casting_mode = {
@@ -345,33 +355,36 @@ def modulated_rms_norm_backward(
     elif X.device.type == "npu":
         sm_count = get_npu_core_count()
 
+    n_groups = 1 if rows_per_modulation == 1 else scale_rows
+    rows_per_group = n_rows // n_groups
+    programs_per_group = max(1, min(math.ceil(sm_count / n_groups), rows_per_group))
+    rows_per_program = math.ceil(rows_per_group / programs_per_group)
+    n_programs = n_groups * programs_per_group
+    grid = (n_programs,)
+
     elementwise_affine = W is not None
     if elementwise_affine:
-        _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+        _dW = torch.empty((n_programs, n_cols), dtype=torch.float32, device=W.device)
     else:
         _dW = None
 
+    # broadcast modulation: fp32 partial sums per program
+    modulation_grad_rows = scale_rows if rows_per_modulation == 1 else n_programs
     modulation_grad_dtype = scale.dtype if rows_per_modulation == 1 else torch.float32
-    dScale = torch.empty((scale_rows, n_cols), dtype=modulation_grad_dtype, device=scale.device)
-    if rows_per_modulation != 1:
-        dScale.zero_()
+    dScale = torch.empty((modulation_grad_rows, n_cols), dtype=modulation_grad_dtype, device=scale.device)
 
     has_shift = shift is not None
     if has_shift:
         shift_shape = shift.shape
         shift = shift.view(scale_rows, dim)
         modulation_grad_dtype = shift.dtype if rows_per_modulation == 1 else torch.float32
-        dShift = torch.empty((scale_rows, n_cols), dtype=modulation_grad_dtype, device=shift.device)
-        if rows_per_modulation != 1:
-            dShift.zero_()
+        dShift = torch.empty((modulation_grad_rows, n_cols), dtype=modulation_grad_dtype, device=shift.device)
     else:
         shift_shape = None
         dShift = dScale
 
     if n_cols > BLOCK_SIZE:
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
-    rows_per_program = math.ceil(n_rows / sm_count)
-    grid = (sm_count,)
 
     if in_place is True:
         dX = dY
@@ -402,9 +415,10 @@ def modulated_rms_norm_backward(
         dScale.stride(0),
         dShift,
         dShift.stride(0) if has_shift else 0,
-        n_rows,
         n_cols,
         offset,
+        rows_per_group,
+        programs_per_group,
         rows_per_program,
         casting_mode,
         elementwise_affine=elementwise_affine,
@@ -417,6 +431,10 @@ def modulated_rms_norm_backward(
 
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype) if elementwise_affine else None
+    if rows_per_modulation != 1:
+        dScale = dScale.view(scale_rows, programs_per_group, n_cols).sum(dim=1)
+        if has_shift:
+            dShift = dShift.view(scale_rows, programs_per_group, n_cols).sum(dim=1)
     dScale = dScale.to(scale.dtype).view(*scale_shape) if dScale.dtype != scale.dtype else dScale.view(*scale_shape)
     if has_shift:
         dShift = dShift.to(shift.dtype).view(*shift_shape) if dShift.dtype != shift.dtype else dShift.view(*shift_shape)
@@ -438,7 +456,7 @@ class LigerModulatedRMSNormFunction(torch.autograd.Function):
     and a flattened token count N = X.numel() / H:
     - shape ``(H,)`` or ``(1, H)``: shared across every token (N rows reuse one modulation row).
     - shape ``(B, H)`` with 3D X of shape ``(B, T, H)``: shared along the sequence axis.
-    - shape ``(N, H)`` (or matching X): per-token modulation, no atomic accumulation needed.
+    - shape ``(N, H)`` (or matching X): per-token modulation, no accumulation needed.
     In general, ``scale.numel() // H`` must divide N. ``shift`` (if provided) must broadcast
     identically to ``scale``.
     """

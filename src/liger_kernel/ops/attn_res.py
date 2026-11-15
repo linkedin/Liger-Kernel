@@ -15,15 +15,18 @@ Paper: https://arxiv.org/abs/2603.15031
 
 Triton optimizations:
 1. Single kernel fuses RMSNorm + dot + softmax + weighted sum
-2. Each program handles one (batch, token) position
+2. Each forward program handles one (batch, token) position
 3. N is small (≤16 blocks), scores fit in registers
 """
+
+import math
 
 import torch
 import triton
 import triton.language as tl
 
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import get_npu_core_count
 
 # ============================================================================
 # Forward Kernel
@@ -122,88 +125,97 @@ def _attn_res_bwd_kernel(
     Alpha_ptr,  # [B*T, N] saved from forward
     RSTD_ptr,  # [B*T, N] saved from forward
     dV_ptr,  # [N, B*T, D] output gradients
-    dW_query_ptr,  # [D] atomic accumulate
-    dW_norm_ptr,  # [D] atomic accumulate
+    dW_query_ptr,  # [n_programs, D] per-program partial sums
+    dW_norm_ptr,  # [n_programs, D] per-program partial sums
     n_blocks,
     n_tokens,
     D,
     eps,
+    tokens_per_program,
     BLOCK_D: tl.constexpr,
     MAX_BLOCKS: tl.constexpr,
 ):
-    """Backward: one program per token."""
-    tok = tl.program_id(0).to(tl.int64)
+    """Backward: each program handles a contiguous chunk of tokens."""
+    pid = tl.program_id(0).to(tl.int64)
+    tok_start = pid * tokens_per_program
+    tok_end = min(tok_start + tokens_per_program, n_tokens)
     cols = tl.arange(0, BLOCK_D)
     d_mask = cols < D
 
-    dh = tl.load(dOut_ptr + tok * D + cols, mask=d_mask, other=0.0).to(tl.float32)
     w_query = tl.load(W_query_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
     w_norm = tl.load(W_norm_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
 
-    # Load alpha for all blocks — layout [B*T, N], contiguous load
-    d_alpha = tl.zeros((MAX_BLOCKS,), dtype=tl.float32)
-    alpha = tl.zeros((MAX_BLOCKS,), dtype=tl.float32)
-
-    for i in tl.static_range(0, MAX_BLOCKS):
-        if i < n_blocks:
-            v_off = (i * n_tokens + tok) * D
-            v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
-            a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
-
-            da_i = tl.sum(dh * v, axis=0)
-            d_alpha = tl.where(tl.arange(0, MAX_BLOCKS) == i, da_i, d_alpha)
-            alpha = tl.where(tl.arange(0, MAX_BLOCKS) == i, a_i, alpha)
-
-    # Softmax backward: d_score_i = alpha_i * (d_alpha_i - sum_j(alpha_j * d_alpha_j))
-    sum_a_da = tl.sum(alpha * d_alpha, axis=0)
-    d_scores = alpha * (d_alpha - sum_a_da)
-
-    # For each block: compute dV_i and accumulate dW_query, dW_norm
     dw_query_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
     dw_norm_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
 
-    for i in tl.static_range(0, MAX_BLOCKS):
-        if i < n_blocks:
-            v_off = (i * n_tokens + tok) * D
-            v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
-            a_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, alpha, 0.0))
-            ds_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, d_scores, 0.0))
-            rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
+    for tok in range(tok_start, tok_end):
+        dh = tl.load(dOut_ptr + tok * D + cols, mask=d_mask, other=0.0).to(tl.float32)
 
-            # dV_i from weighted sum: alpha_i * dh
-            dv_from_sum = a_i * dh
+        # Load alpha for all blocks — layout [B*T, N], contiguous load
+        d_alpha = tl.zeros((MAX_BLOCKS,), dtype=tl.float32)
+        alpha = tl.zeros((MAX_BLOCKS,), dtype=tl.float32)
 
-            # dV_i from score path: d_score_i * d(score_i)/d(v_i)
-            # score_i = dot(w_query, RMSNorm(v_i) * w_norm)
-            # d(score_i)/d(v_i) = d(score_i)/d(k_i) * d(k_i)/d(v_i)
-            # where k_i = RMSNorm(v_i) * w_norm
-            # d(score_i)/d(k_i) = w_query
-            # d(k_i)/d(v_i) = w_norm * d(RMSNorm)/d(v_i)
+        for i in tl.static_range(0, MAX_BLOCKS):
+            if i < n_blocks:
+                v_off = (i * n_tokens + tok) * D
+                v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
+                a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
 
-            # RMSNorm backward: d(v*rstd)/dv = rstd * (I - (1/D) * rstd^2 * v * v^T)
-            v_norm = v * rstd
-            dk = ds_i * w_query * w_norm  # [D]
-            sum_dk_v = tl.sum(dk * v, axis=0)
-            dv_from_score = rstd * dk - rstd * rstd * rstd * (sum_dk_v / D) * v
+                da_i = tl.sum(dh * v, axis=0)
+                d_alpha = tl.where(tl.arange(0, MAX_BLOCKS) == i, da_i, d_alpha)
+                alpha = tl.where(tl.arange(0, MAX_BLOCKS) == i, a_i, alpha)
 
-            dv_total = dv_from_sum + dv_from_score
-            # tl.store handles implicit dtype conversion
-            tl.store(dV_ptr + v_off + cols, dv_total, mask=d_mask)
+        # Softmax backward: d_score_i = alpha_i * (d_alpha_i - sum_j(alpha_j * d_alpha_j))
+        sum_a_da = tl.sum(alpha * d_alpha, axis=0)
+        d_scores = alpha * (d_alpha - sum_a_da)
 
-            # dW_query += d_score_i * k_i
-            k_i = v_norm * w_norm
-            dw_query_acc += ds_i * k_i
+        # For each block: compute dV_i and accumulate dW_query, dW_norm
+        for i in tl.static_range(0, MAX_BLOCKS):
+            if i < n_blocks:
+                v_off = (i * n_tokens + tok) * D
+                v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
+                a_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, alpha, 0.0))
+                ds_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, d_scores, 0.0))
+                rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
 
-            # dW_norm += d_score_i * w_query * v_norm (element-wise)
-            dw_norm_acc += ds_i * w_query * v_norm
+                # dV_i from weighted sum: alpha_i * dh
+                dv_from_sum = a_i * dh
 
-    tl.atomic_add(dW_query_ptr + cols, dw_query_acc, mask=d_mask)
-    tl.atomic_add(dW_norm_ptr + cols, dw_norm_acc, mask=d_mask)
+                # dV_i from score path: d_score_i * d(score_i)/d(v_i)
+                # score_i = dot(w_query, RMSNorm(v_i) * w_norm)
+                # d(score_i)/d(v_i) = d(score_i)/d(k_i) * d(k_i)/d(v_i)
+                # where k_i = RMSNorm(v_i) * w_norm
+                # d(score_i)/d(k_i) = w_query
+                # d(k_i)/d(v_i) = w_norm * d(RMSNorm)/d(v_i)
+
+                # RMSNorm backward: d(v*rstd)/dv = rstd * (I - (1/D) * rstd^2 * v * v^T)
+                v_norm = v * rstd
+                dk = ds_i * w_query * w_norm  # [D]
+                sum_dk_v = tl.sum(dk * v, axis=0)
+                dv_from_score = rstd * dk - rstd * rstd * rstd * (sum_dk_v / D) * v
+
+                dv_total = dv_from_sum + dv_from_score
+                # tl.store handles implicit dtype conversion
+                tl.store(dV_ptr + v_off + cols, dv_total, mask=d_mask)
+
+                # dW_query += d_score_i * k_i
+                k_i = v_norm * w_norm
+                dw_query_acc += ds_i * k_i
+
+                # dW_norm += d_score_i * w_query * v_norm (element-wise)
+                dw_norm_acc += ds_i * w_query * v_norm
+
+    tl.store(dW_query_ptr + pid * D + cols, dw_query_acc, mask=d_mask)
+    tl.store(dW_norm_ptr + pid * D + cols, dw_norm_acc, mask=d_mask)
 
 
 # ============================================================================
 # Python wrappers
 # ============================================================================
+
+
+# backward programs per SM; 1 is slower on long sequences
+_PROGRAMS_PER_SM = 4
 
 
 def _next_pow2(n):
@@ -290,9 +302,20 @@ def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
     N, n_tokens, D = V_3d.shape
     dh_2d = dh.reshape(n_tokens, D)
 
+    sm_count = 1
+    if dh.device.type == "cuda":
+        sm_count = torch.cuda.get_device_properties(dh.device).multi_processor_count
+    elif dh.device.type == "xpu":
+        sm_count = torch.xpu.get_device_properties(dh.device).gpu_eu_count
+    elif dh.device.type == "npu":
+        sm_count = get_npu_core_count()
+    n_programs = max(1, min(n_tokens, sm_count * _PROGRAMS_PER_SM))
+    tokens_per_program = math.ceil(n_tokens / n_programs)
+
     dV = torch.empty_like(V_3d)
-    dW_query = torch.zeros(D, dtype=torch.float32, device=dh.device)
-    dW_norm = torch.zeros(D, dtype=torch.float32, device=dh.device)
+    # fp32 partial sums per program
+    dW_query = torch.empty(n_programs, D, dtype=torch.float32, device=dh.device)
+    dW_norm = torch.empty(n_programs, D, dtype=torch.float32, device=dh.device)
 
     BLOCK_D = _next_pow2(D)
     MAX_BLOCKS = _get_max_blocks(N)
@@ -302,7 +325,7 @@ def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
     if BLOCK_D >= 8192:
         nw = 16
 
-    _attn_res_bwd_kernel[(n_tokens,)](
+    _attn_res_bwd_kernel[(n_programs,)](
         dh_2d,
         V_3d,
         w_query,
@@ -316,12 +339,13 @@ def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
         n_tokens,
         D,
         eps,
+        tokens_per_program,
         BLOCK_D=BLOCK_D,
         MAX_BLOCKS=MAX_BLOCKS,
         num_warps=nw,
     )
 
-    return dV, dW_query.to(w_query.dtype), dW_norm.to(w_norm.dtype)
+    return dV, dW_query.sum(dim=0).to(w_query.dtype), dW_norm.sum(dim=0).to(w_norm.dtype)
 
 
 # ============================================================================
