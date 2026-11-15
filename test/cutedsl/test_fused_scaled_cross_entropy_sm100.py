@@ -51,7 +51,7 @@ def _assert_gradients(x, weight, xr, wr, projection_gradient):
         assert (error / scale).item() < 0.01
 
 
-@pytest.mark.parametrize("shape", [(17, 64, 97), (193, 70, 517), (513, 128, 1024)])
+@pytest.mark.parametrize("shape", [(17, 64, 97), (193, 70, 517), (513, 128, 1024), (513, 512, 4096)])
 @pytest.mark.parametrize("mode", ["nll", "entropy", "selected", "combined"])
 def test_sm100_outputs_and_signed_gradients(shape, mode, monkeypatch):
     module = _module()
@@ -125,7 +125,7 @@ def test_sm100_all_ignored_outputs_and_gradients_are_zero(tokens, monkeypatch):
         torch.testing.assert_close(value, torch.zeros_like(value), atol=0, rtol=0)
 
 
-@pytest.mark.parametrize("vocab,hidden", [(64, 64), (320, 192)])
+@pytest.mark.parametrize("vocab,hidden", [(64, 64), (320, 192), (4096, 576)])
 def test_sm100_weight_gradient_tma_preserves_fp32_accumulation(vocab, hidden):
     module = _module()
     dz = torch.ones(256, vocab, device="cuda", dtype=torch.bfloat16)

@@ -20,6 +20,7 @@ from liger_kernel.ops.cutedsl.ops._sm100_gemm import _current_stream
 from liger_kernel.ops.cutedsl.ops._sm100_gemm import _driver_stream
 from liger_kernel.ops.cutedsl.ops._sm100_gemm import _host
 from liger_kernel.ops.cutedsl.ops._sm100_gemm import _max_active_clusters
+from liger_kernel.ops.cutedsl.ops._sm100_gemm import _select_epilogue_config
 from liger_kernel.ops.cutedsl.ops.utils import ensure_cuda_context
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import _scaled_ce_outputs
@@ -36,6 +37,17 @@ _FRAGMENT_N = 32
 _BACKWARD_WORKSPACE_BYTES = 256 * 1024 * 1024
 _LOG2_E = 1.4426950408889634
 _COMPILE_CACHE = {}
+
+
+@cute.jit
+def _store_gradient_fragment(output, row, col, values):
+    # Gradient matrices have 64-column padding, so every valid 32-column fragment is complete.
+    if row < output.shape[0] and col < output.shape[1]:
+        destination = cute.make_tensor(
+            output.iterator + cute.crd2idx((row, col), output.layout),
+            cute.make_layout((_FRAGMENT_N,)),
+        )
+        cute.autovec_copy(values, destination)
 
 
 class _ForwardEpilogue:
@@ -131,6 +143,7 @@ class _BackwardEpilogue:
         if const_expr(self.return_entropy):
             entropy_value = entropy[row]
             entropy_scale = grad_entropy[row]
+        result = cute.make_rmem_tensor((_FRAGMENT_N,), dz.element_type)
 
         for fragment in cutlass.range_constexpr(_TILE_N // _FRAGMENT_N):
             cute.copy(copy, accumulator[None, None, None, fragment], registers)
@@ -150,8 +163,8 @@ class _BackwardEpilogue:
                         if col == selected_ids[k]:
                             value += grad_selected[row, k]
                     value *= inverse_temperature
-                if col < dz.shape[1]:
-                    dz[row, col] = value.to(dz.element_type)
+                result[element] = value.to(dz.element_type)
+            _store_gradient_fragment(dz, row, coords[0][1], result)
 
 
 class _GradientEpilogue:
@@ -164,13 +177,9 @@ class _GradientEpilogue:
             coords = coordinates[None, None, None, fragment]
             row, col = coords[0][0], coords[0][1]
             if row < output.shape[0] and col < output.shape[1]:
-                destination = cute.make_tensor(
-                    output.iterator + cute.crd2idx((row, col), output.layout),
-                    cute.make_layout((_FRAGMENT_N,)),
-                )
                 for element in cutlass.range_constexpr(_FRAGMENT_N):
                     result[element] = registers[element].to(output.element_type)
-                cute.autovec_copy(result, destination)
+                _store_gradient_fragment(output, row, col, result)
 
 
 @cute.jit
@@ -264,10 +273,13 @@ def _matrix(tensor):
     )
 
 
-def _arguments(args):
-    return tuple(
-        to_cute_tensor(arg, assumed_align=arg.element_size()) if isinstance(arg, torch.Tensor) else arg for arg in args
-    )
+def _arguments(args, matrix_arg_index=None):
+    converted = []
+    for index, arg in enumerate(args):
+        if isinstance(arg, torch.Tensor):
+            arg = _matrix(arg) if index == matrix_arg_index else to_cute_tensor(arg, assumed_align=arg.element_size())
+        converted.append(arg)
+    return tuple(converted)
 
 
 def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False):
@@ -277,9 +289,26 @@ def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False
     m_a, m_b = _matrix(a), _matrix(b)
     m_output = _matrix(output) if use_tma_output else to_cute_tensor(output, assumed_align=16)
     stream = _driver_stream(_current_stream(a.device))
-    cute_args = (_matrix(args[0]),) if isinstance(epilogue, _GradientEpilogue) else _arguments(args)
+    if isinstance(epilogue, _BackwardEpilogue):
+        matrix_arg_index = 7
+    elif isinstance(epilogue, _GradientEpilogue):
+        matrix_arg_index = 0
+    else:
+        matrix_arg_index = None
+    cute_args = _arguments(args, matrix_arg_index)
     a_k_major, b_k_major = a.stride(1) == 1, b.stride(1) == 1
-    cache_key = (a.device, a.dtype, a_k_major, b_k_major, output.dtype, use_tma_output, reduce_add_output, *key)
+    swizzle_size = _select_epilogue_config(a)[1] if use_tma_output else 1
+    cache_key = (
+        a.device,
+        a.dtype,
+        a_k_major,
+        b_k_major,
+        output.dtype,
+        use_tma_output,
+        reduce_add_output,
+        swizzle_size,
+        *key,
+    )
     compiled = _COMPILE_CACHE.get(cache_key)
     if compiled is None:
         with _compile_guard():
@@ -293,7 +322,7 @@ def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False
                 1 if use_tma_output else 0,
                 False,
                 use_tma_output,
-                1,
+                swizzle_size,
                 _max_active_clusters(a.device.index),
                 stream,
                 cute_args,
