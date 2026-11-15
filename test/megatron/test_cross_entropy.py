@@ -327,6 +327,83 @@ def test_class_rejects_non_3d_logits():
         ce(too_many, target2)
 
 
+def _run_ce_in_subprocess(target_value, ignore_index=-100):
+    """Run one CE call in a fresh process and return the CompletedProcess.
+
+    Invalid targets trip the device-side torch._assert_async (matching how
+    torch's own CUDA cross_entropy rejects them), which poisons the CUDA
+    context of the calling process. A subprocess keeps that sticky failure
+    out of the pytest process so later tests still run.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import torch\n"
+        "from liger_kernel.transformers import LigerVocabParallelCrossEntropy\n"
+        "from liger_kernel.utils import infer_device\n"
+        "device = infer_device()\n"
+        f"ce = LigerVocabParallelCrossEntropy(ignore_index={ignore_index})\n"
+        "logits = torch.randn(2, 1, 8, device=device)\n"
+        f"target = torch.tensor([[{target_value}], [{target_value}]], device=device, dtype=torch.long)\n"
+        "ce(logits, target)\n"
+        "torch.cuda.synchronize() if device == 'cuda' else None\n"
+    )
+    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+
+
+def test_class_rejects_target_equal_to_vocab_size():
+    """Target == V_global is out of range. torch is the reference here: its
+    cross_entropy rejects out-of-range targets (IndexError on CPU, device-side
+    assert on CUDA), so Liger rejects them with a device-side assert instead
+    of silently returning log(sum_exp) with the predicted-logit term missing."""
+    result = _run_ce_in_subprocess(8)
+    assert result.returncode != 0
+    assert "out of range" in result.stderr or "device-side assert" in result.stderr
+
+
+def test_class_rejects_negative_target_not_ignore_index():
+    """Target -1 with the default ignore_index=-100 is out of range, not ignored."""
+    result = _run_ce_in_subprocess(-1)
+    assert result.returncode != 0
+    assert "out of range" in result.stderr or "device-side assert" in result.stderr
+
+
+@pytest.mark.parametrize("valid_target", [0, 7])
+def test_class_valid_targets_match_pytorch(valid_target):
+    """Boundary valid targets (0 and V-1) must keep matching F.cross_entropy."""
+    ce = LigerVocabParallelCrossEntropy()
+    torch.manual_seed(0)
+    logits = torch.randn(2, 1, 8, device=device, dtype=torch.float32)
+    target = torch.tensor([[valid_target], [valid_target]], device=device, dtype=torch.long)
+    got = ce(logits, target)
+    ref = _reference_pytorch_loss(logits, target, ignore_index=-100, label_smoothing=0.0)
+    assert_verbose_allclose(got, ref, atol=1e-6, rtol=1e-5)
+
+
+def test_class_ignore_index_targets_still_work():
+    """Targets equal to ignore_index are excluded from validation and keep
+    returning zero loss and zero (finite) gradient for those positions."""
+    ce = LigerVocabParallelCrossEntropy(ignore_index=-100)
+    torch.manual_seed(0)
+    logits = torch.randn(2, 1, 8, device=device, dtype=torch.float32, requires_grad=True)
+    target = torch.tensor([[-100], [3]], device=device, dtype=torch.long)
+    got = ce(logits, target)
+    ref = _reference_pytorch_loss(logits.detach(), target, ignore_index=-100, label_smoothing=0.0)
+    assert_verbose_allclose(got, ref, atol=1e-6, rtol=1e-5)
+    got.sum().backward()
+    assert torch.isfinite(logits.grad).all()
+
+
+def test_class_valid_path_gradient_is_finite():
+    ce = LigerVocabParallelCrossEntropy()
+    torch.manual_seed(0)
+    logits = torch.randn(2, 1, 8, device=device, dtype=torch.float32, requires_grad=True)
+    target = torch.tensor([[3], [0]], device=device, dtype=torch.long)
+    ce(logits, target).sum().backward()
+    assert torch.isfinite(logits.grad).all()
+
+
 def test_megatron_class_extra_repr():
     ce = LigerMegatronCrossEntropy(ignore_index=42, label_smoothing=0.07)
     rep = ce.extra_repr()
@@ -552,27 +629,21 @@ def test_vp_class_correctness_not_last_layer(s, b, v):
 
 
 @pytest.mark.parametrize("ignore_index", [-100, 2])
-def test_vp_class_runs_with_out_of_bounds_target(ignore_index):
-    """Megatron's vocab-parallel CE silently masks targets outside [0, V_local) as "off-rank".
+def test_vp_class_rejects_out_of_bounds_target(ignore_index):
+    """Targets outside the global vocab [0, V_global) are invalid input, not "off-rank".
 
-    At TP=1 the local range == global range so any target >= V is also out of the global
-    vocab. The kernel's clamp keeps it well-defined (treated as off-rank → contributes 0
-    to predicted logit). This test just verifies no crash + finite output.
+    Genuinely off-rank targets at TP>1 are still inside [0, V_global) and keep
+    working; at TP=1 the local range == global range, so a target >= V can only
+    be invalid. This used to be silently masked (predicted logit treated as 0,
+    returning log(sum_exp)); torch's cross_entropy rejects such targets
+    (IndexError on CPU, device-side assert on CUDA), so Liger now rejects them
+    with a device-side torch._assert_async before the kernel launch. The call
+    runs in a subprocess because a device-side assert poisons the CUDA context
+    of the calling process. Targets equal to ignore_index remain excluded.
     """
-    s, b, v = 8, 2, 64
-    ce = LigerVocabParallelCrossEntropy(ignore_index=ignore_index)
-
-    logits = torch.randn(s, b, v, device=device, dtype=torch.float32, requires_grad=True)
-    target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
-    flat = target.view(-1)
-    poison = torch.randperm(flat.numel(), device=flat.device)[:2]
-    flat[poison] = v + 5
-
-    out = ce(logits, target)
-    assert torch.isfinite(out).all()
-    out.sum().backward()
-    assert logits.grad is not None
-    assert torch.isfinite(logits.grad).all()
+    result = _run_ce_in_subprocess(8 + 5, ignore_index=ignore_index)
+    assert result.returncode != 0
+    assert "out of range" in result.stderr or "device-side assert" in result.stderr
 
 
 def test_vp_class_correctness_forward_only():
