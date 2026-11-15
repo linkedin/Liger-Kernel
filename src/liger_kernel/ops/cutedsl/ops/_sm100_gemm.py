@@ -176,13 +176,14 @@ def _run_umma_mainloop(
     work_tile,
     k_tile_count,
     is_leader_cta,
+    num_acc_stages: cutlass.Constexpr = _NUM_ACC_STAGES,
 ):
     tmem.wait_for_alloc()
     tmem_ptr = tmem.retrieve_ptr(Float32)
     t_ct_acc_base = cute.make_tensor(tmem_ptr, t_ct_acc_fake.layout)
     acc_producer_state = pipeline.make_pipeline_state(
         pipeline.PipelineUserType.Producer,
-        _NUM_ACC_STAGES,
+        num_acc_stages,
     )
 
     while work_tile.is_valid_tile:
@@ -224,30 +225,42 @@ def _run_umma_mainloop(
 
 
 @cute.jit
-def _make_tma_epilogue_partitions(tidx, t_acc, t_cg_c, s_out, io_dtype, row_reduction=False):
+def _make_tma_epilogue_partitions(
+    tidx,
+    t_acc,
+    t_cg_c,
+    s_out,
+    io_dtype,
+    row_reduction=False,
+    cta_tile: cutlass.Constexpr = _CTA_TILE,
+    epi_tile: cutlass.Constexpr = _EPI_TILE,
+):
     """Partition accumulator fragments for fused conversion and TMA output."""
     if const_expr(row_reduction):
         copy_atom_t2r = cute.make_copy_atom(tcgen05.Ld32x32bOp(tcgen05.Repetition.x32), Float32)
     else:
         copy_atom_t2r = get_tmem_load_op(
-            _CTA_TILE,
+            cta_tile,
             utils.LayoutEnum.ROW_MAJOR,
             io_dtype,
             Float32,
-            _EPI_TILE,
+            epi_tile,
             True,
         )
-    t_acc_epi = cute.flat_divide(t_acc[((None, None), 0, 0, None)], _EPI_TILE)
+    if const_expr(cta_tile[1] > _MMA_N):
+        t_acc_mn = utils.gemm.sm100.transform_partitioned_tensor_layout(t_acc)
+        t_cg_c_mn = utils.gemm.sm100.transform_partitioned_tensor_layout(t_cg_c)
+    else:
+        t_acc_mn = t_acc[((None, None), 0, 0, None)]
+        t_cg_c_mn = t_cg_c[((None, None), 0, 0, None, None, None)]
+    t_acc_epi = cute.flat_divide(t_acc_mn, epi_tile)
     tiled_copy_t2r = tcgen05.make_tmem_copy(
         copy_atom_t2r,
         t_acc_epi[(None, None, 0, 0, 0)],
     )
     thr_copy_t2r = tiled_copy_t2r.get_slice(tidx)
     t_tr_t_acc = thr_copy_t2r.partition_S(t_acc_epi)
-    t_cg_c_epi = cute.flat_divide(
-        t_cg_c[((None, None), 0, 0, None, None, None)],
-        _EPI_TILE,
-    )
+    t_cg_c_epi = cute.flat_divide(t_cg_c_mn, epi_tile)
     t_tr_g_c = thr_copy_t2r.partition_D(t_cg_c_epi)
     t_tr_r_acc = cute.make_rmem_tensor(
         t_tr_g_c[(None, None, None, 0, 0, 0, 0, 0)].shape,
@@ -296,7 +309,13 @@ def _kernel(
     epilogue_fragments: cutlass.Constexpr,
     use_tma_output: cutlass.Constexpr,
     epilogue_args: tuple = (),
+    tile_n: cutlass.Constexpr = _MMA_N,
 ):
+    epilogue_tile_n = 64 if tile_n == 512 else _EPI_N
+    mma_tiler = (_MMA_M, tile_n, _MMA_K)
+    cta_tile = (_CTA_M, tile_n, _MMA_K)
+    epi_tile = (_CTA_M, epilogue_tile_n)
+    num_acc_stages = _NUM_TMEM_COLS // tile_n
     warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
     tidx, _, _ = cute.arch.thread_idx()
 
@@ -316,7 +335,7 @@ def _kernel(
     @cute.struct
     class SharedStorage:
         ab_full_mbar_ptr: cute.struct.MemRange[cutlass.Int64, num_ab_stages * 2]
-        acc_full_mbar_ptr: cute.struct.MemRange[cutlass.Int64, _NUM_ACC_STAGES * 2]
+        acc_full_mbar_ptr: cute.struct.MemRange[cutlass.Int64, num_acc_stages * 2]
         tmem_dealloc_mbar: cutlass.Int64
         tmem_holding_buf: cutlass.Int32
 
@@ -350,7 +369,7 @@ def _kernel(
 
     acc_pipeline = pipeline.PipelineUmmaAsync.create(
         barrier_storage=storage.acc_full_mbar_ptr.data_ptr(),
-        num_stages=_NUM_ACC_STAGES,
+        num_stages=num_acc_stages,
         producer_group=pipeline.CooperativeGroup(pipeline.Agent.Thread),
         consumer_group=pipeline.CooperativeGroup(
             pipeline.Agent.Thread,
@@ -414,12 +433,12 @@ def _kernel(
 
     g_a_mkl = cute.local_tile(
         m_a_mkl,
-        cute.slice_(_MMA_TILER, (None, 0, None)),
+        cute.slice_(mma_tiler, (None, 0, None)),
         (None, None, None),
     )
     g_b_nkl = cute.local_tile(
         m_b_nkl,
-        cute.slice_(_MMA_TILER, (0, None, None)),
+        cute.slice_(mma_tiler, (0, None, None)),
         (None, None, None),
     )
     k_tile_count = cute.size(g_a_mkl, mode=[3])
@@ -430,20 +449,20 @@ def _kernel(
     m_c_mnl = cute.make_identity_tensor((m_a_mkl.shape[0], cute.size(m_b_nkl, mode=[0]), 1))
     g_c_mnl = cute.local_tile(
         m_c_mnl,
-        cute.slice_(_MMA_TILER, (None, None, 0)),
+        cute.slice_(mma_tiler, (None, None, 0)),
         (None, None, None),
     )
     t_cg_c = thr_mma.partition_C(g_c_mnl)
     if const_expr(epilogue_fragments == 2):
         g_out_mnl = cute.local_tile(
             m_out_mnl,
-            (_MMA_M, _MMA_N // 2, 1),
+            (_MMA_M, tile_n // 2, 1),
             (None, None, None),
         )
     else:
         g_out_mnl = cute.local_tile(
             m_out_mnl,
-            cute.slice_(_MMA_TILER, (None, None, 0)),
+            cute.slice_(mma_tiler, (None, None, 0)),
             (None, None, None),
         )
     t_cg_out = thr_mma.partition_C(g_out_mnl)
@@ -467,8 +486,8 @@ def _kernel(
 
     t_cr_a = tiled_mma.make_fragment_A(s_a)
     t_cr_b = tiled_mma.make_fragment_B(s_b)
-    acc_shape = tiled_mma.partition_shape_C(_MMA_TILER[:2])
-    t_ct_acc_fake = tiled_mma.make_fragment_C(cute.append(acc_shape, _NUM_ACC_STAGES))
+    acc_shape = tiled_mma.partition_shape_C(mma_tiler[:2])
+    t_ct_acc_fake = tiled_mma.make_fragment_C(cute.append(acc_shape, num_acc_stages))
 
     pipeline_init_wait(cluster_shape_mn=cluster_layout_vmnk)
     tile_sched = utils.StaticPersistentTileScheduler.create(
@@ -508,6 +527,7 @@ def _kernel(
             work_tile,
             k_tile_count,
             is_leader_cta,
+            num_acc_stages,
         )
 
     if warp_idx < _MMA_WARP:
@@ -525,18 +545,25 @@ def _kernel(
             t_rs_r_out,
             t_rs_s_out,
         ) = _make_tma_epilogue_partitions(
-            tidx, t_ct_acc_base, t_cg_c, s_out, s_out.element_type, row_reduction=epilogue_fragments == 0
+            tidx,
+            t_ct_acc_base,
+            t_cg_c,
+            s_out,
+            s_out.element_type,
+            row_reduction=epilogue_fragments == 0,
+            cta_tile=cta_tile,
+            epi_tile=epi_tile,
         )
         if const_expr(epilogue_fragments == 2):
             t_tr_r_lhs = cute.make_rmem_tensor(t_tr_r_acc.shape, Float32)
             t_rs_r_lhs = tiled_copy_r2s.retile(t_tr_r_lhs)
             t_cg_out_epi = cute.flat_divide(
                 t_cg_out[((None, None), 0, 0, 0, None, None, None)],
-                _EPI_TILE,
+                epi_tile,
             )
         else:
             t_cg_out_transformed = utils.gemm.sm100.transform_partitioned_tensor_layout(t_cg_out)
-            t_cg_out_epi = cute.flat_divide(t_cg_out_transformed, _EPI_TILE)
+            t_cg_out_epi = cute.flat_divide(t_cg_out_transformed, epi_tile)
         b_sg_s_out, b_sg_g_out_partitioned = cpasync.tma_partition(
             tma_atom_out,
             0,
@@ -554,7 +581,7 @@ def _kernel(
 
         acc_consumer_state = pipeline.make_pipeline_state(
             pipeline.PipelineUserType.Consumer,
-            _NUM_ACC_STAGES,
+            num_acc_stages,
         )
         m = m_a_mkl.shape[0]
         n = cute.size(m_b_nkl, mode=[0])
@@ -588,7 +615,7 @@ def _kernel(
                 acc_consumer_state.advance()
 
             if const_expr(epilogue_fragments == 1):
-                fragment_count = _MMA_N // _EPI_N
+                fragment_count = tile_n // epilogue_tile_n
                 for fragment_idx in cutlass.range_constexpr(fragment_count):
                     cute.copy(
                         tiled_copy_t2r,
@@ -634,7 +661,7 @@ def _kernel(
                             out_pipeline.producer_commit()
 
             if const_expr(epilogue_fragments == 2):
-                pair_count = _MMA_N // (2 * _EPI_N)
+                pair_count = tile_n // (2 * epilogue_tile_n)
                 for pair_idx in cutlass.range_constexpr(pair_count):
                     lhs_subtile = pair_idx * 2
                     cute.copy(
@@ -662,8 +689,10 @@ def _kernel(
                             output_coord = t_rs_g_c[element]
                             output_row = output_coord[0]
                             physical_col = output_coord[1]
-                            physical_base = n_tile * _MMA_N + pair_idx * _EPI_N * 2
-                            logical_col = n_tile * (_MMA_N // 2) + pair_idx * _EPI_N + physical_col - physical_base
+                            physical_base = n_tile * tile_n + pair_idx * epilogue_tile_n * 2
+                            logical_col = (
+                                n_tile * (tile_n // 2) + pair_idx * epilogue_tile_n + physical_col - physical_base
+                            )
                             if output_row < m and physical_col < n and logical_col < m_out_direct_mnl.shape[1]:
                                 m_out_direct_mnl[output_row, logical_col, 0] = t_rs_r_out[element]
 
@@ -711,7 +740,13 @@ def _host(
     a_k_major: cutlass.Constexpr = True,
     b_k_major: cutlass.Constexpr = True,
     reduce_add_output: cutlass.Constexpr = False,
+    tile_n: cutlass.Constexpr = _MMA_N,
 ):
+    # Two adjacent N256 UMMAs share A; the wider result uses the full TMEM allocation.
+    assert tile_n in (_MMA_N, 512)
+    epilogue_tile_n = 64 if tile_n == 512 else _EPI_N
+    mma_tiler = (_MMA_M, tile_n, _MMA_K)
+    epi_tile = (_CTA_M, epilogue_tile_n)
     m_a_mkl = cute.make_tensor(
         m_a.iterator,
         cute.append(m_a.layout, cute.make_layout(1)),
@@ -759,20 +794,20 @@ def _host(
 
     a_smem_layout_staged = utils.sm100.make_smem_layout_a(
         tiled_mma,
-        _MMA_TILER,
+        mma_tiler,
         io_dtype,
         num_ab_stages,
     )
     b_smem_layout_staged = utils.sm100.make_smem_layout_b(
         tiled_mma,
-        _MMA_TILER,
+        mma_tiler,
         io_dtype,
         num_ab_stages,
     )
     out_smem_layout_staged = utils.sm100.make_smem_layout_epi(
         m_out_mnl.element_type,
         utils.LayoutEnum.ROW_MAJOR,
-        _EPI_TILE,
+        epi_tile,
         _NUM_OUT_STAGES,
     )
 
@@ -785,7 +820,7 @@ def _host(
         a_op,
         m_a_mkl,
         a_smem_layout,
-        _MMA_TILER,
+        mma_tiler,
         tiled_mma,
         cluster_layout_vmnk.shape,
     )
@@ -799,7 +834,7 @@ def _host(
         b_op,
         m_b_nkl,
         b_smem_layout,
-        _MMA_TILER,
+        mma_tiler,
         tiled_mma,
         cluster_layout_vmnk.shape,
     )
@@ -812,13 +847,13 @@ def _host(
         out_op,
         m_out_mnl,
         out_smem_layout,
-        _EPI_TILE,
+        epi_tile,
     )
 
     m_c_mnl = cute.make_identity_tensor((m_a_mkl.shape[0], cute.size(m_b_nkl, mode=[0]), 1))
     g_c_mnl = cute.zipped_divide(
         m_c_mnl,
-        tiler=(_CTA_M, _MMA_N),
+        tiler=(_CTA_M, tile_n),
     )
     tile_sched_params = utils.PersistentTileSchedulerParams(
         g_c_mnl[(0, (None, None, None))].shape,
@@ -850,6 +885,7 @@ def _host(
         epilogue_fragments,
         use_tma_output,
         epilogue_args,
+        tile_n,
     ).launch(
         grid=grid,
         block=(_THREADS, 1, 1),

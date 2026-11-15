@@ -284,7 +284,24 @@ def _arguments(args, matrix_arg_index=None):
     return tuple(converted)
 
 
+def _use_wide_input_gradient(a, b):
+    if a.shape[1] < 65536 or b.shape[0] < 4096 or b.shape[0] % (2 * _TILE_N):
+        return False
+    clusters = _max_active_clusters(a.device.index)
+    m_tiles = (a.shape[0] + _TOKEN_ALIGNMENT - 1) // _TOKEN_ALIGNMENT
+    n_tiles = b.shape[0] // _TILE_N
+    narrow_waves = (m_tiles * n_tiles + clusters - 1) // clusters
+    wide_waves = (m_tiles * (n_tiles // 2) + clusters - 1) // clusters
+    # Each wide tile does twice the work; avoid losing utilization to wave quantization.
+    return 2 * wide_waves <= narrow_waves
+
+
 def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False):
+    wide_dx = isinstance(epilogue, _GradientEpilogue) and _use_wide_input_gradient(a, b)
+    if wide_dx:
+        tma_output = args[0]
+        epilogue, args = _weight_gradient_epilogue, ()
+    tile_n, num_ab_stages = (512, 4) if wide_dx else (256, 6)
     use_tma_output = tma_output is not None
     # Matrix-free epilogues need a descriptor, but never store its dummy matrix.
     output = tma_output if use_tma_output else a.new_empty((a.shape[0], 8))
@@ -309,6 +326,8 @@ def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False
         use_tma_output,
         reduce_add_output,
         swizzle_size,
+        num_ab_stages,
+        tile_n,
         *key,
     )
     compiled = _COMPILE_CACHE.get(cache_key)
@@ -319,7 +338,7 @@ def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False
                 m_a,
                 m_b,
                 m_output,
-                6,
+                num_ab_stages,
                 epilogue,
                 1 if use_tma_output else 0,
                 False,
@@ -331,6 +350,7 @@ def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False
                 a_k_major,
                 b_k_major,
                 reduce_add_output,
+                tile_n,
             )
         _COMPILE_CACHE[cache_key] = compiled
     compiled(m_a, m_b, m_output, stream, cute_args)

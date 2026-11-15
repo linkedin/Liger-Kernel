@@ -60,6 +60,7 @@ def _assert_gradients(x, weight, xr, wr, projection_gradient, chunk_size=None):
 @pytest.mark.parametrize("mode", ["nll", "entropy", "selected", "combined"])
 def test_sm100_outputs_and_signed_gradients(shape, mode, monkeypatch):
     module = _module()
+    monkeypatch.setattr(module, "_use_wide_input_gradient", lambda a, b: True)
     set_seed(42)
     tokens, hidden, vocab = shape
     x = (torch.randn(tokens, hidden, device="cuda", dtype=torch.bfloat16) * 0.25).requires_grad_()
@@ -182,6 +183,7 @@ def test_matched_bf16_selected_gradients_against_fp32(backend, mode, tokens, chu
 @pytest.mark.parametrize("needs_grad", [(True, False), (False, True), (True, True)])
 def test_sm100_noncontiguous_inputs_and_empty_selection(needs_grad, monkeypatch):
     module = _module()
+    monkeypatch.setattr(module, "_use_wide_input_gradient", lambda a, b: True)
     monkeypatch.setattr(module, "_forward_chunk_size", lambda x, weight: min(x.shape[0], 256))
     set_seed(43)
     x = torch.randn(513, 140, device="cuda", dtype=torch.bfloat16)[:, ::2].requires_grad_(needs_grad[0])
@@ -206,6 +208,7 @@ def test_sm100_noncontiguous_inputs_and_empty_selection(needs_grad, monkeypatch)
 @pytest.mark.parametrize("tokens", [17, 513])
 def test_sm100_all_ignored_outputs_and_gradients_are_zero(tokens, monkeypatch):
     module = _module()
+    monkeypatch.setattr(module, "_use_wide_input_gradient", lambda a, b: True)
     monkeypatch.setattr(module, "_forward_chunk_size", lambda x, weight: min(x.shape[0], 256))
     monkeypatch.setattr(module, "_BACKWARD_WORKSPACE_BYTES", 256 * module._align(97) * 2)
     x = torch.randn(tokens, 70, device="cuda", dtype=torch.bfloat16, requires_grad=True)
@@ -218,6 +221,28 @@ def test_sm100_all_ignored_outputs_and_gradients_are_zero(tokens, monkeypatch):
 
     for value in (*outputs, x.grad, weight.grad):
         torch.testing.assert_close(value, torch.zeros_like(value), atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("tokens,hidden,vocab", [(256, 576, 320), (768, 1024, 1024), (2048, 4096, 65536)])
+def test_sm100_wide_input_gradient_matches_narrow_and_preserves_padding(tokens, hidden, vocab, monkeypatch):
+    module = _module()
+    set_seed(45)
+    dz = torch.randn(tokens, vocab, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(vocab, hidden, device="cuda", dtype=torch.bfloat16)
+    expected = torch.empty(tokens, hidden, device="cuda", dtype=torch.bfloat16)
+    storage = torch.full((tokens + 256, hidden + 64), float("nan"), device="cuda", dtype=torch.bfloat16)
+    actual = storage[:tokens, :hidden]
+    module.ensure_cuda_context()
+
+    with monkeypatch.context() as narrow:
+        narrow.setattr(module, "_use_wide_input_gradient", lambda a, b: False)
+        module._gemm(dz, weight.t(), module._GradientEpilogue(), (expected,), ("dx", False))
+    monkeypatch.setattr(module, "_use_wide_input_gradient", lambda a, b: True)
+    module._gemm(dz, weight.t(), module._GradientEpilogue(), (actual,), ("dx", False))
+
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    assert torch.isnan(storage[tokens:]).all()
+    assert torch.isnan(storage[:tokens, hidden:]).all()
 
 
 @pytest.mark.parametrize("vocab,hidden", [(64, 64), (320, 192), (4096, 576)])
