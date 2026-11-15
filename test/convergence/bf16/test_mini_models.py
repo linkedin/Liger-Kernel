@@ -66,10 +66,15 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
 from liger_kernel.utils import infer_device
 from test.utils import DEFAULT_DATASET_PATH
+from test.utils import FLIP_AWARE_ENABLED
 from test.utils import MiniModelConfig
+from test.utils import RoutingRecorder
 from test.utils import assert_verbose_allclose
+from test.utils import compare_losses_with_flip_gate
+from test.utils import first_routing_flip
 from test.utils import get_logprobs
 from test.utils import get_topk
+from test.utils import print_routing_flip_report
 from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_deepseek_v2
 from test.utils import revert_liger_kernel_to_deepseek_v3
@@ -1905,6 +1910,7 @@ def run_mini_model(
     dtype=torch.bfloat16,
     lr=1e-5,
     with_liger=False,
+    routing_recorder_factory=None,
 ):
     # If we move it to the beginning of test_mini_model, the two runs are initialized with different weights.
     # This is due to RNG (Random Number Generator). The formula of RNG progression is x_(n+1) = (a * x_n + c) % m
@@ -1956,6 +1962,7 @@ def run_mini_model(
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
     model = create_model(model_name).to(dtype).to(device)
+    routing_recorder = routing_recorder_factory(model) if routing_recorder_factory is not None else None
 
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
     loader = DataLoader(train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn)
@@ -1970,6 +1977,8 @@ def run_mini_model(
         output = model(**batch, accum_dtype=torch.float32)
         output.loss.backward()
         optimizer.step()
+        if routing_recorder is not None:
+            routing_recorder.end_step()
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
@@ -1987,6 +1996,7 @@ def run_mini_model(
         "loss": loss_list,
         "topk_logprobs": topk_logprobs.values,
         "model": model,
+        "routing_recorder": routing_recorder,
     }
 
 
@@ -2763,21 +2773,39 @@ def test_mini_model(
 ):
     # Non-liger models should be initialized and tested first to avoid the module being overridden
 
-    expected_output = run_mini_model(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr)
-
-    actual_output = run_mini_model(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True)
-
-    # Compare every step of the loss
-    assert_verbose_allclose(
-        torch.tensor([expected_output["loss"]]),
-        torch.tensor([actual_output["loss"]]),
-        atol=loss_atol,
-        rtol=loss_rtol,
-        extra_info="[Loss]",
+    recorder_factory = RoutingRecorder if FLIP_AWARE_ENABLED else None
+    expected_output = run_mini_model(
+        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, routing_recorder_factory=recorder_factory
     )
 
+    actual_output = run_mini_model(
+        model_name=model_name,
+        num_steps=num_steps,
+        dtype=dtype,
+        lr=lr,
+        with_liger=True,
+        routing_recorder_factory=recorder_factory,
+    )
+
+    first_flip_step, flip_counts = first_routing_flip(
+        expected_output["routing_recorder"], actual_output["routing_recorder"]
+    )
+    print_routing_flip_report(first_flip_step, flip_counts, num_steps)
+
+    if compare_losses_with_flip_gate(
+        expected_output["loss"], actual_output["loss"], first_flip_step, loss_atol, loss_rtol
+    ):
+        pytest.xfail(
+            "routing decisions already differ at step 0; step-0 loss matched within tolerance, "
+            "but later steps are not comparable"
+        )
+
     # Compare the topk logprobs from evaluation step
-    if expected_output["topk_logprobs"] is not None and actual_output["topk_logprobs"] is not None:
+    if (
+        first_flip_step is None
+        and expected_output["topk_logprobs"] is not None
+        and actual_output["topk_logprobs"] is not None
+    ):
         assert_verbose_allclose(
             expected_output["topk_logprobs"],
             actual_output["topk_logprobs"],
@@ -2788,10 +2816,11 @@ def test_mini_model(
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
-    for expected_param, actual_param in zip(
-        expected_output["model"].named_parameters(),
-        actual_output["model"].named_parameters(),
-    ):
-        assert_verbose_allclose(
-            expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol, extra_info="[Model parameters]"
-        )
+    if first_flip_step is None:
+        for expected_param, actual_param in zip(
+            expected_output["model"].named_parameters(),
+            actual_output["model"].named_parameters(),
+        ):
+            assert_verbose_allclose(
+                expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol, extra_info="[Model parameters]"
+            )

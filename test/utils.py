@@ -208,6 +208,173 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
         raise AssertionError(extra_info + "\n".join(mismatch_details))
 
 
+# =============================================================================
+# Flip-aware routing capture for MoE convergence nodes (see #1383)
+# =============================================================================
+# Two mathematically-equivalent implementations (e.g. the HF reference and the
+# Liger-patched model) differ by tiny numeric noise. In MoE models that noise
+# breaks near-tie router decisions differently, and from the first divergent
+# top-k selection ("routing flip") onward the two training trajectories are
+# legitimately different: per-step losses, eval logprobs and final parameters
+# stop being comparable no matter the tolerances. The recorder below locates
+# the first flip so the comparisons can be restricted to the comparable
+# prefix, with the flip itself reported instead of failing the test.
+# Set LIGER_FLIP_AWARE=0 to disable the capture and compare everything, as
+# before.
+
+FLIP_AWARE_ENABLED = os.environ.get("LIGER_FLIP_AWARE", "1") != "0"
+
+
+class RoutingRecorder:
+    """Records the top-k expert selection of every ``*Router`` module per step.
+
+    Attach one recorder per training run (both runs must use the same model
+    class) and compare the pair with :func:`first_routing_flip`. The selection
+    is recomputed from the router logits with a plain ``topk``: monotone score
+    transforms (softmax, sigmoid, routing normalizations) do not change which
+    experts are selected, so one code path covers every router family that
+    ships a ``*Router`` module. Models whose MoE block routes without a
+    ``*Router`` class (e.g. pixtral, hunyuan_v1_moe) record nothing and the
+    comparison silently falls back to the un-gated behavior.
+
+    With gradient checkpointing the router runs a second time during the
+    backward recompute; the recomputed decision is captured instead, which is
+    the one whose gradients were actually applied.
+    """
+
+    def __init__(self, model):
+        config = getattr(model.config, "text_config", model.config)
+        self.k = getattr(config, "num_experts_per_tok", None)
+        self.n_routers = 0
+        self.capture_warning = None
+        self.step_records = []  # per step: {module name -> [num_tokens, k] int32 top-k indices}
+        self._pending = {}
+
+        routers = [(name, module) for name, module in model.named_modules() if type(module).__name__.endswith("Router")]
+        self.n_routers = len(routers)
+
+        if not routers:
+            return  # dense model, or a MoE family that routes without a *Router class: stay silent
+
+        if self.k is None:
+            self.capture_warning = "num_experts_per_tok not found on the model config; routing capture disabled"
+            return
+
+        for name, module in routers:
+            module.register_forward_hook(self._make_hook(name))
+
+    def _make_hook(self, name):
+        def hook(_module, _args, output):
+            logits = output[0] if isinstance(output, tuple) else output
+            if not (torch.is_tensor(logits) and logits.is_floating_point()):
+                return
+            with torch.no_grad():
+                topk = torch.topk(logits.detach().float(), self.k, dim=-1).indices
+                self._pending[name] = torch.sort(topk, dim=-1).values.to(torch.int32).cpu()
+
+        return hook
+
+    def end_step(self):
+        """Freeze the routing decisions captured during the current step."""
+        if self._pending:
+            self.step_records.append(self._pending)
+            self._pending = {}
+
+
+def first_routing_flip(recorder_a, recorder_b):
+    """Locate the first training step whose routing decisions diverge.
+
+    Returns ``(first_flip_step, flip_counts)``. ``flip_counts[step]`` counts
+    the ``(layer, token)`` selections that differ at that step.
+    ``first_flip_step`` is ``None`` when every step agrees, and also when the
+    capture is unusable (no routers recorded, mismatched step counts) — in
+    every ``None`` case the caller should compare the outputs un-gated, as
+    before.
+    """
+    if not (FLIP_AWARE_ENABLED and recorder_a is not None and recorder_b is not None):
+        return None, []
+
+    for recorder in (recorder_a, recorder_b):
+        if recorder.capture_warning:
+            print(f"[routing] capture unusable: {recorder.capture_warning}")
+            return None, []
+
+    if recorder_a.n_routers == 0 or recorder_b.n_routers == 0:
+        return None, []  # dense model, or MoE family without a *Router class
+
+    if len(recorder_a.step_records) != len(recorder_b.step_records) or not recorder_a.step_records:
+        print(
+            f"[routing] capture unusable: recorded {len(recorder_a.step_records)} vs "
+            f"{len(recorder_b.step_records)} steps"
+        )
+        return None, []
+
+    if set(recorder_a.step_records[0]) != set(recorder_b.step_records[0]):
+        print("[routing] capture unusable: the two runs recorded different router modules")
+        return None, []
+
+    flip_counts = []
+    for rec_a, rec_b in zip(recorder_a.step_records, recorder_b.step_records):
+        flips = 0
+        for name, indices_a in rec_a.items():
+            indices_b = rec_b[name]
+            if indices_a.shape != indices_b.shape:
+                flips += indices_a.numel()
+                continue
+            # indices are sorted within each token, so a plain compare is a
+            # set comparison: expert order carries no semantics
+            flips += int((indices_a != indices_b).any(dim=-1).sum())
+        flip_counts.append(flips)
+
+    for step, flips in enumerate(flip_counts):
+        if flips:
+            return step, flip_counts
+    return None, flip_counts
+
+
+def print_routing_flip_report(first_flip_step, flip_counts, num_steps):
+    """Print a one-line summary of the routing comparison for the CI log."""
+    if not flip_counts:
+        return  # nothing was recorded (dense model or capture disabled): stay silent
+    total = sum(flip_counts)
+    if first_flip_step is None:
+        if not total:
+            print(f"[routing] {num_steps} steps: routing decisions identical in both runs")
+        return
+    flipped_steps = {step: flips for step, flips in enumerate(flip_counts) if flips}
+    print(
+        f"[routing] first routing flip at step {first_flip_step} of {num_steps}; "
+        f"flipped (layer, token) pairs per step: {flipped_steps}"
+    )
+
+
+def compare_losses_with_flip_gate(expected_losses, actual_losses, first_flip_step, atol, rtol):
+    """Compare the comparable prefix of two per-step loss traces.
+
+    Returns True when the runs already disagreed on routing at step 0. Step 0
+    is still compared there as a pure-forward sanity check: a near-tie flip
+    moves the loss by far less than the node's tolerance, while a genuinely
+    miscomputing kernel does not. The caller xfails after this returns, since
+    every later step is legitimately divergent.
+    """
+    if first_flip_step is None:
+        num_compared, extra_info = len(expected_losses), "[Loss]"
+    elif first_flip_step == 0:
+        num_compared = 1
+        extra_info = "[Loss step 0, routing already flipped; forward sanity check]"
+    else:
+        num_compared = first_flip_step
+        extra_info = f"[Loss steps 0..{first_flip_step - 1}, before the first routing flip]"
+    assert_verbose_allclose(
+        torch.tensor([expected_losses[:num_compared]]),
+        torch.tensor([actual_losses[:num_compared]]),
+        atol=atol,
+        rtol=rtol,
+        extra_info=extra_info,
+    )
+    return first_flip_step == 0
+
+
 # Pre-tokenized dataset using Mistral-7B tokenizer used for convergence tests
 DEFAULT_DATASET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare_tokenized")
 

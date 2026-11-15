@@ -31,9 +31,13 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smolvlm
 from liger_kernel.utils import infer_device
 from test.utils import FAKE_CONFIGS_PATH
+from test.utils import FLIP_AWARE_ENABLED
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
+from test.utils import RoutingRecorder
 from test.utils import assert_verbose_allclose
+from test.utils import compare_losses_with_flip_gate
+from test.utils import first_routing_flip
 from test.utils import get_logprobs
 from test.utils import get_topk
 from test.utils import is_torchvision_available
@@ -41,6 +45,7 @@ from test.utils import load_image_processing_config
 from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
+from test.utils import print_routing_flip_report
 from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_gemma3
 from test.utils import revert_liger_kernel_to_gemma4
@@ -1632,6 +1637,7 @@ def run_mini_model_multimodal(
     dtype=torch.bfloat16,
     lr=1e-5,
     with_liger=False,
+    routing_recorder_factory=None,
 ):
     # If we move it to the beginning of test_mini_model, the two runs are initialized with different weights.
     # This is due to RNG (Random Number Generator). The formula of RNG progression is x_(n+1) = (a * x_n + c) % m
@@ -1679,6 +1685,7 @@ def run_mini_model_multimodal(
     model = create_model(model_name).to(dtype).to(device)
 
     model.gradient_checkpointing_enable()
+    routing_recorder = routing_recorder_factory(model) if routing_recorder_factory is not None else None
 
     train_dataset = create_multimodal_dataset(model_name)
     loader = DataLoader(train_dataset, batch_size=2, shuffle=False, collate_fn=multimodal_collate_fn)
@@ -1693,6 +1700,8 @@ def run_mini_model_multimodal(
         output = model(**batch)
         output.loss.backward()
         optimizer.step()
+        if routing_recorder is not None:
+            routing_recorder.end_step()
 
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
@@ -1711,6 +1720,7 @@ def run_mini_model_multimodal(
         "loss": loss_list,
         "topk_logprobs": topk_logprobs.values,
         "model": model,
+        "routing_recorder": routing_recorder,
     }
 
 
@@ -2075,43 +2085,57 @@ def test_mini_model_multimodal(
     param_rtol,
 ):
     # Non-liger models should be initialized and tested first to avoid the module being overridden
-    expected_output = run_mini_model_multimodal(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr)
+    recorder_factory = RoutingRecorder if FLIP_AWARE_ENABLED else None
+    expected_output = run_mini_model_multimodal(
+        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, routing_recorder_factory=recorder_factory
+    )
 
     actual_output = run_mini_model_multimodal(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True
+        model_name=model_name,
+        num_steps=num_steps,
+        dtype=dtype,
+        lr=lr,
+        with_liger=True,
+        routing_recorder_factory=recorder_factory,
     )
 
-    # Compare the loss of every step
-    assert_verbose_allclose(
-        torch.tensor([expected_output["loss"]]),
-        torch.tensor([actual_output["loss"]]),
-        atol=loss_atol,
-        rtol=loss_rtol,
-        extra_info="[Loss]",
+    first_flip_step, flip_counts = first_routing_flip(
+        expected_output["routing_recorder"], actual_output["routing_recorder"]
     )
+    print_routing_flip_report(first_flip_step, flip_counts, num_steps)
+
+    if compare_losses_with_flip_gate(
+        expected_output["loss"], actual_output["loss"], first_flip_step, loss_atol, loss_rtol
+    ):
+        pytest.xfail(
+            "routing decisions already differ at step 0; step-0 loss matched within tolerance, "
+            "but later steps are not comparable"
+        )
 
     # Compare the logits from the last step
-    assert_verbose_allclose(
-        expected_output["topk_logprobs"],
-        actual_output["topk_logprobs"],
-        atol=logprobs_atol,
-        rtol=logprobs_rtol,
-        extra_info="[Top k logrpobs]",
-    )
+    if first_flip_step is None:
+        assert_verbose_allclose(
+            expected_output["topk_logprobs"],
+            actual_output["topk_logprobs"],
+            atol=logprobs_atol,
+            rtol=logprobs_rtol,
+            extra_info="[Top k logrpobs]",
+        )
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
-    for expected_param, actual_param in zip(
-        expected_output["model"].named_parameters(),
-        actual_output["model"].named_parameters(),
-    ):
-        assert_verbose_allclose(
-            expected_param[1],
-            actual_param[1],
-            atol=param_atol,
-            rtol=param_rtol,
-            extra_info="[Model parameters]",
-        )
+    if first_flip_step is None:
+        for expected_param, actual_param in zip(
+            expected_output["model"].named_parameters(),
+            actual_output["model"].named_parameters(),
+        ):
+            assert_verbose_allclose(
+                expected_param[1],
+                actual_param[1],
+                atol=param_atol,
+                rtol=param_rtol,
+                extra_info="[Model parameters]",
+            )
 
 
 #
