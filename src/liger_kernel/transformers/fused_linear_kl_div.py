@@ -10,7 +10,7 @@ class LigerFusedLinearKLDivLoss(torch.nn.Module):
 
     Handle the forward and backward pass of the final linear layer via KL by avoiding
     the materialization of the large logits tensor. Unlike :class:`LigerFusedLinearJSD`,
-    the teacher distribution is given directly as a probability tensor, so no teacher
+    the teacher distribution is given directly as probabilities or log-probabilities, so no teacher
     projection is fused: this is the fused-linear counterpart of
     :class:`liger_kernel.transformers.kl_div.LigerKLDIVLoss` (and ``torch.nn.KLDivLoss``).
 
@@ -23,11 +23,13 @@ class LigerFusedLinearKLDivLoss(torch.nn.Module):
         temperature (float): temperature applied to the student logits before softmax. Default: `1.0`
         eps (float): small value clamping the target before log so entries with q = 0 contribute 0 (0 * log 0 = 0). Default: `1e-10`
         accum_dtype (torch.dtype): the dtype of intermediate result buffers for weight gradient accumulations. Default: `None`
+        log_target (bool): use cached teacher log-probabilities directly. Negative infinity denotes zero probability.
+            The teacher distribution should already be at the desired temperature. Default: `False`
 
     Shape:
         - student_input: :math:`(BT, H)`, where B is batch size, T is sequence length, H is hidden dimension.
         - student_weight: :math:`(V, H)`, where V is vocab size.
-        - target: :math:`(BT, V)`, target probabilities.
+        - target: :math:`(BT, V)`, target probabilities or log-probabilities.
         - shift_labels: :math:`(BT,)`
         - Output: a scalar.
 
@@ -52,6 +54,7 @@ class LigerFusedLinearKLDivLoss(torch.nn.Module):
         temperature: float = 1.0,
         eps: float = 1e-10,
         accum_dtype: Optional[torch.dtype] = None,
+        log_target: bool = False,
     ):
         super().__init__()
         assert temperature != 0, "temperature cannot be 0."
@@ -60,6 +63,7 @@ class LigerFusedLinearKLDivLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.eps = eps
         self.accum_dtype = accum_dtype
+        self.log_target = log_target
 
     def forward(
         self,
@@ -78,10 +82,12 @@ class LigerFusedLinearKLDivLoss(torch.nn.Module):
             self.temperature,
             self.eps,
             self.accum_dtype,
+            self.log_target,
         )
 
     def extra_repr(self):
         return (
             f"reduction={self.reduction}, ignore_index={self.ignore_index}, "
-            f"temperature={self.temperature}, eps={self.eps}, accum_dtype={self.accum_dtype}"
+            f"temperature={self.temperature}, eps={self.eps}, accum_dtype={self.accum_dtype}, "
+            f"log_target={self.log_target}"
         )

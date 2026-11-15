@@ -227,6 +227,7 @@ def liger_fused_linear_kl_div(
     temperature: float = 1.0,
     eps: float = 1e-10,
     accum_dtype: Optional[torch.dtype] = None,
+    log_target: bool = False,
 ):
     return LigerFusedLinearKLDivFunction.apply(
         student_input,
@@ -238,6 +239,7 @@ def liger_fused_linear_kl_div(
         temperature,
         eps,
         accum_dtype,
+        log_target,
     )
 
 

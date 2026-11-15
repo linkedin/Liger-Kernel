@@ -43,7 +43,7 @@ def get_num_warps(BLOCK_SIZE):
 def _kl_div_kernel(
     X_ptr,  # [BT, V] student logits (x @ W^T), overwritten in place with dL/dlogits
     X_stride,
-    Q_ptr,  # [BT, V] target probabilities
+    Q_ptr,  # [BT, V] target probabilities or log-probabilities
     Q_stride,
     loss_ptr,  # [BT], per-row loss (already scaled by reduction)
     loss_stride,
@@ -55,6 +55,7 @@ def _kl_div_kernel(
     scale,  # pre-computed reduction scale fused into loss and gradients
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
+    LOG_TARGET: tl.constexpr = False,
 ):
     pid = tl.program_id(0).to(tl.int64)
     X_ptr += pid * X_stride
@@ -94,9 +95,16 @@ def _kl_div_kernel(
         mask = offsets < n_cols
         x = tl.load(X_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         x = tl.where(mask, x / temperature, float("-inf"))
-        q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        if LOG_TARGET:
+            log_q = tl.load(Q_ptr + offsets, mask=mask, other=-float("inf")).to(tl.float32)
+            q = tl.exp(log_q)
+            # A masked-out vocabulary entry can have log probability -inf.
+            term = tl.where(q == 0.0, 0.0, q * (log_q - x))
+        else:
+            q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+            term = tl.where(mask, q * (tl.log(tl.maximum(q, eps)) - x), 0.0)
         s += tl.sum(tl.exp(x - m), axis=0)
-        a1 += tl.sum(tl.where(mask, q * (tl.log(tl.maximum(q, eps)) - x), 0.0), axis=0)
+        a1 += tl.sum(term, axis=0)
         a2 += tl.sum(q, axis=0)
 
     lse = m + tl.log(s)
@@ -111,6 +119,8 @@ def _kl_div_kernel(
         x = tl.load(X_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         x = tl.where(mask, x / temperature, float("-inf"))
         q = tl.load(Q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        if LOG_TARGET:
+            q = tl.exp(q)
         softmax = tl.exp(x - m) / s
         d = -scale * (q - softmax * a2) / temperature
         tl.store(X_ptr + offsets, d, mask=mask)
@@ -127,6 +137,7 @@ def fused_linear_kl_div_forward(
     temperature,
     eps,
     accum_dtype=None,
+    log_target=False,
 ):
     device = student_input.device
 
@@ -169,6 +180,7 @@ def fused_linear_kl_div_forward(
     else:  # "sum"
         scale = 1.0
 
+    target_kwargs = {"log_target": True} if log_target else {}
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = min((chunk_id + 1) * chunk_size, BT)
@@ -198,6 +210,7 @@ def fused_linear_kl_div_forward(
             temperature,
             eps,
             scale,
+            **target_kwargs,
         )
         loss_1d[start_idx:end_idx] = loss_rows
 
@@ -326,19 +339,21 @@ class LigerFusedLinearKLDivFunction(torch.autograd.Function):
         temperature: float = 1.0,
         eps: float = 1e-10,
         accum_dtype: Optional[torch.dtype] = None,
+        log_target: bool = False,
     ):
         """
         Args:
 
             student_input (torch.tensor): input of the last projection layer in the student model, with shape (BT, H), where B is batch size, T is sequence length, H is hidden dimension.
             student_weight (torch.tensor): the last projection layer in the student model, with shape (V, H), where V is vocab size.
-            target (torch.tensor): target distribution with shape (BT, V), expected to be probabilities. Computes KL(target || softmax(student_input @ student_weight^T / temperature)).
+            target (torch.tensor): teacher distribution with shape (BT, V), in probability or log-probability space.
             shift_labels (Optional[torch.LongTensor]): indicator of next predicted vocab with shape (BT,). Rows whose label equals ignore_index are excluded from the loss and receive zero gradients. Default: `None`
             reduction (REDUCTION_LITERAL, optional): reduction to be applied over the per-row KL losses: `"batchmean"`, `"mean"` or `"sum"` (same semantics as torch.nn.KLDivLoss). `"none"` is not supported because the gradient-in-forward scheme requires a scalar loss; use :class:`liger_kernel.transformers.kl_div.LigerKLDIVLoss` for element-wise losses. Default: `"batchmean"`
             ignore_index (int, optional): the index to ignore. Default: `-100`
             temperature (float, optional): temperature applied to the student logits before softmax. Default: `1.0`
             eps (float, optional): small value clamping the target before log so entries with q = 0 contribute 0 (0 * log 0 = 0). Default: `1e-10`
             accum_dtype (torch.dtype, optional): dtype of the weight gradient accumulator. Accumulating in `torch.float32` avoids precision loss from the chunked bf16/fp16 GEMM accumulation, at the cost of an extra fp32 weight-sized buffer. Default: `None` (same dtype as `student_weight`)
+            log_target (bool, optional): whether the target contains log-probabilities. Negative infinity denotes zero probability. Default: `False`.
 
         Returns:
             loss (torch.Tensor): KL divergence, scaled by the reduction
@@ -372,6 +387,7 @@ class LigerFusedLinearKLDivFunction(torch.autograd.Function):
             temperature,
             eps,
             accum_dtype,
+            log_target,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -385,4 +401,4 @@ class LigerFusedLinearKLDivFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         (grad_input, grad_weight) = ctx.saved_tensors
         grad_input, grad_weight = fused_linear_kl_div_backward(grad_output, grad_input, grad_weight)
-        return (grad_input, grad_weight, None, None, None, None, None, None, None)
+        return (grad_input, grad_weight, None, None, None, None, None, None, None, None)
