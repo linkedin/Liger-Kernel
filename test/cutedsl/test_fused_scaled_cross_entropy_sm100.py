@@ -33,13 +33,18 @@ def _reference(x, weight, target, temperature, return_entropy, selected_ids, pro
     return outputs
 
 
-def _assert_gradients(x, weight, xr, wr, projection_gradient):
-    # Isolate GEMM correctness from the declared BF16 dZ workspace rounding.
-    # Also bound total error against the independent, unrounded autograd result.
+def _assert_gradients(x, weight, xr, wr, projection_gradient, chunk_size=None):
+    # Model BF16 dZ, partial-gradient, and cross-chunk rounding independently.
+    # Keep the separate error bound against unrounded autograd.
     staged = projection_gradient.to(torch.bfloat16).float()
+    chunk_size = x.shape[0] if chunk_size is None else chunk_size
+    staged_weight_gradient = torch.zeros_like(weight)
+    for start in range(0, x.shape[0], chunk_size):
+        partial = staged[start : start + chunk_size].t() @ x.detach()[start : start + chunk_size].float()
+        staged_weight_gradient.add_(partial.to(weight.dtype))
     staged_gradients = (
         (staged @ weight.detach().float()).to(x.dtype),
-        (staged.t() @ x.detach().float()).to(weight.dtype),
+        staged_weight_gradient,
     )
     for actual, reference, expected in zip((x, weight), (xr, wr), staged_gradients):
         if not actual.requires_grad:
@@ -83,7 +88,46 @@ def test_sm100_outputs_and_signed_gradients(shape, mode, monkeypatch):
     torch.autograd.backward(used_actual, upstream)
     torch.autograd.backward(used_expected, upstream)
 
-    _assert_gradients(x, weight, xr, wr, projection_gradients[0])
+    _assert_gradients(x, weight, xr, wr, projection_gradients[0], chunk_size=256)
+
+
+@pytest.mark.parametrize("backend", ["sm100", "cutile"])
+@pytest.mark.parametrize("mode", ["selected", "combined"])
+@pytest.mark.parametrize("tokens,chunk_size,seed", [(513, 256, 42), (4097, 256, 43), (4097, 2048, 43)])
+def test_matched_bf16_selected_gradients_against_fp32(backend, mode, tokens, chunk_size, seed, monkeypatch):
+    if backend == "sm100":
+        module = _module()
+        monkeypatch.setattr(module, "_BACKWARD_WORKSPACE_BYTES", chunk_size * 1024 * 2)
+        function = module.LigerFusedScaledCrossEntropySM100Function
+    else:
+        pytest.importorskip("cuda.tile")
+        import liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy as module
+
+        monkeypatch.setattr(module, "_calculate_token_chunk_size", lambda *args, **kwargs: chunk_size)
+        function = module.LigerFusedLinearScaledCrossEntropyFunction
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    set_seed(seed)
+    x = (torch.randn(tokens, 128, device="cuda", dtype=torch.bfloat16) * 0.25).requires_grad_()
+    weight = (torch.randn(1024, 128, device="cuda", dtype=torch.bfloat16) / 128**0.5).requires_grad_()
+    target = torch.randint(1024, (tokens,), device="cuda")
+    target[::7] = -100
+    selected_ids = torch.tensor([0, 1023, 0], device="cuda")
+    return_entropy = mode == "combined"
+    xr = x.detach().float().requires_grad_()
+    wr = weight.detach().float().requires_grad_()
+
+    actual = function.apply(x, weight, target, 0.7, -100, 1, return_entropy, selected_ids)
+    expected = _reference(xr, wr, target, 0.7, return_entropy, selected_ids)
+    used_actual = actual if return_entropy else actual[-1:]
+    used_expected = expected if return_entropy else expected[-1:]
+    upstream = tuple(torch.randn_like(value) for value in used_actual)
+    torch.autograd.backward(used_actual, upstream)
+    torch.autograd.backward(used_expected, upstream)
+
+    for value, reference in ((x.grad, xr.grad), (weight.grad, wr.grad)):
+        relative_error = (value.float() - reference).norm() / reference.norm().clamp_min(1e-12)
+        assert relative_error.item() < 0.01
+    assert torch.count_nonzero(x.grad[target == -100]) == 0
 
 
 @pytest.mark.parametrize("needs_grad", [(True, False), (False, True), (True, True)])

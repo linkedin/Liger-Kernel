@@ -2,6 +2,7 @@
 
 Forward keeps logits in TMEM/registers. Backward recomputes logits into a
 bounded dZ workspace and uses native CuTe DSL GEMMs for both input gradients.
+GEMM accumulators are FP32; dW partials and cross-chunk accumulation are BF16.
 """
 
 import cuda.bindings.driver as cuda
@@ -34,7 +35,7 @@ _ALIGNMENT = 64
 _TOKEN_ALIGNMENT = 256
 _TILE_N = 256
 _FRAGMENT_N = 32
-_BACKWARD_WORKSPACE_BYTES = 256 * 1024 * 1024
+_BACKWARD_WORKSPACE_BYTES = 512 * 1024 * 1024
 _LOG2_E = 1.4426950408889634
 _COMPILE_CACHE = {}
 
@@ -184,7 +185,7 @@ class _GradientEpilogue:
 
 @cute.jit
 def _weight_gradient_epilogue(accumulator, output):
-    output.store(accumulator.load())
+    output.store(accumulator.load().to(output.element_type))
 
 
 @cute.kernel
@@ -475,7 +476,7 @@ class LigerFusedScaledCrossEntropySM100Function(torch.autograd.Function):
             if grad_selected is None:
                 grad_selected = lse.new_zeros(padded_tokens, num_selected)
             grad_input = torch.empty_like(x) if ctx.needs_input_grad[0] else None
-            grad_weight = torch.empty_like(weight, dtype=torch.float32) if ctx.needs_input_grad[1] else None
+            grad_weight = torch.empty_like(weight) if ctx.needs_input_grad[1] else None
             rows_per_chunk = max(
                 _TOKEN_ALIGNMENT,
                 _BACKWARD_WORKSPACE_BYTES // (weight.shape[0] * x.element_size() * _TOKEN_ALIGNMENT) * _TOKEN_ALIGNMENT,
@@ -525,5 +526,5 @@ class LigerFusedScaledCrossEntropySM100Function(torch.autograd.Function):
             if grad_input is not None:
                 grad_input = grad_input[:tokens, :hidden]
             if grad_weight is not None:
-                grad_weight = grad_weight[:vocab, :hidden].to(weight.dtype)
+                grad_weight = grad_weight[:vocab, :hidden]
         return grad_input, grad_weight, None, None, None, None, None, None
