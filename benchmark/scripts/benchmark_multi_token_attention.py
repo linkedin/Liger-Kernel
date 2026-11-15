@@ -39,9 +39,8 @@ class TorchMultiTokenAttention(torch.nn.Module):
         zero = torch.tensor(0.0, device=scores.device, dtype=scores.dtype)
         s_inf = scores.masked_fill(~mask, inf)
         probs = torch.nn.functional.softmax(s_inf, dim=-1)
-        out_c = torch.nn.functional.conv2d(
-            probs, self.weight, self.bias, stride=1, padding=self.K // 2, groups=self.groups
-        )
+        probs = torch.nn.functional.pad(probs, (self.K // 2, self.K // 2, self.K - 1, 0))
+        out_c = torch.nn.functional.conv2d(probs, self.weight, self.bias, groups=self.groups)
         return out_c.masked_fill(~mask, zero)
 
 

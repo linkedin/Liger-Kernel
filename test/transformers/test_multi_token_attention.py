@@ -19,6 +19,30 @@ def _make_mask(L, device):
     return tril.view(1, 1, L, L)
 
 
+@pytest.mark.skipif(device == "xpu", reason="Skip for xpu")
+@pytest.mark.parametrize("sparse", [False, True])
+@pytest.mark.parametrize("kernel_size", [1, 3])
+def test_multi_token_attention_causality(sparse, kernel_size):
+    attn = LigerMultiTokenAttention(1, 1, kernel_size, padding=kernel_size // 2, bias=False, sparse=sparse).to(device)
+    with torch.no_grad():
+        attn.weight.zero_()
+        attn.weight[0, 0, -1, kernel_size // 2] = 1
+
+    q = torch.zeros(1, 1, 4, 1, device=device, requires_grad=True)
+    k = torch.arange(4, dtype=q.dtype, device=device).view(1, 1, 4, 1)
+    v = k + 1
+    out = attn(q @ k.transpose(-1, -2)) @ v
+    grad_q = torch.autograd.grad(out[:, :, :2].sum(), q)[0]
+
+    changed_q = q.detach().clone()
+    changed_q[:, :, 2] = 2
+    changed_out = attn(changed_q @ k.transpose(-1, -2)) @ v
+
+    torch.testing.assert_close(out[:, :, :2], changed_out[:, :, :2], rtol=0, atol=0)
+    assert torch.count_nonzero(grad_q[:, :, 2:]) == 0
+    assert out[0, 0, 1, 0].item() == 1.5
+
+
 class TorchMultiTokenAttention(torch.nn.Module):
     def __init__(self, C_in, C_out, K, groups, bias, dtype, device):
         super().__init__()
@@ -34,7 +58,8 @@ class TorchMultiTokenAttention(torch.nn.Module):
         zero = torch.tensor(0.0, device=scores.device, dtype=scores.dtype)
         s_inf = scores.masked_fill(~mask, inf)
         probs = F.softmax(s_inf, dim=-1)
-        out_c = F.conv2d(probs, self.weight, self.bias, stride=1, padding=self.K // 2, groups=self.groups)
+        probs = F.pad(probs, (self.K // 2, self.K // 2, self.K - 1, 0))
+        out_c = F.conv2d(probs, self.weight, self.bias, groups=self.groups)
         return out_c.masked_fill(~mask, zero)
 
 
@@ -197,7 +222,8 @@ class TorchSparseMultiTokenAttention(TorchMultiTokenAttention):
         tau = (cum_sum_k - 1) / k_sparsemax_safe.to(z.dtype)
         tau = torch.where(k_sparsemax == 0, torch.full_like(tau, float("inf")), tau)
         probs = torch.clamp(z - tau, min=0)
-        out_c = F.conv2d(probs, self.weight, self.bias, stride=1, padding=self.K // 2, groups=self.groups)
+        probs = F.pad(probs, (self.K // 2, self.K // 2, self.K - 1, 0))
+        out_c = F.conv2d(probs, self.weight, self.bias, groups=self.groups)
         return out_c.masked_fill(~mask, zero)
 
 
