@@ -35,6 +35,7 @@ _ALIGNMENT = 64
 _TOKEN_ALIGNMENT = 256
 _TILE_N = 256
 _FRAGMENT_N = 32
+_FORWARD_CHUNK_SIZE = 4096
 _BACKWARD_WORKSPACE_BYTES = 512 * 1024 * 1024
 _LOG2_E = 1.4426950408889634
 _COMPILE_CACHE = {}
@@ -345,6 +346,13 @@ def _align(size):
     return (size + _ALIGNMENT - 1) // _ALIGNMENT * _ALIGNMENT
 
 
+def _forward_chunk_size(x, weight):
+    # Smaller projections are launch-bound; chunk only the measured wide-head regime.
+    if x.shape[1] >= 4096 and weight.shape[0] >= 32768:
+        return min(x.shape[0], _FORWARD_CHUNK_SIZE)
+    return x.shape[0]
+
+
 def _forward(x, weight, target, temperature, ignore_index, return_entropy, selected_ids):
     tokens, hidden = x.shape
     vocab = weight.shape[0]
@@ -368,22 +376,26 @@ def _forward(x, weight, target, temperature, ignore_index, return_entropy, selec
     entropy = x.new_empty(padded_tokens if return_entropy else 0)
     saved_entropy = nll.new_empty(padded_tokens if return_entropy else 0)
     selected = nll.new_empty(padded_tokens, num_selected)
-    _gemm(
-        x,
-        weight,
-        _ForwardEpilogue(return_entropy, num_selected),
-        (
-            target,
-            partial,
-            target_logits,
-            selected_ids,
-            selected,
-            Float32(1.0 / temperature),
-            Int32(vocab),
-            Int64(ignore_index),
-        ),
-        ("forward", return_entropy, num_selected),
-    )
+    # Bound the X working set so vocabulary tiles can reuse it from L2.
+    rows_per_chunk = _forward_chunk_size(x, weight)
+    for start in range(0, padded_tokens, rows_per_chunk):
+        end = min(start + rows_per_chunk, padded_tokens)
+        _gemm(
+            x[start:end],
+            weight,
+            _ForwardEpilogue(return_entropy, num_selected),
+            (
+                target[start:end],
+                partial[:, :, start:end],
+                target_logits[start:end],
+                selected_ids,
+                selected[start:end],
+                Float32(1.0 / temperature),
+                Int32(vocab),
+                Int64(ignore_index),
+            ),
+            ("forward", return_entropy, num_selected),
+        )
     args = _arguments((partial, target, target_logits, nll, lse, entropy, saved_entropy, selected))
     stream = _driver_stream(_current_stream(x.device))
     key = (x.device, "finalize", return_entropy, num_selected)

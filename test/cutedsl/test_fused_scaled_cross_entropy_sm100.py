@@ -68,6 +68,7 @@ def test_sm100_outputs_and_signed_gradients(shape, mode, monkeypatch):
     target[::7] = -100
     selected_ids = torch.tensor([0, vocab - 1, 0], device="cuda") if mode in ("selected", "combined") else None
     return_entropy = mode in ("entropy", "combined")
+    monkeypatch.setattr(module, "_forward_chunk_size", lambda x, weight: min(x.shape[0], 256))
     monkeypatch.setattr(module, "_BACKWARD_WORKSPACE_BYTES", 256 * module._align(vocab) * 2)
     temperature = 0.7
 
@@ -89,6 +90,54 @@ def test_sm100_outputs_and_signed_gradients(shape, mode, monkeypatch):
     torch.autograd.backward(used_expected, upstream)
 
     _assert_gradients(x, weight, xr, wr, projection_gradients[0], chunk_size=256)
+
+
+@pytest.mark.parametrize(
+    "tokens,hidden,vocab,chunked",
+    [
+        (4096, 4096, 32768, True),
+        (4097, 4096, 32768, True),
+        (8193, 4096, 32768, True),
+        (8193, 128, 32768, False),
+        (8193, 4096, 1024, False),
+    ],
+)
+def test_sm100_forward_chunk_schedule_matches_unchunked(tokens, hidden, vocab, chunked, monkeypatch):
+    module = _module()
+    set_seed(44)
+    x = (torch.randn(tokens, hidden, device="cuda", dtype=torch.bfloat16) * 0.25).requires_grad_()
+    weight = (torch.randn(vocab, hidden, device="cuda", dtype=torch.bfloat16) / hidden**0.5).requires_grad_()
+    target = torch.randint(vocab, (tokens,), device="cuda")
+    target[4095::4096] = -100
+    selected_ids = torch.tensor([vocab - 1, 0, vocab - 1], device="cuda")
+    function = module.LigerFusedScaledCrossEntropySM100Function.apply
+    chunk_size = module._FORWARD_CHUNK_SIZE
+    padded_tokens = (tokens + module._TOKEN_ALIGNMENT - 1) // module._TOKEN_ALIGNMENT * module._TOKEN_ALIGNMENT
+    with monkeypatch.context() as unchunked:
+        unchunked.setattr(module, "_FORWARD_CHUNK_SIZE", padded_tokens)
+        expected = function(x, weight, target, 0.7, -100, 1, True, selected_ids)
+    upstream = tuple(torch.randn_like(value) for value in expected)
+    expected_gradients = torch.autograd.grad(expected, (x, weight), upstream)
+
+    forward_rows = []
+    original_gemm = module._gemm
+
+    def record_gemm(a, b, epilogue, args, key, **kwargs):
+        if key[0] == "forward":
+            forward_rows.append(a.shape[0])
+        return original_gemm(a, b, epilogue, args, key, **kwargs)
+
+    monkeypatch.setattr(module, "_gemm", record_gemm)
+    actual = function(x, weight, target, 0.7, -100, 1, True, selected_ids)
+    actual_gradients = torch.autograd.grad(actual, (x, weight), upstream)
+
+    if chunked:
+        assert max(forward_rows) <= chunk_size
+    else:
+        assert forward_rows == [padded_tokens]
+    assert sum(forward_rows) == padded_tokens
+    for result, reference in zip((*actual, *actual_gradients), (*expected, *expected_gradients)):
+        torch.testing.assert_close(result, reference, atol=0, rtol=0)
 
 
 @pytest.mark.parametrize("backend", ["sm100", "cutile"])
@@ -131,12 +180,13 @@ def test_matched_bf16_selected_gradients_against_fp32(backend, mode, tokens, chu
 
 
 @pytest.mark.parametrize("needs_grad", [(True, False), (False, True), (True, True)])
-def test_sm100_noncontiguous_inputs_and_empty_selection(needs_grad):
+def test_sm100_noncontiguous_inputs_and_empty_selection(needs_grad, monkeypatch):
     module = _module()
+    monkeypatch.setattr(module, "_forward_chunk_size", lambda x, weight: min(x.shape[0], 256))
     set_seed(43)
-    x = torch.randn(33, 140, device="cuda", dtype=torch.bfloat16)[:, ::2].requires_grad_(needs_grad[0])
+    x = torch.randn(513, 140, device="cuda", dtype=torch.bfloat16)[:, ::2].requires_grad_(needs_grad[0])
     weight = (torch.randn(194, 70, device="cuda", dtype=torch.bfloat16)[::2] / 70**0.5).requires_grad_(needs_grad[1])
-    target = torch.randint(97, (66,), device="cuda")[::2]
+    target = torch.randint(97, (1026,), device="cuda")[::2]
     ids = torch.empty(0, device="cuda", dtype=torch.int64)
 
     nll, selected = module.LigerFusedScaledCrossEntropySM100Function.apply(x, weight, target, 1.5, -100, 1, False, ids)
@@ -156,6 +206,7 @@ def test_sm100_noncontiguous_inputs_and_empty_selection(needs_grad):
 @pytest.mark.parametrize("tokens", [17, 513])
 def test_sm100_all_ignored_outputs_and_gradients_are_zero(tokens, monkeypatch):
     module = _module()
+    monkeypatch.setattr(module, "_forward_chunk_size", lambda x, weight: min(x.shape[0], 256))
     monkeypatch.setattr(module, "_BACKWARD_WORKSPACE_BYTES", 256 * module._align(97) * 2)
     x = torch.randn(tokens, 70, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     weight = torch.randn(97, 70, device="cuda", dtype=torch.bfloat16, requires_grad=True)
