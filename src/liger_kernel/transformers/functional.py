@@ -413,8 +413,10 @@ def liger_poly_norm(X, W, B, eps=1e-6, in_place=True):
     return LigerPolyNormFunction.apply(X, W, B, eps, in_place)
 
 
-def liger_fused_add_rms_norm(X, R, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
-    return LigerFusedAddRMSNormFunction.apply(X, R, W, eps, offset, casting_mode, in_place)
+def liger_fused_add_rms_norm(
+    X, R, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True, row_mode=None
+):
+    return LigerFusedAddRMSNormFunction.apply(X, R, W, eps, offset, casting_mode, in_place, row_mode)
 
 
 def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1, rotary_dim=None):

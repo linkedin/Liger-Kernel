@@ -221,6 +221,158 @@ def _fused_add_rms_norm_backward_kernel(
         tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
 
 
+@triton.jit
+def _block_fused_add_rms_norm_forward_kernel(
+    Y_ptr,
+    Y_row_stride,
+    S_ptr,
+    S_row_stride,
+    X_ptr,
+    X_row_stride,
+    R_ptr,
+    R_row_stride,
+    W_ptr,
+    W_row_stride,
+    RSTD_ptr,
+    RSTD_row_stride,
+    n_rows,
+    n_cols,
+    eps,
+    offset,
+    casting_mode: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_ROW: tl.constexpr,
+):
+    """
+    Same as _fused_add_rms_norm_forward_kernel, but each program handles BLOCK_ROW rows.
+    """
+
+    row_idx = tl.program_id(0).to(tl.int64) * BLOCK_ROW + tl.arange(0, BLOCK_ROW)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    row_mask = row_idx < n_rows
+    col_mask = col_offsets < n_cols
+    mask = row_mask[:, None] & col_mask[None, :]
+
+    X_row = tl.load(X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :], mask=mask, other=0)
+    R_row = tl.load(R_ptr + row_idx[:, None] * R_row_stride + col_offsets[None, :], mask=mask, other=0)
+    S_row = X_row + R_row
+    tl.store(S_ptr + row_idx[:, None] * S_row_stride + col_offsets[None, :], S_row, mask=mask)
+    S_row_dtype = S_row.dtype
+    W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0)
+
+    if casting_mode == _CASTING_MODE_LLAMA:
+        S_row = S_row.to(tl.float32)
+
+    if casting_mode == _CASTING_MODE_GEMMA:
+        W_row = W_row.to(tl.float32)
+        S_row = S_row.to(tl.float32)
+
+    if casting_mode == _CASTING_MODE_NONE:
+        eps = tl.cast(eps, S_row_dtype)
+        offset = tl.cast(offset, S_row_dtype)
+    else:
+        eps = tl.cast(eps, tl.float32)
+        offset = tl.cast(offset, tl.float32)
+
+    mean_square = tl.sum(S_row * S_row, axis=1) / n_cols
+    rstd = rsqrt(mean_square + eps)
+    tl.store(RSTD_ptr + row_idx * RSTD_row_stride, rstd, row_mask)
+
+    S_row = S_row * rstd[:, None]
+
+    if casting_mode == _CASTING_MODE_LLAMA:
+        S_row = S_row.to(S_row_dtype)
+
+    Y_row = S_row * (offset + W_row)[None, :]
+
+    if casting_mode == _CASTING_MODE_GEMMA:
+        Y_row = Y_row.to(S_row_dtype)
+
+    tl.store(Y_ptr + row_idx[:, None] * Y_row_stride + col_offsets[None, :], Y_row, mask=mask)
+
+
+@triton.jit
+def _block_fused_add_rms_norm_backward_kernel(
+    dY_ptr,
+    dY_row_stride,
+    dS_out_ptr,
+    dS_out_row_stride,
+    dX_ptr,
+    dX_row_stride,
+    X_ptr,
+    X_row_stride,
+    X_dtype: tl.constexpr,
+    W_ptr,
+    W_row_stride,
+    RSTD_ptr,
+    RSTD_row_stride,
+    dW_ptr,
+    dW_row_stride,
+    n_rows,
+    n_cols,
+    offset,
+    casting_mode: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_ROW: tl.constexpr,
+    has_dS_out: tl.constexpr,
+    COMPUTE_DW: tl.constexpr = True,
+):
+    """
+    Same as _fused_add_rms_norm_backward_kernel, but each program walks the rows in blocks of BLOCK_ROW.
+    """
+
+    pid = tl.program_id(0).cast(tl.int64)
+    NUM_SMS = tl.num_programs(0)
+
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    col_mask = col_offsets < n_cols
+
+    if COMPUTE_DW:
+        dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+
+    W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
+    W_row = W_row + tl.cast(offset, tl.float32)
+
+    for start in range(pid * BLOCK_ROW, n_rows, NUM_SMS * BLOCK_ROW):
+        row_idx = start + tl.arange(0, BLOCK_ROW)
+        row_mask = row_idx < n_rows
+        mask = row_mask[:, None] & col_mask[None, :]
+
+        dY_row = tl.load(dY_ptr + row_idx[:, None] * dY_row_stride + col_offsets[None, :], mask=mask, other=0.0)
+        X_row = tl.load(X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :], mask=mask, other=0.0)
+        rstd_row = tl.load(RSTD_ptr + row_idx * RSTD_row_stride, mask=row_mask, other=0.0)
+
+        X_row = X_row.to(tl.float32)
+
+        if COMPUTE_DW:
+            if casting_mode == _CASTING_MODE_LLAMA:
+                dW_row += tl.sum((dY_row * (X_row * rstd_row[:, None]).to(X_dtype)).to(tl.float32), 0)
+            else:
+                dW_row += tl.sum(dY_row * (X_row * rstd_row[:, None]), 0)
+
+        if casting_mode == _CASTING_MODE_LLAMA:
+            m = (dY_row * W_row[None, :]).to(tl.float32)
+        elif casting_mode == _CASTING_MODE_GEMMA:
+            dY_row = dY_row.to(tl.float32)
+            m = dY_row * W_row[None, :]
+        else:
+            m = dY_row * W_row[None, :]
+
+        dot = tl.sum(m * X_row, axis=1)
+        c = -(1.0 / n_cols) * rstd_row * rstd_row * rstd_row * dot
+        dX_row = rstd_row[:, None] * m + c[:, None] * X_row
+
+        if has_dS_out:
+            dX_row += tl.load(
+                dS_out_ptr + row_idx[:, None] * dS_out_row_stride + col_offsets[None, :], mask=mask, other=0.0
+            )
+
+        tl.store(dX_ptr + row_idx[:, None] * dX_row_stride + col_offsets[None, :], dX_row.to(X_dtype), mask=mask)
+
+    if COMPUTE_DW:
+        tl.store(dW_ptr + pid * dW_row_stride + col_offsets, dW_row, mask=col_mask)
+
+
 _str_to_casting_mode = {
     "llama": _CASTING_MODE_LLAMA.value,
     "gemma": _CASTING_MODE_GEMMA.value,
@@ -228,7 +380,7 @@ _str_to_casting_mode = {
 }
 
 
-def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
+def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode=None):
     if not isinstance(casting_mode, int):
         assert casting_mode in _str_to_casting_mode, f"Invalid casting mode: {casting_mode}"
         casting_mode = _str_to_casting_mode[casting_mode]
@@ -259,35 +411,73 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
 
-    # TODO: add _block_fused_add_rms_norm_forward_kernel
-    _fused_add_rms_norm_forward_kernel[(n_rows,)](
-        Y,
-        Y.stride(0),
-        S,
-        S.stride(0),
-        X,
-        X.stride(0),
-        R,
-        R.stride(0),
-        W,
-        W.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        n_cols,
-        eps,
-        offset,
-        casting_mode,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        **kernel_args,  # XPU-specific optimization
-    )
+    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+        _fused_add_rms_norm_forward_kernel[(n_rows,)](
+            Y,
+            Y.stride(0),
+            S,
+            S.stride(0),
+            X,
+            X.stride(0),
+            R,
+            R.stride(0),
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            n_cols,
+            eps,
+            offset,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            **kernel_args,  # XPU-specific optimization
+        )
+    else:
+        BLOCK_ROW = 16
+        kernel_args["BLOCK_ROW"] = BLOCK_ROW
+        _block_fused_add_rms_norm_forward_kernel[(triton.cdiv(n_rows, BLOCK_ROW),)](
+            Y,
+            Y.stride(0),
+            S,
+            S.stride(0),
+            X,
+            X.stride(0),
+            R,
+            R.stride(0),
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            n_rows,
+            n_cols,
+            eps,
+            offset,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            **kernel_args,  # XPU-specific optimization
+        )
 
     return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, num_warps, num_stages, casting_mode
 
 
 def fused_add_rms_norm_backward(
-    dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, num_stages, in_place, needs_dw=None
+    dY,
+    dS_out,
+    S,
+    W,
+    RSTD,
+    offset,
+    casting_mode,
+    BLOCK_SIZE,
+    num_warps,
+    num_stages,
+    in_place,
+    needs_dw=None,
+    row_mode=None,
 ):
     shape = dY.shape
     dim = shape[-1]
@@ -324,35 +514,65 @@ def fused_add_rms_norm_backward(
     if S.device.type == "xpu":
         set_large_grf_mode(kernel_args)
 
-    # TODO: add _block_fused_add_rms_norm_backward_kernel
-    _fused_add_rms_norm_backward_kernel[grid](
-        dY,
-        dY.stride(0),
-        dS_out,
-        dS_out.stride(0),
-        dX,
-        dX.stride(0),
-        S,
-        S.stride(0),
-        torch_to_triton_dtype[S.dtype],
-        W,
-        W.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        _dW,
-        _dW.stride(0) if compute_dw else 0,
-        n_rows,
-        n_cols,
-        offset,
-        rows_per_program,
-        casting_mode,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        has_dS_out=dS_out is not None,
-        COMPUTE_DW=compute_dw,
-        **kernel_args,  # XPU-specific optimization
-    )
+    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+        _fused_add_rms_norm_backward_kernel[grid](
+            dY,
+            dY.stride(0),
+            dS_out,
+            dS_out.stride(0),
+            dX,
+            dX.stride(0),
+            S,
+            S.stride(0),
+            torch_to_triton_dtype[S.dtype],
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            _dW,
+            _dW.stride(0) if compute_dw else 0,
+            n_rows,
+            n_cols,
+            offset,
+            rows_per_program,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            has_dS_out=dS_out is not None,
+            COMPUTE_DW=compute_dw,
+            **kernel_args,  # XPU-specific optimization
+        )
+    else:
+        BLOCK_ROW = 16
+        kernel_args["BLOCK_ROW"] = BLOCK_ROW
+        _block_fused_add_rms_norm_backward_kernel[grid](
+            dY,
+            dY.stride(0),
+            dS_out,
+            dS_out.stride(0),
+            dX,
+            dX.stride(0),
+            S,
+            S.stride(0),
+            torch_to_triton_dtype[S.dtype],
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            _dW,
+            _dW.stride(0) if compute_dw else 0,
+            n_rows,
+            n_cols,
+            offset,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            has_dS_out=dS_out is not None,
+            COMPUTE_DW=compute_dw,
+            **kernel_args,  # XPU-specific optimization
+        )
 
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype) if compute_dw else None
@@ -384,22 +604,24 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
     - 'none': no casting is done. The computation is done in the original dtype. This saves memory and is slightly faster, but has more error w.r.t. the original implementation.
 
     The `in_place` option determines whether to modify dY in-place to store dX. This defaults to `True` to save memory.
+
+    `row_mode=True` forces the row kernels. By default the block kernels are used for a small hidden size and many rows.
     """
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False):
+    def forward(ctx, X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False, row_mode=None):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        # TODO: add row_mode
         Y, S, RSTD, BLOCK_SIZE, num_warps, num_stages, casting_mode = fused_add_rms_norm_forward(
-            X, R, W, eps, offset, casting_mode
+            X, R, W, eps, offset, casting_mode, row_mode
         )
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
+        ctx.row_mode = row_mode
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.num_stages = num_stages
@@ -427,6 +649,7 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
             ctx.num_stages,
             ctx.in_place,
             needs_dw=needs_dw,
+            row_mode=ctx.row_mode,
         )
 
         return dX, dR, dW, None, None, None, None, None
