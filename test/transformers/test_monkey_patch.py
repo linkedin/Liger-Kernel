@@ -3260,6 +3260,53 @@ def test_apply_liger_kernel_to_qwen2_vl_family_class_patch_rms_norm(monkeypatch,
         assert isinstance(layer.post_attention_layernorm, LigerRMSNorm), type(layer.post_attention_layernorm).__name__
 
 
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2-VL / Qwen2.5-VL support is only compatible with transformers >= 4.52.4",
+)
+@pytest.mark.parametrize(
+    "model_name, attention_cls, apply_fn_kwargs",
+    [
+        ("qwen2_vl", "Qwen2VLAttention", {"layer_norm": False}),
+        ("qwen2_5_vl", "Qwen2_5_VLAttention", {}),
+    ],
+)
+def test_apply_liger_kernel_to_qwen2_vl_family_class_patch_rope(
+    monkeypatch, model_name, attention_cls, apply_fn_kwargs
+):
+    # rope=True must replace the RoPE function that the text attention actually calls. Up to transformers 5.16 that
+    # is apply_multimodal_rotary_pos_emb; from 5.17 the M-RoPE sections are merged in the rotary embedding and the
+    # attention calls the standard apply_rotary_pos_emb instead.
+    import importlib
+
+    from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
+    from liger_kernel.transformers.rope import liger_rotary_pos_emb
+
+    modeling = importlib.import_module(f"transformers.models.{model_name}.modeling_{model_name}")
+    attention_src = inspect.getsource(getattr(modeling, attention_cls).forward)
+    if "apply_multimodal_rotary_pos_emb(" in attention_src:
+        called_name, expected = "apply_multimodal_rotary_pos_emb", liger_multimodal_rotary_pos_emb
+    else:
+        assert "apply_rotary_pos_emb(" in attention_src
+        called_name, expected = "apply_rotary_pos_emb", liger_rotary_pos_emb
+
+    # Restore the module-level RoPE symbols swapped by the class-level patch once the test is done
+    for name in ("apply_multimodal_rotary_pos_emb", "apply_rotary_pos_emb"):
+        if hasattr(modeling, name):
+            monkeypatch.setattr(modeling, name, getattr(modeling, name))
+    created = [n for n in ("apply_multimodal_rotary_pos_emb", "apply_rotary_pos_emb") if not hasattr(modeling, n)]
+
+    try:
+        getattr(monkey_patch, f"apply_liger_kernel_to_{model_name}")(
+            rope=True, rms_norm=False, swiglu=False, fused_linear_cross_entropy=False, **apply_fn_kwargs
+        )
+        assert getattr(modeling, called_name) is expected, f"{model_name}.{called_name} was not patched"
+    finally:
+        for name in created:
+            if hasattr(modeling, name):
+                delattr(modeling, name)
+
+
 @pytest.mark.skipif(not is_internvl_available(), reason="internvl module not available")
 def test_apply_liger_kernel_to_instance_for_internvl():
     # Ensure any monkey patching is cleaned up for subsequent tests

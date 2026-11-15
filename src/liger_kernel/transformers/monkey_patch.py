@@ -2027,7 +2027,12 @@ def apply_liger_kernel_to_qwen2_vl(
     from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
 
     if rope:
-        modeling_qwen2_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
+        # transformers < 5.17 applies M-RoPE in apply_multimodal_rotary_pos_emb. transformers >= 5.17 merges the
+        # mrope sections in the rotary embedding and the text attention calls the standard apply_rotary_pos_emb
+        if hasattr(modeling_qwen2_vl, "apply_multimodal_rotary_pos_emb"):
+            modeling_qwen2_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
+        else:
+            modeling_qwen2_vl.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
         # transformers < 5.2 uses Qwen2RMSNorm, transformers >= 5.2 defines its own Qwen2VLRMSNorm
@@ -2117,7 +2122,12 @@ def apply_liger_kernel_to_qwen2_5_vl(
     from liger_kernel.transformers.model.qwen2_5_vl import lce_forward as qwen2_5_vl_lce_forward
 
     if rope:
-        modeling_qwen2_5_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
+        # transformers < 5.17 applies M-RoPE in apply_multimodal_rotary_pos_emb. transformers >= 5.17 merges the
+        # mrope sections in the rotary embedding and the text attention calls the standard apply_rotary_pos_emb
+        if hasattr(modeling_qwen2_5_vl, "apply_multimodal_rotary_pos_emb"):
+            modeling_qwen2_5_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
+        else:
+            modeling_qwen2_5_vl.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         # transformers < 5.2 uses Qwen2RMSNorm, transformers >= 5.2 defines its own Qwen2_5_VLRMSNorm
         modeling_qwen2_5_vl.Qwen2RMSNorm = LigerRMSNorm
