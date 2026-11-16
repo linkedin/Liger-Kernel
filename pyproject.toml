@@ -78,3 +78,7 @@ line-ending = "auto"
 known-first-party = ["liger_kernel"]
 force-single-line = true
 lines-between-types = 1
+
+[tool.setuptools.package-data]
+"liger_kernel.ops.backends._ascend.ops" = ["_softmax_native.cpp"]
+"liger_kernel.ops" = ["experimental/*.py"]

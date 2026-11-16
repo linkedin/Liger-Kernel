@@ -1,0 +1,14 @@
+/workspace/softmax1802/user/../measure_initialization.py:11: UserWarning: Cannot create tensor with interal format while allow_internel_format=False, tensor will be created with base format. (Triggered internally at build/CMakeFiles/torch_npu.dir/compiler_depend.ts:338.)
+  grad = torch.randn_like(x)
+[
+  {
+    "stage": "first_call_with_existing_disk_compiler_cache",
+    "wall_ms": 1084.3671099282801,
+    "peak_extra_bytes": 251660288
+  },
+  {
+    "stage": "cached_context",
+    "wall_ms": 0.2409704029560089,
+    "peak_extra_bytes": 33555456
+  }
+]

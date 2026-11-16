@@ -1,0 +1,852 @@
+{
+  "A2_upstream_port": {
+    "count": 33,
+    "passed": 33,
+    "max_ratio": 0.9927552849011428,
+    "failures": [],
+    "pairs": [
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "1024",
+        "ratio": 0.8830481912354291
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "2048",
+        "ratio": 0.9078995903617961
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "4096",
+        "ratio": 0.8632004823746856
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "8192",
+        "ratio": 0.9199249384726587
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "1024",
+        "ratio": 0.9128675521890875
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "2048",
+        "ratio": 0.951318043170919
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "4096",
+        "ratio": 0.9324707715468344
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "8192",
+        "ratio": 0.9384054668223983
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "1024",
+        "ratio": 0.9601226981606066
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "2048",
+        "ratio": 0.9492404227410277
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "4096",
+        "ratio": 0.9625275407763695
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "8192",
+        "ratio": 0.9877103380453744
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "llama_2_7b",
+        "ratio": 0.7251392434714656
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "llama_3_8b",
+        "ratio": 0.73513511432614
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_7b",
+        "ratio": 0.8333333103759768
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9039043458150303
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_72b",
+        "ratio": 0.9249972910912263
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.8030707283520508
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "deepseek_v3",
+        "ratio": 0.9805741502390117
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "llama_2_7b",
+        "ratio": 0.9043151408598366
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "llama_3_8b",
+        "ratio": 0.9071356132515223
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_7b",
+        "ratio": 0.9425256852997745
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9589573916980892
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_72b",
+        "ratio": 0.9442015534170289
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.7530480943995697
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "deepseek_v3",
+        "ratio": 0.9252348598934796
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "llama_2_7b",
+        "ratio": 0.970376511203134
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "llama_3_8b",
+        "ratio": 0.9569020863148422
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_7b",
+        "ratio": 0.9927552849011428
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9746433630851165
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_72b",
+        "ratio": 0.9667173560511697
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.9612346293434817
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "deepseek_v3",
+        "ratio": 0.9700088704750558
+      }
+    ]
+  },
+  "A2_upstream_port2": {
+    "count": 33,
+    "passed": 33,
+    "max_ratio": 0.9872946269107158,
+    "failures": [],
+    "pairs": [
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "1024",
+        "ratio": 0.9184497527953214
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "2048",
+        "ratio": 0.844652085183685
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "4096",
+        "ratio": 0.8822298458214638
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "8192",
+        "ratio": 0.9253724998563577
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "1024",
+        "ratio": 0.7760834820402734
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "2048",
+        "ratio": 0.9539017131645754
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "4096",
+        "ratio": 0.9393884406726036
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "8192",
+        "ratio": 0.9504122215605278
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "1024",
+        "ratio": 0.9561155797347813
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "2048",
+        "ratio": 0.9586413088613902
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "4096",
+        "ratio": 0.9726617648039595
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "8192",
+        "ratio": 0.9787302262654721
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "llama_2_7b",
+        "ratio": 0.7848740737426011
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "llama_3_8b",
+        "ratio": 0.7634166972135582
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_7b",
+        "ratio": 0.869787691643975
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_14b",
+        "ratio": 0.8895275617527151
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_72b",
+        "ratio": 0.8779575886298916
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.8352626416669728
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "deepseek_v3",
+        "ratio": 0.9736665287834937
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "llama_2_7b",
+        "ratio": 0.8775035738136199
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "llama_3_8b",
+        "ratio": 0.9305069560614183
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_7b",
+        "ratio": 0.9670317141537149
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_14b",
+        "ratio": 0.8976298983172296
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_72b",
+        "ratio": 0.9519980232124945
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.9336662947173353
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "deepseek_v3",
+        "ratio": 0.9718810453722182
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "llama_2_7b",
+        "ratio": 0.9743435462900414
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "llama_3_8b",
+        "ratio": 0.9728922899350891
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_7b",
+        "ratio": 0.9872946269107158
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9743727159628804
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_72b",
+        "ratio": 0.9619153949042161
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.9681089199981071
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "deepseek_v3",
+        "ratio": 0.9803447272389442
+      }
+    ]
+  },
+  "A3_upstream_port": {
+    "count": 33,
+    "passed": 30,
+    "max_ratio": 1.1619733896104858,
+    "failures": [
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "1024",
+        "ratio": 1.1619733896104858
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_7b",
+        "ratio": 1.1524822351506525
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "deepseek_v2_lite",
+        "ratio": 1.096330297112551
+      }
+    ],
+    "pairs": [
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "1024",
+        "ratio": 0.5141756372369072
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "2048",
+        "ratio": 0.6849949960306965
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "4096",
+        "ratio": 0.7709796852549703
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "8192",
+        "ratio": 0.8113541822789715
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "1024",
+        "ratio": 1.1619733896104858
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "2048",
+        "ratio": 0.9398620368779161
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "4096",
+        "ratio": 0.9729191596376271
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "8192",
+        "ratio": 0.9826113680758237
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "1024",
+        "ratio": 0.9341077407038201
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "2048",
+        "ratio": 0.9600496927137809
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "4096",
+        "ratio": 0.9740035203759962
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "8192",
+        "ratio": 0.980195269832922
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "llama_2_7b",
+        "ratio": 0.5938476517496546
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "llama_3_8b",
+        "ratio": 0.5917491337931833
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_7b",
+        "ratio": 0.7074272077962974
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9044096840169462
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_72b",
+        "ratio": 0.7421616028505136
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.45120157510899533
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "deepseek_v3",
+        "ratio": 0.8135902292826759
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "llama_2_7b",
+        "ratio": 0.9327168152189511
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "llama_3_8b",
+        "ratio": 0.9402505577763428
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_7b",
+        "ratio": 1.1524822351506525
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9392903723884982
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_72b",
+        "ratio": 0.9864465957610282
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "deepseek_v2_lite",
+        "ratio": 1.096330297112551
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "deepseek_v3",
+        "ratio": 0.9590576970309406
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "llama_2_7b",
+        "ratio": 0.9522138271698669
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "llama_3_8b",
+        "ratio": 0.9520507850972311
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_7b",
+        "ratio": 0.9734001687188664
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9682974850302686
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_72b",
+        "ratio": 0.9572572491195837
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.9124319350261665
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "deepseek_v3",
+        "ratio": 0.9669267313410882
+      }
+    ]
+  },
+  "A3_upstream_port2": {
+    "count": 33,
+    "passed": 32,
+    "max_ratio": 1.059487195240676,
+    "failures": [
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "1024",
+        "ratio": 1.059487195240676
+      }
+    ],
+    "pairs": [
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "1024",
+        "ratio": 0.4828777079912677
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "2048",
+        "ratio": 0.6617470288140688
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "4096",
+        "ratio": 0.7573481653195749
+      },
+      {
+        "sweep": "token_length",
+        "mode": "forward",
+        "case": "8192",
+        "ratio": 0.8002967261956524
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "1024",
+        "ratio": 1.059487195240676
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "2048",
+        "ratio": 0.9377568109591342
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "4096",
+        "ratio": 0.9733680300973687
+      },
+      {
+        "sweep": "token_length",
+        "mode": "backward",
+        "case": "8192",
+        "ratio": 0.9997740156123441
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "1024",
+        "ratio": 0.9329863491431907
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "2048",
+        "ratio": 0.9612570406561044
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "4096",
+        "ratio": 0.9749685185633418
+      },
+      {
+        "sweep": "token_length",
+        "mode": "full",
+        "case": "8192",
+        "ratio": 0.9818384552507385
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "llama_2_7b",
+        "ratio": 0.634570382547208
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "llama_3_8b",
+        "ratio": 0.6345253722519915
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_7b",
+        "ratio": 0.7267068748660055
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9499354340029913
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "qwen2.5_72b",
+        "ratio": 0.750459043183201
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.5625000060381392
+      },
+      {
+        "sweep": "model_config",
+        "mode": "forward",
+        "case": "deepseek_v3",
+        "ratio": 0.8247331271939731
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "llama_2_7b",
+        "ratio": 0.9471250951638929
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "llama_3_8b",
+        "ratio": 0.9468988794644245
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_7b",
+        "ratio": 0.9493813671306907
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9520469799449456
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "qwen2.5_72b",
+        "ratio": 0.9611983126614271
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.8225158484594937
+      },
+      {
+        "sweep": "model_config",
+        "mode": "backward",
+        "case": "deepseek_v3",
+        "ratio": 0.9481969516826458
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "llama_2_7b",
+        "ratio": 0.9607841694936933
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "llama_3_8b",
+        "ratio": 0.9616840774445942
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_7b",
+        "ratio": 0.9737039634492793
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_14b",
+        "ratio": 0.9738626605974142
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "qwen2.5_72b",
+        "ratio": 0.9606352677928025
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "deepseek_v2_lite",
+        "ratio": 0.928058712903893
+      },
+      {
+        "sweep": "model_config",
+        "mode": "full",
+        "case": "deepseek_v3",
+        "ratio": 0.9693743220955975
+      }
+    ]
+  }
+}

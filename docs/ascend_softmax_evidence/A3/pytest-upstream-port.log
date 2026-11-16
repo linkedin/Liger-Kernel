@@ -1,0 +1,13 @@
+........................................................................ [ 55%]
+..........................................................               [100%]
+=============================== warnings summary ===============================
+test/transformers/test_softmax.py::test_liger_softmax[dtype0-1e-05-1e-05-shape0]
+  /workspace/softmax1802/upstream-review/test/transformers/test_softmax.py:55: UserWarning: Cannot create tensor with interal format while allow_internel_format=False, tensor will be created with base format. (Triggered internally at build/CMakeFiles/torch_npu.dir/compiler_depend.ts:338.)
+    grad_output = torch.randn_like(ref_out)
+
+test/transformers/test_softmax_ascend.py::test_numerical_gradient
+  /workspace/relu1803/venv/lib/python3.11/site-packages/torch/autograd/gradcheck.py:923: UserWarning: Input #0 requires gradient and is not a double precision floating point or complex. This check will likely fail if all the inputs are not of double precision floating point or complex. 
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+130 passed, 2 warnings in 42.68s

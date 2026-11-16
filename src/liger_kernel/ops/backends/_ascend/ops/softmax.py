@@ -1,3 +1,7 @@
+from functools import lru_cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version
+
 import torch
 import triton
 import triton.language as tl
@@ -313,26 +317,64 @@ def _softmax_backward(
     return dx2d.view(*batch, n_cols)
 
 
-class LigerSoftmaxFunction(torch.autograd.Function):
+@lru_cache(maxsize=1)
+def _native_softmax_supported():
+    # The generated native launcher uses the private ABI of this fixed stack.
+    try:
+        return version("triton-ascend") == "3.2.2" and version("torch-npu").split("+")[0] == "2.9.0"
+    except PackageNotFoundError:
+        return False
+
+
+class _LegacySoftmaxFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, input_: torch.Tensor):
-        y, BLOCK_SIZE, ROWS_PER_BLOCK, multi_block_launch = _softmax_forward(input_)
+    def forward(ctx, input_: torch.Tensor, dim: int = -1):
+        rank = input_.ndim
+        if dim < -max(rank, 1) or dim >= max(rank, 1):
+            raise IndexError(f"Dimension out of range for tensor with {rank} dimensions: {dim}")
+        ctx.dim = dim % max(rank, 1)
+        ctx.scalar = rank == 0
+        ctx.empty = input_.numel() == 0
+        if ctx.empty:
+            return torch.empty_like(input_)
+        if ctx.scalar:
+            input_ = input_.reshape(1)
+        elif ctx.dim != rank - 1:
+            input_ = input_.movedim(ctx.dim, -1).contiguous()
+        y, BLOCK_SIZE, rows_per_block, multi_block_launch = _softmax_forward(input_)
         ctx.save_for_backward(y)
         ctx.BLOCK_SIZE = BLOCK_SIZE
-        ctx.ROWS_PER_BLOCK = ROWS_PER_BLOCK
+        ctx.rows_per_block = rows_per_block
         ctx.multi_block_launch = multi_block_launch
-        return y
+        if ctx.scalar:
+            return y.reshape(())
+        return y.movedim(-1, ctx.dim).contiguous()
 
     @staticmethod
     @ensure_contiguous
     def backward(ctx, grad_output):
+        if ctx.empty:
+            result = torch.empty_like(grad_output)
+            return (result, None)[: len(ctx.needs_input_grad)]
+        if ctx.scalar:
+            grad_output = grad_output.reshape(1)
+        else:
+            grad_output = grad_output.movedim(ctx.dim, -1).contiguous()
         (y,) = ctx.saved_tensors
         dx = _softmax_backward(
             grad_output,
             y,
             ctx.BLOCK_SIZE,
-            ctx.ROWS_PER_BLOCK,
+            ctx.rows_per_block,
             ctx.multi_block_launch,
         )
-        return dx
+        dx = dx.reshape(()) if ctx.scalar else dx.movedim(-1, ctx.dim)
+        return (dx, None)[: len(ctx.needs_input_grad)]
+
+
+# Select once during backend initialization; avoid import/version checks on the hot path.
+if _native_softmax_supported():
+    from liger_kernel.ops.backends._ascend.ops._softmax_optimized import LigerSoftmaxFunction
+else:
+    LigerSoftmaxFunction = _LegacySoftmaxFunction

@@ -1,0 +1,8 @@
+Version=9.1.0
+version_dir=cann
+required_package_runtime_version="9.1"
+required_package_ge-executor_version="9.1"
+required_package_metadef_version="9.1"
+required_package_bisheng-compiler_version="9.1"
+required_package_tbe-tik_version="9.1"
+timestamp=20260730_231653901
