@@ -78,3 +78,6 @@ line-ending = "auto"
 known-first-party = ["liger_kernel"]
 force-single-line = true
 lines-between-types = 1
+
+[tool.setuptools.package-data]
+"liger_kernel.ops" = ["_relu_squared_ascend.cpp"]

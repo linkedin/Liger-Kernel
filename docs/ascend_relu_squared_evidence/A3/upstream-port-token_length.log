@@ -1,0 +1,310 @@
+/workspace/relu1803/Liger-Kernel/benchmark/scripts/benchmark_model_configs.py:282: UserWarning: Cannot create tensor with interal format while allow_internel_format=False, tensor will be created with base format. (Triggered internally at build/CMakeFiles/torch_npu.dir/compiler_depend.ts:338.)
+  y.backward(torch.randn_like(y))
+**************************************
+     BENCHMARKING SPEED for RELU_SQUARED
+**************************************
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.01655999943614006,
+      0.03474000096321106,
+      0.07838000357151031,
+      0.1606599986553192
+    ],
+    "y_values_20": [
+      0.01634399965405464,
+      0.034563999623060226,
+      0.07805600017309189,
+      0.16002799570560455
+    ],
+    "y_values_80": [
+      0.01674400083720684,
+      0.035040002316236496,
+      0.07862000167369843,
+      0.16123200953006744
+    ],
+    "timestamp": "2026-11-16 06:09:01",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.03189999982714653,
+      0.06227999925613403,
+      0.11501999944448471,
+      0.22075000405311584
+    ],
+    "y_values_20": [
+      0.031115999445319176,
+      0.06176000088453293,
+      0.11410000175237656,
+      0.2198439985513687
+    ],
+    "y_values_80": [
+      0.032363999634981155,
+      0.06323999911546707,
+      0.11553600430488586,
+      0.2218800038099289
+    ],
+    "timestamp": "2026-11-16 06:09:01",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.0445299968123436,
+      0.06539999693632126,
+      0.13346000015735626,
+      0.2687000036239624
+    ],
+    "y_values_20": [
+      0.036320000886917114,
+      0.06508000195026398,
+      0.13298399746418,
+      0.2681800127029419
+    ],
+    "y_values_80": [
+      0.05073599889874458,
+      0.0658000037074089,
+      0.13397599756717682,
+      0.2697399854660034
+    ],
+    "timestamp": "2026-11-16 06:09:01",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.06387999653816223,
+      0.11788000166416168,
+      0.23316000401973724,
+      0.48805999755859375
+    ],
+    "y_values_20": [
+      0.0634400025010109,
+      0.11745999753475189,
+      0.2326439917087555,
+      0.4859679937362671
+    ],
+    "y_values_80": [
+      0.06437999755144119,
+      0.11819999665021896,
+      0.23414400219917297,
+      0.49023202061653137
+    ],
+    "timestamp": "2026-11-16 06:09:01",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.47224000096321106,
+      0.9352200031280518,
+      1.861109972000122,
+      3.679610013961792
+    ],
+    "y_values_20": [
+      0.47193199396133423,
+      0.9349520206451416,
+      1.860535979270935,
+      3.6767001152038574
+    ],
+    "y_values_80": [
+      0.472460001707077,
+      0.9353839755058289,
+      1.8622440099716187,
+      3.6825199127197266
+    ],
+    "timestamp": "2026-11-16 06:09:01",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.5336099863052368,
+      1.009119987487793,
+      1.9776500463485718,
+      4.015439987182617
+    ],
+    "y_values_20": [
+      0.533079981803894,
+      1.0087000131607056,
+      1.9744679927825928,
+      4.013400077819824
+    ],
+    "y_values_80": [
+      0.5350080132484436,
+      1.0100599527359009,
+      1.9807840585708618,
+      4.01747989654541
+    ],
+    "timestamp": "2026-11-16 06:09:02",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  }
+]
+**************************************
+     BENCHMARKING MEMORY for RELU_SQUARED
+**************************************
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "y_values_20": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "y_values_80": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "timestamp": "2026-11-16 06:09:02",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      64.00390625,
+      128.00390625,
+      256.00390625,
+      512.00390625
+    ],
+    "y_values_20": [
+      64.00390625,
+      128.00390625,
+      256.00390625,
+      512.00390625
+    ],
+    "y_values_80": [
+      64.00390625,
+      128.00390625,
+      256.00390625,
+      512.00390625
+    ],
+    "timestamp": "2026-11-16 06:09:02",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  }
+]

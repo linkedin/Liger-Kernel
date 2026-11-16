@@ -1,0 +1,204 @@
+[
+  {
+    "profile": "final_profile_liger-kernel_liger",
+    "kernels": {
+      "_relu_squared_ascend_forward_kernel": {
+        "count": 10,
+        "mean_us": 15.148600000000002
+      },
+      "_relu_squared_ascend_backward_kernel": {
+        "count": 10,
+        "mean_us": 30.779200000000003
+      }
+    },
+    "cpu": {
+      "(anonymous namespace)::ReluBackward": {
+        "count": 10,
+        "mean_us": 30.581
+      },
+      "autograd::engine::evaluate_function: (anonymous namespace)::ReluBackward": {
+        "count": 10,
+        "mean_us": 36.273
+      }
+    }
+  },
+  {
+    "profile": "final_profile_liger-kernel_torch",
+    "kernels": {
+      "aclnnRelu_Relu_Relu": {
+        "count": 10,
+        "mean_us": 11.6585
+      },
+      "aclnnPowTensorScalar_PowsAiCore_Pows": {
+        "count": 10,
+        "mean_us": 16.0426
+      },
+      "aclnnPowTensorScalar_TensorMoveAiCore_TensorMove": {
+        "count": 10,
+        "mean_us": 10.544400000000001
+      },
+      "aclnnMuls_Muls_Muls": {
+        "count": 10,
+        "mean_us": 12.2826
+      },
+      "aclnnMul_MulAiCore_Mul": {
+        "count": 10,
+        "mean_us": 20.914799999999996
+      },
+      "aclnnThresholdBackward_ReluGrad_ReluGrad": {
+        "count": 10,
+        "mean_us": 25.000999999999998
+      }
+    },
+    "cpu": {
+      "PowBackward0": {
+        "count": 10,
+        "mean_us": 50.861000000000004
+      },
+      "autograd::engine::evaluate_function: PowBackward0": {
+        "count": 10,
+        "mean_us": 57.987
+      },
+      "aclnnThresholdBackward": {
+        "count": 10,
+        "mean_us": 5.232
+      },
+      "ReluBackward0": {
+        "count": 10,
+        "mean_us": 20.387999999999998
+      },
+      "autograd::engine::evaluate_function: ReluBackward0": {
+        "count": 10,
+        "mean_us": 26.394
+      }
+    }
+  },
+  {
+    "profile": "final_profile_upstream_liger",
+    "kernels": {
+      "_relu_squared_forward_kernel": {
+        "count": 10,
+        "mean_us": 21.956799999999998
+      },
+      "_relu_squared_backward_kernel": {
+        "count": 10,
+        "mean_us": 29.477099999999997
+      }
+    },
+    "cpu": {
+      "LigerReLUSquaredFunction": {
+        "count": 10,
+        "mean_us": 221.43800000000002
+      },
+      "LigerReLUSquaredFunctionBackward": {
+        "count": 10,
+        "mean_us": 191.243
+      },
+      "autograd::engine::evaluate_function: LigerReLUSquaredFunctionBackward": {
+        "count": 10,
+        "mean_us": 201.079
+      }
+    }
+  },
+  {
+    "profile": "profile_liger-kernel_liger",
+    "kernels": {
+      "_relu_squared_ascend_forward_kernel": {
+        "count": 10,
+        "mean_us": 15.106800000000002
+      },
+      "_relu_squared_ascend_backward_kernel": {
+        "count": 10,
+        "mean_us": 30.807000000000006
+      }
+    },
+    "cpu": {
+      "(anonymous namespace)::ReluBackward": {
+        "count": 10,
+        "mean_us": 68.44699999999999
+      },
+      "autograd::engine::evaluate_function: (anonymous namespace)::ReluBackward": {
+        "count": 10,
+        "mean_us": 79.95700000000001
+      }
+    }
+  },
+  {
+    "profile": "profile_liger-kernel_torch",
+    "kernels": {
+      "aclnnRelu_Relu_Relu": {
+        "count": 10,
+        "mean_us": 11.950300000000002
+      },
+      "aclnnPowTensorScalar_PowsAiCore_Pows": {
+        "count": 10,
+        "mean_us": 15.874699999999999
+      },
+      "aclnnPowTensorScalar_TensorMoveAiCore_TensorMove": {
+        "count": 10,
+        "mean_us": 10.4764
+      },
+      "aclnnMuls_Muls_Muls": {
+        "count": 10,
+        "mean_us": 12.056499999999998
+      },
+      "aclnnMul_MulAiCore_Mul": {
+        "count": 10,
+        "mean_us": 22.0409
+      },
+      "aclnnThresholdBackward_ReluGrad_ReluGrad": {
+        "count": 10,
+        "mean_us": 25.125
+      }
+    },
+    "cpu": {
+      "PowBackward0": {
+        "count": 10,
+        "mean_us": 80.68299999999999
+      },
+      "autograd::engine::evaluate_function: PowBackward0": {
+        "count": 10,
+        "mean_us": 93.25
+      },
+      "aclnnThresholdBackward": {
+        "count": 10,
+        "mean_us": 8.592
+      },
+      "ReluBackward0": {
+        "count": 10,
+        "mean_us": 25.392
+      },
+      "autograd::engine::evaluate_function: ReluBackward0": {
+        "count": 10,
+        "mean_us": 35.123999999999995
+      }
+    }
+  },
+  {
+    "profile": "profile_upstream_liger",
+    "kernels": {
+      "_relu_squared_forward_kernel": {
+        "count": 10,
+        "mean_us": 21.831
+      },
+      "_relu_squared_backward_kernel": {
+        "count": 10,
+        "mean_us": 29.2255
+      }
+    },
+    "cpu": {
+      "LigerReLUSquaredFunction": {
+        "count": 10,
+        "mean_us": 195.49
+      },
+      "LigerReLUSquaredFunctionBackward": {
+        "count": 10,
+        "mean_us": 167.84
+      },
+      "autograd::engine::evaluate_function: LigerReLUSquaredFunctionBackward": {
+        "count": 10,
+        "mean_us": 176.5
+      }
+    }
+  }
+]

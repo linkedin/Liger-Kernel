@@ -1,0 +1,45 @@
+[
+  {
+    "platform": "A2",
+    "sweep": "token_length",
+    "count": 12,
+    "passed": 12,
+    "max_ratio": 0.914367286113983,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "sweep": "model_config",
+    "count": 21,
+    "passed": 21,
+    "max_ratio": 0.9197130331116553,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "sweep": "token_length",
+    "count": 12,
+    "passed": 12,
+    "max_ratio": 0.9410714375055268,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "sweep": "model_config",
+    "count": 21,
+    "passed": 19,
+    "max_ratio": 1.411221078208411,
+    "failures": [
+      {
+        "mode": "forward",
+        "configuration": "deepseek_v2_lite",
+        "ratio": 1.411221078208411
+      },
+      {
+        "mode": "backward",
+        "configuration": "deepseek_v2_lite",
+        "ratio": 1.0262184672966477
+      }
+    ]
+  }
+]
