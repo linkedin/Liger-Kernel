@@ -4,6 +4,7 @@ import torch
 from torch.nn import Embedding
 
 from liger_kernel.transformers.experimental.embedding import LigerEmbedding
+from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -64,63 +65,57 @@ def test_embedding_correctness(num_embeddings, embedding_dim, padding_idx, dtype
 INT32_MAX = 2**31 - 1
 
 
-def _free_device_memory_bytes():
-    if not torch.cuda.is_available():
-        return 0
-    free, _ = torch.cuda.mem_get_info()
-    return free
-
-
 @pytest.mark.skipif(
-    _free_device_memory_bytes() < 24 * 1024**3,
-    reason="Needs about 20 GiB of free GPU memory for a >2^31-element output and its gradient",
+    device == "cpu" or get_total_gpu_memory() < 32,
+    reason="Needs about 20 GiB of GPU memory for a >2^31-element output and its gradient",
 )
 def test_embedding_output_offsets_beyond_int32():
     """tokens * embedding_dim > 2^31: row offsets into output / grad_output must not wrap."""
-    from liger_kernel.ops.experimental.embedding import LigerEmbeddingFunction
-
     num_embeddings, embedding_dim = 1024, 128
     num_tokens = INT32_MAX // embedding_dim + 1024
     assert num_tokens * embedding_dim > INT32_MAX
 
     torch.manual_seed(0)
-    weight = torch.randn(num_embeddings, embedding_dim, device=device, dtype=torch.float32, requires_grad=True)
+    with torch.device(device):
+        liger_embedding = LigerEmbedding(num_embeddings, embedding_dim)
+    liger_embedding.weight.data = torch.randn(num_embeddings, embedding_dim, device=device, dtype=torch.float32)
     indices = torch.randint(0, num_embeddings, (num_tokens,), device=device)
 
-    output = LigerEmbeddingFunction.apply(weight, indices)
+    output = liger_embedding(indices)
     # Rows past the int32 boundary must hold the gathered embeddings.
     tail = indices[-2048:]
-    torch.testing.assert_close(output[-2048:], weight.detach()[tail], rtol=0, atol=0)
+    torch.testing.assert_close(output[-2048:], liger_embedding.weight.detach()[tail], rtol=0, atol=0)
 
     # With an all-ones gradient each weight row's gradient is its exact hit count.
     output.backward(torch.ones_like(output))
     del output
     counts = torch.bincount(indices, minlength=num_embeddings).to(torch.float32)
     expected = counts[:, None].expand(-1, embedding_dim)
-    torch.testing.assert_close(weight.grad, expected, rtol=0, atol=0)
+    torch.testing.assert_close(liger_embedding.weight.grad, expected, rtol=0, atol=0)
 
 
 @pytest.mark.skipif(
-    _free_device_memory_bytes() < 24 * 1024**3,
-    reason="Needs about 17 GiB of free GPU memory for a >2^31-element table and its gradient",
+    device == "cpu" or get_total_gpu_memory() < 32,
+    reason="Needs about 17 GiB of GPU memory for a >2^31-element table and its gradient",
 )
 def test_embedding_table_offsets_beyond_int32_with_int32_indices():
     """num_embeddings * embedding_dim > 2^31 with int32 indices: table offsets must not wrap."""
-    from liger_kernel.ops.experimental.embedding import LigerEmbeddingFunction
-
     embedding_dim = 128
     num_embeddings = INT32_MAX // embedding_dim + 1024
     assert num_embeddings * embedding_dim > INT32_MAX
 
-    weight = torch.zeros(num_embeddings, embedding_dim, device=device, dtype=torch.float32)
+    with torch.device(device):
+        liger_embedding = LigerEmbedding(num_embeddings, embedding_dim)
     last_rows = torch.arange(num_embeddings - 512, num_embeddings, device=device)
-    weight[last_rows] = last_rows.to(torch.float32)[:, None]
-    weight.requires_grad_(True)
+    # Zero the table in place, then mark the last rows with their row ids.
+    liger_embedding.weight.data.zero_()
+    liger_embedding.weight.data[last_rows] = last_rows.to(torch.float32)[:, None]
     indices = last_rows.to(torch.int32)
 
-    output = LigerEmbeddingFunction.apply(weight, indices)
-    torch.testing.assert_close(output, weight.detach()[last_rows], rtol=0, atol=0)
+    output = liger_embedding(indices)
+    torch.testing.assert_close(output, liger_embedding.weight.detach()[last_rows], rtol=0, atol=0)
 
     output.backward(torch.ones_like(output))
-    assert torch.all(weight.grad[last_rows] == 1)
-    assert int(weight.grad.sum().item()) == last_rows.numel() * embedding_dim
+    grad = liger_embedding.weight.grad
+    assert torch.all(grad[last_rows] == 1)
+    assert int(grad.sum().item()) == last_rows.numel() * embedding_dim
