@@ -1025,6 +1025,8 @@ def _rope_with_width(q, k, cos, sin, backward, rotary_dim, head_dim):
         return _partial_rope(q, k, cos, sin, backward, rotary_dim)
     if backward:
         return _launch_rope(q, k, cos, sin, backward=True, q_out=q, k_out=k)
+    if (q is None or _is_free_bsnd(q)) and (k is None or _is_free_bsnd(k)):
+        return _launch_rope(q, k, cos, sin, backward=False, q_out=q, k_out=k)
     return _launch_rope(q, k, cos, sin, backward=False)
 
 
