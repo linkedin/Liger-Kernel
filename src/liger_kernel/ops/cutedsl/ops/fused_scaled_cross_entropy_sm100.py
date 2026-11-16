@@ -296,23 +296,12 @@ def _use_wide_input_gradient(a, b):
     return 2 * wide_waves <= narrow_waves
 
 
-def _use_direct_input_gradient(a, b):
-    # Keep complete 1024-token tiles within one resident four-CTA wave.
-    clusters = (a.shape[0] // 1024) * (b.shape[0] // _TOKEN_ALIGNMENT)
-    return a.shape[0] % 1024 == 0 and clusters <= _max_active_clusters(a.device.index, (2, 2))
-
-
 def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False):
     wide_dx = isinstance(epilogue, _GradientEpilogue) and _use_wide_input_gradient(a, b)
-    direct_dx = wide_dx and _use_direct_input_gradient(a, b)
     if wide_dx:
         tma_output = args[0]
-        if direct_dx:
-            a, b = b, a
-            tma_output = tma_output.t()
         epilogue, args = _weight_gradient_epilogue, ()
     tile_n, num_ab_stages = (512, 4) if wide_dx else (256, 6)
-    cluster_shape = (2, 2) if direct_dx else (2, 1)
     use_tma_output = tma_output is not None
     # Matrix-free epilogues need a descriptor, but never store its dummy matrix.
     output = tma_output if use_tma_output else a.new_empty((a.shape[0], 8))
@@ -334,13 +323,11 @@ def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False
         a_k_major,
         b_k_major,
         output.dtype,
-        output.stride(1) == 1,
         use_tma_output,
         reduce_add_output,
         swizzle_size,
         num_ab_stages,
         tile_n,
-        cluster_shape,
         *key,
     )
     compiled = _COMPILE_CACHE.get(cache_key)
@@ -357,14 +344,13 @@ def _gemm(a, b, epilogue, args, key, *, tma_output=None, reduce_add_output=False
                 False,
                 use_tma_output,
                 swizzle_size,
-                _max_active_clusters(a.device.index, cluster_shape),
+                _max_active_clusters(a.device.index),
                 stream,
                 cute_args,
                 a_k_major,
                 b_k_major,
                 reduce_add_output,
                 tile_n,
-                cluster_shape,
             )
         _COMPILE_CACHE[cache_key] = compiled
     compiled(m_a, m_b, m_output, stream, cute_args)

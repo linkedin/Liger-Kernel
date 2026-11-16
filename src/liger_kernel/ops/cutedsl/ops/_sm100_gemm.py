@@ -234,7 +234,6 @@ def _make_tma_epilogue_partitions(
     row_reduction=False,
     cta_tile: cutlass.Constexpr = _CTA_TILE,
     epi_tile: cutlass.Constexpr = _EPI_TILE,
-    output_layout: cutlass.Constexpr = utils.LayoutEnum.ROW_MAJOR,
 ):
     """Partition accumulator fragments for fused conversion and TMA output."""
     if const_expr(row_reduction):
@@ -242,7 +241,7 @@ def _make_tma_epilogue_partitions(
     else:
         copy_atom_t2r = get_tmem_load_op(
             cta_tile,
-            output_layout,
+            utils.LayoutEnum.ROW_MAJOR,
             io_dtype,
             Float32,
             epi_tile,
@@ -270,7 +269,7 @@ def _make_tma_epilogue_partitions(
     t_tr_r_out = cute.make_rmem_tensor(t_tr_r_acc.shape, io_dtype)
 
     copy_atom_r2s = get_smem_store_op(
-        output_layout,
+        utils.LayoutEnum.ROW_MAJOR,
         io_dtype,
         Float32,
         tiled_copy_t2r,
@@ -311,7 +310,6 @@ def _kernel(
     use_tma_output: cutlass.Constexpr,
     epilogue_args: tuple = (),
     tile_n: cutlass.Constexpr = _MMA_N,
-    output_layout: cutlass.Constexpr = utils.LayoutEnum.ROW_MAJOR,
 ):
     epilogue_tile_n = 64 if tile_n == 512 else _EPI_N
     mma_tiler = (_MMA_M, tile_n, _MMA_K)
@@ -555,7 +553,6 @@ def _kernel(
             row_reduction=epilogue_fragments == 0,
             cta_tile=cta_tile,
             epi_tile=epi_tile,
-            output_layout=output_layout,
         )
         if const_expr(epilogue_fragments == 2):
             t_tr_r_lhs = cute.make_rmem_tensor(t_tr_r_acc.shape, Float32)
@@ -744,12 +741,9 @@ def _host(
     b_k_major: cutlass.Constexpr = True,
     reduce_add_output: cutlass.Constexpr = False,
     tile_n: cutlass.Constexpr = _MMA_N,
-    cluster_shape: cutlass.Constexpr = _CLUSTER_SHAPE_MN,
 ):
     # Two adjacent N256 UMMAs share A; the wider result uses the full TMEM allocation.
     assert tile_n in (_MMA_N, 512)
-    assert cluster_shape in ((2, 1), (2, 2))
-    output_layout = utils.LayoutEnum.from_tensor(m_out)
     epilogue_tile_n = 64 if tile_n == 512 else _EPI_N
     mma_tiler = (_MMA_M, tile_n, _MMA_K)
     epi_tile = (_CTA_M, epilogue_tile_n)
@@ -794,7 +788,7 @@ def _host(
     )
     tiled_mma = cute.make_tiled_mma(mma_op)
     cluster_layout_vmnk = cute.tiled_divide(
-        cute.make_layout((*cluster_shape, 1)),
+        cute.make_layout((*_CLUSTER_SHAPE_MN, 1)),
         (tiled_mma.thr_id.shape,),
     )
 
@@ -812,13 +806,13 @@ def _host(
     )
     out_smem_layout_staged = utils.sm100.make_smem_layout_epi(
         m_out_mnl.element_type,
-        output_layout,
+        utils.LayoutEnum.ROW_MAJOR,
         epi_tile,
         _NUM_OUT_STAGES,
     )
 
     a_op = utils.sm100.cluster_shape_to_tma_atom_A(
-        cluster_shape,
+        _CLUSTER_SHAPE_MN,
         tiled_mma.thr_id,
     )
     a_smem_layout = cute.slice_(a_smem_layout_staged, (None, None, None, 0))
@@ -832,7 +826,7 @@ def _host(
     )
 
     b_op = utils.sm100.cluster_shape_to_tma_atom_B(
-        cluster_shape,
+        _CLUSTER_SHAPE_MN,
         tiled_mma.thr_id,
     )
     b_smem_layout = cute.slice_(b_smem_layout_staged, (None, None, None, 0))
@@ -863,7 +857,7 @@ def _host(
     )
     tile_sched_params = utils.PersistentTileSchedulerParams(
         g_c_mnl[(0, (None, None, None))].shape,
-        (*cluster_shape, 1),
+        (*_CLUSTER_SHAPE_MN, 1),
         swizzle_size=swizzle_size,
         raster_along_m=swizzle_size == 1,
     )
@@ -892,11 +886,10 @@ def _host(
         use_tma_output,
         epilogue_args,
         tile_n,
-        output_layout,
     ).launch(
         grid=grid,
         block=(_THREADS, 1, 1),
-        cluster=(*cluster_shape, 1),
+        cluster=(*_CLUSTER_SHAPE_MN, 1),
         stream=stream,
     )
 
@@ -907,12 +900,8 @@ _GET_CURRENT_RAW_STREAM = getattr(torch._C, "_cuda_getCurrentRawStream", None)
 
 
 @functools.cache
-def _max_active_clusters(device_index, cluster_shape=_CLUSTER_SHAPE_MN):
-    cluster_sms = cluster_shape[0] * cluster_shape[1]
-    if cluster_shape != _CLUSTER_SHAPE_MN:
-        # Larger clusters can lose capacity at GPC boundaries.
-        with torch.cuda.device(device_index):
-            return utils.HardwareInfo(torch.cuda.current_device()).get_max_active_clusters(cluster_sms)
+def _max_active_clusters(device_index):
+    cluster_sms = _CLUSTER_SHAPE_MN[0] * _CLUSTER_SHAPE_MN[1]
     sm_count = torch.cuda.get_device_properties(device_index).multi_processor_count
     return sm_count // cluster_sms
 
