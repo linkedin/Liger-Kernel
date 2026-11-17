@@ -12,6 +12,7 @@ from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # no
 from liger_kernel.transformers.fused_linear_kl_div import LigerFusedLinearKLDivLoss  # noqa: F401
 from liger_kernel.transformers.fused_linear_score_centering import ISCorrection  # noqa: F401
 from liger_kernel.transformers.fused_linear_score_centering import LigerFusedLinearScoreCenteringLoss  # noqa: F401
+from liger_kernel.transformers.fused_lora_linear import LigerFusedLoRALinear  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
 from liger_kernel.transformers.kl_div import LigerKLDIVLoss  # noqa: F401
@@ -195,6 +196,7 @@ __all__ = [
     "LigerFusedLinearScoreCenteringLoss",
     "ISCorrection",
     "LigerFusedLinearKLDivLoss",
+    "LigerFusedLoRALinear",
     "LigerGEGLUMLP",
     "LigerJSD",
     "LigerLayerNorm",
