@@ -28,7 +28,7 @@ def _sparsemax_forward_kernel(
         sorted_x_stride_row: row stride of sorted_x.
         o_ptr: pointer to output tensor [n_rows, n_cols].
         o_stride_row: row stride of o.
-        n_rows: number of rows (constexpr).
+        n_rows: number of rows.
         n_cols: number of columns (constexpr).
         BLOCK_SIZE: tile size >= n_cols (constexpr).
     """
@@ -99,7 +99,7 @@ def _sparsemax_forward_tiled_kernel(
         sorted_x_stride_row: row stride of sorted_x.
         o_ptr: pointer to output tensor [n_rows, n_cols].
         o_stride_row: row stride of o.
-        n_rows: number of rows (constexpr).
+        n_rows: number of rows.
         n_cols: number of columns (constexpr).
         BLOCK_SIZE: tile size < n_cols (constexpr).
     """
@@ -168,7 +168,7 @@ def _sparsemax_backward_kernel(
         go_ptr: pointer to upstream gradient [n_rows, n_cols].
         gi_ptr: pointer to input gradient output [n_rows, n_cols].
         stride: common row stride for o, go, gi.
-        n_rows: number of rows (constexpr).
+        n_rows: number of rows.
         n_cols: number of columns (constexpr).
         BLOCK_SIZE: tile size >= n_cols (constexpr).
     """
@@ -208,7 +208,7 @@ def _sparsemax_backward_tiled_kernel(
         go_ptr: pointer to upstream gradient [n_rows, n_cols].
         gi_ptr: pointer to input gradient output [n_rows, n_cols].
         stride: common row stride for o, go, gi.
-        n_rows: number of rows (constexpr).
+        n_rows: number of rows.
         n_cols: number of columns (constexpr).
         BLOCK_SIZE: tile size < n_cols (constexpr).
     """
