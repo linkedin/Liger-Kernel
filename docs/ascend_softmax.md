@@ -27,20 +27,29 @@ torch/torch-npu 2.9.0, triton-ascend 3.2.2 and Python 3.11.15. It is not validat
 of all current-main integrations or its newer default NPU dependencies. Use
 `pip install --no-deps -e .` inside a prepared fixed-version environment and
 install Ninja separately. The native extension needs a C++17 compiler and
-installed torch-npu headers/libraries.
+installed torch-npu headers/libraries and the CANN development headers. Source
+CANN’s `set_env.sh` before use so `ASCEND_HOME_PATH` identifies the SDK.
 
 ## Kernel and host design
 
-The kernels subtract the row maximum and use FP32 exponential/reduction
+The kernels subtract the row maximum and use FP32 exponential/summation
 arithmetic. Backward computes `y * (dy - sum(dy * y))`. Masked row/column tails,
 split reductions for irregular widths, and segmented long rows limit wasted
 work and on-chip memory requirements.
 
 A2 uses split backward reductions with 8/4/2 rows per tile for 2048/4096/8192
-columns; narrow-tail forward reductions avoid power-of-two padding. A3 uses
-persistent per-vector-core row loops for medium widths. For 4096 columns and
-fewer than 2048 rows, it uses one-row fused tiles instead. Multi-buffer choices
-are part of the measured dispatch strategy.
+columns and a four-row, three-part reduction for 3584 columns. Forward uses
+three-part reductions at widths 3584 and 7168, with a shared reciprocal for
+normalization. Narrow tails use two-part reductions with a shared reciprocal. The fused A2 forward path
+reduces the maximum in the input dtype, then converts to FP32 for subtraction,
+exponential and summation. Bounded offsets use int32; larger tensors retain
+int64 indexing.
+
+A3 uses two-row fused backward reductions at 2048 columns. At 4096 columns,
+it uses persistent two-row tiles below 2048 rows, fused two-row tiles from 2048
+to 4095 rows, and persistent one-row tiles for larger row counts. Two-row paths
+use multi-buffering. Configurations are
+fixed from measured cold-cache and end-to-end comparisons.
 
 A C++ bridge handles allocation, native autograd and launching; numerical
 computation remains in Triton. Contexts are bounded to 128 cached shapes/dtypes/
@@ -48,22 +57,46 @@ devices. Saved tensor hooks, version checks, dynamic launch hooks, graph release
 and the current stream remain active. The exact torch-npu 2.9.0 stream accessor
 is provided by `c10_npu::getCurrentNPUStream(device).stream(false)`.
 
-For at least 1,048,576 elements and at most 8192 columns, first use compares
-candidate tiles/buffering in two opposite-order rounds with 100 ms sampling.
-A candidate replaces the default only with at least 10% measured improvement.
-Temporary tuning tensors are released, input/RNG state is preserved, and later
-calls reuse the selected context. Cache eviction can cause retuning. Tuning is
-skipped for launch hooks, compile-only and tensor profiling. Warm up matching
-shapes before NPU Graph capture. Initial compilation/tuning costs are separate
-from steady-state benchmark timing.
+The typed launcher retains Triton 3.2.2's argument packing, workspace and
+profiling logic. Its native path submits the generated callback through
+`OpCommand::RunOpApiV2`, avoiding construction of a generic `OpCommand` for each
+launch. The callback bridge is passed explicitly rather than installed as a
+mutable process-global callback. Python hook dispatch retains the original
+backend path. The unprofiled native entry keeps its invariant kernel name and
+empty tensor metadata in static storage, reducing callback capture costs.
+The bridge passes the cached kernel name by reference, avoiding a string
+allocation at the RunOpApiV2 boundary. Both extension builders use the installed
+PyTorch C++ ABI. Profiling-enabled launches retain per-call tensor metadata.
+
+Dimension validation and axis movement run in the existing native entry,
+reducing per-forward Python metadata calls while preserving scalar, arbitrary-axis
+and noncontiguous-input behavior.
+
+Output and gradient allocation call torch-npu's exported ND allocator directly.
+Backward checks Python launch hooks under the GIL and, after initialization,
+runs the typed C++ entry outside that scope. Hook-enabled launches retain the
+backend's Python dispatch. Concurrent stream and composed-autograd tests cover
+these paths.
+
+Launch configurations are fixed; first use compiles the matching kernels and
+native extension without online tuning. The extension cache name includes its
+source and framework versions to prevent reuse of an outdated binary. Warm up
+matching shapes before NPU Graph capture. Compilation costs are separate from
+steady-state benchmark timing.
 
 ## Validation conditions
 
 See [validation and profiling](ascend_softmax_validation.md) and the committed
-[before/after table](ascend_softmax_evidence/performance.md).
+[current before/after table](ascend_softmax_evidence/dimcache-before-after.csv).
 
-**A2's passing performance results require binding the entire benchmark process,
-including PyTorch, to CPU 0–31 on this server (NPU-local NUMA node 0).** Unbound
-A2 runs had failures and are also retained. This CPU list is machine-specific;
-query the PCI device's `numa_node` and `local_cpulist` on another server. A3 used
-default CPU scheduling. **950 is still being requested and has not been tested.**
+The current optimization runs use `CPU_AFFINITY_CONF=2,npu0:8-31` on both
+servers. The original benchmark runs directly, with the same initialization
+and affinity settings for Liger and PyTorch. External observations confirm the
+main/autograd thread on CPU 8, the task-queue thread on CPU 9 and the release
+thread on CPU 10. Do not combine this setting with `taskset`: pre-existing
+process affinity can prevent torch-npu's automatic thread binding from taking
+effect. Earlier `taskset` trials and their failures remain in the evidence.
+
+These CPU numbers are specific to the test servers. See the validation report
+for each revision's results and scheduling conditions. 950 validation is pending
+server availability.

@@ -1,0 +1,44 @@
+{
+  "stage": "partition_port",
+  "source_sha256": {
+    "src/liger_kernel/ops/backends/_ascend/ops/softmax.py": "0e9e4fee6446ec092714c58213fa8cd684aada2ae33f0503c84a8247491cb236",
+    "src/liger_kernel/ops/backends/_ascend/ops/_softmax_optimized.py": "942f6e1383ddcdba7039ceafc33f872550d0d12811fecd4ded153809b34c07a1",
+    "src/liger_kernel/ops/backends/_ascend/ops/_softmax_native.cpp": "811b71c702a7c290f900969729fd19b6d8029a94ce9cf982be4377b46c322d6e",
+    "src/liger_kernel/ops/backends/_ascend/ops/_softmax_launcher.py": "f3e73205e5c827c8963caa8bb8581ed04b51fdcd3ca51f73de3c5e3280adc557",
+    "src/liger_kernel/ops/softmax.py": "bbdd5ddc4c314b10bb082fe75d3274625fe0c39a62946b5ac751f6d08a2d081c",
+    "test/transformers/test_softmax_ascend.py": "46f719f6862bab933786f494b702da1521dabefd2f5b8f69b9ed9eaae62fe717"
+  },
+  "environment": {
+    "CANN": "9.1.0",
+    "torch": "2.9.0",
+    "torch_npu": "2.9.0",
+    "triton_ascend": "3.2.2"
+  },
+  "conditions": {
+    "A2": {
+      "taskset": "8-31",
+      "CPU_AFFINITY_CONF": "2,npu0:8-31"
+    },
+    "A3": {
+      "taskset": "0-31",
+      "CPU_AFFINITY_CONF": "2,npu0:0-31"
+    }
+  },
+  "tests": {
+    "A2": 140,
+    "A3": 140
+  },
+  "speed_pairs_passed": {
+    "A2": [
+      32,
+      32
+    ],
+    "A3": [
+      33,
+      33
+    ]
+  },
+  "speed_pairs_total": 33,
+  "memory_pairs_per_round": 11,
+  "published": false
+}

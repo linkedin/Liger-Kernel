@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 import torch
 
@@ -6,6 +8,8 @@ from triton.compiler.compiler import CompiledKernel
 from liger_kernel.ops import LigerSoftmaxFunction
 from liger_kernel.transformers.functional import liger_softmax
 from liger_kernel.transformers.softmax import LigerSoftmax
+
+NPU_FORMAT_ND = 2
 
 
 def _validated_stack_available():
@@ -31,14 +35,17 @@ pytestmark = pytest.mark.skipif(
         ((2, 1), -1),
         ((97, 2048), -1),
         ((49, 4096), -1),
+        ((2048, 4096), -1),
         ((5, 8192), -1),
         ((31,), -1),
         ((3, 5, 7), 0),
         ((3, 5, 7), 1),
         ((3, 5, 7), -1),
         ((3, 3584), -1),
+        ((31, 3584), -1),
         ((3, 5120), -1),
         ((3, 7168), -1),
+        ((31, 7168), -1),
         ((2, 4097), -1),
         ((1, 65537), -1),
     ],
@@ -132,6 +139,47 @@ def test_saved_output_version_check():
         y.add_(1)
     with pytest.raises(RuntimeError, match="modified by an inplace operation"):
         y.backward(torch.ones_like(y))
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_nd_output_composes_with_autograd(dtype):
+    from torch_npu import get_npu_format
+
+    x = torch.randn(3, 2, 17, device="npu", dtype=dtype).transpose(0, 1).detach().requires_grad_(True)
+    ref = x.detach().clone().requires_grad_(True)
+    weights = torch.randn(x.shape, device="npu", dtype=torch.float32)
+    y = liger_softmax(x)
+    expected = torch.softmax(ref, -1)
+    assert y.is_contiguous()
+    assert get_npu_format(y) == NPU_FORMAT_ND
+    (y.float() * weights).square().sum().backward()
+    (expected.float() * weights).square().sum().backward()
+    tolerance = {torch.float16: 2e-3, torch.bfloat16: 2e-2, torch.float32: 1e-5}[dtype]
+    torch.testing.assert_close(x.grad, ref.grad, atol=tolerance, rtol=tolerance)
+
+
+def test_concurrent_backward_streams():
+    warmup = torch.randn(16, 64, device="npu", requires_grad=True)
+    liger_softmax(warmup).sum().backward()
+    torch.npu.synchronize()
+
+    def run():
+        torch.npu.set_device(0)
+        stream = torch.npu.Stream()
+        with torch.npu.stream(stream):
+            x = torch.randn(16, 64, device="npu", requires_grad=True)
+            ref = x.detach().clone().requires_grad_(True)
+            grad = torch.randn_like(x)
+            liger_softmax(x).backward(grad)
+            torch.softmax(ref, -1).backward(grad)
+        stream.synchronize()
+        return x.grad, ref.grad
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run) for _ in range(2)]
+        for future in futures:
+            actual, expected = future.result()
+            torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
 
 
 def test_saved_tensor_hooks_and_retained_graph():
@@ -244,7 +292,7 @@ def test_launch_hooks_enabled_after_forward():
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
-def test_autotuning_preserves_input_rng_and_gradients(dtype):
+def test_initialization_preserves_input_rng_and_gradients(dtype):
     x = torch.randn(257, 4096, dtype=dtype, device="npu", requires_grad=True)
     ref = x.detach().clone().requires_grad_(True)
     rng = torch.npu.get_rng_state().clone()

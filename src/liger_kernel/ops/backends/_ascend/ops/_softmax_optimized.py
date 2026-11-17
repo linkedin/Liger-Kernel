@@ -1,13 +1,13 @@
-import ctypes
+import os
 
 from functools import lru_cache
+from hashlib import sha256
 from pathlib import Path
 
 import torch
 import torch_npu
 import triton
 import triton.language as tl
-import triton.testing
 
 from triton.compiler.compiler import CompiledKernel
 
@@ -22,6 +22,7 @@ MIN_SPLIT_COLUMNS = 2048
 SPLIT_TILE_ROWS = 2
 COMPILED_CACHE_SIZE = 128
 A3_DEVICE_PREFIX = "Ascend910_93"
+MAX_INT32_OFFSET: tl.constexpr = (1 << 31) - 1
 
 
 @triton.jit(do_not_specialize_on_alignment=[0, 1])
@@ -34,6 +35,24 @@ def _softmax_ascend_forward(X, Y, ROWS: tl.constexpr, COLS: tl.constexpr, R: tl.
     exp = tl.exp(x - tl.max(x, 1)[:, None])
     result = exp / tl.sum(exp, 1)[:, None]
     tl.store(Y + offsets, result, mask)
+
+
+@triton.jit(do_not_specialize_on_alignment=[0, 1])
+def _softmax_a2_forward(X, Y, ROWS: tl.constexpr, COLS: tl.constexpr, R: tl.constexpr, C: tl.constexpr):
+    # Include masked tile tails in the bound; large tensors retain int64 indexing.
+    if ((ROWS + R - 1) // R) * R * COLS + C > MAX_INT32_OFFSET:
+        program = tl.program_id(0).to(tl.int64)
+    else:
+        program = tl.program_id(0)
+    rows = program * R + tl.arange(0, R)
+    cols = tl.arange(0, C)
+    offsets = rows[:, None] * COLS + cols[None, :]
+    mask = (rows[:, None] < ROWS) & (cols[None, :] < COLS)
+    raw = tl.load(X + offsets, mask, other=-float("inf"))
+    maximum = tl.max(raw, 1).to(tl.float32)
+    exp = tl.exp(raw.to(tl.float32) - maximum[:, None])
+    inverse = 1.0 / tl.sum(exp, 1)
+    tl.store(Y + offsets, exp * inverse[:, None], mask)
 
 
 @triton.jit(do_not_specialize_on_alignment=[0, 1, 2])
@@ -140,14 +159,16 @@ def triple_backward(
 
 
 A3_BACKWARD_TILE_ELEMENTS = 4096
+A3_FUSED_BACKWARD_TILE_ROWS = 2
+A3_FUSED_ROW_MIN = 2048
 A2_DEVICE_PREFIX = "Ascend910B"
 SPLIT_FORWARD_TILE_ROWS = 4
 SPLIT_BACKWARD_TILE_ELEMENTS = 16384
-AUTOTUNE_MIN_ELEMENTS = 1048576
-AUTOTUNE_REPETITION_MS = 100
-AUTOTUNE_ROUNDS = 2
-AUTOTUNE_REQUIRED_RATIO = 0.9
-A3_PERSISTENT_MIN_ROWS = 2048
+A3_SHORT_ROW_LIMIT = 4096
+A3_SHORT_BACKWARD_TILE_ELEMENTS = 8192
+A2_TRIPLE_TILE_COLUMNS = 3584
+A2_TRIPLE_TILE_ROWS = 4
+A2_TRIPLE_FORWARD_TILE_ELEMENTS = 32768
 
 
 def _ascend_tile(cols):
@@ -162,12 +183,15 @@ def _launcher(rows, cols, dtype, device, backward, tile_override=None, multibuff
     if not backward:
         row_tile = max(1, min(MAX_TILE_ROWS, FORWARD_TILE_ELEMENTS // col_tile))
     with torch.npu.device(device):
-        short_a3_backward = (
+        short_rows = (
             backward
             and cols == col_tile
             and MIN_SPLIT_COLUMNS < cols < MAX_FUSED_COLUMNS
-            and rows < A3_PERSISTENT_MIN_ROWS
+            and rows < A3_SHORT_ROW_LIMIT
             and torch.npu.get_device_name(device).startswith(A3_DEVICE_PREFIX)
+        )
+        narrow_fused = (
+            backward and cols == MIN_SPLIT_COLUMNS and torch.npu.get_device_name(device).startswith(A3_DEVICE_PREFIX)
         )
         prefix = col_tile // 2
         split_forward = (
@@ -177,20 +201,46 @@ def _launcher(rows, cols, dtype, device, backward, tile_override=None, multibuff
             and cols - prefix <= prefix // 2
             and torch.npu.get_device_name(device).startswith(A2_DEVICE_PREFIX)
         )
-        persistent = (
+        triple_forward = (
+            not backward
+            and MIN_SPLIT_COLUMNS < cols < MAX_FUSED_COLUMNS
+            and cols == col_tile // 2 + col_tile // 4 + col_tile // 8
+            and torch.npu.get_device_name(device).startswith(A2_DEVICE_PREFIX)
+        )
+        medium_fused = (
             backward
-            and not short_a3_backward
             and cols == col_tile
-            and MIN_SPLIT_COLUMNS <= cols < MAX_FUSED_COLUMNS
+            and MIN_SPLIT_COLUMNS < cols < MAX_FUSED_COLUMNS
+            and A3_FUSED_ROW_MIN <= rows < A3_SHORT_ROW_LIMIT
             and torch.npu.get_device_name(device).startswith(A3_DEVICE_PREFIX)
         )
-        if split_forward:
+        persistent = (
+            backward
+            and not medium_fused
+            and cols == col_tile
+            and MIN_SPLIT_COLUMNS < cols < MAX_FUSED_COLUMNS
+            and torch.npu.get_device_name(device).startswith(A3_DEVICE_PREFIX)
+        )
+        if triple_forward:
+            row_tile = min(MAX_TILE_ROWS, A2_TRIPLE_FORWARD_TILE_ELEMENTS // col_tile)
+            middle = triton.next_power_of_2(cols - prefix) // 2
+            tail = triton.next_power_of_2(cols - prefix - middle)
+            grid = (triton.cdiv(rows, row_tile), 1, 1)
+            kernel = _softmax_triple_forward
+            constants = (rows, cols, row_tile, prefix, middle, tail)
+        elif split_forward:
             row_tile = SPLIT_FORWARD_TILE_ROWS
             grid = (triton.cdiv(rows, row_tile), 1, 1)
             kernel = _softmax_split_forward
             constants = (rows, cols, row_tile, prefix, triton.next_power_of_2(cols - prefix))
+        elif narrow_fused or medium_fused:
+            row_tile = A3_FUSED_BACKWARD_TILE_ROWS
+            grid = (triton.cdiv(rows, row_tile), 1, 1)
+            kernel = _softmax_ascend_backward
+            constants = (rows, cols, row_tile, col_tile)
         elif persistent:
-            row_tile = max(1, A3_BACKWARD_TILE_ELEMENTS // col_tile)
+            tile_elements = A3_SHORT_BACKWARD_TILE_ELEMENTS if short_rows else A3_BACKWARD_TILE_ELEMENTS
+            row_tile = max(1, tile_elements // col_tile)
             cores = int(triton.runtime.driver.active.utils.get_device_properties(device)["num_vectorcore"])
             grid = (min(cores, triton.cdiv(rows, row_tile)), 1, 1)
             kernel = _softmax_persistent_backward
@@ -209,6 +259,8 @@ def _launcher(rows, cols, dtype, device, backward, tile_override=None, multibuff
             row_tile = SPLIT_TILE_ROWS
             if cols == col_tile:
                 row_tile = SPLIT_BACKWARD_TILE_ELEMENTS // cols
+            if cols == A2_TRIPLE_TILE_COLUMNS and torch.npu.get_device_name(device).startswith(A2_DEVICE_PREFIX):
+                row_tile = A2_TRIPLE_TILE_ROWS
             grid = (triton.cdiv(rows, row_tile), 1, 1)
             if remainder == triton.next_power_of_2(remainder):
                 kernel = split_backward
@@ -219,9 +271,9 @@ def _launcher(rows, cols, dtype, device, backward, tile_override=None, multibuff
                 kernel = triple_backward
                 constants = (rows, cols, row_tile, prefix, middle, tail)
         else:
-            if short_a3_backward:
-                row_tile = 1
             kernel = _softmax_ascend_backward if backward else _softmax_ascend_forward
+            if not backward and torch.npu.get_device_name(device).startswith(A2_DEVICE_PREFIX):
+                kernel = _softmax_a2_forward
             grid = (triton.cdiv(rows, row_tile), 1, 1)
             constants = (rows, cols, row_tile, col_tile)
         if tile_override is not None and cols <= MAX_FUSED_COLUMNS:
@@ -229,7 +281,7 @@ def _launcher(rows, cols, dtype, device, backward, tile_override=None, multibuff
             programs = triton.cdiv(rows, row_tile)
             grid = (min(cores, programs) if persistent else programs, 1, 1)
             constants = (*constants[:2], row_tile, *constants[3:])
-        multibuffer = not (persistent and cols > MIN_SPLIT_COLUMNS)
+        multibuffer = not (persistent and not short_rows)
         if multibuffer_override is not None:
             multibuffer = multibuffer_override
         compiled = kernel.warmup(
@@ -291,13 +343,19 @@ def _softmax_backward(dy, y, col_tile, row_tile, multi_block_launch):
 @lru_cache(maxsize=1)
 def _native_module():
     from torch.utils.cpp_extension import load
+    from torch_npu.utils.cpp_extension import NpuExtension
 
     package = Path(torch_npu.__file__).resolve().parent
+    source = Path(__file__).with_name("_softmax_native.cpp")
+    includes = NpuExtension("liger_softmax", sources=[str(source)]).include_dirs
+    includes.append(str(Path(os.environ["ASCEND_HOME_PATH"]) / "include"))
+    signature = repr((torch.__version__, torch_npu.__version__, includes)).encode()
+    digest = sha256(source.read_bytes() + signature).hexdigest()[:16]
     return load(
-        name="liger_softmax_ascend_autograd",
-        sources=[str(Path(__file__).with_name("_softmax_native.cpp"))],
+        name=f"liger_softmax_ascend_autograd_{digest}",
+        sources=[str(source)],
         extra_cflags=["-O2", "-fvisibility=hidden"],
-        extra_include_paths=[str(package / "include")],
+        extra_include_paths=includes,
         extra_ldflags=[f"-L{package / 'lib'}", "-ltorch_npu"],
         verbose=False,
     )
@@ -309,51 +367,6 @@ def _native_specs(x):
     device = x.device.index
     forward = _launcher(rows, cols, x.dtype, device, False)
     backward = _launcher(rows, cols, x.dtype, device, True)
-    if (
-        x.numel() < AUTOTUNE_MIN_ELEMENTS
-        or cols > MAX_FUSED_COLUMNS
-        or not forward.native_spec[5]
-        or not backward.native_spec[5]
-        or CompiledKernel.launch_enter_hook is not None
-        or CompiledKernel.launch_exit_hook is not None
-    ):
-        return forward.native_spec, backward.native_spec
-
-    # Calibrate once per bounded native context. Scratch tensors never escape
-    # this function; the caller's input and RNG state are unchanged.
-    with torch.no_grad(), torch.npu.device(device):
-        sample = x.detach().contiguous()
-        y = torch.empty_like(sample)
-        dy = torch.ones_like(sample)
-        dx = torch.empty_like(sample)
-        sizes = (ctypes.c_int64 * sample.ndim)(*sample.shape)
-        stream = _native_module().current_stream(device)
-        entry_type = ctypes.PYFUNCTYPE(None, *([ctypes.c_size_t] * 5), ctypes.c_int64, ctypes.POINTER(ctypes.c_int64))
-
-        def calibrate(default, backward_mode, pointers):
-            candidates = [default]
-            if default.tile_rows > 1:
-                candidates.append(_launcher(rows, cols, x.dtype, device, backward_mode, default.tile_rows // 2))
-            if default.persistent:
-                candidates.append(_launcher(rows, cols, x.dtype, device, backward_mode, None, not default.multibuffer))
-            calls = []
-            for candidate in candidates:
-                spec = candidate.native_spec
-                entry = entry_type(spec[5])
-                args = (spec[0].function, stream, *pointers, sample.ndim, sizes)
-                calls.append(lambda entry=entry, args=args: entry(*args))
-            scores = [0.0] * len(candidates)
-            for round_index in range(AUTOTUNE_ROUNDS):
-                order = range(len(candidates)) if round_index == 0 else reversed(range(len(candidates)))
-                for index in order:
-                    scores[index] += triton.testing.do_bench(
-                        calls[index], rep=AUTOTUNE_REPETITION_MS, quantiles=[0.5, 0.2, 0.8]
-                    )[0]
-            best = min(range(len(candidates)), key=scores.__getitem__)
-            return candidates[best] if scores[best] < scores[0] * AUTOTUNE_REQUIRED_RATIO else default
-
-        forward = calibrate(forward, False, (sample.data_ptr(), y.data_ptr(), 0))
-        backward = calibrate(backward, True, (dy.data_ptr(), y.data_ptr(), dx.data_ptr()))
     return forward.native_spec, backward.native_spec
 
 
@@ -367,15 +380,7 @@ class LigerSoftmaxFunction(torch.autograd.Function):
     def apply(cls, x, dim=-1):
         if torch._C._are_functorch_transforms_active() or not x.numel():
             return super().apply(x, dim)
-        rank = x.ndim
-        if dim < -max(rank, 1) or dim >= max(rank, 1):
-            raise IndexError(f"Dimension out of range for tensor with {rank} dimensions: {dim}")
-        axis = dim % max(rank, 1)
-        if not rank:
-            return _native_apply()(x.reshape(1)).reshape(())
-        if axis == rank - 1:
-            return _native_apply()(x)
-        return _native_apply()(x.movedim(axis, -1)).movedim(-1, axis).contiguous()
+        return _native_apply()(x, dim)
 
     @staticmethod
     @ensure_contiguous
@@ -441,18 +446,49 @@ def _softmax_persistent_backward(DY, Y, DX, ROWS: tl.constexpr, COLS: tl.constex
 def _softmax_split_forward(
     X, Y, ROWS: tl.constexpr, COLS: tl.constexpr, R: tl.constexpr, C: tl.constexpr, T: tl.constexpr
 ):
-    row = tl.program_id(0).to(tl.int64) * R + tl.arange(0, R)
+    if ((ROWS + R - 1) // R) * R * COLS + C + T > MAX_INT32_OFFSET:
+        program = tl.program_id(0).to(tl.int64)
+    else:
+        program = tl.program_id(0)
+    row = program * R + tl.arange(0, R)
     a = tl.arange(0, C)
     b = C + tl.arange(0, T)
     ia = row[:, None] * COLS + a[None, :]
     ib = row[:, None] * COLS + b[None, :]
     ma = row[:, None] < ROWS
     mb = ma & (b[None, :] < COLS)
+    xa = tl.load(X + ia, ma, other=-float("inf"))
+    xb = tl.load(X + ib, mb, other=-float("inf"))
+    maximum = tl.maximum(tl.max(xa, 1), tl.max(xb, 1)).to(tl.float32)
+    ea = tl.exp(xa.to(tl.float32) - maximum[:, None])
+    eb = tl.exp(xb.to(tl.float32) - maximum[:, None])
+    inverse = 1.0 / (tl.sum(ea, 1) + tl.sum(eb, 1))
+    tl.store(Y + ia, ea * inverse[:, None], ma)
+    tl.store(Y + ib, eb * inverse[:, None], mb)
+
+
+@triton.jit(do_not_specialize_on_alignment=[0, 1])
+def _softmax_triple_forward(
+    X, Y, ROWS: tl.constexpr, COLS: tl.constexpr, R: tl.constexpr, C: tl.constexpr, T: tl.constexpr, U: tl.constexpr
+):
+    rows = tl.program_id(0).to(tl.int64) * R + tl.arange(0, R)
+    a = tl.arange(0, C)
+    b = C + tl.arange(0, T)
+    c = C + T + tl.arange(0, U)
+    ia = rows[:, None] * COLS + a[None, :]
+    ib = rows[:, None] * COLS + b[None, :]
+    ic = rows[:, None] * COLS + c[None, :]
+    ma = rows[:, None] < ROWS
+    mb = ma & (b[None, :] < COLS)
+    mc = ma & (c[None, :] < COLS)
     xa = tl.load(X + ia, ma, other=-float("inf")).to(tl.float32)
     xb = tl.load(X + ib, mb, other=-float("inf")).to(tl.float32)
-    maximum = tl.maximum(tl.max(xa, 1), tl.max(xb, 1))
+    xc = tl.load(X + ic, mc, other=-float("inf")).to(tl.float32)
+    maximum = tl.maximum(tl.maximum(tl.max(xa, 1), tl.max(xb, 1)), tl.max(xc, 1))
     ea = tl.exp(xa - maximum[:, None])
     eb = tl.exp(xb - maximum[:, None])
-    total = tl.sum(ea, 1) + tl.sum(eb, 1)
-    tl.store(Y + ia, ea / total[:, None], ma)
-    tl.store(Y + ib, eb / total[:, None], mb)
+    ec = tl.exp(xc - maximum[:, None])
+    inverse = 1.0 / (tl.sum(ea, 1) + tl.sum(eb, 1) + tl.sum(ec, 1))
+    tl.store(Y + ia, ea * inverse[:, None], ma)
+    tl.store(Y + ib, eb * inverse[:, None], mb)
+    tl.store(Y + ic, ec * inverse[:, None], mc)

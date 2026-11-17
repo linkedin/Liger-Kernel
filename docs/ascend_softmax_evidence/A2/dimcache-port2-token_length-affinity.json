@@ -1,0 +1,90 @@
+{
+  "pid": 188195,
+  "states": [
+    {
+      "time_ns": 1794830375900326530,
+      "threads": [
+        {
+          "tid": 188195,
+          "name": "python",
+          "cpus": "0-255"
+        }
+      ]
+    },
+    {
+      "time_ns": 1794830386663655430,
+      "threads": [
+        {
+          "tid": 188195,
+          "name": "python",
+          "cpus": "0-255"
+        },
+        {
+          "tid": 188285,
+          "name": "acl_thread",
+          "cpus": "9"
+        },
+        {
+          "tid": 188286,
+          "name": "release_thread",
+          "cpus": "10"
+        }
+      ]
+    },
+    {
+      "time_ns": 1794830386920644370,
+      "threads": [
+        {
+          "tid": 188195,
+          "name": "python",
+          "cpus": "8"
+        },
+        {
+          "tid": 188285,
+          "name": "acl_thread",
+          "cpus": "9"
+        },
+        {
+          "tid": 188286,
+          "name": "release_thread",
+          "cpus": "10"
+        },
+        {
+          "tid": 188287,
+          "name": "pt_autograd_0",
+          "cpus": "8"
+        }
+      ]
+    },
+    {
+      "time_ns": 1794830391550270890,
+      "threads": [
+        {
+          "tid": 188195,
+          "name": "python",
+          "cpus": "8"
+        },
+        {
+          "tid": 188285,
+          "name": "acl_thread",
+          "cpus": "9"
+        },
+        {
+          "tid": 188286,
+          "name": "release_thread",
+          "cpus": "10"
+        }
+      ]
+    },
+    {
+      "time_ns": 1794830392062851330,
+      "threads": [
+        {
+          "tid": 188195,
+          "name": "python",
+          "cpus": "8"
+        }
+      ]
+    }
+  ]
+}

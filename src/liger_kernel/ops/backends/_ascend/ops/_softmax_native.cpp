@@ -2,6 +2,9 @@
 #include <torch/csrc/autograd/functions/utils.h>
 #include <torch/csrc/autograd/saved_variable.h>
 #include <torch_npu/csrc/core/npu/NPUStream.h>
+#include <torch_npu/csrc/core/npu/NPUFormat.h>
+#include <acl/acl_base.h>
+#include <torch_npu/csrc/framework/OpCommand.h>
 #include <c10/core/DeviceGuard.h>
 #include <cstdint>
 #include <list>
@@ -15,6 +18,10 @@ namespace py = pybind11;
 using torch::autograd::variable_list;
 namespace {
 constexpr size_t kMaxContexts = 128;
+void enqueue_native(void* function, const std::string& name) {
+  auto& call = *static_cast<std::function<int()>*>(function);
+  at_npu::native::OpCommand::RunOpApiV2(name, call);
+}
 uintptr_t address(const at::Tensor& tensor) {
   return reinterpret_cast<uintptr_t>(tensor.data_ptr());
 }
@@ -25,12 +32,13 @@ uintptr_t address(const at::Tensor& tensor) {
 struct Launcher {
   py::object compiled, grid, stream_fn, run, function, metadata, metadata_fn, kernel_type;
   using NativeEntry = void (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t,
-                                uintptr_t, int64_t, const int64_t*);
+                                uintptr_t, int64_t, const int64_t*, uintptr_t);
   py::object enter_key, exit_key, registered_key, builtin, backend_utils, native_library;
   NativeEntry native;
   uintptr_t function_address;
   int device;
   bool tensor_args, direct_launch;
+  bool native_ready = false;
 
   explicit Launcher(const py::tuple& spec)
       : compiled(spec[0]), grid(spec[1]), stream_fn(spec[2]), device(spec[3].cast<int>()) {
@@ -97,13 +105,14 @@ struct Launcher {
     }
     auto stream = reinterpret_cast<uintptr_t>(
         c10_npu::getCurrentNPUStream(device).stream(false));
-    native(function_address, stream, address(x), p1, p2, x.dim(), x.sizes().data());
+    native(function_address, stream, address(x), p1, p2, x.dim(), x.sizes().data(), reinterpret_cast<uintptr_t>(&enqueue_native));
     if (PyErr_Occurred()) throw py::error_already_set();
     // This generated entry has the same void result as the backend wrapper.
     auto globals = PyModule_GetDict(backend_utils.ptr());
     if (PyDict_GetItemWithError(globals, registered_key.ptr()) != Py_False &&
         PyDict_SetItem(globals, registered_key.ptr(), Py_False) < 0)
       throw py::error_already_set();
+    native_ready = true;
     return true;
   }
 
@@ -112,7 +121,28 @@ struct Launcher {
   }
 
   void backward(const at::Tensor& x, const at::Tensor& dy, const at::Tensor& dx) {
-    if (!native_launch(dy, address(x), address(dx))) launch(dy, x, dx);
+    bool use_native = false;
+    {
+      py::gil_scoped_acquire gil;
+      if (native_ready) {
+        auto dict = reinterpret_cast<PyTypeObject*>(kernel_type.ptr())->tp_dict;
+        auto globals = PyModule_GetDict(backend_utils.ptr());
+        use_native = PyDict_GetItemWithError(dict, enter_key.ptr()) == Py_None &&
+                     PyDict_GetItemWithError(dict, exit_key.ptr()) == Py_None &&
+                     PyDict_GetItemWithError(globals, registered_key.ptr()) == Py_False;
+        if (PyErr_Occurred()) throw py::error_already_set();
+      }
+      if (!use_native) {
+        if (!native_launch(dy, address(x), address(dx))) launch(dy, x, dx);
+        return;
+      }
+    }
+    // The typed entry and task-queue bridge contain no Python calls. Initialize
+    // them under the GIL once; subsequent launches need it only to inspect hooks.
+    auto stream = reinterpret_cast<uintptr_t>(
+        c10_npu::getCurrentNPUStream(device).stream(false));
+    native(function_address, stream, address(dy), address(x), address(dx),
+           dy.dim(), dy.sizes().data(), reinterpret_cast<uintptr_t>(&enqueue_native));
   }
 
 };
@@ -137,12 +167,9 @@ struct SoftmaxBackward : torch::autograd::Node {
                 grads[0].scalar_type() == x.scalar_type() &&
                 grads[0].numel() == x.numel(), "Softmax gradient metadata mismatch");
     c10::DeviceGuard device_guard(x.device());
-    auto dy = grads[0].contiguous();
-    auto dx = at::empty(dy.sizes(), dy.options());
-    if (x.numel()) {
-      py::gil_scoped_acquire gil;
-      launcher->backward(x, dy, dx);
-    }
+    auto dy = grads[0].is_contiguous() ? grads[0] : grads[0].contiguous();
+    auto dx = at_npu::native::empty_with_format(dy.sizes(), dy.options(), ACL_FORMAT_ND);
+    if (x.numel()) launcher->backward(x, dy, dx);
     return {dx};
   }
 
@@ -173,13 +200,13 @@ struct SoftmaxContext {
     bool needs_grad = torch::autograd::compute_requires_grad(x);
     c10::DeviceGuard device_guard(x.device());
     at::AutoGradMode guard(false);
-    auto input = x.contiguous();
+    auto input = x.is_contiguous() ? x : x.contiguous();
     std::shared_ptr<SoftmaxBackward> node;
     if (needs_grad) {
       node = std::make_shared<SoftmaxBackward>(backward);
       node->set_next_edges(torch::autograd::collect_next_edges(x));
     }
-    auto out = at::empty(input.sizes(), input.options());
+    auto out = at_npu::native::empty_with_format(input.sizes(), input.options(), ACL_FORMAT_ND);
     if (elements) forward->forward(input, out);
     if (node) {
       torch::autograd::set_history(out, node);
@@ -223,7 +250,20 @@ struct CachedOp {
     return found->second->second;
   }
 
-  at::Tensor apply(const at::Tensor& x) { return context(x)->apply(x); }
+  at::Tensor apply(const at::Tensor& x, int64_t dim) {
+    const int64_t rank = x.dim();
+    const int64_t dimensions = rank ? rank : 1;
+    TORCH_CHECK_INDEX(dim >= -dimensions && dim < dimensions,
+                      "Dimension out of range for tensor with ", rank, " dimensions: ", dim);
+    const int64_t axis = dim < 0 ? dim + dimensions : dim;
+    if (!rank) {
+      auto input = x.reshape({1});
+      return context(input)->apply(input).reshape({});
+    }
+    if (axis == rank - 1) return context(x)->apply(x);
+    auto input = x.movedim(axis, -1);
+    return context(input)->apply(input).movedim(-1, axis).contiguous();
+  }
 };
 }  // namespace
 
@@ -236,6 +276,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   py::class_<SoftmaxContext, std::shared_ptr<SoftmaxContext>>(m, "Context")
       .def("apply", &SoftmaxContext::apply);
   py::class_<CachedOp>(m, "CachedOp")
-      .def(py::init<py::object>()).def("apply", &CachedOp::apply)
+      .def(py::init<py::object>()).def("apply", &CachedOp::apply, py::arg("x"), py::arg("dim") = -1)
       .def("context", &CachedOp::context);
 }
