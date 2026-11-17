@@ -1,9 +1,16 @@
 from importlib import import_module
-from importlib.util import find_spec
 
 import pytest
 
+from liger_kernel.utils import infer_device
 
+device = infer_device()
+
+
+@pytest.mark.skipif(
+    device != "npu",
+    reason="Ascend-only JIT metadata regression test",
+)
 @pytest.mark.parametrize(
     "module_name, kernel_name, parameter_name",
     [
@@ -38,8 +45,6 @@ import pytest
     ],
 )
 def test_ascend_runtime_rows(module_name, kernel_name, parameter_name):
-    if find_spec("triton.language.extra.cann") is None:
-        pytest.skip("requires Triton-Ascend CANN extensions")
     module = import_module(f"liger_kernel.ops.backends._ascend.ops.{module_name}")
     kernel = getattr(module, kernel_name)
     assert kernel.fn.__module__ == module.__name__
