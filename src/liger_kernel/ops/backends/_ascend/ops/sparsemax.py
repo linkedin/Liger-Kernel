@@ -15,7 +15,7 @@ def _sparsemax_forward_kernel(
     sorted_x_stride_row,
     o_ptr,
     o_stride_row,
-    n_rows: tl.constexpr,
+    n_rows,
     n_cols: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -86,7 +86,7 @@ def _sparsemax_forward_tiled_kernel(
     sorted_x_stride_row,
     o_ptr,
     o_stride_row,
-    n_rows: tl.constexpr,
+    n_rows,
     n_cols: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -157,7 +157,7 @@ def _sparsemax_backward_kernel(
     go_ptr,
     gi_ptr,
     stride,
-    n_rows: tl.constexpr,
+    n_rows,
     n_cols: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -199,7 +199,7 @@ def _sparsemax_backward_kernel(
 
 @triton.jit
 def _sparsemax_backward_tiled_kernel(
-    o_ptr, go_ptr, gi_ptr, stride, n_rows: tl.constexpr, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
+    o_ptr, go_ptr, gi_ptr, stride, n_rows, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
 ):
     """Sparsemax backward kernel for rows where n_cols > BLOCK_SIZE (tiled).
 
