@@ -409,7 +409,7 @@ def liger_modulated_rms_norm(
     return LigerModulatedRMSNormFunction.apply(X, W, scale, shift, eps, offset, casting_mode, in_place)
 
 
-def liger_poly_norm(X, W, B, eps=1e-6, in_place=True):
+def liger_poly_norm(X, W, B, eps=1e-6, in_place=False):
     return LigerPolyNormFunction.apply(X, W, B, eps, in_place)
 
 

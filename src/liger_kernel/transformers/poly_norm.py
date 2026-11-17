@@ -21,7 +21,7 @@ class LigerPolyNorm(nn.Module):
                   Set to True to save memory if grad_output is not needed elsewhere.
     """
 
-    def __init__(self, eps=1e-6, in_place=True):
+    def __init__(self, eps=1e-6, in_place=False):
         super().__init__()
         # Align with PolyCom reference: initialize weights to (1/3, 1/3, 1/3) and bias to 1.0
         self.weight = nn.Parameter(torch.full((3,), 1.0 / 3.0))

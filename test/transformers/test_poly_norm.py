@@ -152,6 +152,31 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol):
     assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol, max_print=20)
 
 
+@pytest.mark.parametrize("entry_point", ["module", "functional", "autograd"])
+def test_residual_backward_preserves_upstream_gradient(entry_point):
+    module = LigerPolyNorm().to(device)
+    reference = NaivePolyNorm().to(device)
+    reference.load_state_dict(module.state_dict())
+
+    x = torch.randn(4, 64, device=device, requires_grad=True)
+    x_ref = x.detach().clone().requires_grad_()
+    grad_output = torch.randn_like(x)
+    original_grad = grad_output.clone()
+
+    if entry_point == "module":
+        output = module(x)
+    elif entry_point == "functional":
+        output = liger_poly_norm(x, module.weight, module.bias)
+    else:
+        output = LigerPolyNormFunction.apply(x, module.weight, module.bias)
+
+    (reference(x_ref) + x_ref).backward(original_grad)
+    (output + x).backward(grad_output)
+
+    torch.testing.assert_close(grad_output, original_grad, atol=0, rtol=0)
+    torch.testing.assert_close(x.grad, x_ref.grad, atol=1e-5, rtol=1e-5)
+
+
 @pytest.mark.parametrize(
     "shape",
     [
