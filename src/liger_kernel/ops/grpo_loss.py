@@ -56,8 +56,10 @@ def _selective_log_softmax_kernel(
         cols = start + tl.arange(0, BLOCK_N)
         logits = tl.load(LOGITS + cols, mask=cols < N, other=float("-inf")).to(tl.float32) / TEMPERATURE
         new_m_i = tl.maximum(m_i, tl.max(logits))
-        alpha = tl.exp(m_i - new_m_i)
-        l_i = l_i * alpha + tl.sum(tl.exp(logits - new_m_i))
+        # Finite exponent base while every logit so far is -inf, so masked blocks add zero
+        m_safe = tl.where(new_m_i == float("-inf"), 0.0, new_m_i)
+        alpha = tl.exp(m_i - m_safe)
+        l_i = l_i * alpha + tl.sum(tl.exp(logits - m_safe))
         m_i = new_m_i
     lse = m_i + tl.log(l_i)
 
@@ -156,8 +158,10 @@ def _grpo_loss_fwd_kernel(
         cols = start + tl.arange(0, BLOCK_N)
         logits = tl.load(LOGITS + cols, mask=cols < N, other=float("-inf")).to(tl.float32) / TEMPERATURE
         new_m_i = tl.maximum(m_i, tl.max(logits))
-        alpha = tl.exp(m_i - new_m_i)
-        l_i = l_i * alpha + tl.sum(tl.exp(logits - new_m_i))
+        # Finite exponent base while every logit so far is -inf, so masked blocks add zero
+        m_safe = tl.where(new_m_i == float("-inf"), 0.0, new_m_i)
+        alpha = tl.exp(m_i - m_safe)
+        l_i = l_i * alpha + tl.sum(tl.exp(logits - m_safe))
         m_i = new_m_i
     lse = m_i + tl.log(l_i)
 
