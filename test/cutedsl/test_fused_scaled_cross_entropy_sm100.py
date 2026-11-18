@@ -279,6 +279,7 @@ def test_sm100_public_frontend_uses_native_without_override(monkeypatch):
 
     module = _module()
     monkeypatch.delenv("LIGER_KERNEL_IMPL", raising=False)
+    monkeypatch.delenv("LIGER_DISABLE_SM100_SCALED_CE", raising=False)
     assert frontend._resolve_implementation(torch.device("cuda:0"), torch.bfloat16) is (
         module.LigerFusedScaledCrossEntropySM100Function
     )

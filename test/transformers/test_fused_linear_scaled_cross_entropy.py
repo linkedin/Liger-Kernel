@@ -1,8 +1,11 @@
+import builtins
 import importlib.util
 import inspect
+import logging
 import os
 
 from contextlib import nullcontext
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,6 +36,126 @@ _NATIVE_FRONTEND = importlib.util.module_from_spec(_NATIVE_SPEC)
 _NATIVE_SPEC.loader.exec_module(_NATIVE_FRONTEND)
 
 _CUTILE_ENABLED = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower() == "cutile"
+_SM100_MODULE = "liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm100"
+
+
+@pytest.fixture
+def sm100_loader():
+    loader = _FRONTEND._load_sm100_function
+    loader.cache_clear()
+    yield loader
+    loader.cache_clear()
+
+
+@pytest.fixture
+def sm100_imports(monkeypatch):
+    native = object()
+    original_import = builtins.__import__
+
+    def stub_import(name, *args, **kwargs):
+        if name == "cutlass.cute":
+            return SimpleNamespace(cute=object())
+        if name == _SM100_MODULE:
+            return SimpleNamespace(LigerFusedScaledCrossEntropySM100Function=native)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", stub_import)
+    return native
+
+
+@pytest.mark.parametrize("installed_version", [None, "4.5.0", "4.6.0rc1", "invalid"])
+def test_sm100_loader_rejects_missing_or_unsupported_version_once(monkeypatch, caplog, sm100_loader, installed_version):
+    def installed(name):
+        assert name == "nvidia-cutlass-dsl"
+        if installed_version is None:
+            raise PackageNotFoundError(name)
+        return installed_version
+
+    original_import = builtins.__import__
+
+    def reject_cute_import(name, *args, **kwargs):
+        if name.startswith("cutlass") or name == _SM100_MODULE:
+            pytest.fail("An unsupported CuTe DSL version must not import native kernels")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(_FRONTEND, "version", installed)
+    monkeypatch.setattr(builtins, "__import__", reject_cute_import)
+    with caplog.at_level(logging.WARNING, logger=_FRONTEND.__name__):
+        assert sm100_loader() is None
+        assert sm100_loader() is None
+    messages = [record.getMessage() for record in caplog.records if record.name == _FRONTEND.__name__]
+    assert len(messages) == 1
+    assert "using the PyTorch fallback" in messages[0]
+    assert "nvidia-cutlass-dsl>=4.6.0" in messages[0]
+
+
+@pytest.mark.parametrize("failed_module", ["cutlass.cute", _SM100_MODULE])
+def test_sm100_loader_falls_back_on_import_error_once(monkeypatch, caplog, sm100_loader, sm100_imports, failed_module):
+    monkeypatch.setattr(_FRONTEND, "version", lambda _: "4.6.0")
+    original_import = builtins.__import__
+
+    def fail_import(name, *args, **kwargs):
+        if name == failed_module:
+            if name == "cutlass.cute":
+                raise ModuleNotFoundError("No module named 'cutlass.cute'", name=name)
+            raise ImportError("missing optional CuTe binding")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_import)
+    with caplog.at_level(logging.WARNING, logger=_FRONTEND.__name__):
+        assert sm100_loader() is None
+        assert sm100_loader() is None
+    messages = [record.getMessage() for record in caplog.records if record.name == _FRONTEND.__name__]
+    assert len(messages) == 1
+    assert "using the PyTorch fallback" in messages[0]
+
+
+@pytest.mark.parametrize("installed_version", ["4.6.0", "4.10.0"])
+def test_sm100_loader_accepts_supported_versions(monkeypatch, sm100_loader, sm100_imports, installed_version):
+    monkeypatch.setattr(_FRONTEND, "version", lambda _: installed_version)
+
+    assert sm100_loader() is sm100_imports
+
+
+def test_sm100_loader_does_not_hide_unexpected_errors(monkeypatch, sm100_loader, sm100_imports):
+    monkeypatch.setattr(_FRONTEND, "version", lambda _: "4.6.0")
+    original_import = builtins.__import__
+
+    def fail_import(name, *args, **kwargs):
+        if name == _SM100_MODULE:
+            raise RuntimeError("unexpected native initialization error")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_import)
+
+    with pytest.raises(RuntimeError, match="unexpected native initialization error"):
+        sm100_loader()
+
+
+@pytest.mark.parametrize("capability", [(10, 0), (10, 3)])
+def test_frontend_blackwell_opt_out_before_and_after_loading(monkeypatch, sm100_loader, sm100_imports, capability):
+    monkeypatch.setattr(_FRONTEND, "version", lambda _: "4.6.0")
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda _: capability)
+    device = torch.device("cuda:0")
+    monkeypatch.setenv("LIGER_DISABLE_SM100_SCALED_CE", "1")
+    assert _FRONTEND._resolve_implementation(device, torch.bfloat16) is _FRONTEND._FusedLinearPPOFallbackFunction
+    monkeypatch.setenv("LIGER_DISABLE_SM100_SCALED_CE", "0")
+    assert _FRONTEND._resolve_implementation(device, torch.bfloat16) is sm100_imports
+    monkeypatch.setenv("LIGER_DISABLE_SM100_SCALED_CE", "1")
+    assert _FRONTEND._resolve_implementation(device, torch.bfloat16) is _FRONTEND._FusedLinearPPOFallbackFunction
+
+
+def test_frontend_blackwell_opt_out_does_not_disable_hopper(monkeypatch):
+    native = object()
+    monkeypatch.setenv("LIGER_DISABLE_SM100_SCALED_CE", "1")
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda _: (9, 0))
+    monkeypatch.setattr(_FRONTEND, "_load_sm90_function", lambda: native)
+
+    assert _FRONTEND._resolve_implementation(torch.device("cuda:0"), torch.bfloat16) is native
 
 
 @pytest.mark.parametrize(
@@ -124,6 +247,7 @@ def test_frontend_dispatches_blackwell_without_global_override(monkeypatch, capa
             return "blackwell"
 
     monkeypatch.delenv("LIGER_KERNEL_IMPL", raising=False)
+    monkeypatch.delenv("LIGER_DISABLE_SM100_SCALED_CE", raising=False)
     monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
     monkeypatch.setattr(
