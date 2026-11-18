@@ -233,10 +233,12 @@ def test_frontend_dispatches_sm90_and_forwards_arguments(monkeypatch):
 
 
 @pytest.mark.parametrize("capability", [(10, 0), (10, 3)])
-def test_frontend_dispatches_blackwell_without_global_override(monkeypatch, capability):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_frontend_dispatches_blackwell_without_global_override(monkeypatch, capability, accum_dtype):
     device = torch.device("cuda:2")
     x = SimpleNamespace(device=device, dtype=torch.bfloat16)
-    weight, target, selected_ids = object(), object(), object()
+    weight = SimpleNamespace(dtype=torch.bfloat16)
+    target, selected_ids = object(), object()
     calls = []
     seen_devices = []
 
@@ -256,11 +258,12 @@ def test_frontend_dispatches_blackwell_without_global_override(monkeypatch, capa
     monkeypatch.setattr(_FRONTEND, "_load_sm100_function", lambda: NativeFunction)
 
     result = _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction.apply(
-        x, weight, target, 0.7, -1, 2, True, selected_ids
+        x, weight, target, 0.7, -1, 2, True, selected_ids, accum_dtype
     )
 
     assert result == "blackwell"
-    assert calls == [(x, weight, target, 0.7, -1, 2, True, selected_ids)]
+    accum_args = (accum_dtype,) if accum_dtype is not None else ()
+    assert calls == [(x, weight, target, 0.7, -1, 2, True, selected_ids, *accum_args)]
     assert seen_devices == [device]
 
 
@@ -372,11 +375,12 @@ def test_frontend_fallback_supports_entropy_only_backward():
     [(9, 0), (10, 0), (10, 3)],
     ids=["hopper", "blackwell-b200", "blackwell-b300"],
 )
-def test_tp_frontend_dispatches_supported_bf16_cuda_to_native(monkeypatch, capability):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_tp_frontend_dispatches_supported_bf16_cuda_to_native(monkeypatch, capability, accum_dtype):
     process_group = object()
     device = torch.device("cuda:3")
     _input = SimpleNamespace(device=device, dtype=torch.bfloat16)
-    weight = SimpleNamespace(shape=(16, 32))
+    weight = SimpleNamespace(shape=(16, 32), dtype=torch.bfloat16)
     target = object()
     calls = []
     seen = []
@@ -412,10 +416,12 @@ def test_tp_frontend_dispatches_supported_bf16_cuda_to_native(monkeypatch, capab
         -1,
         2,
         True,
+        accum_dtype,
     )
 
     assert result == "native-result"
-    assert calls == [(_input, weight, target, 32, 0.5, -1, 2, True, process_group)]
+    accum_args = (accum_dtype,) if accum_dtype is not None else ()
+    assert calls == [(_input, weight, target, 32, 0.5, -1, 2, True, process_group, *accum_args)]
     assert seen == [device]
 
 
@@ -458,6 +464,53 @@ def test_tp_group_is_a_call_argument():
     parameters = inspect.signature(_FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction.apply).parameters
 
     assert list(parameters)[3] == "tp_group"
+
+
+@pytest.mark.parametrize("tp", [False, True])
+@pytest.mark.parametrize(
+    "accum_dtype,error", [("float32", TypeError), (torch.int32, ValueError), (torch.float64, ValueError)]
+)
+def test_accum_dtype_rejected_before_dispatch(tp, accum_dtype, error):
+    x = torch.zeros(3, 4, dtype=torch.bfloat16)
+    weight = torch.zeros(8, 4, dtype=torch.bfloat16)
+    target = torch.zeros(3, dtype=torch.int64)
+    function = (
+        _FRONTEND.LigerFusedLinearScaledCrossEntropyTPFunction
+        if tp
+        else _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction
+    )
+    args = (x, weight, target, object()) if tp else (x, weight, target)
+    with pytest.raises(error, match="accum_dtype"):
+        function.apply(*args, accum_dtype=accum_dtype)
+
+
+@pytest.mark.parametrize("tp", [False, True])
+def test_fallback_fp32_accumulation_rounds_only_final_weight_gradient(monkeypatch, tp):
+    monkeypatch.setattr(_FRONTEND, "_FALLBACK_CHUNK_SIZE", 16)
+    monkeypatch.setattr(_FRONTEND.dist, "get_rank", lambda group: 0)
+    monkeypatch.setattr(_FRONTEND.dist, "get_world_size", lambda group: 1)
+    tokens, hidden, vocab = 4097, 7, 4
+    target = torch.zeros(tokens, dtype=torch.int64)
+    target[::7] = -100
+    gradients = []
+    for accum_dtype in (None, torch.float32, torch.bfloat16):
+        x = torch.full((tokens, hidden), 0.125, dtype=torch.bfloat16, requires_grad=True)
+        weight = torch.zeros(vocab, hidden, dtype=torch.bfloat16, requires_grad=True)
+        if tp:
+            nll = _FRONTEND._apply_tp_fallback(x, weight, target, 1.0, -100, False, object(), accum_dtype)
+        else:
+            nll = _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction.apply(x, weight, target, accum_dtype=accum_dtype)
+        nll.sum().backward()
+        assert x.grad.dtype == x.dtype and weight.grad.dtype == weight.dtype
+        assert torch.count_nonzero(x.grad) == 0
+        gradients.append(weight.grad)
+
+    expected = torch.full((vocab, hidden), 1 / vocab)
+    expected[0] -= 1
+    expected *= (target != -100).sum() * 0.125
+    torch.testing.assert_close(gradients[1], expected.bfloat16(), atol=0, rtol=0)
+    torch.testing.assert_close(gradients[0], gradients[2], atol=0, rtol=0)
+    assert not torch.equal(gradients[0], gradients[1])
 
 
 @pytest.mark.parametrize("native_result", [None, ImportError("native package unavailable")])
@@ -548,7 +601,8 @@ def test_tp_fallback_matches_torch_with_entropy_and_ignored_rows(monkeypatch):
     torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=2e-5, rtol=2e-5)
 
 
-def test_native_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_native_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch, accum_dtype):
     calls = {}
 
     class FakeTvmFfi:
@@ -561,15 +615,15 @@ def test_native_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch
         @staticmethod
         def fused_linear_scaled_cross_entropy_backward(*args):
             calls["backward"] = args
-            return torch.full_like(args[2], 3.0), torch.full_like(args[3], 4.0)
+            return torch.full_like(args[2], 3.0), torch.full_like(args[3], 4.0, dtype=accum_dtype)
 
     monkeypatch.setattr(_NATIVE_FRONTEND, "_validate_inputs", lambda *args: None)
     monkeypatch.setattr(_NATIVE_FRONTEND, "_pad_hidden", lambda x, weight: (x, weight, x.shape[1]))
     monkeypatch.setattr(_NATIVE_FRONTEND, "_prepare_native_call", lambda *args: 17)
     monkeypatch.setattr(_NATIVE_FRONTEND, "_get_tvm_ffi", lambda: FakeTvmFfi)
 
-    _input = torch.randn(3, 4, requires_grad=True)
-    weight = torch.randn(5, 4, requires_grad=True)
+    _input = torch.randn(3, 4, dtype=torch.bfloat16, requires_grad=True)
+    weight = torch.randn(5, 4, dtype=torch.bfloat16, requires_grad=True)
     target = torch.tensor([0, 1, 2], dtype=torch.int64)
     nll, entropy = _NATIVE_FRONTEND.LigerFusedLinearScaledCrossEntropyNativeTPFunction.apply(
         _input,
@@ -581,13 +635,15 @@ def test_native_tp_autograd_forwards_runtime_and_inverse_temperature(monkeypatch
         2,
         True,
         object(),
+        accum_dtype,
     )
     torch.autograd.backward((nll, entropy), (torch.ones_like(nll), torch.full_like(entropy, 0.25)))
 
     assert calls["forward"][3:] == (10, -100, 2.0, 17, True)
     torch.testing.assert_close(calls["backward"][0], torch.ones(3))
     torch.testing.assert_close(calls["backward"][1], torch.full((3,), 0.25))
-    assert calls["backward"][7:] == (10, -100, 2.0, 17, 2, True)
+    accum_args = (accum_dtype,) if accum_dtype is not None else ()
+    assert calls["backward"][7:] == (10, -100, 2.0, 17, 2, True, *accum_args)
     torch.testing.assert_close(_input.grad, torch.full_like(_input, 3.0))
     torch.testing.assert_close(weight.grad, torch.full_like(weight, 4.0))
 

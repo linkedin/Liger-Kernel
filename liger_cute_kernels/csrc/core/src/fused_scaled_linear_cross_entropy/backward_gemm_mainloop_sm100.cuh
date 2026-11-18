@@ -232,13 +232,24 @@ struct BackwardDwTraitsSm100 {
 // metadata live outside it.
 // ───────────────────────────────────────────────────────────────────────────
 
-template <int Compute, bool ReturnEntropy>
+template <class ElementDw>
+struct BackwardDwOutputSm100 {
+	// Keep each TMA staging slot at 8 KiB for either output dtype.
+	static constexpr int kTileN = 64 / sizeof(ElementDw);
+	using SmemLayout = decltype(tile_to_shape(
+		UMMA::Layout_K_SW64_Atom<ElementDw>{},
+		Shape<_128, Int<kTileN>>{}));
+	static constexpr int kElements = cosize_v<SmemLayout>;
+};
+
+template <int Compute, bool ReturnEntropy, class ElementDw = cutlass::bfloat16_t>
 struct BackwardGemmSmemSm100 {
 	using Traits = BackwardGemmTraitsSm100<Compute>;
 	using DxTraits = BackwardDxTraitsSm100;
 	using DwTraits = BackwardDwTraitsSm100<Compute>;
 	using Config = typename Traits::Config;
 	using Element = typename Traits::Element;
+	using DwOutput = BackwardDwOutputSm100<ElementDw>;
 
 	static constexpr int kRows = Config::kCtaTileM;
 
@@ -267,8 +278,8 @@ struct BackwardGemmSmemSm100 {
 			cosize_v<typename DwTraits::SmemLayoutA>];
 		alignas(1024) Element operand_b[
 			cosize_v<typename DwTraits::SmemLayoutB>];
-		alignas(1024) Element store[
-			Config::kEpilogueWarpgroups * Traits::kStoreSlotElements];
+		alignas(1024) ElementDw store[
+			Config::kEpilogueWarpgroups * DwOutput::kElements];
 	};
 
 	union alignas(1024) PhaseStorage {
@@ -305,8 +316,8 @@ struct BackwardGemmSmemSm100 {
 	}
 	CUTE_DEVICE Element* dw_a_data() { return &phase.dw.operand_a[0]; }
 	CUTE_DEVICE Element* dw_b_data() { return &phase.dw.operand_b[0]; }
-	CUTE_DEVICE Element* dw_store_data(int warpgroup) {
-		return &phase.dw.store[warpgroup * Traits::kStoreSlotElements];
+	CUTE_DEVICE ElementDw* dw_store_data(int warpgroup) {
+		return &phase.dw.store[warpgroup * DwOutput::kElements];
 	}
 };
 
@@ -1081,8 +1092,10 @@ template <
 	class TmaDzt,
 	class TmaXt,
 	class TmaDwStore,
-	class TmaDwAdd>
+	class TmaDwAdd,
+	class ElementDw_ = cutlass::bfloat16_t>
 struct BackwardTmaBundleSm100 {
+	using ElementDw = ElementDw_;
 	TmaX x;
 	TmaW w;
 	TmaDzStore dz_store;
@@ -1124,7 +1137,9 @@ void backward_gemm_tp_kernel_sm100(
 	using Traits = BackwardGemmTraitsSm100<Compute>;
 	using Config = typename Traits::Config;
 	using Launch = BackwardGemmLaunchSm100<Compute>;
-	using Smem = BackwardGemmSmemSm100<Compute, ReturnEntropy>;
+	using ElementDw = typename Bundle::ElementDw;
+	using DwOutput = BackwardDwOutputSm100<ElementDw>;
+	using Smem = BackwardGemmSmemSm100<Compute, ReturnEntropy, ElementDw>;
 	using Element = typename Traits::Element;
 	constexpr int kPhaseBits = PhaseMask & kBackwardPhaseAll;
 	constexpr bool kRunDz = (kPhaseBits & kBackwardPhaseDz) != 0;
@@ -2685,17 +2700,17 @@ void backward_gemm_tp_kernel_sm100(
 				tCtAcc.data() = tmem_base;
 				auto epi_tile = make_tile(
 					Int<Config::kCtaTileM>{},
-					Int<Config::kEpilogueChunkN>{});
+					Int<DwOutput::kTileN>{});
 				auto acc_mn =
 					tCtAcc(make_coord(_, _), _0{}, _0{});
 				auto tAccEpi = flat_divide(acc_mn, epi_tile);
 				auto t2r = make_tmem_copy(
-					::liger::TmemLoadOp<Config::kEpilogueChunkN>{},
+					::liger::TmemLoadOp<DwOutput::kTileN>{},
 					tAccEpi(_, _, _0{}, _0{}));
 				auto thr_t2r = t2r.get_slice(tid_in_warpgroup);
 				auto cChunk = make_identity_tensor(make_shape(
 					Int<Config::kCtaTileM>{},
-					Int<Config::kEpilogueChunkN>{}));
+					Int<DwOutput::kTileN>{}));
 				auto tTR_cChunk = thr_t2r.partition_D(cChunk);
 				auto tTR_rAcc =
 					make_tensor<float>(shape(tTR_cChunk));
@@ -2709,22 +2724,22 @@ void backward_gemm_tp_kernel_sm100(
 					cute::as_position_independent_swizzle_tensor(
 						make_tensor(
 							make_smem_ptr(smem.dw_store_data(0)),
-							typename Traits::SmemLayoutStoreSlot{}));
+							typename DwOutput::SmemLayout{}));
 				auto sDwStore1 =
 					cute::as_position_independent_swizzle_tensor(
 						make_tensor(
 							make_smem_ptr(smem.dw_store_data(1)),
-							typename Traits::SmemLayoutStoreSlot{}));
+							typename DwOutput::SmemLayout{}));
 				auto tTR_sDw0 = thr_t2r.partition_D(sDwStore0);
 				auto tTR_sDw1 = thr_t2r.partition_D(sDwStore1);
 				auto tTR_rDw =
-					make_tensor<Element>(shape(tTR_sDw0));
-				constexpr int kFragmentSize = 32;
+					make_tensor<ElementDw>(shape(tTR_sDw0));
+				constexpr int kFragmentSize = DwOutput::kTileN;
 				auto tTR_rAccFragments =
 					recast<cutlass::Array<float, kFragmentSize>>(
 						coalesce(tTR_rAcc));
 				auto tTR_rDwFragments =
-					recast<cutlass::Array<Element, kFragmentSize>>(
+					recast<cutlass::Array<ElementDw, kFragmentSize>>(
 						coalesce(tTR_rDw));
 				auto shape_dw = make_shape(
 					static_cast<int64_t>(params.local_vocab),
@@ -2746,7 +2761,7 @@ void backward_gemm_tp_kernel_sm100(
 						mDwStore,
 						make_tile(
 							Int<Config::kCtaTileM>{},
-							Int<Config::kEpilogueChunkN>{}),
+							Int<DwOutput::kTileN>{}),
 						make_coord(_, _)));
 				auto tAsS_dw0 =
 					cta_dw_add.partition_S(sDwStore0);
@@ -2757,7 +2772,7 @@ void backward_gemm_tp_kernel_sm100(
 						mDwAdd,
 						make_tile(
 							Int<Config::kCtaTileM>{},
-							Int<Config::kEpilogueChunkN>{}),
+							Int<DwOutput::kTileN>{}),
 						make_coord(_, _)));
 				for (int index = 0; index < dw_local; ++index) {
 					int item = dw_first + index;
@@ -2792,7 +2807,7 @@ void backward_gemm_tp_kernel_sm100(
 						for (int round = 0;
 								round <
 									Config::kTileN /
-										Config::kEpilogueChunkN;
+										DwOutput::kTileN;
 								++round) {
 							int chunk = round;
 							int buffer = round & 1;
@@ -2812,7 +2827,7 @@ void backward_gemm_tp_kernel_sm100(
 							if (
 								round + 1 ==
 								Config::kTileN /
-									Config::kEpilogueChunkN) {
+									DwOutput::kTileN) {
 								cutlass::arch::fence_view_async_tmem_load();
 							}
 							if (tid_in_warpgroup == 0) {
@@ -2824,7 +2839,7 @@ void backward_gemm_tp_kernel_sm100(
 							if (
 								round + 1 ==
 									Config::kTileN /
-										Config::kEpilogueChunkN &&
+										DwOutput::kTileN &&
 								tid_in_epi == 0) {
 								dw_acc_pipe.consumer_release(
 									dw_acc_cons_state);
@@ -2836,7 +2851,7 @@ void backward_gemm_tp_kernel_sm100(
 										++i) {
 									tTR_rDwFragments(i) =
 										cutlass::NumericArrayConverter<
-											Element,
+											ElementDw,
 											float,
 											kFragmentSize>{}(
 											tTR_rAccFragments(i));
@@ -2864,7 +2879,7 @@ void backward_gemm_tp_kernel_sm100(
 								int n_chunk =
 									n_tile *
 										(Config::kTileN /
-											Config::kEpilogueChunkN) +
+											DwOutput::kTileN) +
 									chunk;
 								if (wave == 0) {
 									copy(

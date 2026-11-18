@@ -76,6 +76,7 @@ from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_s
 from liger_kernel.ops.cutedsl.ops._fused_scaled_cross_entropy_forward_fragment_sm90 import scaled_ce_forward_fragment
 from liger_kernel.ops.cutedsl.ops.utils import ensure_cuda_context
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import _scaled_ce_outputs
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_accum_dtype
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 
@@ -228,6 +229,7 @@ def fused_scaled_cross_entropy_backward(
     input_dtype=torch.bfloat16,
     selected_token_ids=None,
     grad_selected=None,
+    accum_dtype=None,
 ):
     """Backward of :func:`fused_scaled_cross_entropy_forward`.
 
@@ -269,12 +271,14 @@ def fused_scaled_cross_entropy_backward(
         config=FusedBackwardConfig(m_tiles_per_wave=m_tiles_per_wave),
         selected_token_ids=selected_token_ids,
         selected_grad=selected_scale,
+        accum_dtype=accum_dtype,
     )
 
 
 class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
     """``apply(_input, weight, target, temperature=1.0, ignore_index=-100,
-    m_tiles_per_cluster=1, return_entropy=False, selected_token_ids=None)``.
+    m_tiles_per_cluster=1, return_entropy=False, selected_token_ids=None,
+    accum_dtype=None)``.
 
     Forward returns the per-token NLL ``[M]`` (FP32).  Backward expects the
     per-token upstream gradient ``[M]``.  ``m_tiles_per_cluster`` is retained
@@ -295,7 +299,9 @@ class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
         m_tiles_per_cluster=1,
         return_entropy=False,
         selected_token_ids=None,
+        accum_dtype=None,
     ):
+        ctx.accum_dtype = _validate_accum_dtype(accum_dtype, weight.dtype)
         ctx.set_materialize_grads(False)
         _validate_temperature(temperature)
         outputs = fused_scaled_cross_entropy_forward(
@@ -342,8 +348,9 @@ class LigerFusedScaledCrossEntropySM90Function(torch.autograd.Function):
             input_dtype=ctx.input_dtype,
             selected_token_ids=selected_token_ids,
             grad_selected=grad_selected,
+            accum_dtype=ctx.accum_dtype,
         )
-        return grad_input, grad_weight, None, None, None, None, None, None
+        return grad_input, grad_weight, None, None, None, None, None, None, None
 
 
 __all__ = [
