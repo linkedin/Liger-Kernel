@@ -1,7 +1,10 @@
 import pytest
 import torch
 
+from test.utils import FP64_SAFE_COLLAPSE_MARGINS
+from test.utils import assert_grad_close_per_row
 from test.utils import assert_verbose_allclose
+from test.utils import dominant_target_logits
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
@@ -25,8 +28,10 @@ _SOFTMAX_MIN_FREE_BYTES = 4 * _SOFTMAX_OVERFLOW_ROWS * _SOFTMAX_OVERFLOW_COLS * 
         (4, 16),
         (1, 1023),  # Large single row single-block dispatch
         (3, 7, 256),  # 3D input
-        (1, 4096),  # test multi-block dispatch
-        (1, 2, 4096),  # test multi-block dispatch on 3D input
+        (1, 4096),
+        (1, 2, 4096),
+        (1, 100003),  # wider than one block: multi-block dispatch
+        (2, 3, 70000),  # multi-block dispatch on 3D input
     ],
 )
 @pytest.mark.parametrize(
@@ -73,6 +78,8 @@ def test_liger_softmax(shape, dtype, atol, rtol):
         (3, 7, 256),
         (1, 4096),
         (1, 2, 4096),
+        (1, 100003),
+        (2, 3, 70000),
     ],
 )
 @pytest.mark.parametrize(
@@ -139,3 +146,31 @@ def test_softmax_large_row_offset():
 
     assert_verbose_allclose(y[-1].float(), y_ref, atol=5e-2, rtol=5e-2)
     assert_verbose_allclose(x.grad[-1].float(), x_ref.grad, atol=5e-2, rtol=5e-2)
+
+
+@pytest.mark.parametrize("V", [4096, 65536, 100003])  # 100003 is wider than one block: multi-block kernels
+@pytest.mark.parametrize(
+    "dtype, rtol",
+    [
+        (torch.float32, 1e-4),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
+        ),
+    ],
+)
+def test_dominant_entry_does_not_collapse(V, dtype, rtol):
+    # Once softmax rounds the max entry to 1 its backward rounds that entry's gradient to 0 while the others stay
+    # non-zero; it must still match fp64 (arXiv 2610.31642). Margins stay below fp64's own cliff (~36.7) so
+    # autograd in fp64 is a valid reference.
+    set_seed()
+    x, _ = dominant_target_logits(FP64_SAFE_COLLAPSE_MARGINS, V=V, dtype=dtype, device=device)
+    dy = torch.randn_like(x)
+    _ref = x.double().requires_grad_(True)
+    torch.softmax(_ref, -1).backward(dy.double())
+
+    _input = x.clone().requires_grad_(True)
+    liger_softmax(_input).backward(dy)
+
+    assert_grad_close_per_row(_input.grad, _ref.grad, rtol)
