@@ -486,7 +486,7 @@ def run_benchmarks(
     update_benchmark_data_csv(benchmark_data_list=benchmark_data_list, filename=file_name, overwrite=overwrite)
 
 
-def parse_benchmark_script_args():
+def parse_benchmark_script_args(add_extra_arguments: Optional[Callable[[argparse.ArgumentParser], None]] = None):
     parser = argparse.ArgumentParser(description="Benchmarking script for Liger-Kernel")
 
     parser.add_argument(
@@ -524,5 +524,7 @@ def parse_benchmark_script_args():
             "sweep. Only used when --sweep-mode=model_config."
         ),
     )
+    if add_extra_arguments is not None:
+        add_extra_arguments(parser)
     args = parser.parse_args()
     return args
