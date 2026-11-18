@@ -3756,6 +3756,110 @@ def apply_liger_kernel_to_deepseek_v4(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_glm5_next(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = False,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace GLM-5.3 (`glm5_next`) models.
+
+    NOTE: RoPE and SwiGLU are not supported for GLM-5.3. Its attention applies RoPE to a partial
+    rope head inside MLA and the KDA linear-attention layers, and its routed experts are fused 3D
+    tensors. Passing ``rope=True`` or ``swiglu=True`` emits a warning and skips the kernel swap.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+            Currently unsupported; emits a warning and is a no-op.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+            Currently unsupported; emits a warning and is a no-op.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if already loaded.
+            Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.glm5_next import modeling_glm5_next
+    from transformers.models.glm5_next.modeling_glm5_next import Glm5NextForConditionalGeneration
+    from transformers.models.glm5_next.modeling_glm5_next import Glm5NextModel
+    from transformers.models.glm5_next.modeling_glm5_next import Glm5NextTextModel
+
+    from liger_kernel.transformers.model.glm5_next import lce_forward as glm5_next_lce_forward
+
+    if rope:
+        logger.warning_once(
+            "rope=True is not supported for GLM-5.3: its MLA and KDA layers apply RoPE in their own "
+            "code. Skipping rope kernel swap."
+        )
+
+    if rms_norm:
+        modeling_glm5_next.Glm5NextTextRMSNorm = LigerRMSNorm
+        modeling_glm5_next.Glm5NextRMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(glm5_next_lce_forward, model)
+        else:
+            modeling_glm5_next.Glm5NextForConditionalGeneration.forward = glm5_next_lce_forward
+
+    if swiglu:
+        logger.warning_once(
+            "swiglu=True is not supported for GLM-5.3: its routed experts are fused 3D tensors. "
+            "Skipping SwiGLU kernel swap."
+        )
+
+    if model is not None and rms_norm:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        if isinstance(model, Glm5NextForConditionalGeneration):
+            text_model = model.model.language_model
+            vision_model = model.model.visual
+        elif isinstance(model, Glm5NextModel):
+            text_model = model.language_model
+            vision_model = model.visual
+        elif isinstance(model, Glm5NextTextModel):
+            text_model = model
+            vision_model = None
+        else:
+            raise TypeError(
+                "Unsupported glm5_next model type. `model` must be `Glm5NextForConditionalGeneration`, "
+                f"`Glm5NextModel` or `Glm5NextTextModel`. Got: {type(model)}"
+            )
+
+        _patch_rms_norm_module(text_model.norm)
+        for decoder_layer in text_model.layers:
+            _patch_rms_norm_module(decoder_layer.input_layernorm)
+            _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+            # Only the MLA layers have these; the KDA layers use a gated norm of their own
+            for name in ("q_a_layernorm", "kv_a_layernorm"):
+                norm = getattr(decoder_layer.self_attn, name, None)
+                if norm is not None:
+                    _patch_rms_norm_module(norm)
+
+        if vision_model is not None:
+            _patch_rms_norm_module(vision_model.post_layernorm)
+            for vision_block in vision_model.blocks:
+                _patch_rms_norm_module(vision_block.norm1)
+                _patch_rms_norm_module(vision_block.norm2)
+                _patch_rms_norm_module(vision_block.attn.q_norm)
+                _patch_rms_norm_module(vision_block.attn.k_norm)
+
+
 def apply_liger_kernel_to_exaone4(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -3847,6 +3951,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "glm4": apply_liger_kernel_to_glm4,
     "glm4v": apply_liger_kernel_to_glm4v,
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
+    "glm5_next": apply_liger_kernel_to_glm5_next,
     "gpt_oss": apply_liger_kernel_to_gpt_oss,
     "internvl": apply_liger_kernel_to_internvl,
     "llama": apply_liger_kernel_to_llama,

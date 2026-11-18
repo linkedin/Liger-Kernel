@@ -36,6 +36,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_gemma4_text
 from liger_kernel.transformers import apply_liger_kernel_to_glm4
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe
+from liger_kernel.transformers import apply_liger_kernel_to_glm5_next
 from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_hunyuan_v1_dense
 from liger_kernel.transformers import apply_liger_kernel_to_hunyuan_v1_moe
@@ -81,6 +82,7 @@ from test.utils import revert_liger_kernel_to_gemma4_text
 from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_glm4v
 from test.utils import revert_liger_kernel_to_glm4v_moe
+from test.utils import revert_liger_kernel_to_glm5_next
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_hunyuan_v1
 from test.utils import revert_liger_kernel_to_hunyuan_v1_moe
@@ -364,6 +366,14 @@ try:
     DEEPSEEK_V4_AVAILABLE = True
 except ImportError:
     DEEPSEEK_V4_AVAILABLE = False
+
+try:
+    from transformers.models.glm5_next.configuration_glm5_next import Glm5NextConfig
+    from transformers.models.glm5_next.modeling_glm5_next import Glm5NextForConditionalGeneration
+
+    GLM5_NEXT_AVAILABLE = True
+except ImportError:
+    GLM5_NEXT_AVAILABLE = False
 
 try:
     from transformers.models.exaone4.configuration_exaone4 import Exaone4Config
@@ -1742,6 +1752,66 @@ if DEEPSEEK_V4_AVAILABLE:
         ),
     )
 
+if GLM5_NEXT_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_glm5_next"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_glm5_next,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_glm5_next,
+        model_class=Glm5NextForConditionalGeneration,
+        mini_model_config=Glm5NextConfig(
+            # Special tokens past the text vocab, so the text-only batches never hit them
+            image_token_id=151343,
+            video_token_id=151344,
+            image_start_token_id=151339,
+            image_end_token_id=151340,
+            video_start_token_id=151341,
+            video_end_token_id=151342,
+            text_config={
+                "vocab_size": 32000,  # 154880
+                "pad_token_id": 2,  # 154820
+                "hidden_size": 64,  # 4096
+                "intermediate_size": 128,
+                "num_hidden_layers": 4,
+                # KDA linear attention and DSA-indexed MLA, as in the release. "full_attention" is the MLA
+                # layer; each transformers version maps it to its own name
+                "layer_types": ["linear_attention", "full_attention", "linear_attention", "full_attention"],
+                "mlp_layer_types": ["dense", "sparse", "sparse", "sparse"],
+                "num_attention_heads": 2,
+                "num_key_value_heads": 2,
+                "head_dim": 16,
+                "q_lora_rank": 32,
+                "kv_lora_rank": 16,
+                "qk_rope_head_dim": 0,
+                "qk_nope_head_dim": 64,
+                "v_head_dim": 16,
+                "linear_num_heads": 2,
+                "linear_head_dim": 16,
+                "linear_conv_kernel_dim": 2,
+                "index_n_heads": 2,
+                "index_head_dim": 16,
+                "index_topk": 48,
+                "index_kpool": 3,
+                "moe_intermediate_size": 32,
+                "n_routed_experts": 4,
+                "num_local_experts": 4,
+                "num_experts_per_tok": 2,
+                "max_position_embeddings": 4096,
+                "tie_word_embeddings": False,
+            },
+            vision_config={
+                "depth": 1,
+                "hidden_size": 64,
+                "num_heads": 2,
+                "out_hidden_size": 64,
+                "intermediate_size": 64,
+                "projection_intermediate_size": 64,
+                "patch_size": 14,
+                "spatial_merge_size": 1,
+                "temporal_patch_size": 2,
+            },
+            attn_implementation="sdpa",
+        ),
+    )
+
 if EXAONE4_AVAILABLE:
     MINI_MODEL_SETUPS["mini_exaone4"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_exaone4,
@@ -1834,6 +1904,7 @@ def run_mini_model(
             or "qwen3_5" in model_name
             or "deepseek_v3" in model_name
             or "deepseek_v4" in model_name
+            or "glm5_next" in model_name
         ):
             kwargs["rope"] = False
 
@@ -1846,7 +1917,7 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        if "deepseek_v4" in model_name:
+        if "deepseek_v4" in model_name or "glm5_next" in model_name:
             kwargs["swiglu"] = False
 
         if "llava" in model_name:
@@ -2552,6 +2623,22 @@ def run_mini_model(
             marks=pytest.mark.skipif(
                 not DEEPSEEK_V4_AVAILABLE,
                 reason="DeepSeek-V4 not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_glm5_next",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=pytest.mark.skipif(
+                not GLM5_NEXT_AVAILABLE,
+                reason="GLM-5.3 (glm5_next) not available in this version of transformers",
             ),
         ),
         pytest.param(
