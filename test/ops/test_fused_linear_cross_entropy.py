@@ -218,6 +218,46 @@ def test_fused_linear_cross_entropy_with_bias(backend, shape, dtype):
     )
 
 
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+@pytest.mark.parametrize("has_bias", [False, True])
+def test_fused_linear_cross_entropy_frozen_backbone(reduction, has_bias):
+    """When input does not require grad (e.g. frozen backbone), weight.grad
+    and bias.grad must still be properly accumulated (#1644)."""
+    BT, V, H = 8, 32, 16
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    g = torch.Generator(device="cpu").manual_seed(42)
+    h = torch.randn(BT, H, generator=g).to(device).requires_grad_(False)
+    w = torch.randn(V, H, generator=g).to(device).requires_grad_(True)
+    b = torch.randn(V, generator=g).to(device).requires_grad_(True) if has_bias else None
+    t = torch.randint(0, V, (BT,), generator=g).to(device)
+
+    from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+
+    loss = LigerFusedLinearCrossEntropyLoss(reduction=reduction)(w, h, t, b)
+    if reduction == "none":
+        go = torch.randn_like(loss)
+        loss.backward(go)
+    else:
+        go = None
+        loss.backward()
+
+    w_ref = w.detach().clone().requires_grad_(True)
+    b_ref = b.detach().clone().requires_grad_(True) if has_bias else None
+    logits_ref = h @ w_ref.t() + (b_ref if has_bias else 0)
+    loss_ref = F.cross_entropy(logits_ref, t, reduction=reduction)
+    if reduction == "none":
+        loss_ref.backward(go)
+    else:
+        loss_ref.backward()
+
+    assert h.grad is None
+    assert w.grad is not None
+    torch.testing.assert_close(w.grad, w_ref.grad, atol=1e-4, rtol=1e-4)
+    if has_bias:
+        assert b.grad is not None
+        torch.testing.assert_close(b.grad, b_ref.grad, atol=1e-4, rtol=1e-4)
+
+
 def test_fused_linear_cross_entropy_available_backends_includes_triton():
     """Sanity: the Triton implementation should always be available."""
     impls = available_backends("fused_linear_cross_entropy")

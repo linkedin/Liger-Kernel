@@ -68,7 +68,9 @@ def fused_linear_cross_entropy_forward(
     ce_mode=None,
     token_grad_output=None,
     compute_gradients=None,
+    input_requires_grad=None,
     weight_requires_grad=None,
+    bias_requires_grad=None,
     chunk_mem_const: int = _CHUNK_MEM_CONST,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
@@ -81,13 +83,28 @@ def fused_linear_cross_entropy_forward(
     if isinstance(chunk_mem_const, bool) or not isinstance(chunk_mem_const, int) or chunk_mem_const < 1:
         raise ValueError(f"chunk_mem_const must be a positive integer. Got: {chunk_mem_const!r}")
     device = _input.device
-    # ``compute_gradients`` / ``weight_requires_grad`` let backward re-enter this
-    # function with *detached* saved tensors (whose ``.requires_grad`` is False) and
-    # still get gradients out. ``token_grad_output`` is the per-token upstream
-    # gradient for reduction="none"; it must be folded into the logits gradient
-    # before that gradient is summed into grad_weight/grad_bias.
-    input_requires_grad = _input.requires_grad if compute_gradients is None else compute_gradients
-    weight_needs_grad = weight.requires_grad if weight_requires_grad is None else weight_requires_grad
+    # ``compute_gradients`` / ``input_requires_grad`` / ``weight_requires_grad`` / ``bias_requires_grad``
+    # let backward re-enter this function with *detached* saved tensors (whose
+    # ``.requires_grad`` is False) and still get gradients out. ``token_grad_output``
+    # is the per-token upstream gradient for reduction="none"; it must be folded into
+    # the logits gradient before that gradient is summed into grad_weight/grad_bias.
+    if compute_gradients is False:
+        input_requires_grad = False
+        weight_needs_grad = False
+        bias_needs_grad = False
+    else:
+        if input_requires_grad is None:
+            input_requires_grad = _input.requires_grad if compute_gradients is None else compute_gradients
+        if weight_requires_grad is None:
+            weight_needs_grad = weight.requires_grad
+        else:
+            weight_needs_grad = weight_requires_grad
+        if bias_requires_grad is None:
+            bias_needs_grad = bias is not None and bias.requires_grad
+        else:
+            bias_needs_grad = bias is not None and bias_requires_grad
+
+    has_any_gradients = input_requires_grad or weight_needs_grad or bias_needs_grad
 
     # inputs have shape: BT x H
     # materialized activations will have shape: BT x V
@@ -111,15 +128,20 @@ def fused_linear_cross_entropy_forward(
     # with accum_dtype=None they inherit the parameter dtype (e.g. bf16/fp16), and only
     # take accum_dtype when one is explicitly requested. The weight-grad projection below
     # therefore has a dtype-matched low-precision path in addition to the fp32 fast path.
-    if input_requires_grad:
+    if weight_needs_grad:
         if accum_dtype is None:
-            grad_weight = torch.zeros_like(weight, device=device) if weight_needs_grad else None
-            grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
+            grad_weight = torch.zeros_like(weight, device=device)
         else:
-            grad_weight = torch.zeros_like(weight, dtype=accum_dtype, device=device) if weight_needs_grad else None
-            grad_bias = torch.zeros_like(bias, dtype=accum_dtype, device=device) if bias is not None else None
+            grad_weight = torch.zeros_like(weight, dtype=accum_dtype, device=device)
     else:
         grad_weight = None
+
+    if bias_needs_grad:
+        if accum_dtype is None:
+            grad_bias = torch.zeros_like(bias, device=device)
+        else:
+            grad_bias = torch.zeros_like(bias, dtype=accum_dtype, device=device)
+    else:
         grad_bias = None
 
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
@@ -243,7 +265,7 @@ def fused_linear_cross_entropy_forward(
                 RETURN_PREDICTED_TOKENS=return_predicted_tokens,
                 HAS_WEIGHT=ce_weight is not None,
                 HAS_SOFTCAPPING=softcap is not None,
-                HAS_GRADIENTS=input_requires_grad,
+                HAS_GRADIENTS=has_any_gradients,
                 BLOCK_SIZE=block_size,
                 num_warps=32 if not is_hip() else 16,
             )
@@ -264,7 +286,7 @@ def fused_linear_cross_entropy_forward(
                 return_z_loss,
                 return_token_accuracy,
                 return_predicted_tokens,
-                input_requires_grad,
+                has_any_gradients,
             )
             (
                 loss_1d_slice,
@@ -321,7 +343,7 @@ def fused_linear_cross_entropy_forward(
             else:
                 grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
-        if grad_weight is not None and input_requires_grad:
+        if grad_weight is not None:
             grad_logits_t = grad_logits_chunk.t()
             if (
                 _ADDMM_SUPPORTS_OUT_DTYPE
@@ -375,7 +397,7 @@ def fused_linear_cross_entropy_forward(
                 grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
             del grad_logits_t
 
-        if bias is not None and input_requires_grad:
+        if grad_bias is not None:
             torch.add(
                 input=grad_bias,
                 other=grad_logits_chunk.sum(dim=0),
@@ -420,19 +442,20 @@ def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, gr
     if not torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
         # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
-        BT, H = grad_input.shape
-        n_rows = BT
-        BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+        if grad_input is not None:
+            BT, H = grad_input.shape
+            n_rows = BT
+            BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
 
-        element_mul_kernel[(n_rows,)](
-            grad_input,
-            grad_input.stride(-2),
-            grad_output,
-            H,
-            BLOCK_SIZE=BLOCK_SIZE,
-            X_col_stride=grad_input.stride(-1),
-            num_warps=32 if not is_hip() else 16,
-        )
+            element_mul_kernel[(n_rows,)](
+                grad_input,
+                grad_input.stride(-2),
+                grad_output,
+                H,
+                BLOCK_SIZE=BLOCK_SIZE,
+                X_col_stride=grad_input.stride(-1),
+                num_warps=32 if not is_hip() else 16,
+            )
 
         # handle grad_weight
         if grad_weight is not None:
@@ -568,7 +591,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 ce_mode=ce_mode,
                 chunk_mem_const=chunk_mem_const,
             )
+            ctx.input_requires_grad = _input.requires_grad
             ctx.weight_requires_grad = weight.requires_grad
+            ctx.bias_requires_grad = bias.requires_grad if bias is not None else False
         else:
             # downcast to dtype and store for backward
             ctx.save_for_backward(
@@ -602,8 +627,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 target=target,
                 bias=bias,
                 token_grad_output=grad_output,
-                compute_gradients=True,
+                input_requires_grad=ctx.input_requires_grad,
                 weight_requires_grad=ctx.weight_requires_grad,
+                bias_requires_grad=ctx.bias_requires_grad,
                 **ctx.fwd_kwargs,
             )
         else:
