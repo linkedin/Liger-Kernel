@@ -114,16 +114,16 @@ def _rms_norm_forward_kernel(
         X_row = X_row.to(tl.float32)
 
     if casting_mode == _CASTING_MODE_NONE:
-        eps = eps.to(X_row_dtype)
-        offset = offset.to(X_row_dtype)
+        eps = tl.cast(eps, X_row_dtype)
+        offset = tl.cast(offset, X_row_dtype)
     else:
         # Scalar kernel params are specialized to fp32 by eager Triton but to
         # fp64 by Inductor when this kernel is launched from inside
         # torch.compile. An fp64 scalar silently promotes mean_square, rsqrt
         # and the weight multiply to float64, roughly halving throughput.
         # Pinning to fp32 is a no-op in eager and keeps both paths identical.
-        eps = eps.to(tl.float32)
-        offset = offset.to(tl.float32)
+        eps = tl.cast(eps, tl.float32)
+        offset = tl.cast(offset, tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
     rstd = rsqrt(mean_square + eps)
@@ -191,7 +191,7 @@ def _rms_norm_backward_kernel(
     if elementwise_affine:
         W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
         # Pin the fp64 scalar Inductor passes to fp32 (see _rms_norm_forward_kernel).
-        W_row = W_row + offset.to(tl.float32)
+        W_row = W_row + tl.cast(offset, tl.float32)
 
     for row_idx in range(row_start, row_end):
         dy_base = dY_ptr + row_idx * dY_row_stride
@@ -298,12 +298,12 @@ def _block_rms_norm_forward_kernel(
         X_row = X_row.to(tl.float32)
 
     if casting_mode == _CASTING_MODE_NONE:
-        eps = eps.to(X_row_dtype)
-        offset = offset.to(X_row_dtype)
+        eps = tl.cast(eps, X_row_dtype)
+        offset = tl.cast(offset, X_row_dtype)
     else:
         # See _rms_norm_forward_kernel: pin fp64 scalars from Inductor to fp32.
-        eps = eps.to(tl.float32)
-        offset = offset.to(tl.float32)
+        eps = tl.cast(eps, tl.float32)
+        offset = tl.cast(offset, tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=1) / n_cols
     rstd = rsqrt(mean_square + eps)
@@ -375,7 +375,7 @@ def _block_rms_norm_backward_kernel(
     if elementwise_affine:
         W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
         # Pin the fp64 scalar Inductor passes to fp32 (see _rms_norm_forward_kernel).
-        W_row = W_row + offset.to(tl.float32)
+        W_row = W_row + tl.cast(offset, tl.float32)
 
     for start in range(pid * BLOCK_ROW, n_rows, NUM_SMS * BLOCK_ROW):
         row_idx = start + tl.arange(0, BLOCK_ROW)
