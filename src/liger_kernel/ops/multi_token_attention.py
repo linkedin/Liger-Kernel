@@ -139,8 +139,16 @@ class LigerMultiTokenAttentionFunction(torch.autograd.Function):
             ctx.save_for_backward(scores_inf, activation_output, weight, bias)
             ctx.out_flat_sparse_saved = False
 
+        padding = _pair(padding)
+        query_pad = _pair(dilation)[0] * (weight.shape[-2] - 1)
+        # Keep the output size, but align each query window with its last token.
+        ctx.query_padding = (query_pad, 2 * padding[0] - query_pad)
+        conv_input = (
+            F.pad(activation_output, (0, 0, *ctx.query_padding)) if any(ctx.query_padding) else activation_output
+        )
+        padding = (0, padding[1])
         out_conv = F.conv2d(
-            activation_output,
+            conv_input,
             weight,
             bias,
             stride=stride,
@@ -174,12 +182,15 @@ class LigerMultiTokenAttentionFunction(torch.autograd.Function):
 
         grad_conv = _mask_zero_backward(grad_out)
 
-        grad_probs = F.conv_transpose2d(
-            grad_conv, weight, None, stride=stride, padding=padding, dilation=dilation, groups=groups
+        conv_input = (
+            F.pad(activation_output, (0, 0, *ctx.query_padding)) if any(ctx.query_padding) else activation_output
+        )
+        grad_probs = torch.nn.grad.conv2d_input(
+            conv_input.shape, weight, grad_conv, stride=stride, padding=padding, dilation=dilation, groups=groups
         )
 
         grad_weight = torch.nn.grad.conv2d_weight(
-            input=activation_output,
+            input=conv_input,
             weight_size=weight.shape,
             grad_output=grad_conv,
             stride=stride,
@@ -187,6 +198,8 @@ class LigerMultiTokenAttentionFunction(torch.autograd.Function):
             dilation=dilation,
             groups=groups,
         )
+        if any(ctx.query_padding):
+            grad_probs = F.pad(grad_probs, (0, 0, -ctx.query_padding[0], -ctx.query_padding[1]))
         grad_bias = None
         if bias is not None:
             grad_bias = grad_conv.sum(dim=(0, 2, 3))

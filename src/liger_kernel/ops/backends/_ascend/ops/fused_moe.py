@@ -1,7 +1,7 @@
 """
 Fused MoE expert computation via Triton grouped GEMM (Ascend backend).
 
-Forward: routing metadata (3 kernels) → gather+GEMM → SwiGLU epilogue → down-proj → token aggregation
+Forward: routing metadata → gather+GEMM → SwiGLU epilogue → down-proj → token aggregation
 Backward: memory-efficient — recomputes dA' = dO@W2^T to avoid caching Y (TK×H bytes)
 """
 
@@ -9,6 +9,7 @@ import torch
 import triton
 
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import get_npu_core_count
 
 from .fused_moe_kernels import ASCEND_BWD_BLOCK_N
 from .fused_moe_kernels import ASCEND_DW_BLOCK_K
@@ -28,6 +29,7 @@ from .fused_moe_kernels import _moe_bwd_dX_expanded_kernel
 from .fused_moe_kernels import _moe_router_histogram_kernel
 from .fused_moe_kernels import _moe_router_prefix_sum_kernel
 from .fused_moe_kernels import _moe_router_scatter_kernel
+from .fused_moe_kernels import _moe_router_tile_kernel
 from .fused_moe_kernels import _swiglu_from_pre_act_kernel
 from .fused_moe_kernels import _token_gather_weighted_sum_kernel
 
@@ -42,95 +44,60 @@ BLOCK_M_TOKEN = 32
 
 
 def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: int = BLOCK_M_TOKEN):
-    """Compute token→expert routing permutation metadata via 3 Triton kernels.
-
-    Also computes GPU tile metadata (tile_row_start, tile_expert) inside
-    kernel 3 — no CPU loop, one .item() sync for num_m_tiles allocation.
-
-    Args:
-        topk_indices:  (T, K) int32 — pre-computed top-k expert indices per token
-        E:             number of experts
-        block_m_token: BLOCK_M for token-dimension tiling (default BLOCK_M_TOKEN)
-
-    Returns:
-        expert_token_count:     (E,)            int32
-        expert_start_idx:       (E+1,)          int32
-        x_gather_idx:           (TK,)           int32
-        s_scatter_idx:          (TK,)           int32
-        s_reverse_scatter_idx:  (TK,)           int32
-        tile_row_start:         (num_m_tiles,)  int32 — absolute row_start per M-tile
-        tile_expert:            (num_m_tiles,)  int32 — expert index per M-tile
-    """
+    """Expert-major routing permutation and GEMM tile bounds."""
     T, K = topk_indices.shape
     TK = T * K
     device = topk_indices.device
-    E_POW2 = triton.next_power_of_2(E)
-    K_POW2 = triton.next_power_of_2(K)
-    TOKENS_PER_BLOCK = max(1, 1024 // K_POW2)
-    n_tiles = triton.cdiv(T, TOKENS_PER_BLOCK)
+    topk = topk_indices.contiguous().reshape(TK)
 
-    # Kernel 1: per-expert counts per token tile
-    tile_expert_counts = torch.empty(E, n_tiles, dtype=torch.int32, device=device)
-    _moe_router_histogram_kernel[(n_tiles,)](
-        topk_indices,
-        tile_expert_counts,
-        T,
-        E=E,
-        n_tiles=n_tiles,
-        TOKENS_PER_TILE=TOKENS_PER_BLOCK,
-        K_POW2=K_POW2,
-        K=K,
-        E_POW2=E_POW2,
-    )
-
-    expert_token_count = tile_expert_counts.sum(dim=1, dtype=torch.int32)  # (E,)
-
-    # Kernel 2: expert offsets, tile offsets, and tile-level prefix sums
+    expert_token_count = torch.zeros(E, dtype=torch.int32, device=device)
     expert_start_idx = torch.empty(E + 1, dtype=torch.int32, device=device)
     expert_tile_offset = torch.empty(E + 1, dtype=torch.int32, device=device)
-    _moe_router_prefix_sum_kernel[(E + 2,)](
-        expert_token_count,
-        expert_start_idx,
-        expert_tile_offset,
-        E=E,
-        partial_sum_ptr=tile_expert_counts,
-        n_tiles=n_tiles,
-        TK=TK,
-        BLOCK_M=128,
-        BLOCK_N=E_POW2,
-        BLOCK_M_TOKEN=block_m_token,
-    )
-
-    num_m_tiles = int(expert_tile_offset[-1].item())
-
-    tile_row_start = torch.empty(num_m_tiles, dtype=torch.int32, device=device)
-    tile_expert = torch.empty(num_m_tiles, dtype=torch.int32, device=device)
     s_scatter_idx = torch.empty(TK, dtype=torch.int32, device=device)
     s_reverse_scatter_idx = torch.empty(TK, dtype=torch.int32, device=device)
     x_gather_idx = torch.empty(TK, dtype=torch.int32, device=device)
 
-    # Kernel 3: scatter into expert-sorted order and emit GEMM tile metadata
-    if TK > 0:
-        _moe_router_scatter_kernel[(n_tiles,)](
-            s_scatter_idx,
-            s_reverse_scatter_idx,
-            x_gather_idx,
-            tile_row_start,
-            tile_expert,
-            topk_indices,
-            T,
-            TK,
-            tile_expert_counts,
-            n_tiles,
-            expert_start_idx[:E],
-            expert_tile_offset[:E],
-            E=E,
-            K_POW2=K_POW2,
-            K=K,
-            TOKENS_PER_BLOCK=TOKENS_PER_BLOCK,
+    if E == 0:
+        expert_start_idx.zero_()
+        expert_tile_offset.zero_()
+    else:
+        nprog = min(get_npu_core_count(), TK) if TK > 0 else 1
+        if TK > 0:
+            _moe_router_histogram_kernel[(nprog,)](topk, expert_token_count, TK, E)
+        _moe_router_prefix_sum_kernel[(1,)](
+            expert_token_count,
+            expert_start_idx,
+            expert_tile_offset,
+            E,
             BLOCK_M_TOKEN=block_m_token,
         )
+        if TK > 0:
+            cursor = torch.zeros(E, dtype=torch.int32, device=device)
+            _moe_router_scatter_kernel[(nprog,)](
+                topk,
+                cursor,
+                expert_start_idx,
+                s_scatter_idx,
+                s_reverse_scatter_idx,
+                x_gather_idx,
+                TK,
+                K,
+                E,
+            )
 
+    # Exact tile count stays on device. This is a host upper bound (slack < E).
+    # Padding tiles start at row TK, past every expert, so the existing row mask drops them.
+    num_m_tiles = 0 if TK <= 0 or E <= 0 else min(TK, (TK + E * (block_m_token - 1)) // block_m_token)
+    tile_row_start = torch.full((num_m_tiles,), TK, dtype=torch.int32, device=device)
+    tile_expert = torch.zeros(num_m_tiles, dtype=torch.int32, device=device)
+    if num_m_tiles > 0:
+        _moe_router_tile_kernel[(E,)](
+            expert_start_idx,
+            expert_tile_offset,
+            tile_row_start,
+            tile_expert,
+            BLOCK_M_TOKEN=block_m_token,
+        )
     return (
         expert_token_count,
         expert_start_idx,

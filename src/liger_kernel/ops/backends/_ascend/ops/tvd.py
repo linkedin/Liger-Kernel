@@ -13,6 +13,18 @@ MAX_FUSED_SIZE = 65536 // 4
 
 REDUCTION_LITERAL = Literal["none", "sum", "mean", "batchmean"]
 
+# Integer constexpr. torch.compile re-emits a string constexpr as a bare name.
+_REDUCTION_NONE = 0
+_REDUCTION_SUM = 1
+_REDUCTION_MEAN = 2
+_REDUCTION_BATCHMEAN = 3
+_REDUCTION_TO_INT = {
+    "none": _REDUCTION_NONE,
+    "sum": _REDUCTION_SUM,
+    "mean": _REDUCTION_MEAN,
+    "batchmean": _REDUCTION_BATCHMEAN,
+}
+
 
 @triton.jit
 def _tv_distance_kernel(
@@ -30,7 +42,7 @@ def _tv_distance_kernel(
     total_rows: tl.constexpr,  # BT
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
-    reduction: tl.constexpr,  # no default: always pass explicitly
+    reduction: tl.constexpr,  # 0 none; 1/2/3 reduced, scaled on the host
 ):
     thread_id = tl.program_id(0)
     num_threads = tl.num_programs(0)
@@ -55,7 +67,7 @@ def _tv_distance_kernel(
                 offsets = i + base_offsets
                 mask = offsets < n_cols
                 tl.store(grads_row_ptr + offsets, 0.0, mask=mask)
-                if reduction == "none":
+                if reduction == 0:
                     tl.store(loss_row_ptr + offsets, 0.0, mask=mask)
         else:
             loss_sum = 0.0
@@ -66,18 +78,18 @@ def _tv_distance_kernel(
                 p = tl.load(p_row_ptr + offsets, mask=mask, other=0.0)
                 q = tl.load(q_row_ptr + offsets, mask=mask, other=0.0)
 
-                # TVD(P || Q) = 0.5 * |P - Q|
+                # Tie subgradient is 0.
                 tv_loss = 0.5 * tl.abs(p - q)
-                grad_res = tl.where(p > q, 0.5, -0.5)
+                grad_res = tl.where(p > q, 0.5, tl.where(p < q, -0.5, 0.0))
 
                 tl.store(grads_row_ptr + offsets, grad_res, mask=mask)
 
-                if reduction == "none":
+                if reduction == 0:
                     tl.store(loss_row_ptr + offsets, tv_loss, mask=mask)
                 else:
                     loss_sum += tl.sum(tv_loss, axis=0)
 
-            if reduction != "none":
+            if reduction != 0:
                 tl.store(loss_row_ptr, loss_sum)
 
 
@@ -126,6 +138,7 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
     grads = torch.empty_like(p, dtype=torch.float32)
 
     n_non_ignore = (shift_labels != ignore_index).sum().item() if has_label else BT
+    reduction_id = _REDUCTION_TO_INT[reduction]
 
     _tv_distance_kernel[grid](
         p,
@@ -142,9 +155,14 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
         BT,
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_LABEL=has_label,
-        reduction=reduction,
+        reduction=reduction_id,
     )
 
+    # n_non_ignore == 0 must not divide.
+    if n_non_ignore == 0 and reduction != "none":
+        if reduction == "sum":
+            return output_tensor.sum(dim=0) * 0, grads * 0
+        return output_tensor.sum() * 0, grads * 0
     if reduction == "batchmean":
         return output_tensor.sum() / n_non_ignore, grads / n_non_ignore
     elif reduction == "sum":
