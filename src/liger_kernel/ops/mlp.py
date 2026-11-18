@@ -649,7 +649,7 @@ class LigerMLPFunction(torch.autograd.Function):
             raise RuntimeError(
                 "LigerMLP requires triton.tools.tensor_descriptor, which is not available in this Triton build."
             )
-        assert input.is_cuda and gate_weight.is_cuda and up_weight.is_cuda and down_weight.is_cuda
+        assert all(t.device.type != "cpu" for t in (input, gate_weight, up_weight, down_weight))
         input, gate_weight, up_weight, down_weight = _check_inputs(input, gate_weight, up_weight, down_weight)
         # Note:
         # PyTorch automatically disables global gradient computation during

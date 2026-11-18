@@ -23,6 +23,7 @@ from liger_kernel.backends.dispatch import available_backends
 from liger_kernel.backends.dispatch import dispatch
 from liger_kernel.backends.registry import get_registered
 
+from .conftest import device
 from .conftest import get_available_backends_for_op
 
 FLJSD_TEST_SHAPES = [
@@ -84,7 +85,6 @@ def test_fused_linear_jsd_correctness(backend, shape, dtype):
         pytest.skip("No fused_linear_jsd backends registered in this environment")
 
     BT, V, H = shape
-    device = "cuda"
     g = torch.Generator(device="cpu").manual_seed(0)
 
     si_cpu = torch.randn(BT, H, dtype=torch.float32, generator=g)
@@ -168,10 +168,10 @@ def test_fused_linear_jsd_propagates_backend_to_inner_jsd(monkeypatch, backend):
 
     monkeypatch.setattr(fljsd_ops, "dispatch", tracking_dispatch)
 
-    student_input = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    student_weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    teacher_input = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16)
-    teacher_weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16)
+    student_input = torch.randn(8, 64, device=device, dtype=torch.bfloat16, requires_grad=True)
+    student_weight = torch.randn(256, 64, device=device, dtype=torch.bfloat16, requires_grad=True)
+    teacher_input = torch.randn(8, 64, device=device, dtype=torch.bfloat16)
+    teacher_weight = torch.randn(256, 64, device=device, dtype=torch.bfloat16)
 
     loss = dispatch(
         "fused_linear_jsd",
@@ -198,10 +198,10 @@ def test_fused_linear_jsd_default_path_dispatches_inner_jsd(monkeypatch):
 
     monkeypatch.setattr(fljsd_ops, "dispatch", tracking_dispatch)
 
-    student_input = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    student_weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    teacher_input = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16)
-    teacher_weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16)
+    student_input = torch.randn(8, 64, device=device, dtype=torch.bfloat16, requires_grad=True)
+    student_weight = torch.randn(256, 64, device=device, dtype=torch.bfloat16, requires_grad=True)
+    teacher_input = torch.randn(8, 64, device=device, dtype=torch.bfloat16)
+    teacher_weight = torch.randn(256, 64, device=device, dtype=torch.bfloat16)
 
     fljsd_ops.LigerFusedLinearJSDFunction.apply(
         student_input,
