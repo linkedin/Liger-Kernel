@@ -57,6 +57,8 @@ def liger_cross_entropy_kernel(
     HAS_WEIGHT: tl.constexpr,
     HAS_SOFTCAPPING: tl.constexpr,
     HAS_GRADIENTS: tl.constexpr,
+    grad_output_ptr=None,
+    grad_output_stride: tl.constexpr = 0,
 ):
     """
     This kernel computes both cross entropy loss and the gradient of the input.
@@ -88,6 +90,8 @@ def liger_cross_entropy_kernel(
     HAS_WEIGHT (bool): The boolean value to determine whether assigning weight to each of the classes.
     HAS_SOFTCAPPING (bool): The boolean value to determine whether applying soft-capping or not.
     HAS_GRADIENTS (bool): The boolean value to determine whether calculating gradients in forward pass.
+    grad_output_ptr: Optional upstream gradients, applied in FP32 before storing the CE gradients.
+    grad_output_stride (int): Row stride of upstream gradients; zero broadcasts a scalar scale.
     """
 
     # https://github.com/triton-lang/triton/issues/1058
@@ -206,6 +210,10 @@ def liger_cross_entropy_kernel(
     # dx_y = softmax(x_y) - 1
     # dx_i = softmax(x_i), for i ≠ y
     if HAS_GRADIENTS:
+        # Fuse loss scaling into the FP32 calculation before the first gradient store.
+        grad_scale = 1.0
+        if grad_output_ptr is not None:
+            grad_scale = tl.load(grad_output_ptr + program_id * grad_output_stride).to(tl.float32)
         for i in range(0, n_cols, BLOCK_SIZE):
             X_offsets = i + tl.arange(0, BLOCK_SIZE)
             X_block = tl.load(
@@ -252,7 +260,7 @@ def liger_cross_entropy_kernel(
             if HAS_SOFTCAPPING:
                 X_block = X_block * (1 - intermediate * intermediate)
 
-            tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
+            tl.store(X_ptr + X_offsets, X_block * grad_scale, mask=X_offsets < n_cols)
 
         # dx_y correction: recompute the true-class gradient once, in fp32, and overwrite X[y]
         # (replaces the per-element tl.where removed above). The -(1 - label_smoothing) term must
@@ -283,7 +291,7 @@ def liger_cross_entropy_kernel(
         if HAS_SOFTCAPPING:
             t_y = ori_X_y / softcap
             dx_y = dx_y * (1 - t_y * t_y)
-        tl.store(X_ptr + y, dx_y)
+        tl.store(X_ptr + y, dx_y * grad_scale)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
     # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/ops/cross_entropy.py#L34
