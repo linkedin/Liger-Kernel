@@ -16,6 +16,54 @@ def _cast_and_contiguous(q, k, freqs_complex):
     return q, k, freqs_complex
 
 
+def _normalize_freqs_cis(freqs_cis: torch.Tensor, batch_size: int, seq_len: int, head_dim_half: int):
+    """Normalize complex or real ``freqs_cis`` to 3D real ``(..., head_dim_half, 2)`` and return stride flags."""
+    if freqs_cis.is_complex():
+        if freqs_cis.shape[-1] != head_dim_half:
+            raise ValueError(f"Expected complex freqs_cis last dim {head_dim_half}, got {freqs_cis.shape[-1]}")
+        if freqs_cis.ndim == 4 and freqs_cis.shape[2] == 1:
+            freqs_cis = freqs_cis.squeeze(2)
+        if freqs_cis.stride(-1) != 1:
+            freqs_cis = freqs_cis.contiguous()
+        freqs_cis = torch.view_as_real(freqs_cis)
+    else:
+        if freqs_cis.ndim == 5 and freqs_cis.shape[2] == 1:
+            freqs_cis = freqs_cis.squeeze(2)
+        if freqs_cis.ndim in (2, 3) and freqs_cis.shape[-1] == head_dim_half * 2:
+            freqs_cis = freqs_cis.reshape(*freqs_cis.shape[:-1], head_dim_half, 2)
+
+    if freqs_cis.ndim not in (3, 4) or freqs_cis.shape[-2:] != (head_dim_half, 2):
+        raise ValueError(f"Unexpected freqs_cis shape {tuple(freqs_cis.shape)} for head_dim_half={head_dim_half}")
+
+    has_batch_freqs = False
+    if freqs_cis.ndim == 4:
+        b_freq = freqs_cis.shape[0]
+        if b_freq == 1 or (batch_size > 1 and freqs_cis.stride(0) == 0):
+            freqs_cis = freqs_cis[0]
+        elif b_freq == batch_size:
+            has_batch_freqs = batch_size > 1
+        else:
+            raise ValueError(f"Expected freqs_cis batch dimension to be 1 or {batch_size}, got {b_freq}")
+
+    s_freq = freqs_cis.shape[1] if freqs_cis.ndim == 4 else freqs_cis.shape[0]
+    if s_freq == 1 and seq_len > 1:
+        has_seq_freqs = False
+        if freqs_cis.ndim == 4:
+            freqs_cis = freqs_cis.squeeze(1)
+    elif s_freq >= seq_len:
+        has_seq_freqs = True
+        if freqs_cis.ndim == 4:
+            if s_freq > seq_len:
+                freqs_cis = freqs_cis[:, :seq_len]
+            freqs_cis = freqs_cis.reshape(batch_size * seq_len, head_dim_half, 2)
+        elif s_freq > seq_len:
+            freqs_cis = freqs_cis[:seq_len]
+    else:
+        raise ValueError(f"Expected freqs_cis sequence length >= {seq_len} (or 1), got {s_freq}")
+
+    return freqs_cis, has_batch_freqs, has_seq_freqs
+
+
 @triton.jit
 def _llama4_rope_kernel(
     q_ptr,
@@ -25,6 +73,7 @@ def _llama4_rope_kernel(
     k_row_stride,
     q_head_stride,
     k_head_stride,
+    freqs_batch_stride,
     freqs_row_stride,
     seq_len,
     batch_size,
@@ -53,7 +102,7 @@ def _llama4_rope_kernel(
     base_offset = batch_idx * seq_len + seq_idx
     q_base = q_ptr + base_offset * q_row_stride
     k_base = k_ptr + base_offset * k_row_stride
-    freq_base = seq_idx * freqs_row_stride
+    freq_base = batch_idx * freqs_batch_stride + seq_idx * freqs_row_stride
 
     # Tiling over dim/2
     for d_start in tl.static_range(0, head_dim_half, BLOCK_SIZE):
@@ -113,14 +162,17 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
     batch_size, seq_len, n_q_heads, head_dim = q.shape
     _, _, n_k_heads, _ = k.shape
     head_dim_half = head_dim // 2
-    if freqs_cis.is_complex():
-        freqs_cis = freqs_cis.reshape(-1, freqs_cis.shape[-1])
-        if freqs_cis.shape[0] > seq_len:
-            freqs_cis = freqs_cis[:seq_len]
-        freqs_cis = torch.view_as_real(freqs_cis)
+    freqs_cis, has_batch_freqs, has_seq_freqs = _normalize_freqs_cis(freqs_cis, batch_size, seq_len, head_dim_half)
 
     # Cast to appropriate dtype and make contiguous only when needed
     q, k, freqs_cis = _cast_and_contiguous(q, k, freqs_cis)
+    row_elem_stride = freqs_cis.stride(0)
+    freqs_row_stride = row_elem_stride if has_seq_freqs else 0
+    freqs_batch_stride = (seq_len * row_elem_stride if has_seq_freqs else row_elem_stride) if has_batch_freqs else 0
+    # For seq_len == 1, transposed (B, H, 1, D).transpose(1, 2) tensors have is_contiguous() == True
+    # with stride(1) == D rather than H * D; use stride(0) so batch rows step across all heads (#1527).
+    q_row_stride = q.stride(0) if seq_len == 1 else q.stride(1)
+    k_row_stride = k.stride(0) if seq_len == 1 else k.stride(1)
 
     # H100-optimized meta-params
     if BLOCK_SIZE is None:
@@ -138,11 +190,12 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
         q,
         k,
         freqs_cis,
-        q.stride(1),
-        k.stride(1),
+        q_row_stride,
+        k_row_stride,
         q.stride(2),
         k.stride(2),
-        freqs_cis.stride(0),
+        freqs_batch_stride,
+        freqs_row_stride,
         seq_len,
         batch_size,
         imag_sign,
