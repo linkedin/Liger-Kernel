@@ -73,7 +73,7 @@ def _mhc_mm_norm_fwd_kernel(
     BLOCK_M: tl.constexpr,
     CAST_FP32: tl.constexpr,
 ):
-    pid_n = tl.program_id(0)
+    pid_n = tl.program_id(0).to(tl.int64)
     pid_m = tl.program_id(1)
 
     n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -229,7 +229,7 @@ def _mhc_mm_norm_bwd_fused_kernel(
     BLOCK_M: tl.constexpr,
     CAST_FP32: tl.constexpr,
 ):
-    pid_n = tl.program_id(0)
+    pid_n = tl.program_id(0).to(tl.int64)
     pid_k = tl.program_id(1)
 
     n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -869,7 +869,7 @@ def _mhc_pre_fwd_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid_n = tl.program_id(0)
+    pid_n = tl.program_id(0).to(tl.int64)
     pid_c = tl.program_id(1)
 
     n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -921,7 +921,7 @@ def _mhc_pre_bwd_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid_n = tl.program_id(0)
+    pid_n = tl.program_id(0).to(tl.int64)
     pid_c = tl.program_id(1)
 
     n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -1074,7 +1074,7 @@ def _mhc_post_res_fwd_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid_n = tl.program_id(0)
+    pid_n = tl.program_id(0).to(tl.int64)
     pid_c = tl.program_id(1)
 
     n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -1159,7 +1159,7 @@ def _mhc_post_res_bwd_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid_n = tl.program_id(0)
+    pid_n = tl.program_id(0).to(tl.int64)
     pid_c = tl.program_id(1)
 
     n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
