@@ -9,6 +9,34 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+
+@pytest.mark.parametrize("student_dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("target_dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("reduction", ["none", "sum", "mean", "batchmean"])
+@pytest.mark.parametrize("log_target", [False, True])
+@pytest.mark.parametrize("upstream_scale", [1.0, 2.0])
+def test_mixed_dtype_backward_preserves_small_gradients(
+    student_dtype, target_dtype, reduction, log_target, upstream_scale
+):
+    if torch.bfloat16 in (student_dtype, target_dtype) and not supports_bfloat16():
+        pytest.skip("bfloat16 not supported on this GPU")
+    shape = (2, 32768)
+    x = torch.zeros(shape, dtype=student_dtype, device=device, requires_grad=True)
+    ref_x = x.detach().double().requires_grad_()
+    target = torch.full(shape, 1 / shape[1], dtype=target_dtype, device=device)
+    if log_target:
+        target = target.log()
+    actual = LigerKLDIVLoss(reduction=reduction, log_target=log_target)(x, target)
+    expected = KLDivLoss(reduction=reduction, log_target=log_target)(ref_x, target.double())
+    upstream = torch.full_like(actual, upstream_scale)
+    actual.backward(upstream)
+    expected.backward(upstream.to(expected.dtype))
+    assert x.grad.dtype == student_dtype
+    # Avoid an absolute tolerance that would accept complete gradient loss.
+    rtol = max(1e-5, 2 * torch.finfo(student_dtype).eps)
+    torch.testing.assert_close(x.grad, ref_x.grad.to(student_dtype), rtol=rtol, atol=0)
+
+
 _SHAPE_PARAMS = (
     "B, T, V",
     [
