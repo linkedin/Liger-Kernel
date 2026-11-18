@@ -24,6 +24,11 @@ if infer_device() == "npu":
 else:
     MAX_FUSED_SIZE = 65536
 
+# Centering X - block_mean keeps the fp32 X tile live across tl.sum(X); at 65536
+# with default num_warps=4 (512 fp32 values/thread) that spills heavily to local
+# memory, whereas 8192 (64 values/thread) stays in registers.
+MAX_FUSED_SIZE_FORWARD = 8192
+
 
 @triton.jit
 def _group_norm_forward_kernel(
@@ -58,22 +63,26 @@ def _group_norm_forward_kernel(
 
     block_range = tl.arange(0, BLOCK_SIZE)
 
-    # Compute mean and variance using the online algorithm
-    s = 0.0
-    squared_sum = 0.0
+    # Compute mean and variance in fp32 using block-wise Welford's algorithm
+    # so variance stays non-negative for constant groups and accurate when |mean| >> std.
+    m = 0.0
+    m2 = 0.0
+    count = 0.0
     for i in tl.range(0, hidden_size, BLOCK_SIZE):
         hidden_size_offsets = i + block_range
         mask = hidden_size_offsets < hidden_size
-        # upcast before the sums: fp16 sum(X * X) overflows and bf16 E[X^2] - E[X]^2 cancels
+        block_count = tl.cast(tl.minimum(BLOCK_SIZE, hidden_size - i), tl.float32)
         X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0).to(tl.float32)
-        s += tl.sum(X)
-        # X**2
-        squared_sum += tl.sum(X * X)
+        block_mean = tl.sum(X, axis=0) / block_count
+        X_centered = tl.where(mask, X - block_mean, 0.0)
+        block_m2 = tl.sum(X_centered * X_centered, axis=0)
+        delta = block_mean - m
+        new_count = count + block_count
+        m = m + delta * (block_count / new_count)
+        m2 = m2 + block_m2 + delta * delta * count * (block_count / new_count)
+        count = new_count
 
-    m = s / hidden_size
-
-    # variance = E[X**2] - E[X]**2
-    variance = (squared_sum / hidden_size) - (m * m)
+    variance = m2 / hidden_size
 
     # 1/std
     rstd = rsqrt(variance + tl.cast(eps, tl.float32))
@@ -85,14 +94,14 @@ def _group_norm_forward_kernel(
     for i in tl.range(0, hidden_size, BLOCK_SIZE):
         hidden_size_offsets = i + block_range
         mask = hidden_size_offsets < hidden_size
-        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=m)
+        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0).to(tl.float32)
         # Determine which channel each element belongs to, then load W/B
         local_channel = hidden_size_offsets // hidden_size_per_channel
         global_channel = group_idx * channels_per_group + local_channel
-        W = tl.load(W_ptr + global_channel, mask=mask)
-        B = tl.load(B_ptr + global_channel, mask=mask)
+        W = tl.load(W_ptr + global_channel, mask=mask, other=0.0).to(tl.float32)
+        B = tl.load(B_ptr + global_channel, mask=mask, other=0.0).to(tl.float32)
         Y = (X - m) * rstd * W + B
-        tl.store(Y_ptr + hidden_size_offsets, Y, mask=mask)
+        tl.store(Y_ptr + hidden_size_offsets, Y.to(Y_ptr.dtype.element_ty), mask=mask)
 
     tl.store(Mean_ptr + batch_idx * Mean_row_stride + group_idx * Mean_col_stride, m)
     tl.store(RSTD_ptr + batch_idx * RSTD_row_stride + group_idx * RSTD_col_stride, rstd)
@@ -211,7 +220,7 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     # Reshape X so that the mean and std are computed across the groups
     X = X.view(batch_size, num_groups, -1).contiguous()
     hidden_size = X.shape[-1]
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(hidden_size))
+    BLOCK_SIZE = min(MAX_FUSED_SIZE_FORWARD, triton.next_power_of_2(hidden_size))
     Y = torch.empty((batch_size, num_groups, hidden_size), dtype=X.dtype, device=X.device)
     Mean = torch.zeros((batch_size, num_groups), dtype=X.dtype, device=X.device)
     RSTD = torch.zeros((batch_size, num_groups), dtype=X.dtype, device=X.device)
