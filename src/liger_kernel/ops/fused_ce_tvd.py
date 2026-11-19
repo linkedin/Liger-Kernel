@@ -94,15 +94,17 @@ def _fused_ce_tvd_forward_kernel(
 
         student_block_max = tl.max(student, axis=0)
         new_student_max = tl.maximum(student_max, student_block_max)
-        student_sumexp = student_sumexp * tl.exp(student_max - new_student_max) + tl.sum(
-            tl.exp(student - new_student_max), axis=0
+        student_ref_max = tl.where(new_student_max == float("-inf"), 0.0, new_student_max)
+        student_sumexp = student_sumexp * tl.exp(student_max - student_ref_max) + tl.sum(
+            tl.exp(student - student_ref_max), axis=0
         )
         student_max = new_student_max
 
         teacher_block_max = tl.max(teacher, axis=0)
         new_teacher_max = tl.maximum(teacher_max, teacher_block_max)
-        teacher_sumexp = teacher_sumexp * tl.exp(teacher_max - new_teacher_max) + tl.sum(
-            tl.exp(teacher - new_teacher_max), axis=0
+        teacher_ref_max = tl.where(new_teacher_max == float("-inf"), 0.0, new_teacher_max)
+        teacher_sumexp = teacher_sumexp * tl.exp(teacher_max - teacher_ref_max) + tl.sum(
+            tl.exp(teacher - teacher_ref_max), axis=0
         )
         teacher_max = new_teacher_max
 
