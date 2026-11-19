@@ -26,7 +26,7 @@ def _mask_fwd_kernel(
 ):
     row_block = tl.program_id(0)
     col_block = tl.program_id(1)
-    batch_id = tl.program_id(2)
+    batch_id = tl.program_id(2).to(tl.int64)
 
     row_idx = row_block * BLOCK + tl.arange(0, BLOCK)
     col_idx = col_block * BLOCK + tl.arange(0, BLOCK)
@@ -46,7 +46,7 @@ def _mask_bwd_kernel(
 ):
     row_block = tl.program_id(0)
     col_block = tl.program_id(1)
-    batch_id = tl.program_id(2)
+    batch_id = tl.program_id(2).to(tl.int64)
 
     row_idx = row_block * BLOCK + tl.arange(0, BLOCK)
     col_idx = col_block * BLOCK + tl.arange(0, BLOCK)
