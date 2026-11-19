@@ -32,8 +32,10 @@ def _masked_logits(batch, rows, vocab, masked_cols):
 def test_cross_entropy_with_masked_leading_tile():
     torch.manual_seed(0)
     B, T, V = 2, 3, CE_TILE * 2
-    logits = _masked_logits(B, T, V, CE_TILE)
-    target = torch.randint(CE_TILE, V, (B, T), device="cuda")
+    # liger_cross_entropy expects a 2-D (BT, V) input, not (B, T, V).
+    logits = torch.randn(B * T, V, device="cuda", dtype=torch.float32)
+    logits[:, :CE_TILE] = float("-inf")
+    target = torch.randint(CE_TILE, V, (B * T,), device="cuda")
 
     actual = liger_cross_entropy(logits, target, reduction="none")
     expected = F.cross_entropy(logits, target, reduction="none")
