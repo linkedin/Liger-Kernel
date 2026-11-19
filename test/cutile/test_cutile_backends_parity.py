@@ -1,5 +1,5 @@
-"""Pinned ``nvidia-cutile`` parity + correctness tests for the five cuTile
-backends (RMSNorm, LayerNorm, Softmax, JSD, FusedLinearJSD).
+"""Pinned ``nvidia-cutile`` parity + correctness tests for the four cuTile
+backends (RMSNorm, LayerNorm, Softmax, JSD).
 
 These are the tests requested by the PR-E code review. They exercise the fixes
 landed in ``src/liger_kernel/ops/backends/_cutile/``:
@@ -268,39 +268,6 @@ def test_jsd_fwd_bwd_parity(dtype, beta):
     ref.backward()
     _assert_close(out, ref, tols["atol_fwd"], tols["rtol_fwd"], f"jsd/{dtype}/beta={beta} fwd")
     _assert_close(lq.grad, lqr.grad, tols["atol_bwd"], tols["rtol_bwd"], f"jsd/{dtype}/beta={beta} dx")
-
-
-@pytest.mark.parametrize("dtype", _DTYPES)
-@pytest.mark.parametrize("beta", [0.0, 0.5, 1.0])
-def test_fused_linear_jsd_parity_vs_triton(dtype, beta):
-    """Forward + backward parity for cuTile fused_linear_jsd vs the Triton
-    backend. The two share the outer chunked cuBLAS implementation and differ
-    only in the inner cuTile JSD primitive, so they agree tightly; comparing
-    them directly pins the inner primitive."""
-    ci = _cutile_impl("fused_linear_jsd")
-    ti = _triton_impl("fused_linear_jsd")
-    BT, H, V = 64, 128, 512
-    tols = _tols("fused_linear_jsd", ci, dtype)
-    g = torch.Generator(device="cpu").manual_seed(0)
-    si_cpu = torch.randn(BT, H, generator=g)
-    sw_cpu = torch.randn(V, H, generator=g)
-    ti_cpu = torch.randn(BT, H, generator=g)
-    tw_cpu = torch.randn(V, H, generator=g)
-
-    def run(impl):
-        si = si_cpu.to("cuda", dtype).detach().requires_grad_(True)
-        sw = sw_cpu.to("cuda", dtype).detach().requires_grad_(True)
-        t_in = ti_cpu.to("cuda", dtype).detach()
-        tw = tw_cpu.to("cuda", dtype).detach()
-        out = F.fused_linear_jsd(si, sw, t_in, tw, None, jsd_beta=beta, temperature=1.0, impl=impl)
-        out.backward()
-        return out, si.grad, sw.grad
-
-    oc, dsic, dswc = run(ci)
-    ot, dsit, dswt = run(ti)
-    _assert_close(oc, ot, tols["atol_fwd"], tols["rtol_fwd"], f"fljsd/{dtype}/beta={beta} fwd")
-    _assert_close(dsic, dsit, tols["atol_bwd"], tols["rtol_bwd"], f"fljsd/{dtype}/beta={beta} d_student_input")
-    _assert_close(dswc, dswt, tols["atol_bwd"], tols["rtol_bwd"], f"fljsd/{dtype}/beta={beta} d_student_weight")
 
 
 # ===========================================================================
@@ -692,108 +659,3 @@ def test_jsd_non_contiguous():
     ref.backward()
     _assert_close(out, ref, tols["atol_fwd"], tols["rtol_fwd"], "jsd-noncontig fwd")
     _assert_close(lq.grad, lqr.grad, tols["atol_bwd"], tols["rtol_bwd"], "jsd-noncontig dx")
-
-
-def test_fused_linear_jsd_non_contiguous():
-    ci = _cutile_impl("fused_linear_jsd")
-    ti = _triton_impl("fused_linear_jsd")
-    dtype = torch.float32
-    tols = _tols("fused_linear_jsd", ci, dtype)
-    BT, H, V = 64, 128, 256
-    g = torch.Generator(device="cpu").manual_seed(19)
-    si_cpu = torch.randn(H, BT, generator=g)  # transposed layout
-    sw_cpu = torch.randn(V, H, generator=g)
-    ti_cpu = torch.randn(BT, H, generator=g)
-    tw_cpu = torch.randn(V, H, generator=g)
-
-    def run(impl):
-        si = si_cpu.to("cuda", dtype).t().detach().requires_grad_(True)  # (BT, H) non-contig
-        # Assert the exact layout that reaches the fused kernel, before dispatch.
-        assert not si.is_contiguous() and si.shape == (BT, H)
-        sw = sw_cpu.to("cuda", dtype).detach().requires_grad_(True)
-        t_in = ti_cpu.to("cuda", dtype).detach()
-        tw = tw_cpu.to("cuda", dtype).detach()
-        out = F.fused_linear_jsd(si, sw, t_in, tw, None, jsd_beta=0.5, impl=impl)
-        out.backward()
-        return out, si.grad, sw.grad
-
-    oc, dsic, dswc = run(ci)
-    ot, dsit, dswt = run(ti)
-    _assert_close(oc, ot, tols["atol_fwd"], tols["rtol_fwd"], "fljsd-noncontig fwd")
-    _assert_close(dsic, dsit, tols["atol_bwd"], tols["rtol_bwd"], "fljsd-noncontig d_student_input")
-    _assert_close(dswc, dswt, tols["atol_bwd"], tols["rtol_bwd"], "fljsd-noncontig d_student_weight")
-
-
-# ===========================================================================
-# 6. Fused-linear JSD semantics vs an INDEPENDENT torch reference
-# ===========================================================================
-# The parity-vs-Triton tests above only pin the inner cuTile primitive against
-# Triton (both share the outer chunked cuBLAS loop, so a shared bug would hide).
-# These cases build the whole fused_linear_jsd forward+backward from plain torch
-# ops in fp32 and differentiate through it, then compare the cuTile op against
-# that ground truth across: ignored labels, non-unit upstream gradient,
-# non-default temperature, asymmetric beta, and a multi-outer-chunk shape.
-def _ref_fused_linear_jsd(si_cpu, sw_cpu, t_in_cpu, tw_cpu, labels, beta, ignore_index, temperature, upstream):
-    """fp32 autograd ground truth for fused_linear_jsd -> (loss, d_si, d_sw)."""
-    si = si_cpu.to("cuda", torch.float32).detach().requires_grad_(True)
-    sw = sw_cpu.to("cuda", torch.float32).detach().requires_grad_(True)
-    t_in = t_in_cpu.to("cuda", torch.float32).detach()
-    tw = tw_cpu.to("cuda", torch.float32).detach()
-    student_logits = (si @ sw.t()) / temperature
-    teacher_logits = (t_in @ tw.t()) / temperature
-    log_q = student_logits.log_softmax(-1)
-    log_p = teacher_logits.log_softmax(-1)
-    loss = _ref_jsd(log_q, log_p, labels, beta, ignore_index)
-    loss.backward(upstream)
-    return loss.detach(), si.grad, sw.grad
-
-
-def _run_cutile_fused(si_cpu, sw_cpu, t_in_cpu, tw_cpu, labels, beta, ignore_index, temperature, upstream, impl):
-    si = si_cpu.to("cuda", torch.float32).detach().requires_grad_(True)
-    sw = sw_cpu.to("cuda", torch.float32).detach().requires_grad_(True)
-    t_in = t_in_cpu.to("cuda", torch.float32).detach()
-    tw = tw_cpu.to("cuda", torch.float32).detach()
-    out = F.fused_linear_jsd(
-        si, sw, t_in, tw, labels, jsd_beta=beta, ignore_index=ignore_index, temperature=temperature, impl=impl
-    )
-    out.backward(upstream)
-    return out.detach(), si.grad, sw.grad
-
-
-# (name, BT, H, V, beta, temperature, upstream_scale, label_kind)
-# multi_chunk uses V >> chunk_mem_const*H so the outer loop runs >1 chunk on
-# BOTH B200 (const 8) and B300 (const 16): V=4096 > 16*64.
-_FLJSD_SEMANTIC_CASES = [
-    ("ignored_labels", 32, 128, 512, 0.5, 1.0, 1.0, "scattered_ignore"),
-    ("non_unit_grad", 32, 128, 512, 0.5, 1.0, 2.75, "none"),
-    ("non_default_temp", 32, 128, 512, 0.5, 2.0, 1.0, "none"),
-    ("asymmetric_beta_low", 32, 128, 512, 0.1, 1.0, 1.0, "none"),
-    ("asymmetric_beta_high", 32, 128, 512, 0.9, 1.0, 1.0, "none"),
-    ("multi_chunk", 256, 64, 4096, 0.5, 1.0, 1.0, "none"),
-]
-
-
-@pytest.mark.parametrize("case", _FLJSD_SEMANTIC_CASES, ids=[c[0] for c in _FLJSD_SEMANTIC_CASES])
-def test_fused_linear_jsd_semantics_vs_torch(case):
-    name, BT, H, V, beta, temperature, scale, label_kind = case
-    ci = _cutile_impl("fused_linear_jsd")
-    dtype = torch.float32
-    tols = _tols("fused_linear_jsd", ci, dtype)
-    g = torch.Generator(device="cpu").manual_seed(hash(name) & 0xFFFF)
-    si_cpu = torch.randn(BT, H, generator=g)
-    sw_cpu = torch.randn(V, H, generator=g)
-    ti_cpu = torch.randn(BT, H, generator=g)
-    tw_cpu = torch.randn(V, H, generator=g)
-
-    if label_kind == "scattered_ignore":
-        labels = torch.arange(BT, device="cuda", dtype=torch.int64) % V
-        labels[::3] = -100
-    else:
-        labels = None
-    upstream = torch.tensor(scale, device="cuda", dtype=torch.float32)
-
-    oc, dsic, dswc = _run_cutile_fused(si_cpu, sw_cpu, ti_cpu, tw_cpu, labels, beta, -100, temperature, upstream, ci)
-    orf, dsir, dswr = _ref_fused_linear_jsd(si_cpu, sw_cpu, ti_cpu, tw_cpu, labels, beta, -100, temperature, upstream)
-    _assert_close(oc, orf, tols["atol_fwd"], tols["rtol_fwd"], f"fljsd-sem/{name} fwd")
-    _assert_close(dsic, dsir, tols["atol_bwd"], tols["rtol_bwd"], f"fljsd-sem/{name} d_student_input")
-    _assert_close(dswc, dswr, tols["atol_bwd"], tols["rtol_bwd"], f"fljsd-sem/{name} d_student_weight")

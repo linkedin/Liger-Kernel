@@ -8,8 +8,7 @@ The native cells use aligned, supported widths on the advertised sm_90+ path.
 Hopper is not excluded merely because validation is pending; launch or numerical
 failures on an advertised device must surface. Pre-sm_90 devices and missing
 CUDA/CuTe DSL are unsupported and skipped. Fallback coverage lives separately in
-test_shape_fallbacks.py. For fused_linear_jsd, "native" refers to the inner JSD
-primitive, not its shared PyTorch matmuls or Triton gradient-scaling kernel.
+test_shape_fallbacks.py.
 """
 
 import warnings
@@ -118,13 +117,6 @@ def _pytorch_jsd_loss(log_q, log_p, labels=None, beta=0.5, ignore_index=-100, n_
     return loss / max(n_non_ignore, 1)
 
 
-def _pytorch_fused_linear_jsd(si, sw, ti, tw, labels, jsd_beta=0.5, ignore_index=-100, temperature=1.0):
-    # Match the public projection dtype, but differentiate the unfused PyTorch graph.
-    log_q = torch.log_softmax((si @ sw.T).float() / temperature, dim=-1)
-    log_p = torch.log_softmax((ti @ tw.T).float() / temperature, dim=-1)
-    return _pytorch_jsd_loss(log_q, log_p, labels, jsd_beta, ignore_index).sum()
-
-
 def _dispatch_cutedsl_detecting_fallback(op, *args, fallback_reason=None, **kwargs):
     """Dispatch ``op`` to ``nvidia-cutedsl`` and report whether the CuTe DSL impl
     internally punted to Triton.
@@ -155,13 +147,13 @@ def _dispatch_cutedsl_detecting_fallback(op, *args, fallback_reason=None, **kwar
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(_dispatch_mod, "_FALLBACK_NOTIFIED", set())
         patch.setenv("LIGER_KERNEL_STRICT", "0")
-        if op in ("jsd", "fused_linear_jsd"):
+        if op == "jsd":
             composed_module = importlib.import_module(f"liger_kernel.ops.{op}")
             patch.setattr(composed_module, "dispatch", track_inner_dispatch)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", _dispatch_mod.LigerImplFallbackWarning)
             out = _dispatch_mod.dispatch(op, *args, impl="nvidia-cutedsl", **kwargs)
-    if op in ("jsd", "fused_linear_jsd"):
+    if op == "jsd":
         assert inner_impls and set(inner_impls) == {"nvidia-cutedsl"}, f"{op}: inner JSD route was {inner_impls}"
     fallbacks = [w for w in caught if isinstance(w.message, _dispatch_mod.LigerImplFallbackWarning)]
     for warning in caught:
@@ -340,19 +332,6 @@ def test_cutedsl_jsd_loss_and_grad_primitive_matches_triton(dtype, beta, label_m
         if label_mode == "ignored":
             assert torch.count_nonzero(loss[labels == -100]) == 0
             assert torch.count_nonzero(dx[labels == -100]) == 0
-
-
-@cuda_required
-@skip_no_cutedsl
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_cutedsl_fused_linear_jsd_matches_triton(dtype):
-    set_seed()
-    si = torch.randn(512, 512, device="cuda", dtype=dtype, requires_grad=True) * 0.1
-    sw = torch.randn(4096, 512, device="cuda", dtype=dtype, requires_grad=True) * 0.1
-    ti = torch.randn(512, 512, device="cuda", dtype=dtype) * 0.1
-    tw = torch.randn(4096, 512, device="cuda", dtype=dtype) * 0.1
-    labels = torch.arange(512, device="cuda") % 10
-    _assert_parity("fused_linear_jsd", (si, sw, ti, tw, labels), dtype, _pytorch_fused_linear_jsd)
 
 
 def test_parity_helper_rejects_missing_gradient():

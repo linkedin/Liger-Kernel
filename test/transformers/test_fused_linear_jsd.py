@@ -331,8 +331,6 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, t
         ignore_index,
         temperature,
         accum_dtype,
-        None,
-        None,
     )
 
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)

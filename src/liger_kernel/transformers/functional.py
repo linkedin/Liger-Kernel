@@ -176,8 +176,6 @@ def liger_fused_linear_jsd(
         ignore_index,
         temperature,
         accum_dtype,
-        None,
-        None,
     )
 
 

@@ -17,7 +17,6 @@ import liger_kernel
 
 # Importing functional registers the discovery map so available_backends works.
 import liger_kernel.functional  # noqa: F401
-import liger_kernel.ops.fused_linear_jsd as fljsd_ops
 
 from liger_kernel.backends.dispatch import available_backends
 from liger_kernel.backends.dispatch import dispatch
@@ -151,64 +150,3 @@ def test_fused_linear_jsd_available_backends_includes_triton():
     """Sanity: the Triton implementation should always be available."""
     impls = available_backends("fused_linear_jsd")
     assert any(b in ("triton", "nvidia-triton") for b in impls), f"expected 'triton' / 'nvidia-triton' in {impls}"
-
-
-@pytest.mark.parametrize("backend", _REGISTERED_BACKENDS or ["__none__"])
-def test_fused_linear_jsd_propagates_backend_to_inner_jsd(monkeypatch, backend):
-    if backend == "__none__":
-        pytest.skip("No fused_linear_jsd backends registered in this environment")
-
-    observed_impls = []
-    real_dispatch = fljsd_ops.dispatch
-
-    def tracking_dispatch(op_name, *args, **kwargs):
-        if op_name == "jsd_loss_and_grad":
-            observed_impls.append(kwargs.get("impl"))
-        return real_dispatch(op_name, *args, **kwargs)
-
-    monkeypatch.setattr(fljsd_ops, "dispatch", tracking_dispatch)
-
-    student_input = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    student_weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    teacher_input = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16)
-    teacher_weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16)
-
-    loss = dispatch(
-        "fused_linear_jsd",
-        student_input,
-        student_weight,
-        teacher_input,
-        teacher_weight,
-        backend=backend,
-    )
-    loss.backward()
-
-    assert observed_impls
-    assert set(observed_impls) == {backend}
-
-
-def test_fused_linear_jsd_default_path_dispatches_inner_jsd(monkeypatch):
-    observed_impls = []
-    real_dispatch = fljsd_ops.dispatch
-
-    def tracking_dispatch(op_name, *args, **kwargs):
-        if op_name == "jsd_loss_and_grad":
-            observed_impls.append(kwargs.get("impl"))
-        return real_dispatch(op_name, *args, **kwargs)
-
-    monkeypatch.setattr(fljsd_ops, "dispatch", tracking_dispatch)
-
-    student_input = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    student_weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    teacher_input = torch.randn(8, 64, device="cuda", dtype=torch.bfloat16)
-    teacher_weight = torch.randn(256, 64, device="cuda", dtype=torch.bfloat16)
-
-    fljsd_ops.LigerFusedLinearJSDFunction.apply(
-        student_input,
-        student_weight,
-        teacher_input,
-        teacher_weight,
-    ).backward()
-
-    assert observed_impls
-    assert set(observed_impls) == {None}

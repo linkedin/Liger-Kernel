@@ -160,16 +160,12 @@ declare_op_locations(
     ("liger_kernel.ops.backends._triton.kl_div",),
 )
 
-# fused_linear_jsd: Triton (universal) + cuTile (Blackwell). The CuTe DSL
-# registration remains explicit-only because the composed op upcasts its inner
-# JSD inputs to fp32, which safely falls back to Triton.
+# fused_linear_jsd: one Triton kernel computes the JSD from the logit gap, so the
+# gradient stays accurate near the teacher; it no longer composes the per-backend
+# ``jsd_loss_and_grad`` primitive.
 declare_op_locations(
     "fused_linear_jsd",
-    (
-        "liger_kernel.ops.backends._triton.fused_linear_jsd",
-        "liger_kernel.ops.backends._cutedsl.fused_linear_jsd",
-        "liger_kernel.ops.backends._cutile.fused_linear_jsd",
-    ),
+    ("liger_kernel.ops.backends._triton.fused_linear_jsd",),
 )
 
 # fused_linear_cross_entropy: Triton (universal) + Ascend Triton on NPU.
@@ -633,9 +629,8 @@ def fused_linear_jsd(
     """Fused linear + JSD loss for knowledge distillation.
 
     Computes the JSD loss between student and teacher logits without
-    materializing the full log-softmax tensors. Matmuls use cuBLAS; the inner
-    JSD computation dispatches through ``jsd_loss_and_grad`` (picking up the
-    CuTe DSL kernel on Hopper+).
+    materializing the full log-softmax tensors. Matmuls use cuBLAS; the JSD and
+    its gradient are computed from the student-teacher logit gap in one Triton kernel.
 
     Args:
         student_input: student hidden states, shape ``(BT, H)``.
@@ -647,8 +642,8 @@ def fused_linear_jsd(
         jsd_beta: JSD mixing coefficient in ``[0, 1]``.
         ignore_index: label value to ignore.
         temperature: softmax temperature scaling.
-        impl: explicit implementation name (``"nvidia-cutedsl"``,
-            ``"nvidia-triton"``). Legacy bare names accepted and translated.
+        impl: explicit implementation name (``"nvidia-triton"``). Legacy bare
+            names accepted and translated.
         backend: Legacy back-compat alias for ``impl=``.
         mode: implementation-specific kernel-variant selection.
     """
