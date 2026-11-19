@@ -158,6 +158,89 @@ def test_frontend_blackwell_opt_out_does_not_disable_hopper(monkeypatch):
     assert _FRONTEND._resolve_implementation(torch.device("cuda:0"), torch.bfloat16) is native
 
 
+_CUTILE_MODULE = "liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy"
+
+
+@pytest.fixture
+def cutile_loader():
+    loader = _FRONTEND._load_cutile_function
+    loader.cache_clear()
+    yield loader
+    loader.cache_clear()
+
+
+def test_cutile_loader_falls_back_on_import_error_once(monkeypatch, caplog, cutile_loader):
+    original_import = builtins.__import__
+
+    def fail_import(name, *args, **kwargs):
+        if name == _CUTILE_MODULE:
+            raise ImportError("cuda-tile is not installed")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_import)
+    with caplog.at_level(logging.WARNING, logger=_FRONTEND.__name__):
+        assert cutile_loader() is None
+        assert cutile_loader() is None
+    messages = [record.getMessage() for record in caplog.records if record.name == _FRONTEND.__name__]
+    assert len(messages) == 1
+    assert "cuTile scaled cross entropy is unavailable" in messages[0]
+
+
+@pytest.mark.parametrize("capability", [(9, 0), (10, 0), (10, 3)])
+def test_frontend_prefers_cutile_when_enabled(monkeypatch, capability):
+    cutile = object()
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda _: capability)
+    monkeypatch.setattr(_FRONTEND, "_load_cutile_function", lambda: cutile)
+    monkeypatch.setattr(_FRONTEND, "_load_sm90_function", lambda: pytest.fail("cuTile must take precedence on sm90"))
+    monkeypatch.setattr(_FRONTEND, "_load_sm100_function", lambda: pytest.fail("cuTile must take precedence on sm100"))
+    monkeypatch.setenv("LIGER_ENABLE_CUTILE_SCALED_CE", "1")
+
+    assert _FRONTEND._resolve_implementation(torch.device("cuda:0"), torch.bfloat16) is cutile
+
+
+@pytest.mark.parametrize(
+    ("capability", "loader_name"),
+    [((9, 0), "_load_sm90_function"), ((10, 0), "_load_sm100_function"), ((10, 3), "_load_sm100_function")],
+)
+def test_frontend_cutile_falls_back_when_unavailable(monkeypatch, capability, loader_name):
+    native = object()
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda _: capability)
+    monkeypatch.setattr(_FRONTEND, "_load_cutile_function", lambda: None)
+    monkeypatch.setattr(_FRONTEND, loader_name, lambda: native)
+    monkeypatch.setenv("LIGER_ENABLE_CUTILE_SCALED_CE", "1")
+    monkeypatch.delenv("LIGER_DISABLE_SM100_SCALED_CE", raising=False)
+
+    assert _FRONTEND._resolve_implementation(torch.device("cuda:0"), torch.bfloat16) is native
+
+
+def test_frontend_cutile_requires_opt_in(monkeypatch):
+    native = object()
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda _: (9, 0))
+    monkeypatch.setattr(_FRONTEND, "_load_cutile_function", lambda: pytest.fail("cuTile must not load without opt-in"))
+    monkeypatch.setattr(_FRONTEND, "_load_sm90_function", lambda: native)
+    monkeypatch.delenv("LIGER_ENABLE_CUTILE_SCALED_CE", raising=False)
+
+    assert _FRONTEND._resolve_implementation(torch.device("cuda:0"), torch.bfloat16) is native
+
+
+def test_frontend_cutile_requires_bfloat16(monkeypatch):
+    native = object()
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(_FRONTEND.torch.version, "hip", None)
+    monkeypatch.setattr(_FRONTEND.torch.cuda, "get_device_capability", lambda _: (9, 0))
+    monkeypatch.setattr(_FRONTEND, "_load_cutile_function", lambda: pytest.fail("cuTile must not load for non-bf16"))
+    monkeypatch.setattr(_FRONTEND, "_load_sm90_function", lambda: native)
+    monkeypatch.setenv("LIGER_ENABLE_CUTILE_SCALED_CE", "1")
+
+    assert _FRONTEND._resolve_implementation(torch.device("cuda:0"), torch.float32) is native
+
+
 @pytest.mark.parametrize(
     ("device", "cuda_available", "hip_version"),
     [

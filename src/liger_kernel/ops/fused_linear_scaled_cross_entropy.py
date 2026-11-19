@@ -49,6 +49,24 @@ def _load_sm100_function():
     return LigerFusedScaledCrossEntropySM100Function
 
 
+@functools.lru_cache(maxsize=1)
+def _load_cutile_function():
+    try:
+        from liger_kernel.ops.cutile.ops.fused_linear_scaled_cross_entropy import (
+            LigerFusedLinearScaledCrossEntropyFunction,
+        )
+    except ImportError as exc:
+        _log.warning(
+            "cuTile scaled cross entropy is unavailable (%s); falling back to the default dispatch. "
+            "Install cuda-tile with the tileiras compiler (pip install 'liger-kernel[cutile-tileiras]'), "
+            "or unset LIGER_ENABLE_CUTILE_SCALED_CE to silence this warning.",
+            exc,
+        )
+        return None
+
+    return LigerFusedLinearScaledCrossEntropyFunction
+
+
 def _load_native_tp_function():
     from liger_kernel.ops.cute.fused_linear_scaled_cross_entropy_tp import (
         LigerFusedLinearScaledCrossEntropyNativeTPFunction,
@@ -400,6 +418,14 @@ def _resolve_implementation(device, dtype=None):
         return _FusedLinearPPOFallbackFunction
 
     capability = torch.cuda.get_device_capability(device)
+    if (
+        dtype == torch.bfloat16
+        and capability in ((9, 0), (10, 0), (10, 3))
+        and os.environ.get("LIGER_ENABLE_CUTILE_SCALED_CE") == "1"
+    ):
+        cutile_implementation = _load_cutile_function()
+        if cutile_implementation is not None:
+            return cutile_implementation
     if capability == (9, 0):
         return _load_sm90_function()
     if capability in ((10, 0), (10, 3)) and dtype == torch.bfloat16:
