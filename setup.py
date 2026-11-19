@@ -37,7 +37,12 @@ def get_default_dependencies():
             "torch>=2.6.0",
         ]
     elif platform == "npu":
-        return ["torch==2.9.0", "torch_npu==2.9.0", "triton-ascend==3.2.2"]
+        return [
+            "torch==2.10.0",
+            "torch_npu==2.10.0.post7",
+            "torchvision==0.25.0",
+            "triton-ascend==3.6.0",
+        ]
 
 
 def get_optional_dependencies():

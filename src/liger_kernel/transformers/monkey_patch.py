@@ -729,13 +729,12 @@ def apply_liger_kernel_to_mistral(
     Apply Liger kernels to replace original implementation in HuggingFace Mistral models
 
     Args:
-        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
-        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is True.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
-        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
@@ -2259,9 +2258,10 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     Apply Liger kernels to replace original implementation in HuggingFace Qwen3-VL MoE models.
 
     Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
-            Whether to apply Liger's fused linear cross entropy loss. Default is False.
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
@@ -3014,12 +3014,12 @@ def apply_liger_kernel_to_falcon_h1(
     Apply Liger kernels to replace original implementation in HuggingFace Falcon-H1 models
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
-        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
-            Whether to apply Liger's fused linear cross entropy loss. Default is False.
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
-        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is False.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
