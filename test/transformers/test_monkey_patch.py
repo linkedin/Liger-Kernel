@@ -4489,3 +4489,65 @@ def test_cross_entropy_patch_is_scoped_to_hf_loss_utils(monkeypatch):
     torch.testing.assert_close(
         loss_utils.ForCausalLMLoss(hf_logits.clone(), hf_labels, vocab_size, num_items_in_batch=num_items), expected
     )
+
+    # Gradients through the patched Hugging Face loss match PyTorch. The loss gets a fresh non-leaf tensor because
+    # the Liger kernel stores the gradient in the buffer it is given.
+    liger_leaf = hf_logits.clone().requires_grad_(True)
+    torch_leaf = hf_logits.clone().requires_grad_(True)
+    loss_utils.ForCausalLMLoss(liger_leaf * 1.0, hf_labels, vocab_size).backward()
+    original_ce(torch_leaf[:, :-1].reshape(-1, vocab_size), hf_labels[:, 1:].reshape(-1)).backward()
+    torch.testing.assert_close(liger_leaf.grad, torch_leaf.grad)
+
+
+# These apply functions patch a model-specific `CrossEntropyLoss` instead of `transformers.loss.loss_utils`.
+_MODEL_SPECIFIC_CE_PATCH = {
+    "apply_liger_kernel_to_gemma3",
+    "apply_liger_kernel_to_llama4",
+    "apply_liger_kernel_to_ministral",
+    "apply_liger_kernel_to_mistral",
+    "apply_liger_kernel_to_nemotron",
+    "apply_liger_kernel_to_paligemma",
+    "apply_liger_kernel_to_pixtral",
+    "apply_liger_kernel_to_qwen2_vl",
+    "apply_liger_kernel_to_qwen2_5_vl",
+}
+_APPLY_FNS_WITH_CROSS_ENTROPY = sorted(
+    name
+    for name, fn in inspect.getmembers(monkey_patch, inspect.isfunction)
+    if name.startswith("apply_liger_kernel_to_") and "cross_entropy" in signature(fn).parameters
+)
+
+
+@pytest.mark.parametrize("apply_fn_name", _APPLY_FNS_WITH_CROSS_ENTROPY)
+def test_cross_entropy_patch_leaves_torch_functional_untouched(apply_fn_name, monkeypatch):
+    # https://github.com/linkedin/Liger-Kernel/issues/1639: no apply function may rebind
+    # torch.nn.functional.cross_entropy, which every unrelated caller in the process shares.
+    import torch.nn.functional as F
+
+    from transformers.loss import loss_utils
+
+    from liger_kernel.transformers.functional import liger_fixed_cross_entropy
+
+    original_ce = F.cross_entropy
+    original_fixed_ce = loss_utils.fixed_cross_entropy
+    monkeypatch.setattr(torch.nn.functional, "cross_entropy", original_ce)
+    monkeypatch.setattr(torch.nn, "CrossEntropyLoss", torch.nn.CrossEntropyLoss)
+    monkeypatch.setattr(loss_utils, "fixed_cross_entropy", original_fixed_ce)
+
+    apply_fn = getattr(monkey_patch, apply_fn_name)
+    # Switch every other patch off so nothing else leaks into the rest of the test session.
+    kwargs = {
+        name: False
+        for name, param in signature(apply_fn).parameters.items()
+        if isinstance(param.default, bool) and name != "cross_entropy"
+    }
+    try:
+        apply_fn(cross_entropy=True, **kwargs)
+    except ImportError as e:
+        pytest.skip(f"model not available in this transformers version: {e}")
+
+    assert F.cross_entropy is original_ce
+    if apply_fn_name in _MODEL_SPECIFIC_CE_PATCH:
+        assert loss_utils.fixed_cross_entropy is original_fixed_ce
+    else:
+        assert loss_utils.fixed_cross_entropy is liger_fixed_cross_entropy

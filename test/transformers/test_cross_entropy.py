@@ -1658,9 +1658,9 @@ def test_none_reduction_loss_dtype_float32_backward_keeps_input_dtype(in_place):
     assert torch.equal(grad, (unscaled.float() * g_seen.float().unsqueeze(1)).to(torch.bfloat16))
 
 
-# Regression tests for https://github.com/linkedin/Liger-Kernel/issues/1639: `cross_entropy=True` replaces
-# `torch.nn.functional.cross_entropy` process-wide, so `liger_cross_entropy` must delegate calls the Liger kernel
-# does not support back to PyTorch instead of raising.
+# Regression tests for https://github.com/linkedin/Liger-Kernel/issues/1639: `liger_cross_entropy` is reached by
+# direct callers and by the Hugging Face losses that `cross_entropy=True` patches, so it must delegate calls the
+# Liger kernel does not support back to PyTorch instead of raising or returning a wrong gradient.
 _UNSUPPORTED_CE_CASES = {
     # (N, C, d) logits with (N, d) class-index targets
     "nc_d_input": lambda: (torch.randn(2, 7, 5, device=device), torch.randint(0, 7, (2, 5), device=device), {}),
@@ -1703,6 +1703,43 @@ def test_liger_cross_entropy_delegates_unsupported_calls_to_torch(case):
     liger_loss.sum().backward()
     torch_loss.sum().backward()
     torch.testing.assert_close(liger_logits.grad, torch_logits.grad)
+
+
+@pytest.mark.parametrize("layout", ["transposed", "expanded"])
+def test_liger_cross_entropy_delegates_non_contiguous_logits_to_torch(layout):
+    # The kernel stores the gradient in the logits buffer, which is only valid for a dense (BT, V) layout.
+    set_seed(42)
+    shape = (7, 16) if layout == "transposed" else (1, 7)
+    view = (lambda x: x.t()) if layout == "transposed" else (lambda x: x.expand(16, 7))
+    base = torch.randn(*shape, device=device)
+    target = torch.randint(0, 7, (16,), device=device)
+    liger_base = base.clone().requires_grad_(True)
+    torch_base = base.clone().requires_grad_(True)
+
+    liger_loss = liger_cross_entropy(view(liger_base), target)
+    torch_loss = F.cross_entropy(view(torch_base), target)
+    torch.testing.assert_close(liger_loss, torch_loss)
+    torch.testing.assert_close(liger_base.detach(), base, rtol=0, atol=0)
+
+    liger_loss.backward()
+    torch_loss.backward()
+    torch.testing.assert_close(liger_base.grad, torch_base.grad)
+
+
+def test_liger_cross_entropy_delegates_empty_input_to_torch():
+    logits = torch.randn(0, 7, device=device)
+    target = torch.zeros(0, dtype=torch.long, device=device)
+    torch.testing.assert_close(liger_cross_entropy(logits, target), F.cross_entropy(logits, target), equal_nan=True)
+    torch.testing.assert_close(
+        liger_cross_entropy(logits, target, reduction="sum"), F.cross_entropy(logits, target, reduction="sum")
+    )
+
+
+def test_liger_cross_entropy_raises_on_target_length_mismatch_like_torch():
+    logits = torch.randn(8, 7, device=device)
+    target = torch.randint(0, 7, (12,), device=device)
+    with pytest.raises(ValueError, match="batch_size"):
+        liger_cross_entropy(logits, target)
 
 
 @pytest.mark.parametrize(
