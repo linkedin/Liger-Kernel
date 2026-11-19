@@ -1656,3 +1656,82 @@ def test_none_reduction_loss_dtype_float32_backward_keeps_input_dtype(in_place):
         logits.clone().requires_grad_(True), target, None, -100, 0.0, 0.0, "none", None, False
     )[4]
     assert torch.equal(grad, (unscaled.float() * g_seen.float().unsqueeze(1)).to(torch.bfloat16))
+
+
+# Regression tests for https://github.com/linkedin/Liger-Kernel/issues/1639: `cross_entropy=True` replaces
+# `torch.nn.functional.cross_entropy` process-wide, so `liger_cross_entropy` must delegate calls the Liger kernel
+# does not support back to PyTorch instead of raising.
+_UNSUPPORTED_CE_CASES = {
+    # (N, C, d) logits with (N, d) class-index targets
+    "nc_d_input": lambda: (torch.randn(2, 7, 5, device=device), torch.randint(0, 7, (2, 5), device=device), {}),
+    # (N, C) logits with probability targets
+    "probability_targets": lambda: (
+        torch.randn(4, 7, device=device),
+        torch.softmax(torch.randn(4, 7, device=device), dim=-1),
+        {},
+    ),
+    # probability targets with label smoothing and a class weight
+    "probability_targets_weight_smoothing": lambda: (
+        torch.randn(4, 7, device=device),
+        torch.softmax(torch.randn(4, 7, device=device), dim=-1),
+        {"weight": torch.rand(7, device=device), "label_smoothing": 0.1},
+    ),
+    # (C,) unbatched logits with a scalar target
+    "unbatched": lambda: (torch.randn(7, device=device), torch.tensor(3, device=device), {}),
+    # CPU tensors: the Triton kernel cannot run on them
+    "cpu": lambda: (torch.randn(4, 7), torch.randint(0, 7, (4,)), {"ignore_index": 2}),
+    # legacy `reduce` argument
+    "legacy_reduce": lambda: (
+        torch.randn(4, 7, device=device),
+        torch.randint(0, 7, (4,), device=device),
+        {"reduce": False},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_UNSUPPORTED_CE_CASES))
+def test_liger_cross_entropy_delegates_unsupported_calls_to_torch(case):
+    set_seed(42)
+    logits, target, kwargs = _UNSUPPORTED_CE_CASES[case]()
+    liger_logits = logits.clone().requires_grad_(True)
+    torch_logits = logits.clone().requires_grad_(True)
+
+    liger_loss = liger_cross_entropy(liger_logits, target, **kwargs)
+    torch_loss = F.cross_entropy(torch_logits, target, **kwargs)
+    torch.testing.assert_close(liger_loss, torch_loss)
+
+    liger_loss.sum().backward()
+    torch_loss.sum().backward()
+    torch.testing.assert_close(liger_logits.grad, torch_logits.grad)
+
+
+@pytest.mark.parametrize(
+    "liger_kwargs",
+    [
+        {"return_z_loss": True},
+        {"return_token_accuracy": True},
+        {"return_predicted_tokens": True},
+        {"lse_square_scale": 1e-4},
+        {"softcap": 30.0},
+        {"loss_dtype": torch.float32},
+        {"in_place": True},
+    ],
+)
+def test_liger_cross_entropy_rejects_liger_only_options_on_unsupported_calls(liger_kwargs):
+    logits, target, _ = _UNSUPPORTED_CE_CASES["nc_d_input"]()
+    with pytest.raises(ValueError, match=next(iter(liger_kwargs))):
+        liger_cross_entropy(logits, target, **liger_kwargs)
+
+
+@pytest.mark.skipif(device == "cpu", reason="the Liger cross entropy kernel needs an accelerator")
+def test_liger_cross_entropy_uses_kernel_for_supported_calls(monkeypatch):
+    import liger_kernel.transformers.functional as liger_functional
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("a supported (BT, V) call must not fall back to torch")
+
+    monkeypatch.setattr(liger_functional, "_torch_cross_entropy", _fail)
+    set_seed(42)
+    logits = torch.randn(8, 32, device=device)
+    target = torch.randint(0, 32, (8,), device=device)
+    torch.testing.assert_close(liger_cross_entropy(logits, target), F.cross_entropy(logits, target))

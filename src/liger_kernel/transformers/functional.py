@@ -42,8 +42,28 @@ class CrossEntropyOutput:
     predicted_tokens: Optional[torch.Tensor] = None
 
 
+# The original PyTorch callable, captured before any `apply_liger_kernel_to_*(cross_entropy=True)` call
+# replaces `torch.nn.functional.cross_entropy` process-wide. `liger_cross_entropy` delegates to it for
+# input/target combinations the Liger kernel does not handle, so unrelated callers keep working.
+_torch_cross_entropy = torch.nn.functional.cross_entropy
+
+
+def _liger_cross_entropy_supported(input, target, size_average, reduce) -> bool:
+    """Whether the Liger kernel handles this call: (BT, V) logits on an accelerator with (BT,) class-index
+    targets and the non-legacy `reduction` argument."""
+    return (
+        input.dim() == 2
+        and target.dim() == 1
+        and not torch.is_floating_point(target)
+        and input.device.type != "cpu"
+        and size_average is None
+        and reduce is None
+    )
+
+
 # conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html
-# `weight` and `size_average` are placeholders and not implemented yet
+# Calls the Liger kernel cannot handle (e.g. (N, C, d) inputs, probability targets, CPU tensors, the legacy
+# `size_average`/`reduce` arguments) are delegated to the original `torch.nn.functional.cross_entropy`.
 def liger_cross_entropy(
     input,
     target,
@@ -61,6 +81,34 @@ def liger_cross_entropy(
     loss_dtype: Optional[torch.dtype] = None,
     in_place: bool = False,
 ):
+    if not _liger_cross_entropy_supported(input, target, size_average, reduce):
+        liger_only = {
+            "lse_square_scale": lse_square_scale != 0.0,
+            "softcap": softcap is not None,
+            "return_z_loss": return_z_loss,
+            "return_token_accuracy": return_token_accuracy,
+            "return_predicted_tokens": return_predicted_tokens,
+            "loss_dtype": loss_dtype is not None,
+            "in_place": in_place,
+        }
+        requested = [name for name, is_set in liger_only.items() if is_set]
+        if requested:
+            raise ValueError(
+                f"liger_cross_entropy: {', '.join(requested)} require (BT, V) input and (BT,) class-index targets "
+                f"on an accelerator, without size_average/reduce; got input {tuple(input.shape)} on "
+                f"{input.device.type} and target {tuple(target.shape)} of dtype {target.dtype}."
+            )
+        return _torch_cross_entropy(
+            input,
+            target,
+            weight=weight,
+            size_average=size_average,
+            ignore_index=ignore_index,
+            reduce=reduce,
+            reduction=reduction,
+            label_smoothing=label_smoothing,
+        )
+
     loss, z_loss, token_accuracy, predicted_tokens = LigerCrossEntropyFunction.apply(
         input,
         target,

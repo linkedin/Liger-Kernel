@@ -4443,3 +4443,23 @@ def test_apply_liger_kernel_to_instance_for_exaone4():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+def test_cross_entropy_patch_keeps_unrelated_torch_calls_working(monkeypatch):
+    # Regression test for https://github.com/linkedin/Liger-Kernel/issues/1639: `cross_entropy=True` rebinds
+    # torch.nn.functional.cross_entropy process-wide, so calls outside the patched model must still work.
+    import torch.nn.functional as F
+
+    original = F.cross_entropy
+    # monkeypatch restores the original callable at teardown, so the global patch does not leak into other tests.
+    monkeypatch.setattr(torch.nn.functional, "cross_entropy", original)
+
+    x3, y3 = torch.randn(2, 7, 5), torch.randint(0, 7, (2, 5))
+    x2, soft = torch.randn(4, 7), torch.softmax(torch.randn(4, 7), dim=-1)
+    expected = (original(x3, y3), original(x2, soft))
+
+    monkey_patch.apply_liger_kernel_to_granite(rope=False, rms_norm=False, swiglu=False, cross_entropy=True)
+    assert F.cross_entropy is not original
+
+    torch.testing.assert_close(F.cross_entropy(x3, y3), expected[0])
+    torch.testing.assert_close(F.cross_entropy(x2, soft), expected[1])
