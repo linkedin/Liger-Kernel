@@ -1541,3 +1541,61 @@ def test_dominant_target_does_not_collapse(importance_sampling_level, dtype, rto
 
     torch.testing.assert_close(_logits.grad[:, :-1].double(), ref_logits.grad[:, :-1], rtol=rtol, atol=0)
     assert_rows_sum_to_zero(_logits.grad)
+
+
+def _grpo_impls():
+    from liger_kernel.ops.grpo_loss import GrpoLossFunction as TritonGrpo
+
+    impls = [pytest.param(TritonGrpo, id="triton")]
+    try:
+        from liger_kernel.ops.cutile.ops.grpo_loss import GrpoLossFunction as CuTileGrpo
+
+        impls.append(pytest.param(CuTileGrpo, id="cutile"))
+    except ImportError:
+        pass
+    return impls
+
+
+@pytest.mark.parametrize("grpo", _grpo_impls())
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+def test_k3_kl_near_reference(grpo, importance_sampling_level):
+    # Near the reference policy the K3 term exp(r) - r - 1 is O(r^2) and its gradient 1 - exp(r) is O(r), so evaluating
+    # either directly in fp32 cancels away the small part (arXiv 2611.18511, reformulation 6).
+    set_seed()
+    log_ratios = torch.tensor([1e-1, -1e-2, 1e-3, -1e-4, 1e-5, -1e-5], dtype=torch.float64)
+    rows, completion_ids = dominant_target_logits([15.0] * len(log_ratios), V=4096, device=device)
+    logits = torch.cat([rows, torch.randn_like(rows[:1])])[None]  # the last position predicts nothing
+    completion_ids = completion_ids[None]
+
+    ref_logits = logits.double().requires_grad_(True)
+    logp = -reference_cross_entropy(ref_logits[0, :-1], completion_ids[0])[None]
+    ref_logp = (logp.detach() + log_ratios.to(device)).float()
+    r = ref_logp.double() - logp
+    ref_kl = torch.where(r.abs() < 1e-3, r * r * (0.5 + r / 6 + r * r / 24), torch.expm1(r) - r)
+    upstream_grad = torch.randn_like(ref_kl).float()
+    ref_kl.backward(upstream_grad.double())
+
+    _logits = logits.clone().requires_grad_(True)
+    loss, kl, _ = grpo.apply(
+        _logits,
+        None,
+        ref_logp,
+        completion_ids,
+        torch.zeros(1, device=device),
+        None,
+        1.0,
+        1.0,
+        0.2,
+        0.2,
+        False,
+        "grpo",
+        None,
+        False,
+        importance_sampling_level,
+    )
+    loss.backward(upstream_grad)
+
+    torch.testing.assert_close(kl.double(), ref_kl.detach(), rtol=1e-4, atol=0)
+    torch.testing.assert_close(loss.double(), ref_kl.detach(), rtol=1e-4, atol=0)
+    torch.testing.assert_close(_logits.grad[:, :-1].double(), ref_logits.grad[:, :-1], rtol=1e-4, atol=1e-12)
+    assert_rows_sum_to_zero(_logits.grad)

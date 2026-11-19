@@ -1340,3 +1340,19 @@ def test_ref_per_token_logps_preferred_over_ref_input():
     with pytest.warns(UserWarning, match="Using ref_per_token_logps"):
         loss, _ = loss_fn(*args, ref_per_token_logps=ref_per_token_logps, ref_input=_input, ref_weight=weight)
     assert_verbose_allclose(loss, expected)
+
+
+def test_k3_kl_near_reference():
+    # exp(r) - r - 1 and its gradient cancel in fp32 near the reference policy (arXiv 2611.18511, reformulation 6)
+    from liger_kernel.chunked_loss.grpo_loss import k3_loss_fn
+
+    r = torch.tensor([1.0, -0.5, 1e-1, -1e-2, 1e-3, -1e-4, 1e-5, -1e-6], dtype=torch.float64)
+    log_q = torch.randn_like(r) - 5.0
+    log_p = log_q + r
+    lp, lq = log_p.float().requires_grad_(True), log_q.float().requires_grad_(True)
+    k3_loss_fn(lp, lq).backward(torch.ones(len(r)))
+
+    r = lp.detach().double() - lq.detach().double()
+    ref = torch.where(r.abs() < 1e-3, r * r * (0.5 + r / 6 + r * r / 24), torch.expm1(r) - r)
+    torch.testing.assert_close(k3_loss_fn(lp.detach(), lq.detach()).double(), ref, rtol=1e-5, atol=0)
+    torch.testing.assert_close(lq.grad.double(), -torch.expm1(r), rtol=1e-5, atol=0)
