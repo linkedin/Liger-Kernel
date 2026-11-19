@@ -336,6 +336,39 @@ def test_frontend_fallback_matches_torch_with_entropy_and_ignored_rows():
     torch.testing.assert_close(actual_weight.grad, expected_weight.grad, atol=2e-5, rtol=2e-5)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available() or torch.version.hip is not None, reason="requires NVIDIA CUDA")
+@pytest.mark.parametrize("autocast_dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("backward_inside_autocast", [False, True])
+def test_fallback_fp32_parameters_backward_under_cuda_autocast(autocast_dtype, backward_inside_autocast):
+    if not _FRONTEND._SUPPORTS_OUT_DTYPE or torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("requires the CUDA FP32-output addmm path")
+    tokens, hidden, vocab = 521, 32, 16
+    x = (
+        torch.linspace(0.125, 1.125, tokens * hidden, device="cuda", dtype=torch.float32)
+        .reshape(tokens, hidden)
+        .requires_grad_()
+    )
+    weight = torch.zeros(vocab, hidden, device="cuda", dtype=torch.float32, requires_grad=True)
+    target = torch.zeros(tokens, device="cuda", dtype=torch.int64)
+    target[::11] = -100
+    upstream = torch.where(torch.arange(tokens, device="cuda") % 2 == 0, 0.5, -0.25)
+
+    with torch.autocast("cuda", dtype=autocast_dtype):
+        nll = _FRONTEND._FusedLinearPPOFallbackFunction.apply(x, weight, target, 1.0, -100, False)
+    with torch.autocast("cuda", dtype=autocast_dtype, enabled=backward_inside_autocast):
+        nll.backward(upstream)
+
+    # Zero weights give uniform probabilities, so dW is an analytic weighted sum of X.
+    projected_x = x.detach().to(autocast_dtype).float() if backward_inside_autocast else x.detach()
+    weighted_x = (projected_x * upstream.masked_fill(target == -100, 0)[:, None]).sum(dim=0)
+    class_gradient = torch.full((vocab, 1), 1 / vocab, device="cuda")
+    class_gradient[0] -= 1
+    expected_dw = class_gradient * weighted_x
+    assert x.grad.dtype == torch.float32 and weight.grad.dtype == torch.float32
+    torch.testing.assert_close(x.grad, torch.zeros_like(x), atol=0, rtol=0)
+    torch.testing.assert_close(weight.grad, expected_dw, atol=1e-5, rtol=1e-5)
+
+
 def test_frontend_fallback_returns_only_nll_when_entropy_is_disabled():
     _input = torch.randn(4, 8, requires_grad=True)
     weight = torch.randn(16, 8, requires_grad=True)

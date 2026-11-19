@@ -40,6 +40,9 @@ def _accumulate_fp32_grad_weight(grad_weight, grad_logits, hidden_states):
             and torch.cuda.get_device_capability(hidden_states.device)[0] >= 8
             and grad_logits.dtype in (torch.float16, torch.bfloat16)
         ):
+            # FP32-output addmm bypasses autocast's operand conversion.
+            if hidden_states.dtype != grad_logits.dtype:
+                hidden_states = hidden_states.to(grad_logits.dtype)
             torch.addmm(grad_weight, grad_logits.t(), hidden_states, out_dtype=torch.float32, out=grad_weight)
         else:
             grad_weight.addmm_(grad_logits.float().t(), hidden_states.float())
