@@ -4499,6 +4499,28 @@ def test_cross_entropy_patch_is_scoped_to_hf_loss_utils(monkeypatch):
     torch.testing.assert_close(liger_leaf.grad, torch_leaf.grad)
 
 
+def test_cross_entropy_patch_can_be_reverted(monkeypatch):
+    from transformers.loss import loss_utils
+
+    from liger_kernel.transformers.functional import liger_fixed_cross_entropy
+
+    original_fixed_ce = loss_utils.fixed_cross_entropy
+    monkeypatch.setattr(loss_utils, "fixed_cross_entropy", original_fixed_ce)
+    monkeypatch.setattr(monkey_patch, "_hf_fixed_cross_entropy", None)
+
+    # Reverting before anything was patched is a no-op.
+    monkey_patch._revert_hf_cross_entropy()
+    assert loss_utils.fixed_cross_entropy is original_fixed_ce
+
+    # Patching twice must still remember the Hugging Face original, not the Liger replacement.
+    for _ in range(2):
+        monkey_patch.apply_liger_kernel_to_granite(rope=False, rms_norm=False, swiglu=False, cross_entropy=True)
+    assert loss_utils.fixed_cross_entropy is liger_fixed_cross_entropy
+
+    monkey_patch._revert_hf_cross_entropy()
+    assert loss_utils.fixed_cross_entropy is original_fixed_ce
+
+
 # These apply functions patch a model-specific `CrossEntropyLoss` instead of `transformers.loss.loss_utils`.
 _MODEL_SPECIFIC_CE_PATCH = {
     "apply_liger_kernel_to_gemma3",
@@ -4507,7 +4529,6 @@ _MODEL_SPECIFIC_CE_PATCH = {
     "apply_liger_kernel_to_mistral",
     "apply_liger_kernel_to_nemotron",
     "apply_liger_kernel_to_paligemma",
-    "apply_liger_kernel_to_pixtral",
     "apply_liger_kernel_to_qwen2_vl",
     "apply_liger_kernel_to_qwen2_5_vl",
 }

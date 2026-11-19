@@ -61,14 +61,30 @@ if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
     )
 
 
+# `transformers.loss.loss_utils.fixed_cross_entropy` as it was before `_patch_hf_cross_entropy` replaced it.
+_hf_fixed_cross_entropy = None
+
+
 def _patch_hf_cross_entropy():
     # Scope the Liger cross entropy to the Hugging Face model losses: every loss in `transformers.loss.loss_utils`
     # (ForCausalLMLoss, ForMaskedLMLoss, ...) calls the module-level `fixed_cross_entropy`. Rebinding
     # `torch.nn.functional.cross_entropy` instead would route unrelated callers into the Liger kernel, which writes
     # the gradient into requires-grad logits in place (https://github.com/linkedin/Liger-Kernel/issues/1639).
+    global _hf_fixed_cross_entropy
     from transformers.loss import loss_utils
 
-    loss_utils.fixed_cross_entropy = liger_fixed_cross_entropy
+    if loss_utils.fixed_cross_entropy is not liger_fixed_cross_entropy:
+        _hf_fixed_cross_entropy = loss_utils.fixed_cross_entropy
+        loss_utils.fixed_cross_entropy = liger_fixed_cross_entropy
+
+
+def _revert_hf_cross_entropy():
+    # Undo `_patch_hf_cross_entropy`. The patch lives on `transformers.loss.loss_utils`, so reloading a modeling
+    # module does not remove it.
+    from transformers.loss import loss_utils
+
+    if _hf_fixed_cross_entropy is not None and loss_utils.fixed_cross_entropy is liger_fixed_cross_entropy:
+        loss_utils.fixed_cross_entropy = _hf_fixed_cross_entropy
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
