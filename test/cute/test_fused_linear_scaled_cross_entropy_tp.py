@@ -89,7 +89,7 @@ def _reference(x, global_weight, target, grad_nll, grad_entropy):
     dz[rows, safe_target] -= grad_nll
     dz *= valid[:, None] * inverse_temperature
     dz = dz.to(torch.bfloat16).float()
-    return nll, entropy, dz @ global_weight.float(), dz
+    return nll, entropy, dz @ global_weight.float(), dz, lse
 
 
 def _run_moe(rank: int, world_size: int):
@@ -157,7 +157,17 @@ def _run_moe(rank: int, world_size: int):
     assert torch.isfinite(output).all()
 
 
-def _worker(rank: int, world_size: int, init_file: str, layout: str, implementation: str, run_moe: bool):
+def _worker(
+    rank: int,
+    world_size: int,
+    init_file: str,
+    layout: str,
+    implementation: str,
+    run_moe: bool,
+    accum_dtype=None,
+    tokens=_TOKENS,
+    backward_only=False,
+):
     if implementation == "fallback":
         import liger_kernel.ops.fused_linear_scaled_cross_entropy as frontend
 
@@ -190,7 +200,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
                 process_groups={"tp": tp_group},
                 device=torch.device("cuda", rank),
                 flsce=FusedLinearCrossEntropyConfig(
-                    max_tokens=_TOKENS + 128,
+                    max_tokens=tokens + 128,
                     hidden_size=_HIDDEN,
                     local_vocab_size=_LOCAL_VOCAB,
                     group="tp",
@@ -201,7 +211,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
             assert configure(
                 device=torch.device("cuda", rank),
                 flsce=FusedLinearCrossEntropyConfig(
-                    max_tokens=_TOKENS,
+                    max_tokens=tokens,
                     hidden_size=_HIDDEN,
                     local_vocab_size=_LOCAL_VOCAB,
                     group="tp",
@@ -213,7 +223,7 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         x_generator = torch.Generator(device="cpu")
         x_generator.manual_seed(2027 + group_index)
         x = (
-            torch.randn(_TOKENS, _HIDDEN, generator=x_generator)
+            torch.randn(tokens, _HIDDEN, generator=x_generator)
             .mul_(0.05)
             .to(device="cuda", dtype=torch.bfloat16)
             .requires_grad_(True)
@@ -232,12 +242,12 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         global_weight = torch.cat(gathered_weights, dim=0)
         global_vocab = tp_size * _LOCAL_VOCAB
 
-        target = (torch.arange(_TOKENS, device="cuda", dtype=torch.int64) * 17 + 3) % global_vocab
+        target = (torch.arange(tokens, device="cuda", dtype=torch.int64) * 17 + 3) % global_vocab
         target[::19] = _IGNORE_INDEX
-        grad_nll = torch.linspace(0.25, 1.0, _TOKENS, device="cuda", dtype=torch.float32)
-        grad_entropy = torch.linspace(-0.2, 0.3, _TOKENS, device="cuda", dtype=torch.float32)
+        grad_nll = torch.linspace(0.25, 1.0, tokens, device="cuda", dtype=torch.float32)
+        grad_entropy = torch.linspace(-0.2, 0.3, tokens, device="cuda", dtype=torch.float32)
 
-        expected_nll, expected_entropy, expected_dx, dz = _reference(
+        expected_nll, expected_entropy, expected_dx, dz, lse = _reference(
             x.detach(),
             global_weight,
             target,
@@ -247,30 +257,50 @@ def _worker(rank: int, world_size: int, init_file: str, layout: str, implementat
         local_start = tp_rank * _LOCAL_VOCAB
         expected_dw = dz[:, local_start : local_start + _LOCAL_VOCAB].t() @ x.detach().float()
 
-        actual_nll, actual_entropy = LigerFusedLinearScaledCrossEntropyTPFunction.apply(
-            x,
-            weight,
-            target,
-            tp_group,
-            _TEMPERATURE,
-            _IGNORE_INDEX,
-            1,
-            True,
-        )
-        torch.autograd.backward((actual_nll, actual_entropy), (grad_nll, grad_entropy))
+        if backward_only:
+            from liger_cute_kernels import tvm_ffi
+
+            actual_dx, actual_dw = tvm_ffi.fused_linear_scaled_cross_entropy_backward(
+                grad_nll,
+                grad_entropy,
+                x,
+                weight,
+                target,
+                lse,
+                expected_entropy,
+                local_start,
+                _IGNORE_INDEX,
+                1.0 / _TEMPERATURE,
+                team_handle,
+                1,
+                True,
+                accum_dtype,
+            )
+            assert actual_dw.dtype == accum_dtype
+            actual_dw = actual_dw.to(weight.dtype)
+        else:
+            actual_nll, actual_entropy = LigerFusedLinearScaledCrossEntropyTPFunction.apply(
+                x, weight, target, tp_group, _TEMPERATURE, _IGNORE_INDEX, 1, True, accum_dtype
+            )
+            torch.autograd.backward((actual_nll, actual_entropy), (grad_nll, grad_entropy))
+            torch.testing.assert_close(actual_nll, expected_nll, atol=3e-4, rtol=3e-4)
+            torch.testing.assert_close(actual_entropy, expected_entropy, atol=3e-4, rtol=3e-4)
+            actual_dx, actual_dw = x.grad, weight.grad
         torch.cuda.synchronize()
 
-        torch.testing.assert_close(actual_nll, expected_nll, atol=3e-4, rtol=3e-4)
-        torch.testing.assert_close(actual_entropy, expected_entropy, atol=3e-4, rtol=3e-4)
-        torch.testing.assert_close(x.grad.float(), expected_dx, atol=8e-3, rtol=4e-2)
-        torch.testing.assert_close(weight.grad.float(), expected_dw, atol=8e-3, rtol=4e-2)
+        torch.testing.assert_close(actual_dx.float(), expected_dx, atol=8e-3, rtol=4e-2)
+        torch.testing.assert_close(actual_dw.float(), expected_dw, atol=8e-3, rtol=4e-2)
+        assert actual_dx.dtype == x.dtype and actual_dw.dtype == weight.dtype
+        if accum_dtype == torch.float32 and implementation == "native":
+            relative_error = (actual_dw.float() - expected_dw).norm() / expected_dw.norm().clamp_min(1e-12)
+            assert relative_error.item() < 0.003
 
         if implementation == "native":
             with pytest.raises(ValueError, match="exceeds configured capacity"):
                 LigerFusedLinearScaledCrossEntropyTPFunction.apply(
-                    x.new_zeros((_TOKENS + 129, _HIDDEN)),
+                    x.new_zeros((tokens + 129, _HIDDEN)),
                     weight,
-                    target.new_zeros((_TOKENS + 129,)),
+                    target.new_zeros((tokens + 129,)),
                     tp_group,
                 )
 
@@ -304,6 +334,9 @@ def _run(
     implementation: str,
     run_moe: bool = False,
     disable_nvls: bool = False,
+    accum_dtype=None,
+    tokens=_TOKENS,
+    backward_only=False,
 ):
     rendezvous = tempfile.mkdtemp(prefix=f"liger_fslce_tp_{layout}_")
     init_file = os.path.join(rendezvous, "store")
@@ -318,7 +351,7 @@ def _run(
     try:
         mp.spawn(
             _worker,
-            args=(world_size, init_file, layout, implementation, run_moe),
+            args=(world_size, init_file, layout, implementation, run_moe, accum_dtype, tokens, backward_only),
             nprocs=world_size,
             join=True,
         )
@@ -419,7 +452,7 @@ def _multi_context_worker(rank, world_size, init_file, bootstrap_subgroups, part
         target = torch.arange(tokens, device="cuda", dtype=torch.int64) % (len(ranks) * _LOCAL_VOCAB)
         grad_nll = torch.linspace(0.25, 1.0, tokens, device="cuda")
         grad_entropy = torch.linspace(-0.2, 0.3, tokens, device="cuda")
-        nll, entropy, dx, dz = _reference(x.detach(), torch.cat(weights), target, grad_nll, grad_entropy)
+        nll, entropy, dx, dz, _ = _reference(x.detach(), torch.cat(weights), target, grad_nll, grad_entropy)
         start = ranks.index(rank) * _LOCAL_VOCAB
         dw = dz[:, start : start + _LOCAL_VOCAB].t() @ x.detach().float()
         case = (group, x, weight, target, grad_nll, grad_entropy, (nll, entropy, dx, dw))
@@ -559,12 +592,13 @@ def test_native_multiple_tp_contexts(world_size, bootstrap_subgroups, partial_ov
 
 
 @pytest.mark.parametrize("world_size", [1, 2, 4, 8])
-def test_tp_frontend_world_process_group(world_size):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_tp_frontend_world_process_group(world_size, accum_dtype):
     if not _NATIVE_AVAILABLE:
         pytest.skip("requires a matching liger_cute_kernels wheel")
     if _NDEV < world_size:
         pytest.skip(f"requires at least {world_size} CUDA devices")
-    _run(world_size, "world", "native")
+    _run(world_size, "world", "native", accum_dtype=accum_dtype)
 
 
 @pytest.mark.parametrize("layout", ["contiguous", "strided"])
@@ -603,3 +637,21 @@ def test_tp_frontend_direct_peer_fallback():
     if _NDEV < 2:
         pytest.skip("requires at least two CUDA devices")
     _run(2, "world", "native", disable_nvls=True)
+
+
+@pytest.mark.parametrize("implementation,disable_nvls", [("native", False), ("native", True), ("fallback", False)])
+def test_tp_fp32_accumulation_many_waves(implementation, disable_nvls):
+    if implementation == "native" and not _NATIVE_AVAILABLE:
+        pytest.skip("requires a matching liger_cute_kernels build")
+    if torch is None or _NDEV < 2:
+        pytest.skip("requires at least two CUDA devices")
+    # Isolate native backward from the forward grid's small-shard residency limit.
+    _run(
+        2,
+        "world",
+        implementation,
+        disable_nvls=disable_nvls,
+        accum_dtype=torch.float32,
+        tokens=65537,
+        backward_only=implementation == "native",
+    )

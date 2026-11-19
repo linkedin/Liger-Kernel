@@ -25,6 +25,7 @@ from liger_kernel.ops.cutedsl.ops._sm100_gemm import _select_epilogue_config
 from liger_kernel.ops.cutedsl.ops.utils import ensure_cuda_context
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import _scaled_ce_outputs
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_accum_dtype
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_fallback_inputs
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_selected_token_ids
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_temperature
@@ -455,7 +456,9 @@ class LigerFusedScaledCrossEntropySM100Function(torch.autograd.Function):
         m_tiles_per_cluster=1,
         return_entropy=False,
         selected_token_ids=None,
+        accum_dtype=None,
     ):
+        ctx.accum_dtype = _validate_accum_dtype(accum_dtype, weight.dtype)
         _validate_temperature(temperature)
         _validate_fallback_inputs(x, weight, target, ignore_index)
         if x.device.type != "cuda" or torch.cuda.get_device_capability(x.device) not in ((10, 0), (10, 3)):
@@ -508,7 +511,7 @@ class LigerFusedScaledCrossEntropySM100Function(torch.autograd.Function):
             if grad_selected is None:
                 grad_selected = lse.new_zeros(padded_tokens, num_selected)
             grad_input = torch.empty_like(x) if ctx.needs_input_grad[0] else None
-            grad_weight = torch.empty_like(weight) if ctx.needs_input_grad[1] else None
+            grad_weight = torch.empty_like(weight, dtype=ctx.accum_dtype) if ctx.needs_input_grad[1] else None
             rows_per_chunk = max(
                 _TOKEN_ALIGNMENT,
                 _BACKWARD_WORKSPACE_BYTES // (weight.shape[0] * x.element_size() * _TOKEN_ALIGNMENT) * _TOKEN_ALIGNMENT,
@@ -558,5 +561,5 @@ class LigerFusedScaledCrossEntropySM100Function(torch.autograd.Function):
             if grad_input is not None:
                 grad_input = grad_input[:tokens, :hidden]
             if grad_weight is not None:
-                grad_weight = grad_weight[:vocab, :hidden]
-        return grad_input, grad_weight, None, None, None, None, None, None
+                grad_weight = grad_weight[:vocab, :hidden].to(weight.dtype)
+        return grad_input, grad_weight, None, None, None, None, None, None, None
