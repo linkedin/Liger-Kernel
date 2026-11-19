@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import exp_excess
 from liger_kernel.ops.utils import expm1
 from liger_kernel.ops.utils import target_nll
 
@@ -215,7 +216,7 @@ def _grpo_loss_fwd_kernel(
         REF_LOGP += off_b * L + off_l
         KL += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
-        kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
+        kl = exp_excess(ref_logp - logp)
         if USE_BIAS_CORRECTION_KL:
             # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= coef_1
             kl = kl * tl.exp(logp - old_logp)
@@ -286,7 +287,7 @@ def _grpo_loss_fwd_kernel_seq(
         REF_LOGP += off_b * L + off_l
         KL += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
-        kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
+        kl = exp_excess(ref_logp - logp)
         if USE_BIAS_CORRECTION_KL:
             # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= coef_1.
             # Use the pre-clamp sequence-level coef_1 to match TRL — the same coef_1
@@ -382,9 +383,9 @@ def _grpo_loss_bwd_kernel_seq(
         if USE_BIAS_CORRECTION_KL:
             # The shared ratio contributes every token's upstream-weighted KL.
             dkl_sum = tl.load(DKL_SUM + off_b).to(tl.float32)
-            dlogp += BETA * (coef_1 * (1 - tl.exp(ref_logp - logp)) * dloss + dkl_sum / seq_len)
+            dlogp += BETA * (coef_1 * -expm1(ref_logp - logp) * dloss + dkl_sum / seq_len)
         else:
-            dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
+            dlogp += BETA * -expm1(ref_logp - logp) * dloss
 
     dlogp = dlogp / TEMPERATURE
     if dlogp == 0.0:
@@ -520,7 +521,7 @@ def _grpo_loss_bwd_kernel(
             # d(kl * coef_1)/d(logp) = coef_1 * (logp - ref_logp), where coef_1 = exp(logp - old_logp)
             dlogp += BETA * coef_1 * (logp - ref_logp)
         else:
-            dlogp += BETA * (1 - tl.exp(ref_logp - logp))
+            dlogp += BETA * -expm1(ref_logp - logp)
 
     dlogp = dlogp * dloss / TEMPERATURE
     if dlogp == 0.0:

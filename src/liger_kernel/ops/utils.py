@@ -168,7 +168,18 @@ def log1p(x):
 def expm1(x):
     u = tl.exp(x)
     um1 = u - 1.0
-    return tl.where(u == 1.0, x, tl.where(um1 == -1.0, -1.0, um1 * (x / tl.log(tl.where(u == 1.0, 2.0, u)))))
+    big = u == float("inf")  # past exp overflow the formula below is inf * 0
+    safe_u = tl.where((u == 1.0) | big, 2.0, u)
+    return tl.where(big, u, tl.where(u == 1.0, x, tl.where(um1 == -1.0, -1.0, um1 * (x / tl.log(safe_u)))))
+
+
+@triton.jit
+def exp_excess(x):
+    """e^x - 1 - x, the K3 KL estimator, keeping its O(x^2) value near 0 where the direct form cancels
+    (arXiv 2611.18511, reformulation 6)."""
+    s = tl.minimum(tl.maximum(x, -0.5), 0.5)
+    series = s * s * (0.5 + s * (1 / 6 + s * (1 / 24 + s * (1 / 120 + s * (1 / 720 + s * (1 / 5040 + s / 40320))))))
+    return tl.where(tl.abs(x) <= 0.5, series, tl.exp(x) - 1.0 - x)
 
 
 @triton.jit

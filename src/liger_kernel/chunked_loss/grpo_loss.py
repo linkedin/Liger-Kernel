@@ -10,7 +10,11 @@ from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
 def k3_loss_fn(log_p, log_q):
     # computes k3 estimate of KL[q, p]
     # ref: http://joschu.net/blog/kl-approx.html
-    return torch.exp(log_p - log_q) - (log_p - log_q) - 1.0
+    # e^r - 1 - r cancels near r = 0, so small r uses its series, whose derivative is expm1(r) (arXiv 2611.18511)
+    r = log_p - log_q
+    s = r.clamp(-0.5, 0.5)
+    series = s * s * (0.5 + s * (1 / 6 + s * (1 / 24 + s * (1 / 120 + s * (1 / 720 + s * (1 / 5040 + s / 40320))))))
+    return torch.where(r.abs() < 0.5, series, torch.expm1(r) - r)
 
 
 @torch.no_grad()
