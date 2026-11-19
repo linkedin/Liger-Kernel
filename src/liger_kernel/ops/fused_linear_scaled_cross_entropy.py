@@ -18,6 +18,34 @@ from packaging.version import Version
 # https://github.com/verl-project/verl/blob/main/verl/utils/experimental/torch_functional.py
 _FALLBACK_CHUNK_SIZE = 512
 _log = logging.getLogger(__name__)
+_SUPPORTS_OUT_DTYPE = Version(torch.__version__.split("+")[0]) >= Version("2.8.0")
+
+
+def _validate_accum_dtype(accum_dtype, weight_dtype):
+    if accum_dtype is None:
+        return weight_dtype
+    if not isinstance(accum_dtype, torch.dtype):
+        raise TypeError("accum_dtype must be a torch.dtype or None")
+    if accum_dtype not in (weight_dtype, torch.float32):
+        raise ValueError("accum_dtype must be the weight dtype or torch.float32")
+    return accum_dtype
+
+
+def _accumulate_fp32_grad_weight(grad_weight, grad_logits, hidden_states):
+    with torch.autocast(device_type=hidden_states.device.type, enabled=False):
+        if (
+            _SUPPORTS_OUT_DTYPE
+            and hidden_states.is_cuda
+            and torch.version.hip is None
+            and torch.cuda.get_device_capability(hidden_states.device)[0] >= 8
+            and grad_logits.dtype in (torch.float16, torch.bfloat16)
+        ):
+            # FP32-output addmm bypasses autocast's operand conversion.
+            if hidden_states.dtype != grad_logits.dtype:
+                hidden_states = hidden_states.to(grad_logits.dtype)
+            torch.addmm(grad_weight, grad_logits.t(), hidden_states, out_dtype=torch.float32, out=grad_weight)
+        else:
+            grad_weight.addmm_(grad_logits.float().t(), hidden_states.float())
 
 
 def _load_sm90_function():
@@ -168,7 +196,18 @@ class _TensorParallelFusedLinearPPOFallbackFunction(torch.autograd.Function):
     """Chunked TP fallback adapted from Verl's fused linear PPO formulas."""
 
     @staticmethod
-    def forward(ctx, hidden_states, vocab_weights, input_ids, temperature, ignore_index, return_entropy, process_group):
+    def forward(
+        ctx,
+        hidden_states,
+        vocab_weights,
+        input_ids,
+        temperature,
+        ignore_index,
+        return_entropy,
+        process_group,
+        accum_dtype=None,
+    ):
+        ctx.accum_dtype = _validate_accum_dtype(accum_dtype, vocab_weights.dtype)
         ctx.set_materialize_grads(False)
         rank = dist.get_rank(process_group)
         world_size = dist.get_world_size(process_group)
@@ -243,7 +282,7 @@ class _TensorParallelFusedLinearPPOFallbackFunction(torch.autograd.Function):
             grad_entropy = grad_entropy.to(torch.float32)
 
         grad_hidden_states = torch.zeros_like(hidden_states) if ctx.needs_input_grad[0] else None
-        grad_vocab_weights = torch.zeros_like(vocab_weights) if ctx.needs_input_grad[1] else None
+        grad_vocab_weights = torch.zeros_like(vocab_weights, dtype=ctx.accum_dtype) if ctx.needs_input_grad[1] else None
         inverse_temperature = 1.0 / ctx.temperature
 
         for start in range(0, token_count, _FALLBACK_CHUNK_SIZE):
@@ -270,14 +309,21 @@ class _TensorParallelFusedLinearPPOFallbackFunction(torch.autograd.Function):
             if grad_hidden_states is not None:
                 grad_hidden_states[start:end] = grad_logits @ vocab_weights
             if grad_vocab_weights is not None:
-                grad_vocab_weights.add_(grad_logits.t() @ hidden_chunk)
+                if grad_vocab_weights.dtype != grad_logits.dtype:
+                    _accumulate_fp32_grad_weight(grad_vocab_weights, grad_logits, hidden_chunk)
+                else:
+                    grad_vocab_weights.add_(grad_logits.t() @ hidden_chunk)
 
         if grad_hidden_states is not None and ctx.world_size > 1:
             dist.all_reduce(grad_hidden_states, op=dist.ReduceOp.SUM, group=ctx.process_group)
-        return grad_hidden_states, grad_vocab_weights, None, None, None, None, None
+        if grad_vocab_weights is not None:
+            grad_vocab_weights = grad_vocab_weights.to(vocab_weights.dtype)
+        return grad_hidden_states, grad_vocab_weights, None, None, None, None, None, None
 
 
-def _apply_tp_fallback(_input, weight, target, temperature, ignore_index, return_entropy, process_group):
+def _apply_tp_fallback(
+    _input, weight, target, temperature, ignore_index, return_entropy, process_group, accum_dtype=None
+):
     return _TensorParallelFusedLinearPPOFallbackFunction.apply(
         _input.contiguous(),
         weight.contiguous(),
@@ -286,6 +332,7 @@ def _apply_tp_fallback(_input, weight, target, temperature, ignore_index, return
         ignore_index,
         return_entropy,
         process_group,
+        accum_dtype,
     )
 
 
@@ -319,6 +366,7 @@ def _fallback_backward_chunk(
     temperature,
     selected_token_ids=None,
     grad_selected=None,
+    grad_weight=None,
 ):
     logits = (hidden_states @ vocab_weights.t()) / temperature
     output_dtype = logits.dtype
@@ -343,14 +391,28 @@ def _fallback_backward_chunk(
         grad_logits.scatter_add_(1, selected_token_ids.expand(hidden_states.shape[0], -1), selected_grad)
 
     grad_logits = grad_logits.to(output_dtype) / temperature
-    return grad_logits @ vocab_weights, grad_logits.t() @ hidden_states
+    if grad_weight is not None:
+        if grad_weight.dtype != grad_logits.dtype:
+            _accumulate_fp32_grad_weight(grad_weight, grad_logits, hidden_states)
+        else:
+            grad_weight.add_(grad_logits.t() @ hidden_states)
+    return grad_logits @ vocab_weights
 
 
 class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, hidden_states, vocab_weights, input_ids, temperature, ignore_index, return_entropy, selected_token_ids=None
+        ctx,
+        hidden_states,
+        vocab_weights,
+        input_ids,
+        temperature,
+        ignore_index,
+        return_entropy,
+        selected_token_ids=None,
+        accum_dtype=None,
     ):
+        ctx.accum_dtype = _validate_accum_dtype(accum_dtype, vocab_weights.dtype)
         ctx.set_materialize_grads(False)
         _validate_fallback_inputs(hidden_states, vocab_weights, input_ids, ignore_index)
         _validate_temperature(temperature)
@@ -390,11 +452,11 @@ class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
         if not ctx.return_entropy:
             grad_selected, grad_entropy = grad_entropy, None
         grad_hidden_states = torch.zeros_like(hidden_states) if ctx.needs_input_grad[0] else None
-        grad_vocab_weights = torch.zeros_like(vocab_weights) if ctx.needs_input_grad[1] else None
+        grad_vocab_weights = torch.zeros_like(vocab_weights, dtype=ctx.accum_dtype) if ctx.needs_input_grad[1] else None
 
         for start in range(0, hidden_states.shape[0], _FALLBACK_CHUNK_SIZE):
             end = min(start + _FALLBACK_CHUNK_SIZE, hidden_states.shape[0])
-            chunk_grad_hidden, chunk_grad_weight = _fallback_backward_chunk(
+            chunk_grad_hidden = _fallback_backward_chunk(
                 grad_nll[start:end] if grad_nll is not None else None,
                 grad_entropy[start:end] if grad_entropy is not None else None,
                 hidden_states[start:end],
@@ -404,13 +466,13 @@ class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
                 ctx.temperature,
                 selected_token_ids,
                 grad_selected[start:end] if grad_selected is not None else None,
+                grad_vocab_weights,
             )
             if grad_hidden_states is not None:
                 grad_hidden_states[start:end].add_(chunk_grad_hidden)
-            if grad_vocab_weights is not None:
-                grad_vocab_weights.add_(chunk_grad_weight)
-
-        return grad_hidden_states, grad_vocab_weights, None, None, None, None, None
+        if grad_vocab_weights is not None:
+            grad_vocab_weights = grad_vocab_weights.to(vocab_weights.dtype)
+        return grad_hidden_states, grad_vocab_weights, None, None, None, None, None, None
 
 
 def _resolve_implementation(device, dtype=None):
@@ -443,6 +505,10 @@ class LigerFusedLinearScaledCrossEntropyFunction:
     Supplying int64 ``selected_token_ids[K]`` appends FP32 full-vocabulary
     log-probabilities ``[M,K]`` to the outputs. Ignored rows are zero; ID order
     and duplicates are preserved. All floating-point outputs are differentiable.
+
+    ``accum_dtype=None`` accumulates weight gradients in the weight dtype.
+    Use ``torch.float32`` to accumulate dW across token chunks in FP32, then
+    cast once to the weight dtype. Forward, dZ and dX precision are unchanged.
     """
 
     @staticmethod
@@ -455,6 +521,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
         m_tiles_per_cluster=1,
         return_entropy=False,
         selected_token_ids=None,
+        accum_dtype=None,
     ):
         if not isinstance(m_tiles_per_cluster, int) or isinstance(m_tiles_per_cluster, bool):
             raise TypeError("m_tiles_per_cluster must be an int")
@@ -462,9 +529,17 @@ class LigerFusedLinearScaledCrossEntropyFunction:
             raise ValueError("m_tiles_per_cluster must be >= 1")
         if not isinstance(return_entropy, bool):
             raise TypeError("return_entropy must be a bool")
+        if accum_dtype is not None:
+            _validate_accum_dtype(accum_dtype, weight.dtype)
 
         implementation = _resolve_implementation(_input.device, _input.dtype)
-        selected_args = (selected_token_ids,) if selected_token_ids is not None else ()
+        selected_args = (
+            (selected_token_ids, accum_dtype)
+            if accum_dtype is not None
+            else (selected_token_ids,)
+            if selected_token_ids is not None
+            else ()
+        )
         if implementation is _FusedLinearPPOFallbackFunction:
             return implementation.apply(
                 _input,
@@ -500,6 +575,10 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
     Returns per-token NLL, or ``(nll, entropy)`` when ``return_entropy=True``.
     Autograd returns a tensor-parallel reduced input gradient and a rank-local
     gradient for the vocabulary shard.
+
+    ``accum_dtype=None`` uses the weight dtype for dW accumulation.
+    ``torch.float32`` retains FP32 dW partials and accumulates token waves in
+    FP32 before casting to the weight dtype. TP dX reduction is unchanged.
     """
 
     @staticmethod
@@ -512,6 +591,7 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
         ignore_index=-100,
         tiles_per_reduce=1,
         return_entropy=False,
+        accum_dtype=None,
     ):
         _validate_temperature(temperature)
         if not isinstance(tiles_per_reduce, int) or isinstance(tiles_per_reduce, bool):
@@ -520,6 +600,9 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
             raise ValueError("tiles_per_reduce must be one of 1, 2, or 4")
         if not isinstance(return_entropy, bool):
             raise TypeError("return_entropy must be a bool")
+        if accum_dtype is not None:
+            _validate_accum_dtype(accum_dtype, weight.dtype)
+        accum_args = (accum_dtype,) if accum_dtype is not None else ()
 
         process_group, rank = _tp_group_info(tp_group)
         _validate_tp_inputs(_input, weight, target)
@@ -542,6 +625,7 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
                 tiles_per_reduce,
                 return_entropy,
                 process_group,
+                *accum_args,
             )
 
         return _apply_tp_fallback(
@@ -552,6 +636,7 @@ class LigerFusedLinearScaledCrossEntropyTPFunction:
             ignore_index,
             return_entropy,
             process_group,
+            *accum_args,
         )
 
 

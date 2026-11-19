@@ -91,7 +91,8 @@ template <
 	int Compute = 90,
 	int MainloopStages = BackwardGemmConfigSm90<Compute>::kMainloopStages,
 	int DwStoreTileN = BackwardGemmConfigSm90<Compute>::kDwStoreTileN,
-	int DwStoreStages = BackwardGemmConfigSm90<Compute>::kDwStoreStages>
+	int DwStoreStages = BackwardGemmConfigSm90<Compute>::kDwStoreStages,
+	class ElementDw_ = cutlass::bfloat16_t>
 struct BackwardGemmTraitsSm90 {
 	static_assert(Compute == 90,
 		"SM90 fused scaled linear cross entropy requires Compute=90");
@@ -100,6 +101,7 @@ struct BackwardGemmTraitsSm90 {
 	static constexpr int kCompute = Compute;
 
 	using Element = cutlass::bfloat16_t;
+	using ElementDw = ElementDw_;
 	using ElementAccum = float;
 
 	static constexpr int kTileM = Config::kTileM;
@@ -111,7 +113,8 @@ struct BackwardGemmTraitsSm90 {
 	static constexpr int kWarpGroupSize = Config::kWarpGroupSize;
 	static constexpr int kNumMmaWarpGroups = Config::kNumMmaWarpGroups;
 	static constexpr int kConsumerThreads = Config::kConsumerThreads;
-	static constexpr int kDwStoreTileN = DwStoreTileN;
+	static constexpr int kDwStoreTileN =
+		DwStoreTileN * sizeof(Element) / sizeof(ElementDw);
 	static constexpr int kDwStoreStages = DwStoreStages;
 
 	static_assert(Config::kDzTileN == Config::kDxTileN);
@@ -143,10 +146,10 @@ struct BackwardGemmTraitsSm90 {
 	// dX stores accumulator fragments directly to FP32 global staging; dW
 	// uses this shared-memory TMA epilogue.
 	using DwSmemStore1 = sm90::SmemLayoutKMajorSm90<
-		Element, kTileM, kDwStoreTileN, 1, Compute>;
+		ElementDw, kTileM, kDwStoreTileN, 1, Compute>;
 	template <int Stages>
 	using DwSmemStore = sm90::SmemLayoutKMajorSm90<
-		Element, kTileM, kDwStoreTileN, Stages, Compute>;
+		ElementDw, kTileM, kDwStoreTileN, Stages, Compute>;
 
 	static constexpr int kDwStoreElements =
 		DwSmemStore<kDwStoreStages>::kStagedElements;
@@ -854,7 +857,8 @@ struct DwPhaseSm90 {
 			bool valid_tile = tile.n_tile < valid_n_tiles;
 
 			bool issuer = (tid_in_mma / Traits::kWarpSize) == 0;
-			auto sStore = make_tensor(make_smem_ptr(smem.store_data()),
+			auto sStore = make_tensor(make_smem_ptr(
+					reinterpret_cast<typename Traits::ElementDw*>(smem.store_data())),
 				typename Traits::template DwSmemStore<
 					Traits::kDwStoreStages>::Staged{});
 			auto shape_dw = make_shape(
@@ -878,7 +882,7 @@ struct DwPhaseSm90 {
 			typename Traits::DwStoreMmaTraits::Type store_mma;
 			auto store_thr = store_mma.get_slice(tid_in_mma);
 			auto tDsDFrag = store_thr.partition_C(sStore);
-			auto d_frag = make_tensor<typename Traits::Element>(
+			auto d_frag = make_tensor<typename Traits::ElementDw>(
 				shape(tDsDFrag(_, _, _, Int<0>{})));
 			constexpr int kFragElements =
 				decltype(cute::size(d_frag))::value;
@@ -899,7 +903,7 @@ struct DwPhaseSm90 {
 				}
 				CUTE_UNROLL
 				for (int j = 0; j < kFragElements; ++j) {
-					d_frag(j) = static_cast<typename Traits::Element>(
+					d_frag(j) = static_cast<typename Traits::ElementDw>(
 						accum(sub * kFragElements + j));
 				}
 				copy(d_frag, tDsDFrag(_, _, _, stage));
@@ -979,8 +983,10 @@ template <
 	class TmaDzt,
 	class TmaXt,
 	class TmaDwStore,
-	class TmaDwAdd>
+	class TmaDwAdd,
+	class ElementDw_ = cutlass::bfloat16_t>
 struct BackwardDxDwTmaBundleSm90 {
+	using ElementDw = ElementDw_;
 	TmaDzLoad dz_load;
 	TmaWt wt;
 	TmaDzt dzt;
@@ -1373,8 +1379,10 @@ template <
 	class TmaDzt,
 	class TmaXt,
 	class TmaDwStore,
-	class TmaDwAdd>
+	class TmaDwAdd,
+	class ElementDw_ = cutlass::bfloat16_t>
 struct BackwardClusterCombinedTmaBundleSm90 {
+	using ElementDw = ElementDw_;
 	TmaDz dz;
 	TmaWt wt;
 	TmaDxStore dx_store;
@@ -1399,7 +1407,7 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 		int wave) {
 	static_assert(DxSplitK == 1 || DxSplitK == 2);
 	using Traits = BackwardDxCluster2TraitsSm90<Compute>;
-	using DwTraits = BackwardGemmTraitsSm90<Compute, 4, 64, 2>;
+	using DwTraits = BackwardGemmTraitsSm90<Compute, 4, 64, 2, typename Bundle::ElementDw>;
 	using Config = typename Traits::Config;
 	using Launch = BackwardGemmLaunchSm90<Compute>;
 	using Smem = BackwardDxCluster2SmemSm90<Compute>;
@@ -1411,7 +1419,7 @@ void backward_dx_cluster2_gemm_wave_kernel_sm90(
 		Compute>;
 	static_assert(Traits::kStages == 4);
 	static_assert(DwTraits::kStages == 4);
-	static_assert(DwTraits::kDwStoreTileN == 64);
+	static_assert(DwTraits::kDwStoreTileN * sizeof(typename DwTraits::ElementDw) == 128);
 	static_assert(DwTraits::kDwStoreStages == 2);
 	static_assert(Traits::kTileM == DwTraits::kTileM);
 	static_assert(Traits::kTileN == DwTraits::kTileN);

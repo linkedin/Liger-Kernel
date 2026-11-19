@@ -546,7 +546,8 @@ struct BackwardGemmParamsSm100 {
 	const float* entropy_grad = nullptr;   // FP32 [tokens], entropy scale
 
 	void* grad_input = nullptr;   // X.dtype [tokens, hidden], BF16
-	void* grad_weight = nullptr;  // BF16 [local_vocab, hidden], rank local
+	void* grad_weight = nullptr;  // BF16 or FP32 [local_vocab, hidden], rank local
+	bool accum_fp32 = false;
 
 	void* dz_workspace = nullptr;  // BF16 [kWaveRows, padded_local_vocab]
 	std::size_t dz_workspace_bytes = 0;

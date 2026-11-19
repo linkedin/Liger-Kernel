@@ -95,6 +95,7 @@ def _run_liger(
     ignore_index=-100,
     temperature=1.0,
     m_tiles_per_cluster=1,
+    accum_dtype=None,
 ):
     function = _frontend_function()
     x = x.detach().clone().requires_grad_(True)
@@ -107,6 +108,8 @@ def _run_liger(
         ignore_index,
         m_tiles_per_cluster,
         False,
+        None,
+        accum_dtype,
     )
     if grad_output is not None:
         nll.backward(grad_output)
@@ -126,7 +129,8 @@ def _run_reference(x, weight, target, grad_output, ignore_index=-100, temperatur
 
 @pytest.mark.parametrize("shape", [(256, 128, 512), (193, 70, 517)], ids=["aligned", "ragged"])
 @pytest.mark.parametrize("m_tiles_per_cluster", [1, 2], ids=["mtiles1", "mtiles2"])
-def test_sm90_per_token_nll_and_grads_match_torch(shape, m_tiles_per_cluster):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_sm90_per_token_nll_and_grads_match_torch(shape, m_tiles_per_cluster, accum_dtype):
     set_seed(42)
     bt, hidden_size, vocab_size = shape
     x, weight, target = _make_inputs(bt, hidden_size, vocab_size, ignore_stride=7)
@@ -138,6 +142,7 @@ def test_sm90_per_token_nll_and_grads_match_torch(shape, m_tiles_per_cluster):
         target,
         grad_output,
         m_tiles_per_cluster=m_tiles_per_cluster,
+        accum_dtype=accum_dtype,
     )
     expected = _run_reference(x, weight, target, grad_output)
 
@@ -148,6 +153,24 @@ def test_sm90_per_token_nll_and_grads_match_torch(shape, m_tiles_per_cluster):
     assert_verbose_allclose(actual[0].float(), expected[0].float(), atol=5e-2, rtol=5e-2)
     assert_verbose_allclose(actual[1].float(), expected[1].float(), atol=2e-2, rtol=1e-1)
     assert_verbose_allclose(actual[2].float(), expected[2].float(), atol=2e-2, rtol=1e-1)
+
+
+def test_sm90_fp32_accumulation_many_waves():
+    tokens, hidden, vocab = 65537, 64, 128
+    x = torch.full((tokens, hidden), 0.125, device="cuda", dtype=torch.bfloat16)
+    weight = torch.zeros(vocab, hidden, device="cuda", dtype=torch.bfloat16)
+    target = torch.zeros(tokens, device="cuda", dtype=torch.int64)
+    target[::7] = -100
+    upstream = torch.ones(tokens, device="cuda")
+    default = _run_liger(x, weight, target, upstream)
+    fp32 = _run_liger(x, weight, target, upstream, accum_dtype=torch.float32)
+    expected_dw = torch.full_like(weight, 1 / vocab, dtype=torch.float32)
+    expected_dw[0] -= 1
+    expected_dw *= (target != -100).sum() * 0.125
+    torch.testing.assert_close(fp32[2], expected_dw.bfloat16(), atol=0, rtol=0)
+    torch.testing.assert_close(fp32[0], default[0], atol=0, rtol=0)
+    torch.testing.assert_close(fp32[1], default[1], atol=0, rtol=0)
+    assert not torch.equal(fp32[2], default[2])
 
 
 @pytest.mark.parametrize("temperature", [0.7, 1.5])
@@ -165,7 +188,8 @@ def test_sm90_temperature_matches_torch(temperature):
 
 
 @pytest.mark.parametrize("m_tiles_per_cluster", [1, 2])
-def test_sm90_differentiable_entropy_matches_torch(m_tiles_per_cluster):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_sm90_differentiable_entropy_matches_torch(m_tiles_per_cluster, accum_dtype):
     set_seed(44)
     x, weight, target = _make_inputs(193, 70, 517, ignore_stride=7)
     temperature = 0.8
@@ -183,6 +207,8 @@ def test_sm90_differentiable_entropy_matches_torch(m_tiles_per_cluster):
         -100,
         m_tiles_per_cluster,
         True,
+        None,
+        accum_dtype,
     )
     torch.autograd.backward((nll, entropy), (grad_nll, grad_entropy.to(entropy.dtype)))
 
