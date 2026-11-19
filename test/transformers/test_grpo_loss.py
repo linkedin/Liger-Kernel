@@ -1484,6 +1484,20 @@ def test_triton_sequence_level_rejects_unsupported_loss_types(loss_type):
         )
 
 
+def _grpo_impls():
+    from liger_kernel.ops.grpo_loss import GrpoLossFunction as TritonGrpo
+
+    impls = [pytest.param(TritonGrpo, id="triton")]
+    try:
+        from liger_kernel.ops.cutile.ops.grpo_loss import GrpoLossFunction as CuTileGrpo
+
+        impls.append(pytest.param(CuTileGrpo, id="cutile"))
+    except ImportError:
+        pass
+    return impls
+
+
+@pytest.mark.parametrize("grpo", _grpo_impls())
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 @pytest.mark.parametrize(
     "dtype, rtol",
@@ -1496,7 +1510,7 @@ def test_triton_sequence_level_rejects_unsupported_loss_types(loss_type):
         ),
     ],
 )
-def test_dominant_target_does_not_collapse(importance_sampling_level, dtype, rtol):
+def test_dominant_target_does_not_collapse(grpo, importance_sampling_level, dtype, rtol):
     # When softmax(x_y) rounds to 1, logp and the 1 - p_y gradient of the sampled token must still match fp64
     # instead of flushing to 0 (arXiv 2610.31642).
     set_seed()
@@ -1522,38 +1536,27 @@ def test_dominant_target_does_not_collapse(importance_sampling_level, dtype, rto
     ref_loss.backward(upstream_grad.double())
 
     _logits = logits.clone().requires_grad_(True)
-    loss, _, _ = triton_grpo_loss(
+    loss, _, _ = grpo.apply(
         _logits,
         old_logp,
         None,
         completion_ids,
         advantages,
-        temperature=1.0,
-        beta=0.0,
-        eps_low=0.2,
-        eps_high=0.2,
-        inplace=False,
-        loss_type="grpo",
-        importance_sampling_level=importance_sampling_level,
-        reduce=False,
+        None,
+        1.0,
+        0.0,
+        0.2,
+        0.2,
+        False,
+        "grpo",
+        None,
+        False,
+        importance_sampling_level,
     )
     loss.backward(upstream_grad)
 
     torch.testing.assert_close(_logits.grad[:, :-1].double(), ref_logits.grad[:, :-1], rtol=rtol, atol=0)
     assert_rows_sum_to_zero(_logits.grad)
-
-
-def _grpo_impls():
-    from liger_kernel.ops.grpo_loss import GrpoLossFunction as TritonGrpo
-
-    impls = [pytest.param(TritonGrpo, id="triton")]
-    try:
-        from liger_kernel.ops.cutile.ops.grpo_loss import GrpoLossFunction as CuTileGrpo
-
-        impls.append(pytest.param(CuTileGrpo, id="cutile"))
-    except ImportError:
-        pass
-    return impls
 
 
 @pytest.mark.parametrize("grpo", _grpo_impls())
