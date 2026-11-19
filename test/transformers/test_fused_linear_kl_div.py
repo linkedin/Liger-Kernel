@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from test.utils import COLLAPSE_DTYPES
 from test.utils import assert_grad_close_per_row
 from test.utils import assert_verbose_allclose
 from test.utils import dominant_student_teacher_logits
@@ -570,17 +571,7 @@ def test_invalid_reduction():
         liger_fused_linear_kl_div(_input, _weight, target, reduction="none")
 
 
-@pytest.mark.parametrize(
-    "dtype, rtol",
-    [
-        (torch.float32, 1e-4),
-        pytest.param(
-            torch.bfloat16,
-            1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
 def test_dominant_token_does_not_collapse(dtype, rtol):
     # Student and teacher both put almost all mass on one token, so softmax - q at that token cancels to 0 in
     # fp32 while the other tokens keep their gradients; it must still match fp64 (arXiv 2610.31642). Margins

@@ -2,10 +2,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from test.utils import COLLAPSE_MARGINS
-from test.utils import assert_matches_reference
-from test.utils import dominant_target_logits
-from test.utils import reference_cross_entropy
+from test.utils import COLLAPSE_DTYPES
+from test.utils import assert_cross_entropy_does_not_collapse
 from test.utils import supports_bfloat16
 
 from liger_kernel.ops.fused_ce_tvd import LigerFusedCETVDFunction
@@ -214,26 +212,8 @@ def test_shape_validation():
         LigerFusedCETVDFunction.apply(student, torch.randn(BT, V, device=device), target[:-1])
 
 
-@pytest.mark.parametrize(
-    "dtype, rtol",
-    [
-        (torch.float32, 1e-4),
-        pytest.param(
-            torch.bfloat16,
-            1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
 def test_dominant_target_does_not_collapse(dtype, rtol):
-    # Once softmax(x_y) rounds to 1 the cross-entropy and its true-class gradient must still match fp64 rather
-    # than flushing to 0 (arXiv 2610.31642).
-    torch.manual_seed(0)
-    student, target = dominant_target_logits(COLLAPSE_MARGINS, V=4096, dtype=dtype, device=device)
-    teacher = torch.randn_like(student)
-    student_liger = student.clone().requires_grad_(True)
-    student_ref = student.double().requires_grad_(True)
-
-    ce, _ = LigerFusedCETVDFunction.apply(student_liger, teacher, target)
-    ref = reference_cross_entropy(student_ref, target)
-    assert_matches_reference(ce, student_liger, ref, student_ref, rtol)
+    assert_cross_entropy_does_not_collapse(
+        lambda x, y, reduction: LigerFusedCETVDFunction.apply(x, torch.randn_like(x), y)[0], dtype, rtol, device
+    )

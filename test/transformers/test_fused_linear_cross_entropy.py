@@ -4,13 +4,10 @@ import pytest
 import torch
 
 from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
-from test.utils import COLLAPSE_MARGINS
-from test.utils import assert_matches_reference
+from test.utils import COLLAPSE_DTYPES
+from test.utils import assert_cross_entropy_does_not_collapse
 from test.utils import assert_verbose_allclose
-from test.utils import dominant_target_logits
-from test.utils import reference_cross_entropy
 from test.utils import set_seed
-from test.utils import supports_bfloat16
 
 from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.transformers.functional import CrossEntropyOutput
@@ -1116,27 +1113,11 @@ def test_correctness_reduction_none_per_token_grad_output(B, T, H, V, bias, dtyp
 
 
 @pytest.mark.parametrize("reduction", ["none", "sum", "mean"])
-@pytest.mark.parametrize(
-    "dtype, rtol",
-    [
-        (torch.float32, 1e-4),
-        pytest.param(
-            torch.bfloat16,
-            1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
 def test_dominant_target_does_not_collapse(reduction, dtype, rtol):
-    # With an identity lm_head the fused path sees exactly these logits, so the input gradient is the logits
-    # gradient and must match fp64 even once softmax(x_y) rounds to 1 (arXiv 2610.31642).
-    set_seed()
-    V = 4096
-    logits, target = dominant_target_logits(COLLAPSE_MARGINS, V=V, dtype=dtype, device=device)
-    weight = torch.eye(V, dtype=dtype, device=device)
-    _input = logits.clone().requires_grad_(True)
-    _ref = logits.double().requires_grad_(True)
+    # With an identity lm_head the fused path sees exactly these logits, so the input gradient is the logits gradient.
+    def fused_linear_cross_entropy(x, y, reduction):
+        weight = torch.eye(x.shape[-1], dtype=x.dtype, device=x.device)
+        return liger_fused_linear_cross_entropy(x, weight, y, reduction=reduction)
 
-    loss = liger_fused_linear_cross_entropy(_input, weight, target, reduction=reduction)
-    ref = reference_cross_entropy(_ref, target, reduction=reduction)
-    assert_matches_reference(loss, _input, ref, _ref, rtol)
+    assert_cross_entropy_does_not_collapse(fused_linear_cross_entropy, dtype, rtol, device, reduction)

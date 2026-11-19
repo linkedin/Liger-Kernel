@@ -37,11 +37,9 @@ import torch.nn.functional as F
 from liger_kernel.megatron import LigerMegatronCrossEntropy
 from liger_kernel.transformers import LigerVocabParallelCrossEntropy
 from liger_kernel.utils import infer_device
-from test.utils import COLLAPSE_MARGINS
-from test.utils import assert_matches_reference
+from test.utils import COLLAPSE_DTYPES
+from test.utils import assert_cross_entropy_does_not_collapse
 from test.utils import assert_verbose_allclose
-from test.utils import dominant_target_logits
-from test.utils import reference_cross_entropy
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
@@ -153,26 +151,11 @@ def test_vp_class_matches_pytorch_cross_entropy(s, b, v, dtype, atol, rtol):
     assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=atol, rtol=rtol)
 
 
-@pytest.mark.parametrize(
-    "dtype, rtol",
-    [
-        (torch.float32, 1e-4),
-        pytest.param(
-            torch.bfloat16,
-            1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
 def test_vp_class_dominant_target_does_not_collapse(dtype, rtol):
-    """Once softmax(x_y) rounds to 1 the loss and true-class grad must still match fp64 (arXiv 2610.31642)."""
-    logits, target = dominant_target_logits(COLLAPSE_MARGINS, V=4096, dtype=dtype, device=device)
-    h_got = logits[:, None].clone().requires_grad_(True)
-    h_ref = logits[:, None].double().requires_grad_(True)
-
-    got = LigerVocabParallelCrossEntropy()(h_got, target[:, None])
-    ref = reference_cross_entropy(h_ref.flatten(0, 1), target).view(-1, 1)
-    assert_matches_reference(got, h_got, ref, h_ref, rtol)
+    assert_cross_entropy_does_not_collapse(
+        lambda x, y, reduction: LigerVocabParallelCrossEntropy()(x[:, None], y[:, None]).flatten(), dtype, rtol, device
+    )
 
 
 @pytest.mark.parametrize("ignore_index", [-100, 0])

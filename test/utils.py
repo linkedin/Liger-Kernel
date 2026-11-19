@@ -14,6 +14,7 @@ from typing import Optional
 from typing import Tuple
 
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 import transformers
@@ -207,6 +208,112 @@ def assert_jsd_edge_cases(jsd, device):
             jsd(_input, weight, teacher, beta).backward()
             reference_jsd(_ref, teacher.double(), beta).backward()
             assert_grad(_input.grad, _ref.grad, msg=f"beta={beta}")
+
+
+def assert_cross_entropy_does_not_collapse(cross_entropy, dtype, rtol, device, reduction="none"):
+    """
+    `cross_entropy(logits, target, reduction=...)` must keep the loss and its true-class gradient once softmax(x_y) rounds
+    to 1, where lse - x_y and p_y - 1 cancel to 0 (arXiv 2610.31642).
+    """
+    set_seed()
+    logits, target = dominant_target_logits(COLLAPSE_MARGINS, V=4096, dtype=dtype, device=device)
+    _input = logits.clone().requires_grad_(True)
+    _ref = logits.double().requires_grad_(True)
+    loss = cross_entropy(_input, target, reduction=reduction)
+    ref = reference_cross_entropy(_ref, target, reduction=reduction)
+    assert_matches_reference(loss, _input, ref, _ref, rtol)
+
+
+def dominant_completion_logits(margins, dtype, device):
+    """One completion of len(margins) tokens whose sampled token is `margin` above the rest, as (1, L + 1, V) logits."""
+    rows, completion_ids = dominant_target_logits(margins, V=4096, dtype=dtype, device=device)
+    logits = torch.cat([rows, torch.randn_like(rows[:1])])[None]  # the last position predicts nothing
+    ref_logits = logits.double().requires_grad_(True)
+    ref_logp = -reference_cross_entropy(ref_logits[0, :-1], completion_ids)[None]
+    return logits, completion_ids[None], ref_logits, ref_logp
+
+
+def assert_grpo_dominant_target(grpo_loss, importance_sampling_level, dtype, rtol, device):
+    """
+    `grpo_loss` (the `triton_grpo_loss` interface) must keep logp and the 1 - p_y gradient of the sampled token once
+    softmax(x_y) rounds to 1, instead of flushing them to 0 (arXiv 2610.31642).
+    """
+    set_seed()
+    logits, completion_ids, ref_logits, ref_logp = dominant_completion_logits(COLLAPSE_MARGINS, dtype, device)
+    advantages = torch.tensor([0.7], device=device)
+    old_logp = (ref_logp.detach() + 0.01 * torch.randn_like(ref_logp)).float()
+
+    log_ratio = ref_logp - old_logp.double()
+    if importance_sampling_level == "sequence":
+        log_ratio = log_ratio.mean(-1, keepdim=True).expand_as(ref_logp)
+    coef_1 = log_ratio.exp()
+    coef_2 = coef_1.clamp(1 - 0.2, 1 + 0.2)
+    ref_loss = -torch.min(coef_1 * advantages.double()[:, None], coef_2 * advantages.double()[:, None])
+    upstream_grad = torch.randn_like(ref_loss).float()
+    ref_loss.backward(upstream_grad.double())
+
+    _logits = logits.clone().requires_grad_(True)
+    loss, _, _ = grpo_loss(
+        _logits,
+        old_logp,
+        None,
+        completion_ids,
+        advantages,
+        temperature=1.0,
+        beta=0.0,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type="grpo",
+        importance_sampling_level=importance_sampling_level,
+        reduce=False,
+    )
+    loss.backward(upstream_grad)
+
+    torch.testing.assert_close(_logits.grad[:, :-1].double(), ref_logits.grad[:, :-1], rtol=rtol, atol=0)
+    assert_rows_sum_to_zero(_logits.grad)
+
+
+def assert_grpo_k3_near_reference(grpo_loss, importance_sampling_level, device):
+    """
+    Near the reference policy the K3 KL term exp(r) - r - 1 is O(r^2) and its gradient 1 - exp(r) is O(r), so evaluating
+    either directly in fp32 cancels away the small part (arXiv 2611.18511, reformulation 6). `grpo_loss` has the
+    `triton_grpo_loss` interface; with zero advantages its per-token loss is the KL term alone.
+    """
+    set_seed()
+    log_ratios = torch.tensor([1e-1, -1e-2, 1e-3, -1e-4, 1e-5, -1e-5], dtype=torch.float64, device=device)
+    # confident sampled tokens, so logp ~ -3e-7 and is exact in fp32
+    logits, completion_ids, ref_logits, logp = dominant_completion_logits(
+        [15.0] * len(log_ratios), torch.float32, device
+    )
+    ref_logp = (logp.detach() + log_ratios).float()
+    r = ref_logp.double() - logp
+    ref_kl = torch.where(r.abs() < 1e-3, r * r * (0.5 + r / 6 + r * r / 24), torch.expm1(r) - r)
+    upstream_grad = torch.randn_like(ref_kl).float()
+    ref_kl.backward(upstream_grad.double())
+
+    _logits = logits.clone().requires_grad_(True)
+    loss, kl, _ = grpo_loss(
+        _logits,
+        None,
+        ref_logp,
+        completion_ids,
+        torch.zeros(1, device=device),
+        temperature=1.0,
+        beta=1.0,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type="grpo",
+        importance_sampling_level=importance_sampling_level,
+        reduce=False,
+    )
+    loss.backward(upstream_grad)
+
+    torch.testing.assert_close(kl.double(), ref_kl.detach(), rtol=1e-4, atol=0)
+    torch.testing.assert_close(loss.double(), ref_kl.detach(), rtol=1e-4, atol=0)
+    torch.testing.assert_close(_logits.grad[:, :-1].double(), ref_logits.grad[:, :-1], rtol=1e-4, atol=1e-12)
+    assert_rows_sum_to_zero(_logits.grad)
 
 
 def set_seed(seed=42):
@@ -442,6 +549,17 @@ def supports_bfloat16():
         return True
     else:
         return False
+
+
+# (dtype, rtol) for the collapse tests: fp32 must match fp64 closely, bf16 only to its own resolution.
+COLLAPSE_DTYPES = [
+    (torch.float32, 1e-4),
+    pytest.param(
+        torch.bfloat16,
+        1e-2,
+        marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
+    ),
+]
 
 
 def is_torchvision_available():

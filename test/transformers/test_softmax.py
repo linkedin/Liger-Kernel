@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from test.utils import COLLAPSE_DTYPES
 from test.utils import FP64_SAFE_COLLAPSE_MARGINS
 from test.utils import assert_grad_close_per_row
 from test.utils import assert_verbose_allclose
@@ -149,17 +150,7 @@ def test_softmax_large_row_offset():
 
 
 @pytest.mark.parametrize("V", [4096, 65536, 100003])  # 100003 is wider than one block: multi-block kernels
-@pytest.mark.parametrize(
-    "dtype, rtol",
-    [
-        (torch.float32, 1e-4),
-        pytest.param(
-            torch.bfloat16,
-            1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
 def test_dominant_entry_does_not_collapse(V, dtype, rtol):
     # Once softmax rounds the max entry to 1 its backward rounds that entry's gradient to 0 while the others stay
     # non-zero; it must still match fp64 (arXiv 2610.31642). Margins stay below fp64's own cliff (~36.7) so

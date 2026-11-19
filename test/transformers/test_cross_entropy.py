@@ -4,11 +4,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from test.utils import COLLAPSE_MARGINS
-from test.utils import assert_matches_reference
+from test.utils import COLLAPSE_DTYPES
+from test.utils import assert_cross_entropy_does_not_collapse
 from test.utils import assert_verbose_allclose
-from test.utils import dominant_target_logits
-from test.utils import reference_cross_entropy
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 from torch.nn import CrossEntropyLoss
@@ -1353,28 +1351,11 @@ def test_correctness_true_class_grad_confident_predictions(dtype, label_smoothin
 
 
 @pytest.mark.parametrize("reduction", ["none", "sum", "mean"])
-@pytest.mark.parametrize(
-    "dtype, rtol",
-    [
-        (torch.float32, 1e-4),
-        pytest.param(
-            torch.bfloat16,
-            1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
 def test_dominant_target_does_not_collapse(reduction, dtype, rtol):
-    # Once softmax(x_y) rounds to 1 the true-class gradient and the loss must still match fp64 rather than
-    # flushing to 0 while the other classes keep their gradients (arXiv 2610.31642).
-    set_seed()
-    logits, target = dominant_target_logits(COLLAPSE_MARGINS, V=4096, dtype=dtype, device=device)
-    _input = logits.clone().requires_grad_(True)
-    _ref = logits.double().requires_grad_(True)
-
-    loss = liger_cross_entropy(_input, target, reduction=reduction)
-    ref = reference_cross_entropy(_ref, target, reduction=reduction)
-    assert_matches_reference(loss, _input, ref, _ref, rtol)
+    assert_cross_entropy_does_not_collapse(
+        lambda x, y, reduction: liger_cross_entropy(x, y, reduction=reduction), dtype, rtol, device, reduction
+    )
 
 
 _LOSS_DTYPE_SHAPES = [(512, 4096), (256, 32001)]

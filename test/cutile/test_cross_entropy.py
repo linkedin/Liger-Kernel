@@ -4,14 +4,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from test.utils import COLLAPSE_MARGINS
+from test.utils import COLLAPSE_DTYPES
 from test.utils import FP64_SAFE_COLLAPSE_MARGINS
+from test.utils import assert_cross_entropy_does_not_collapse
 from test.utils import assert_grad_close_per_row
-from test.utils import assert_matches_reference
 from test.utils import dominant_target_logits
-from test.utils import reference_cross_entropy
 from test.utils import set_seed
-from test.utils import supports_bfloat16
 
 
 def _has_cuda_tile():
@@ -32,32 +30,15 @@ pytestmark = [
     pytest.mark.skipif(not _CUDA_TILE_AVAILABLE, reason="cuda-tile is not installed"),
 ]
 
-_DTYPES = [
-    (torch.float32, 1e-4),
-    pytest.param(
-        torch.bfloat16,
-        1e-2,
-        marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
-    ),
-]
-
 
 def _cutile_ce(x, target, weight=None, label_smoothing=0.0, reduction="mean"):
     return LigerCrossEntropyFunction.apply(x, target, weight, -100, 0.0, label_smoothing, reduction)[0]
 
 
 @pytest.mark.parametrize("reduction", ["none", "sum", "mean"])
-@pytest.mark.parametrize("dtype, rtol", _DTYPES)
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
 def test_dominant_target_does_not_collapse(reduction, dtype, rtol):
-    # Once softmax(x_y) rounds to 1 the true-class gradient and the loss must still match fp64 (arXiv 2610.31642).
-    set_seed()
-    logits, target = dominant_target_logits(COLLAPSE_MARGINS, V=4096, dtype=dtype, device="cuda")
-    _input = logits.clone().requires_grad_(True)
-    _ref = logits.double().requires_grad_(True)
-
-    loss = _cutile_ce(_input, target, reduction=reduction)
-    ref = reference_cross_entropy(_ref, target, reduction=reduction)
-    assert_matches_reference(loss, _input, ref, _ref, rtol)
+    assert_cross_entropy_does_not_collapse(_cutile_ce, dtype, rtol, "cuda", reduction)
 
 
 @pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
