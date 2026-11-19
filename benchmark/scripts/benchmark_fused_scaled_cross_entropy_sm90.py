@@ -20,8 +20,9 @@ Sweep parameters (all optional; defaults reproduce the previous behaviour)::
     --label-stride N               consume every Nth selected-output row
 
 Providers: ``torch``, ``liger`` (Triton FLCE, ``reduction="none"``),
-``fallback``, ``cutile``, and ``cutedsl-sm90`` (fixed 1024-token wave-batched
-backward). ``liger`` does not support selected outputs, entropy or temperature.
+``fallback``, ``cutile``, ``cutedsl-sm90`` (fixed 1024-token wave-batched
+backward), and ``cutedsl-sm100`` (native Blackwell). ``liger`` does not support
+selected outputs, entropy or temperature.
 
 Example::
 
@@ -70,6 +71,7 @@ REPRESENTATIVE_CONFIG = {
 }
 
 CUTEDSL_PREFIX = "cutedsl-sm90"
+BLACKWELL_PREFIX = "cutedsl-sm100"
 CUTILE_PREFIX = "cutile"
 # Seed of the fixed per-token upstream gradient, so every provider and every
 # repetition sees byte-identical ``d(NLL)/d(loss)`` values.
@@ -97,6 +99,14 @@ class SelectedLMHeadScaledCE(torch.nn.Module):
         )
 
     def fused(self, x, target, ids=None):
+        if self.provider == BLACKWELL_PREFIX:
+            from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm100 import (
+                LigerFusedScaledCrossEntropySM100Function,
+            )
+
+            return LigerFusedScaledCrossEntropySM100Function.apply(
+                x, self.weight, target, self.temperature, -100, 1, self.return_entropy, ids
+            )
         if self.provider == CUTEDSL_PREFIX:
             return LigerFusedScaledCrossEntropySM90Function.apply(
                 x, self.weight, target, self.temperature, -100, 1, self.return_entropy, ids
@@ -270,7 +280,7 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
         cfg.get("selected_tokens", 0)
         or cfg.get("return_entropy", False)
         or cfg.get("temperature", 1.0) != 1.0
-        or provider == "fallback"
+        or provider in ("fallback", BLACKWELL_PREFIX)
     )
     if configured:
         generator = torch.Generator(device=device).manual_seed(GRAD_SEED)
@@ -309,7 +319,10 @@ def setup_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput):
 
 def probe_forward_fn(x, weight, fwd_fn, grad_output):
     """Adapter for the shared memory-probing helpers (setup returns a 4-tuple)."""
-    return fwd_fn()
+    output = fwd_fn()
+    if isinstance(output, tuple):
+        return sum((value * gradient).sum() for value, gradient in zip(output, grad_output))
+    return output
 
 
 def bench_speed_fused_scaled_cross_entropy_sm90(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -395,7 +408,7 @@ def resolve_providers(sweep_args):
     configured = sweep_args.selected_tokens or sweep_args.return_entropy or sweep_args.temperature != 1.0
     if sweep_args.providers:
         for provider in sweep_args.providers:
-            if provider not in ("torch", "liger", "fallback", CUTILE_PREFIX, CUTEDSL_PREFIX):
+            if provider not in ("torch", "liger", "fallback", CUTILE_PREFIX, CUTEDSL_PREFIX, BLACKWELL_PREFIX):
                 raise ValueError(f"Unknown provider {provider!r}")
             if configured and provider == "liger":
                 raise ValueError("The reduction-oriented Triton FLCE provider does not support this output contract")
