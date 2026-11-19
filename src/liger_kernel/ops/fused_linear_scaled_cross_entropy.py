@@ -1,20 +1,52 @@
 """Device-dispatching frontend for fused scaled cross entropy."""
 
+import functools
+import logging
 import math
+import os
+
+from importlib.metadata import version
 
 import torch
 import torch.distributed as dist
+
+from packaging.version import InvalidVersion
+from packaging.version import Version
 
 # The fallback formulas and 512-token chunking are adapted from Verl's
 # Apache-2.0 FusedLinearForPPOFunction:
 # https://github.com/verl-project/verl/blob/main/verl/utils/experimental/torch_functional.py
 _FALLBACK_CHUNK_SIZE = 512
+_log = logging.getLogger(__name__)
 
 
 def _load_sm90_function():
     from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm90 import LigerFusedScaledCrossEntropySM90Function
 
     return LigerFusedScaledCrossEntropySM90Function
+
+
+@functools.lru_cache(maxsize=1)
+def _load_sm100_function():
+    try:
+        installed_version = version("nvidia-cutlass-dsl")
+        if Version(installed_version) < Version("4.6.0"):
+            raise ImportError(f"nvidia-cutlass-dsl>=4.6.0 is required, found {installed_version}")
+        import cutlass.cute  # noqa: F401
+
+        from liger_kernel.ops.cutedsl.ops.fused_scaled_cross_entropy_sm100 import (
+            LigerFusedScaledCrossEntropySM100Function,
+        )
+    except (ImportError, InvalidVersion) as exc:
+        _log.warning(
+            "Native Blackwell scaled cross entropy is unavailable (%s); using the PyTorch fallback. "
+            "Install nvidia-cutlass-dsl>=4.6.0 with cutlass.cute, or set LIGER_DISABLE_SM100_SCALED_CE=1 "
+            "to disable native dispatch.",
+            exc,
+        )
+        return None
+
+    return LigerFusedScaledCrossEntropySM100Function
 
 
 def _load_native_tp_function():
@@ -363,13 +395,19 @@ class _FusedLinearPPOFallbackFunction(torch.autograd.Function):
         return grad_hidden_states, grad_vocab_weights, None, None, None, None, None
 
 
-def _resolve_implementation(device):
+def _resolve_implementation(device, dtype=None):
     if device.type != "cuda" or not torch.cuda.is_available() or torch.version.hip is not None:
         return _FusedLinearPPOFallbackFunction
 
     capability = torch.cuda.get_device_capability(device)
     if capability == (9, 0):
         return _load_sm90_function()
+    if capability in ((10, 0), (10, 3)) and dtype == torch.bfloat16:
+        if os.environ.get("LIGER_DISABLE_SM100_SCALED_CE") == "1":
+            return _FusedLinearPPOFallbackFunction
+        implementation = _load_sm100_function()
+        if implementation is not None:
+            return implementation
     return _FusedLinearPPOFallbackFunction
 
 
@@ -399,7 +437,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
         if not isinstance(return_entropy, bool):
             raise TypeError("return_entropy must be a bool")
 
-        implementation = _resolve_implementation(_input.device)
+        implementation = _resolve_implementation(_input.device, _input.dtype)
         selected_args = (selected_token_ids,) if selected_token_ids is not None else ()
         if implementation is _FusedLinearPPOFallbackFunction:
             return implementation.apply(
