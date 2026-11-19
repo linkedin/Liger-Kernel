@@ -161,7 +161,7 @@ def lce_forward(
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
-        rope_deltas=outputs.rope_deltas,
+        rope_deltas=getattr(outputs, "rope_deltas", None),
         token_accuracy=token_accuracy,
         predicted_tokens=predicted_tokens,
     )

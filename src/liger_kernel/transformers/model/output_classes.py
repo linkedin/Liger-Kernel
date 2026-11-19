@@ -112,6 +112,33 @@ class LigerMoeCausalLMOutputWithPast(MoeCausalLMOutputWithPast):
     predicted_tokens: Optional[torch.LongTensor] = None
 
 
+@dataclass
+class _LigerVLOutputWithPast(CausalLMOutputWithPast):
+    """Fallback base for vision-language outputs.
+
+    transformers 5.23 dropped the per-model ``*CausalLMOutputWithPast`` classes,
+    so the guarded imports above resolve to ``None`` and the ``Liger*`` subclass
+    was never defined. The ``Liger*`` names are imported unconditionally by the
+    VL forward modules, which then failed with ``ImportError`` at import time.
+    The patched forwards still carry ``rope_deltas``, so the fallback base
+    declares it.
+    """
+
+    rope_deltas: Optional[torch.LongTensor] = None
+
+
+@dataclass
+class _LigerVLMoeOutputWithPast(MoeCausalLMOutputWithPast):
+    """Fallback base for vision-language *MoE* outputs.
+
+    Same reason as ``_LigerVLOutputWithPast``. ``aux_loss`` and ``router_logits``
+    are inherited from ``MoeCausalLMOutputWithPast``; only ``rope_deltas``, which
+    the patched VL forwards always pass, has to be declared here.
+    """
+
+    rope_deltas: Optional[torch.LongTensor] = None
+
+
 if _Gemma3CausalLMOutputWithPast is not None:
 
     @dataclass
@@ -128,12 +155,15 @@ if _Gemma4CausalLMOutputWithPast is not None:
         predicted_tokens: Optional[torch.LongTensor] = None
 
 
-if _Glm4vMoeCausalLMOutputWithPast is not None:
+_Glm4vMoeOutputBase = (
+    _Glm4vMoeCausalLMOutputWithPast if _Glm4vMoeCausalLMOutputWithPast is not None else _LigerVLMoeOutputWithPast
+)
 
-    @dataclass
-    class LigerGlm4vMoeCausalLMOutputWithPast(_Glm4vMoeCausalLMOutputWithPast):
-        token_accuracy: Optional[torch.FloatTensor] = None
-        predicted_tokens: Optional[torch.LongTensor] = None
+
+@dataclass
+class LigerGlm4vMoeCausalLMOutputWithPast(_Glm4vMoeOutputBase):
+    token_accuracy: Optional[torch.FloatTensor] = None
+    predicted_tokens: Optional[torch.LongTensor] = None
 
 
 if _LlavaCausalLMOutputWithPast is not None:
@@ -168,49 +198,67 @@ if _PaliGemmaCausalLMOutputWithPast is not None:
         predicted_tokens: Optional[torch.LongTensor] = None
 
 
-if _Qwen2_5_VLCausalLMOutputWithPast is not None:
-
-    @dataclass
-    class LigerQwen2_5_VLCausalLMOutputWithPast(_Qwen2_5_VLCausalLMOutputWithPast):
-        token_accuracy: Optional[torch.FloatTensor] = None
-        predicted_tokens: Optional[torch.LongTensor] = None
+_Qwen2_5_VLOutputBase = (
+    _Qwen2_5_VLCausalLMOutputWithPast if _Qwen2_5_VLCausalLMOutputWithPast is not None else _LigerVLOutputWithPast
+)
 
 
-if _Qwen2VLCausalLMOutputWithPast is not None:
-
-    @dataclass
-    class LigerQwen2VLCausalLMOutputWithPast(_Qwen2VLCausalLMOutputWithPast):
-        token_accuracy: Optional[torch.FloatTensor] = None
-        predicted_tokens: Optional[torch.LongTensor] = None
+@dataclass
+class LigerQwen2_5_VLCausalLMOutputWithPast(_Qwen2_5_VLOutputBase):
+    token_accuracy: Optional[torch.FloatTensor] = None
+    predicted_tokens: Optional[torch.LongTensor] = None
 
 
-if _Qwen3VLCausalLMOutputWithPast is not None:
-
-    @dataclass
-    class LigerQwen3VLCausalLMOutputWithPast(_Qwen3VLCausalLMOutputWithPast):
-        token_accuracy: Optional[torch.FloatTensor] = None
-        predicted_tokens: Optional[torch.LongTensor] = None
+_Qwen2VLOutputBase = (
+    _Qwen2VLCausalLMOutputWithPast if _Qwen2VLCausalLMOutputWithPast is not None else _LigerVLOutputWithPast
+)
 
 
-if _Qwen3VLMoeCausalLMOutputWithPast is not None:
-
-    @dataclass
-    class LigerQwen3VLMoeCausalLMOutputWithPast(_Qwen3VLMoeCausalLMOutputWithPast):
-        token_accuracy: Optional[torch.FloatTensor] = None
-        predicted_tokens: Optional[torch.LongTensor] = None
+@dataclass
+class LigerQwen2VLCausalLMOutputWithPast(_Qwen2VLOutputBase):
+    token_accuracy: Optional[torch.FloatTensor] = None
+    predicted_tokens: Optional[torch.LongTensor] = None
 
 
-if _Qwen3_5CausalLMOutputWithPast is not None:
-
-    @dataclass
-    class LigerQwen3_5CausalLMOutputWithPast(_Qwen3_5CausalLMOutputWithPast):
-        token_accuracy: Optional[torch.FloatTensor] = None
-        predicted_tokens: Optional[torch.LongTensor] = None
+_Qwen3VLOutputBase = (
+    _Qwen3VLCausalLMOutputWithPast if _Qwen3VLCausalLMOutputWithPast is not None else _LigerVLOutputWithPast
+)
 
 
-if _Qwen3_5MoeCausalLMOutputWithPast is not None:
+@dataclass
+class LigerQwen3VLCausalLMOutputWithPast(_Qwen3VLOutputBase):
+    token_accuracy: Optional[torch.FloatTensor] = None
+    predicted_tokens: Optional[torch.LongTensor] = None
 
-    @dataclass
-    class LigerQwen3_5MoeCausalLMOutputWithPast(_Qwen3_5MoeCausalLMOutputWithPast):
-        token_accuracy: Optional[torch.FloatTensor] = None
-        predicted_tokens: Optional[torch.LongTensor] = None
+
+_Qwen3VLMoeOutputBase = (
+    _Qwen3VLMoeCausalLMOutputWithPast if _Qwen3VLMoeCausalLMOutputWithPast is not None else _LigerVLMoeOutputWithPast
+)
+
+
+@dataclass
+class LigerQwen3VLMoeCausalLMOutputWithPast(_Qwen3VLMoeOutputBase):
+    token_accuracy: Optional[torch.FloatTensor] = None
+    predicted_tokens: Optional[torch.LongTensor] = None
+
+
+_Qwen3_5OutputBase = (
+    _Qwen3_5CausalLMOutputWithPast if _Qwen3_5CausalLMOutputWithPast is not None else _LigerVLOutputWithPast
+)
+
+
+@dataclass
+class LigerQwen3_5CausalLMOutputWithPast(_Qwen3_5OutputBase):
+    token_accuracy: Optional[torch.FloatTensor] = None
+    predicted_tokens: Optional[torch.LongTensor] = None
+
+
+_Qwen3_5MoeOutputBase = (
+    _Qwen3_5MoeCausalLMOutputWithPast if _Qwen3_5MoeCausalLMOutputWithPast is not None else _LigerVLMoeOutputWithPast
+)
+
+
+@dataclass
+class LigerQwen3_5MoeCausalLMOutputWithPast(_Qwen3_5MoeOutputBase):
+    token_accuracy: Optional[torch.FloatTensor] = None
+    predicted_tokens: Optional[torch.LongTensor] = None
