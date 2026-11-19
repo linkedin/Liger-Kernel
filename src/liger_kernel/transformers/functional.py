@@ -133,6 +133,28 @@ def liger_cross_entropy(
     )
 
 
+def liger_fixed_cross_entropy(
+    source: torch.Tensor,
+    target: torch.Tensor,
+    num_items_in_batch: Optional[torch.Tensor] = None,
+    ignore_index: int = -100,
+    **kwargs,
+) -> torch.Tensor:
+    """Drop-in replacement for `transformers.loss.loss_utils.fixed_cross_entropy` backed by `liger_cross_entropy`.
+
+    `apply_liger_kernel_to_*(cross_entropy=True)` rebinds only this function, so the Liger kernel is used by the
+    Hugging Face model losses and `torch.nn.functional.cross_entropy` stays untouched for every other caller.
+    """
+    reduction = "sum" if num_items_in_batch is not None else "mean"
+    loss = liger_cross_entropy(source, target, ignore_index=ignore_index, reduction=reduction)
+    if reduction == "sum":
+        # num_items_in_batch may be a Python int when passed by a custom trainer
+        if torch.is_tensor(num_items_in_batch):
+            num_items_in_batch = num_items_in_batch.to(loss.device)
+        loss = loss / num_items_in_batch
+    return loss
+
+
 def liger_fused_linear_cross_entropy(
     input,
     weight,
