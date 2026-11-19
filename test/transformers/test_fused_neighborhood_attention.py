@@ -570,3 +570,25 @@ def test_liger_fused_neighborhood_attention_functional_parameters(kernel_size, d
 
     assert not torch.isnan(output).any(), "Output contains NaN values"
     assert not torch.isinf(output).any(), "Output contains Inf values"
+
+
+@pytest.mark.skipif(device != "cuda", reason="CUDA required")
+def test_fused_neighborhood_attention_int32_offset_overflow():
+    # The last (batch, head) score matrix starts past 2**31 elements, so int32
+    # batch/head offsets would wrap negative in all six kernels.
+    if torch.cuda.mem_get_info()[0] / (1024**3) < 20:
+        pytest.skip("needs >=20 GiB free GPU memory to cross the 2**31 offset threshold")
+    B, H, S, D = 2049, 16, 256, 16
+    assert (B * H - 1) * S * S >= 2**31
+    q, k, v = (torch.randn(B, H, S, D, device=device, dtype=torch.float16, requires_grad=True) for _ in range(3))
+    out = liger_fused_neighborhood_attention(q, k, v)
+    grad_out = torch.randn_like(out)
+    out.backward(grad_out)
+    torch.cuda.synchronize()
+    for b, h in ((0, 0), (B - 1, H - 1)):
+        q1, k1, v1 = (t[b : b + 1, h : h + 1].detach().clone().requires_grad_() for t in (q, k, v))
+        out1 = liger_fused_neighborhood_attention(q1, k1, v1)
+        out1.backward(grad_out[b : b + 1, h : h + 1])
+        torch.testing.assert_close(out[b, h], out1[0, 0], rtol=0, atol=0)
+        for t, t1 in ((q, q1), (k, k1), (v, v1)):
+            torch.testing.assert_close(t.grad[b, h], t1.grad[0, 0], rtol=0, atol=0)
