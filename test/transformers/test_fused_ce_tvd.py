@@ -208,3 +208,20 @@ def test_shape_validation():
 
     with pytest.raises(ValueError, match="target must have shape"):
         LigerFusedCETVDFunction.apply(student, torch.randn(BT, V, device=device), target[:-1])
+
+
+def test_leading_masked_block_stays_finite():
+    """A fully -inf leading vocabulary block must not make the loss or its gradient NaN."""
+    V = 16384 + 1  # one whole block of -inf at the largest block size, then one finite logit
+    data = torch.full((1, V), -torch.inf, device=device)
+    data[0, -1] = 0.0
+    logits = data.clone().requires_grad_()
+    target = torch.tensor([V - 1], device=device)
+
+    ce, tvd = LigerFusedCETVDFunction.apply(logits, data.clone(), target)
+    (ce + tvd).sum().backward()
+
+    # One finite class that is also the target: CE, TVD and the gradient are all exactly zero
+    assert torch.equal(ce, torch.zeros_like(ce))
+    assert torch.equal(tvd, torch.zeros_like(tvd))
+    assert torch.equal(logits.grad, torch.zeros_like(logits.grad))
