@@ -35,6 +35,10 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 
 from liger_kernel.megatron import LigerMegatronCrossEntropy
+from liger_kernel.ops.vocab_parallel_cross_entropy import _get_num_warps
+from liger_kernel.ops.vocab_parallel_cross_entropy import _select_block_size
+from liger_kernel.ops.vocab_parallel_cross_entropy import liger_vocab_parallel_ce_backward_kernel
+from liger_kernel.ops.vocab_parallel_cross_entropy import liger_vocab_parallel_ce_forward_kernel
 from liger_kernel.transformers import LigerVocabParallelCrossEntropy
 from liger_kernel.utils import infer_device
 from test.utils import assert_verbose_allclose
@@ -587,6 +591,105 @@ def test_vp_class_correctness_forward_only():
         ref = _reference_pytorch_loss(logits_input, target, ignore_index=-100, label_smoothing=0.0)
         got = ce(logits_input, target)
         assert_verbose_allclose(got.float(), ref.float(), atol=1e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "vocab_start, n_cols",
+    [
+        # Shard ends right at 2**31: vocab_start + n_cols wraps to -2**31 in int32.
+        (2**31 - 32, 32),
+        # Shard straddles 2**31: vocab_start < 2**31 < vocab_start + n_cols.
+        (2**31 - 16, 32),
+        # Shard starts at 2**31: vocab_start is already int64.
+        (2**31, 32),
+    ],
+)
+@pytest.mark.parametrize("has_label_smoothing", [False, True])
+def test_vocab_parallel_ce_kernels_handle_int32_shard_boundary(vocab_start, n_cols, has_label_smoothing):
+    """Regression test for int32 overflow in vocab_start + n_cols (issue #1661)."""
+    ignore_index = -100
+    targets_list = [
+        vocab_start,  # first on-rank token
+        vocab_start + n_cols // 2,  # middle on-rank token (crosses 2**31 for straddling shard)
+        vocab_start + n_cols - 1,  # last on-rank token
+        vocab_start - 1,  # off-rank below shard
+        vocab_start + n_cols,  # off-rank at/above shard end
+        ignore_index,  # ignored position
+    ]
+    bt = len(targets_list)
+    x = torch.randn(bt, n_cols, device=device, dtype=torch.float32)
+    target = torch.tensor(targets_list, device=device, dtype=torch.int64)
+    logits_max = x.amax(dim=-1)
+    grad_out = torch.rand(bt, device=device, dtype=torch.float32) + 0.5
+
+    alpha_eff = 0.1 if has_label_smoothing else 0.0
+    eps_eff = alpha_eff / n_cols if has_label_smoothing else 0.0
+
+    exp_buf = torch.empty((bt, n_cols), device=device, dtype=torch.float32)
+    pred = torch.empty(bt, device=device, dtype=torch.float32)
+    sum_exp = torch.empty(bt, device=device, dtype=torch.float32)
+
+    block_size = _select_block_size(n_cols)
+    num_warps = _get_num_warps(block_size)
+
+    liger_vocab_parallel_ce_forward_kernel[(bt,)](
+        X_ptr=x,
+        X_stride=x.stride(0),
+        EXP_ptr=exp_buf,
+        EXP_stride=exp_buf.stride(0),
+        logits_max_ptr=logits_max,
+        Y_ptr=target,
+        pred_ptr=pred,
+        sum_exp_ptr=sum_exp,
+        vocab_start=vocab_start,
+        n_cols=n_cols,
+        ignore_index=ignore_index,
+        BLOCK_SIZE=block_size,
+        HAS_LABEL_SMOOTHING=has_label_smoothing,
+        num_warps=num_warps,
+    )
+
+    shifted = x - logits_max.unsqueeze(-1)
+    expected_exp = torch.exp(shifted)
+    expected_sum_exp = expected_exp.sum(dim=-1)
+    expected_pred = torch.zeros(bt, device=device, dtype=torch.float32)
+    on_rank_mask = (target >= vocab_start) & (target < vocab_start + n_cols)
+    for row in range(bt):
+        if target[row].item() == ignore_index:
+            expected_sum_exp[row] = 1.0
+        elif on_rank_mask[row]:
+            expected_pred[row] = shifted[row, target[row].item() - vocab_start]
+
+    assert_verbose_allclose(pred, expected_pred, atol=1e-6, rtol=1e-5)
+    assert_verbose_allclose(sum_exp, expected_sum_exp, atol=1e-5, rtol=1e-5)
+
+    liger_vocab_parallel_ce_backward_kernel[(bt,)](
+        EXP_ptr=exp_buf,
+        EXP_stride=exp_buf.stride(0),
+        sum_exp_ptr=sum_exp,
+        Y_ptr=target,
+        grad_out_ptr=grad_out,
+        vocab_start=vocab_start,
+        n_cols=n_cols,
+        ignore_index=ignore_index,
+        alpha_eff=alpha_eff,
+        eps_eff=eps_eff,
+        HAS_LABEL_SMOOTHING=has_label_smoothing,
+        BLOCK_SIZE=block_size,
+        num_warps=num_warps,
+    )
+
+    expected_grad = expected_exp / expected_sum_exp.unsqueeze(-1)
+    if has_label_smoothing:
+        expected_grad = expected_grad - eps_eff
+    for row in range(bt):
+        if target[row].item() == ignore_index:
+            expected_grad[row].zero_()
+        elif on_rank_mask[row]:
+            expected_grad[row, target[row].item() - vocab_start] -= 1.0 - alpha_eff
+    expected_grad = expected_grad * grad_out.unsqueeze(-1)
+
+    assert_verbose_allclose(exp_buf, expected_grad, atol=1e-5, rtol=1e-5)
 
 
 # ===========================================================================
