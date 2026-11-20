@@ -286,7 +286,7 @@ class LigerPolyNormFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, X, W, B, eps=1e-6, in_place=True):
+    def forward(ctx, X, W, B, eps=1e-6, in_place=False):
         shape = X.shape
         dim = shape[-1]
         X_2d = X.contiguous().view(-1, dim)
