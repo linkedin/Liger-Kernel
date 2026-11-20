@@ -94,10 +94,10 @@ except ImportError:
     _Qwen3VLMoeCausalLMOutputWithPast = None
 
 try:
-    from transformers.models.qwen3_5.modeling_qwen3_5 import (
-        Qwen3_5CausalLMOutputWithPast as _Qwen3_5CausalLMOutputWithPast,
-    )
-except Exception:
+    from transformers.models.qwen3_5 import modeling_qwen3_5
+
+    _Qwen3_5CausalLMOutputWithPast = getattr(modeling_qwen3_5, "Qwen3_5CausalLMOutputWithPast", CausalLMOutputWithPast)
+except ImportError:
     _Qwen3_5CausalLMOutputWithPast = None
 
 try:
@@ -219,6 +219,7 @@ if _Qwen3_5CausalLMOutputWithPast is not None:
 
     @dataclass
     class LigerQwen3_5CausalLMOutputWithPast(_Qwen3_5CausalLMOutputWithPast):
+        rope_deltas: Optional[torch.LongTensor] = None
         token_accuracy: Optional[torch.FloatTensor] = None
         predicted_tokens: Optional[torch.LongTensor] = None
 

@@ -22,6 +22,7 @@ _MODELS = [
     ("glm4v_moe", "Glm4vMoeCausalLMOutputWithPast", MoeCausalLMOutputWithPast),
     ("qwen2_5_vl", "Qwen2_5_VLCausalLMOutputWithPast", CausalLMOutputWithPast),
     ("qwen2_vl", "Qwen2VLCausalLMOutputWithPast", CausalLMOutputWithPast),
+    ("qwen3_5", "Qwen3_5CausalLMOutputWithPast", CausalLMOutputWithPast),
     ("qwen3_5_moe", "Qwen3_5MoeCausalLMOutputWithPast", MoeCausalLMOutputWithPast),
     ("qwen3_vl", "Qwen3VLCausalLMOutputWithPast", CausalLMOutputWithPast),
     ("qwen3_vl_moe", "Qwen3VLMoeCausalLMOutputWithPast", MoeCausalLMOutputWithPast),
@@ -79,7 +80,10 @@ def test_multimodal_forward_handles_removed_rope_output(
 ):
     modeling = pytest.importorskip(f"transformers.models.{model_name}.modeling_{model_name}")
     module = importlib.import_module(f"liger_kernel.transformers.model.{model_name}")
-    forward_name = "lce_forward_conditional_generation" if model_name == "qwen3_5_moe" else "lce_forward"
+    forward_name = {
+        "qwen3_5": "lce_forward_for_multimodal",
+        "qwen3_5_moe": "lce_forward_conditional_generation",
+    }.get(model_name, "lce_forward")
     forward = getattr(module, forward_name)
     hidden_states = torch.randn(1, 2, 4)
     outputs = MoeModelOutputWithPast(last_hidden_state=hidden_states)
