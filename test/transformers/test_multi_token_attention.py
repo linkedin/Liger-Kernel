@@ -70,6 +70,7 @@ class TorchMultiTokenAttention(torch.nn.Module):
         (2, 4, 4, 8, 3, 1),
         (1, 2, 2, 5, 1, 1),
         (3, 6, 6, 6, 3, 1),
+        (1, 2, 2, 1025, 3, 1),  # L > 1024: next_power_of_2(L) x next_power_of_2(L) tile does not compile
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
