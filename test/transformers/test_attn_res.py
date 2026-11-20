@@ -121,6 +121,10 @@ def test_correctness_backward(N, B, T, D, dtype, atol, rtol):
     h_tri.backward(do, retain_graph=True)
 
     assert_verbose_allclose(V_ref.grad, V_tri.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(wn_ref.grad, wn_tri.grad, atol=atol, rtol=rtol)
+    # half-precision keys make dW_query too noisy for these tolerances
+    if dtype == torch.float32:
+        assert_verbose_allclose(wq_ref.grad, wq_tri.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.flaky(reruns=3, reruns_delay=2)
@@ -229,3 +233,19 @@ def test_attn_res_int32_offset_overflow():
     out.sum().backward()
     torch.cuda.synchronize()
     assert torch.isfinite(V.grad).all()
+
+
+def test_backward_bitwise_reproducible():
+    N, B, T, D = 8, 2, 256, 1024
+    V = torch.randn(N, B, T, D, device=device, requires_grad=True)
+    w_query = (torch.randn(D, device=device) * 0.02).requires_grad_(True)
+    w_norm = torch.ones(D, device=device, requires_grad=True)
+    do = torch.randn(B, T, D, device=device)
+
+    h = LigerAttnResFunction.apply(V, w_query, w_norm, 1e-6)
+    inputs = (V, w_query, w_norm)
+    expected = torch.autograd.grad(h, inputs, do, retain_graph=True)
+    for _ in range(9):
+        grads = torch.autograd.grad(h, inputs, do, retain_graph=True)
+        for grad, ref in zip(grads, expected):
+            assert torch.equal(grad, ref)
