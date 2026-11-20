@@ -31,8 +31,9 @@ except ModuleNotFoundError:
 
 @triton.jit
 def _l2_swizzle(pid, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
-    num_pid_m = tl.cdiv(M, BLOCK_M)
-    num_pid_n = tl.cdiv(N, BLOCK_N)
+    # Count tiles in int64 to prevent int32 overflow when M or N is within BLOCK_M/BLOCK_N of 2**31
+    num_pid_m = tl.cdiv(M.to(tl.int64), BLOCK_M)
+    num_pid_n = tl.cdiv(N.to(tl.int64), BLOCK_N)
     num_pid_in_group = GROUP_SIZE_M * num_pid_n
     group_id = pid // num_pid_in_group
     base_pid_m = group_id * GROUP_SIZE_M
@@ -40,7 +41,7 @@ def _l2_swizzle(pid, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, GROUP_S
     pid_in_group = pid % num_pid_in_group
     pid_m = pid_in_group % effective_group_size_m + base_pid_m
     pid_n = pid_in_group // effective_group_size_m
-    return pid_m, pid_n
+    return pid_m.to(tl.int32), pid_n.to(tl.int32)
 
 
 # =====================================================================
