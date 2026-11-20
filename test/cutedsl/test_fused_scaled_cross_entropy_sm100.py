@@ -3,6 +3,7 @@
 import pytest
 import torch
 
+from test.utils import require_highest_float32_matmul_precision
 from test.utils import set_seed
 
 pytestmark = pytest.mark.skipif(
@@ -170,6 +171,7 @@ def test_sm100_forward_chunk_schedule_matches_unchunked(tokens, hidden, vocab, c
 @pytest.mark.parametrize("backend", ["sm100", "cutile"])
 @pytest.mark.parametrize("mode", ["selected", "combined"])
 @pytest.mark.parametrize("tokens,chunk_size,seed", [(513, 256, 42), (4097, 256, 43), (4097, 2048, 43)])
+@require_highest_float32_matmul_precision
 def test_matched_bf16_selected_gradients_against_fp32(backend, mode, tokens, chunk_size, seed, monkeypatch):
     if backend == "sm100":
         module = _module()
@@ -181,7 +183,6 @@ def test_matched_bf16_selected_gradients_against_fp32(backend, mode, tokens, chu
 
         monkeypatch.setattr(module, "_calculate_token_chunk_size", lambda *args, **kwargs: chunk_size)
         function = module.LigerFusedLinearScaledCrossEntropyFunction
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     set_seed(seed)
     x = (torch.randn(tokens, 128, device="cuda", dtype=torch.bfloat16) * 0.25).requires_grad_()
     weight = (torch.randn(1024, 128, device="cuda", dtype=torch.bfloat16) / 128**0.5).requires_grad_()
