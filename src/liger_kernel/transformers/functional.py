@@ -42,8 +42,35 @@ class CrossEntropyOutput:
     predicted_tokens: Optional[torch.Tensor] = None
 
 
+# The PyTorch callable `liger_cross_entropy` delegates to for input/target combinations the Liger kernel does not
+# handle. Both direct callers and the Hugging Face losses patched by `apply_liger_kernel_to_*(cross_entropy=True)`
+# (e.g. `ForSemanticSegmentationLoss` with (N, C, H, W) logits) can pass such inputs.
+_torch_cross_entropy = torch.nn.functional.cross_entropy
+
+
+def _liger_cross_entropy_supported(input, target, size_average, reduce) -> bool:
+    """Whether the Liger kernel handles this call: non-empty, contiguous (BT, V) logits on an accelerator with (BT,)
+    class-index targets and the non-legacy `reduction` argument.
+
+    The kernel writes the gradient into the logits buffer, so it needs a dense layout: for a transposed or expanded
+    view it returns the right loss with a wrong gradient. PyTorch also raises on a target length mismatch and accepts
+    empty and meta tensors, so those calls are left to it as well."""
+    return (
+        input.dim() == 2
+        and target.dim() == 1
+        and input.shape[0] > 0
+        and target.shape[0] == input.shape[0]
+        and input.is_contiguous()
+        and not torch.is_floating_point(target)
+        and input.device.type not in ("cpu", "meta")
+        and size_average is None
+        and reduce is None
+    )
+
+
 # conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html
-# `weight` and `size_average` are placeholders and not implemented yet
+# Calls the Liger kernel cannot handle (e.g. (N, C, d) inputs, probability targets, CPU tensors, non-contiguous
+# logits, the legacy `size_average`/`reduce` arguments) are delegated to `torch.nn.functional.cross_entropy`.
 def liger_cross_entropy(
     input,
     target,
@@ -61,6 +88,34 @@ def liger_cross_entropy(
     loss_dtype: Optional[torch.dtype] = None,
     in_place: bool = False,
 ):
+    if not _liger_cross_entropy_supported(input, target, size_average, reduce):
+        liger_only = {
+            "lse_square_scale": lse_square_scale != 0.0,
+            "softcap": softcap is not None,
+            "return_z_loss": return_z_loss,
+            "return_token_accuracy": return_token_accuracy,
+            "return_predicted_tokens": return_predicted_tokens,
+            "loss_dtype": loss_dtype is not None,
+            "in_place": in_place,
+        }
+        requested = [name for name, is_set in liger_only.items() if is_set]
+        if requested:
+            raise ValueError(
+                f"liger_cross_entropy: {', '.join(requested)} require contiguous (BT, V) input and (BT,) class-index "
+                f"targets on an accelerator, without size_average/reduce; got input {tuple(input.shape)} on "
+                f"{input.device.type} and target {tuple(target.shape)} of dtype {target.dtype}."
+            )
+        return _torch_cross_entropy(
+            input,
+            target,
+            weight=weight,
+            size_average=size_average,
+            ignore_index=ignore_index,
+            reduce=reduce,
+            reduction=reduction,
+            label_smoothing=label_smoothing,
+        )
+
     loss, z_loss, token_accuracy, predicted_tokens = LigerCrossEntropyFunction.apply(
         input,
         target,
@@ -83,6 +138,28 @@ def liger_cross_entropy(
     return CrossEntropyOutput(
         loss=loss, z_loss=z_loss, token_accuracy=token_accuracy, predicted_tokens=predicted_tokens
     )
+
+
+def liger_fixed_cross_entropy(
+    source: torch.Tensor,
+    target: torch.Tensor,
+    num_items_in_batch: Optional[torch.Tensor] = None,
+    ignore_index: int = -100,
+    **kwargs,
+) -> torch.Tensor:
+    """Drop-in replacement for `transformers.loss.loss_utils.fixed_cross_entropy` backed by `liger_cross_entropy`.
+
+    `apply_liger_kernel_to_*(cross_entropy=True)` rebinds only this function, so the Liger kernel is used by the
+    Hugging Face model losses and `torch.nn.functional.cross_entropy` stays untouched for every other caller.
+    """
+    reduction = "sum" if num_items_in_batch is not None else "mean"
+    loss = liger_cross_entropy(source, target, ignore_index=ignore_index, reduction=reduction)
+    if reduction == "sum":
+        # num_items_in_batch may be a Python int when passed by a custom trainer
+        if torch.is_tensor(num_items_in_batch):
+            num_items_in_batch = num_items_in_batch.to(loss.device)
+        loss = loss / num_items_in_batch
+    return loss
 
 
 def liger_fused_linear_cross_entropy(
