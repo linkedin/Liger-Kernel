@@ -1656,3 +1656,79 @@ def test_none_reduction_loss_dtype_float32_backward_keeps_input_dtype(in_place):
         logits.clone().requires_grad_(True), target, None, -100, 0.0, 0.0, "none", None, False
     )[4]
     assert torch.equal(grad, (unscaled.float() * g_seen.float().unsqueeze(1)).to(torch.bfloat16))
+
+
+@pytest.mark.parametrize("layout", ["transposed", "col_strided", "row_expanded"])
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+@pytest.mark.parametrize("grad_scale", [1.0, 2.5])
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            2e-2,
+            2e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_non_contiguous_logits_backward(layout, reduction, grad_scale, dtype, atol, rtol):
+    """Regression test for #1642: non-contiguous / broadcasted logits must write gradients, not return raw logits."""
+    set_seed(0)
+    BT, V = 16, 65
+    target = torch.randint(0, V, (BT,), device=device)
+    target[0] = -100
+
+    if layout == "transposed":
+        x0 = torch.randn(BT, V, device=device, dtype=dtype)
+        leaf = x0.t().contiguous().requires_grad_(True)
+        leaf_orig = leaf.detach().clone()
+        logits = leaf.t()
+        assert logits.stride(-1) != 1
+    elif layout == "col_strided":
+        leaf = torch.randn(BT, V * 2, device=device, dtype=dtype, requires_grad=True)
+        leaf_orig = leaf.detach().clone()
+        logits = leaf[:, ::2]
+        x0 = logits.detach().clone()
+        assert logits.stride(-1) != 1
+    else:
+        leaf = torch.randn(1, V, device=device, dtype=dtype, requires_grad=True)
+        leaf_orig = leaf.detach().clone()
+        logits = leaf.expand(BT, V)
+        x0 = logits.detach().clone()
+        assert logits.stride(-2) == 0
+
+    in_place = reduction == "none" and grad_scale == 2.5
+    loss_fn = LigerCrossEntropyLoss(
+        reduction=reduction,
+        ignore_index=-100,
+        label_smoothing=0.1,
+        in_place=in_place,
+    )
+    loss = loss_fn(logits, target)
+    # Leaf storage must remain untouched because forward copied into a fresh buffer.
+    assert torch.equal(leaf.detach(), leaf_orig)
+
+    ref_leaf = leaf.detach().clone().requires_grad_(True)
+    if layout == "transposed":
+        ref_logits = ref_leaf.t()
+    elif layout == "col_strided":
+        ref_logits = ref_leaf[:, ::2]
+    else:
+        ref_logits = ref_leaf.expand(BT, V)
+    ref_loss = F.cross_entropy(ref_logits, target, reduction=reduction, ignore_index=-100, label_smoothing=0.1)
+
+    assert_verbose_allclose(loss, ref_loss, atol=atol, rtol=rtol)
+
+    if reduction == "none":
+        grad_out = torch.randn_like(loss) * grad_scale
+        loss.backward(grad_out)
+        ref_loss.backward(grad_out)
+    else:
+        (loss * grad_scale).backward()
+        (ref_loss * grad_scale).backward()
+
+    if layout == "transposed":
+        assert not torch.equal(leaf.grad.t(), x0)
+    assert_verbose_allclose(leaf.grad, ref_leaf.grad, atol=atol, rtol=rtol)
