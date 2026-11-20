@@ -21,7 +21,7 @@ def liger_correctness_tests():
     import subprocess
 
     subprocess.run(
-        ["uv pip install -e '.[dev]' --system"],
+        ["uv pip install -e '.[dev,triton]' --system"],
         check=True,
         shell=True,
         cwd=REMOTE_ROOT_PATH,
@@ -34,7 +34,7 @@ def liger_convergence_tests():
     import subprocess
 
     subprocess.run(
-        ["uv pip install -e '.[dev]' --system"],
+        ["uv pip install -e '.[dev,triton]' --system"],
         check=True,
         shell=True,
         cwd=REMOTE_ROOT_PATH,
@@ -112,7 +112,7 @@ def liger_oldest_correctness_tests():
     import subprocess
 
     subprocess.run(
-        ["uv pip install -e '.[dev]' --system"],
+        ["uv pip install -e '.[dev,triton]' --system"],
         check=True,
         shell=True,
         cwd=REMOTE_ROOT_PATH,
@@ -131,7 +131,7 @@ def liger_oldest_convergence_tests():
     import subprocess
 
     subprocess.run(
-        ["uv pip install -e '.[dev]' --system"],
+        ["uv pip install -e '.[dev,triton]' --system"],
         check=True,
         shell=True,
         cwd=REMOTE_ROOT_PATH,
