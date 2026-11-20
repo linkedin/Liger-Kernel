@@ -375,12 +375,18 @@ def _grpo_loss_bwd_kernel_seq(
     per_token_loss1 = coef_1_for_loss * advantage
     per_token_loss2 = coef_2 * advantage
     is_unclipped = per_token_loss2 >= per_token_loss1
+    if DELTA != 0.0:
+        is_active = tl.where(
+            is_unclipped,
+            coef_1 <= DELTA,
+            (coef_1 >= 1 - EPS_LOW) & (coef_1 <= 1 + EPS_HIGH),
+        )
+    else:
+        is_active = is_unclipped
 
     # For sequence-level: gradient flows through mean, so scale by coef_1/seq_len
     # d(loss)/d(logp) = -advantage * coef_1 / seq_len (when unclipped and not delta-clamped)
-    dlogp = -coef_1 * advantage / seq_len * is_unclipped * dloss_sum
-    if DELTA != 0.0:
-        dlogp = dlogp * (coef_1 <= DELTA)
+    dlogp = -coef_1 * advantage / seq_len * is_active * dloss_sum
 
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
@@ -480,10 +486,16 @@ def _grpo_loss_bwd_kernel(
         per_token_loss1 = coef_1_for_loss * advantage
         per_token_loss2 = coef_2 * advantage
         mask = per_token_loss2 >= per_token_loss1
-        # Gradient uses original coef_1; zero when delta-clamped (constant → no gradient)
-        dlogp = -coef_1 * advantage * mask
         if DELTA != 0.0:
-            dlogp = dlogp * (coef_1 <= DELTA)
+            is_active = tl.where(
+                mask,
+                coef_1 <= DELTA,
+                (coef_1 >= 1 - EPS_LOW) & (coef_1 <= 1 + EPS_HIGH),
+            )
+        else:
+            is_active = mask
+        # Gradient uses original coef_1; zero when clipped / delta-clamped (constant → no gradient)
+        dlogp = -coef_1 * advantage * is_active
 
     elif LOSS_TYPE == 1:  # CISPO: coef_2 is DETACHED, so gradient only flows through logp
         # loss = -coef_2 * advantage * logp, where coef_2 = clamp(coef_1, max=eps_high).detach()
