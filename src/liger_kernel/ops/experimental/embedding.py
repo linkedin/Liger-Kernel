@@ -18,11 +18,14 @@ def embedding_forward_kernel(
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    start_m = pid_m * BLOCK_SIZE_M
+    # Compute row offsets in int64: `offsets_m * embedding_dim` and
+    # `indices * embedding_dim` overflow int32 once the output or the
+    # embedding table holds 2^31 or more elements.
+    start_m = pid_m.to(tl.int64) * BLOCK_SIZE_M
     start_n = pid_n * BLOCK_SIZE_N
     offsets_m = start_m + tl.arange(0, BLOCK_SIZE_M)
     mask_m = offsets_m < n_elements
-    indices = tl.load(indices_ptr + offsets_m, mask=mask_m, other=0)
+    indices = tl.load(indices_ptr + offsets_m, mask=mask_m, other=0).to(tl.int64)
     offsets_n = start_n + tl.arange(0, BLOCK_SIZE_N)
     mask_n = offsets_n < embedding_dim
 
@@ -50,11 +53,14 @@ def embedding_backward_kernel(
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    start_m = pid_m * BLOCK_SIZE_M
+    # Compute row offsets in int64: `offsets_m * embedding_dim` and
+    # `indices * embedding_dim` overflow int32 once the output or the
+    # embedding table holds 2^31 or more elements.
+    start_m = pid_m.to(tl.int64) * BLOCK_SIZE_M
     start_n = pid_n * BLOCK_SIZE_N
     offsets_m = start_m + tl.arange(0, BLOCK_SIZE_M)
     mask_m = offsets_m < n_elements
-    indices = tl.load(indices_ptr + offsets_m, mask=mask_m, other=0)
+    indices = tl.load(indices_ptr + offsets_m, mask=mask_m, other=0).to(tl.int64)
     offsets_n = start_n + tl.arange(0, BLOCK_SIZE_N)
     mask_n = offsets_n < embedding_dim
 
