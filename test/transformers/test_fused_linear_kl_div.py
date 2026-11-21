@@ -555,6 +555,35 @@ def test_torch_kl_div_parity():
     assert_verbose_allclose(expected, got, atol=1e-6, rtol=1e-5)
 
 
+@pytest.mark.parametrize("reduction,v", [("sum", 32771), ("batchmean", 1031), ("mean", 1031)])
+def test_cached_teacher_log_probs(reduction, v):
+    # Exercise token chunking and a partially filled vocabulary tile.
+    bt, h = 19, 8
+    x = torch.randn(bt, h, device=device, requires_grad=True)
+    weight = torch.randn(v, h, device=device, requires_grad=True)
+    teacher = torch.randn(bt, v, device=device)
+    teacher[:, ::3] = -torch.inf
+    log_target = teacher.log_softmax(-1).half()
+    labels = torch.arange(bt, device=device)
+    labels[::4] = -100
+
+    temperature = 1.7
+    keep = labels != -100
+    log_p = ((x[keep] @ weight.T) / temperature).log_softmax(-1)
+    expected = torch.nn.functional.kl_div(log_p, log_target[keep].float().exp(), reduction=reduction)
+    if reduction == "batchmean":
+        actual = LigerFusedLinearKLDivLoss(reduction=reduction, temperature=temperature, log_target=True)(
+            x, weight, log_target, labels
+        )
+    else:
+        actual = liger_fused_linear_kl_div(
+            x, weight, log_target, labels, reduction=reduction, temperature=temperature, log_target=True
+        )
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
+    for grad, ref in zip(torch.autograd.grad(actual, (x, weight)), torch.autograd.grad(expected, (x, weight))):
+        torch.testing.assert_close(grad, ref, atol=1e-6, rtol=1e-5)
+
+
 def test_invalid_reduction():
     B = 1
     T = 4

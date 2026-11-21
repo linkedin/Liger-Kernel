@@ -93,6 +93,7 @@ def kl_loss_and_grad_triton(
     eps: float,
     scale: float,
     *,
+    log_target: bool = False,
     mode: Optional[str] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Per-row loss + dL/dlogits for one chunk of the fused-linear KL.
@@ -104,7 +105,7 @@ def kl_loss_and_grad_triton(
     Args:
         logits_chunk: ``(chunk_BT, V)`` student logits in native precision
             (the GEMM output). Overwritten with dL/dlogits.
-        target_chunk: ``(chunk_BT, V)`` target probabilities.
+        target_chunk: ``(chunk_BT, V)`` target probabilities, or log-probabilities when ``log_target=True``.
         shift_labels: optional ``(chunk_BT,)`` mask; rows whose label equals
             ``ignore_index`` contribute zero loss and zero gradient.
         ignore_index: label value to ignore.
@@ -143,6 +144,7 @@ def kl_loss_and_grad_triton(
         scale=scale,
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_LABEL=has_label,
+        LOG_TARGET=log_target,
         num_warps=get_num_warps(BLOCK_SIZE),
     )
     return loss_rows, logits_chunk
