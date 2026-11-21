@@ -183,7 +183,10 @@ def liger_cross_entropy_kernel(
             else:
                 scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block, 0.0))
         m_new = tl.maximum(m, block_max)
-        d = d * tl.exp2((m - m_new) * LOG2_E) + tl.sum(tl.exp2((X_block - m_new) * LOG2_E))
+        # While the running max is -inf, rescaling against it gives -inf - -inf = NaN.
+        # The running sum is still 0 at that point, so use 0 as the reference.
+        ref_m = tl.where(m_new == float("-inf"), 0.0, m_new)
+        d = d * tl.exp2((m - ref_m) * LOG2_E) + tl.sum(tl.exp2((X_block - ref_m) * LOG2_E))
         m = m_new
 
     # log (sum(e^(X_i))) = log (sum(e ^ (max(X) * e ^ (X_i - max(X)))))
