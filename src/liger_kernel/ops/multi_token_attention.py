@@ -8,7 +8,6 @@ from torch.nn.modules.utils import _pair
 from liger_kernel.ops.softmax import _softmax_forward
 from liger_kernel.ops.sparsemax import _sparsemax_backward
 from liger_kernel.ops.sparsemax import _sparsemax_forward
-from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import ensure_contiguous
 
 
@@ -63,6 +62,13 @@ def _mask_bwd_kernel(
     tl.store(out_ptr + batch_id * stride_b + offs, out, mask=in_bounds, cache_modifier=".wb")
 
 
+def _mask_settings(L):
+    # The mask kernels work on BLOCK x BLOCK tiles over a grid of cdiv(L, BLOCK) x cdiv(L, BLOCK).
+    # A tile of next_power_of_2(L) x next_power_of_2(L) goes over Triton's 2**20 element limit
+    # for L > 1024, so keep the tile small.
+    return min(triton.next_power_of_2(L), 64), 4
+
+
 def _mask_inf_forward(scores: torch.Tensor) -> torch.Tensor:
     *batch, L, _ = scores.shape
     N = int(torch.prod(torch.tensor(batch))) if batch else 1
@@ -70,7 +76,7 @@ def _mask_inf_forward(scores: torch.Tensor) -> torch.Tensor:
     out = torch.empty_like(scores_f)
 
     sb, sm, sn = scores_f.stride(0), scores_f.stride(1), scores_f.stride(2)
-    BLOCK_SIZE, num_warps = calculate_settings(L)
+    BLOCK_SIZE, num_warps = _mask_settings(L)
     grid = (triton.cdiv(L, BLOCK_SIZE), triton.cdiv(L, BLOCK_SIZE), N)
     _mask_fwd_kernel[grid](scores_f, out, sb, sm, sn, L, mask_val=-1e9, BLOCK=BLOCK_SIZE, num_warps=num_warps)
     return out.view(*batch, L, L)
@@ -83,7 +89,7 @@ def _mask_inf_backward(grad: torch.Tensor) -> torch.Tensor:
     out = torch.empty_like(grad_f)
 
     sb, sm, sn = grad_f.stride(0), grad_f.stride(1), grad_f.stride(2)
-    BLOCK_SIZE, num_warps = calculate_settings(L)
+    BLOCK_SIZE, num_warps = _mask_settings(L)
     grid = (triton.cdiv(L, BLOCK_SIZE), triton.cdiv(L, BLOCK_SIZE), N)
     _mask_bwd_kernel[grid](grad_f, out, sb, sm, sn, L, BLOCK=BLOCK_SIZE, num_warps=num_warps)
     return out.view(*batch, L, L)
@@ -96,7 +102,7 @@ def _mask_zero_forward(scores: torch.Tensor) -> torch.Tensor:
     out = torch.empty_like(scores_f)
 
     sb, sm, sn = scores_f.stride(0), scores_f.stride(1), scores_f.stride(2)
-    BLOCK_SIZE, num_warps = calculate_settings(L)
+    BLOCK_SIZE, num_warps = _mask_settings(L)
     grid = (triton.cdiv(L, BLOCK_SIZE), triton.cdiv(L, BLOCK_SIZE), N)
     _mask_fwd_kernel[grid](scores_f, out, sb, sm, sn, L, mask_val=0.0, BLOCK=BLOCK_SIZE, num_warps=num_warps)
     return out.view(*batch, L, L)
@@ -109,7 +115,7 @@ def _mask_zero_backward(grad: torch.Tensor) -> torch.Tensor:
     out = torch.empty_like(grad_f)
 
     sb, sm, sn = grad_f.stride(0), grad_f.stride(1), grad_f.stride(2)
-    BLOCK_SIZE, num_warps = calculate_settings(L)
+    BLOCK_SIZE, num_warps = _mask_settings(L)
     grid = (triton.cdiv(L, BLOCK_SIZE), triton.cdiv(L, BLOCK_SIZE), N)
     _mask_bwd_kernel[grid](grad_f, out, sb, sm, sn, L, BLOCK=BLOCK_SIZE, num_warps=num_warps)
     return out.view(*batch, L, L)
