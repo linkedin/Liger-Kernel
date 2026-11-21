@@ -109,3 +109,33 @@ def test_liger_group_norm_low_precision_statistics(shape, num_groups, offset, dt
 
     assert torch.isfinite(liger_output).all()
     assert torch.allclose(liger_output.float(), torch_output, atol=atol, rtol=rtol)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
+def test_liger_group_norm_int32_batch_offset_overflow():
+    # The kernels move to sample `batch_idx` with `batch_idx * stride(0)`. With an
+    # int32 program id this wraps once the sample offset reaches 2**31 elements, even
+    # though each sample is far smaller than that.
+    if torch.cuda.mem_get_info()[0] < 48 * 2**30:
+        pytest.skip("needs about 48 GiB of free GPU memory to cross the 2**31 offset")
+    batch_size, num_channels, num_groups, spatial = 17, 128, 32, (1024, 1024)
+    assert (batch_size - 1) * num_channels * spatial[0] * spatial[1] >= 2**31
+    torch.manual_seed(0)
+    x = torch.randn(batch_size, num_channels, *spatial, device="cuda")
+    liger_ln = LigerGroupNorm(num_channels, num_groups, eps=1e-6).to("cuda")
+    x.requires_grad_(True)
+    y = liger_ln(x)
+    dy = torch.randn_like(y)
+    y.backward(dy)
+    torch.cuda.synchronize()
+
+    # GroupNorm is independent per sample: compare the first sample and the last one
+    # (past the 2**31 offset) with a reference on that sample alone.
+    weight = liger_ln.weight.detach()
+    bias = liger_ln.bias.detach()
+    for s in (0, batch_size - 1):
+        xs = x.detach()[s : s + 1].clone().requires_grad_(True)
+        ys = torch.nn.functional.group_norm(xs, num_groups, weight, bias, 1e-6)
+        ys.backward(dy[s : s + 1])
+        assert (y[s] - ys[0]).abs().max().item() < 1e-3, f"output of sample {s}"
+        assert (x.grad[s] - xs.grad[0]).abs().max().item() < 1e-3, f"input grad of sample {s}"
