@@ -1,0 +1,12 @@
+[
+  {
+    "stage": "first_call_with_existing_disk_compiler_cache",
+    "wall_ms": 1081.5458502620459,
+    "peak_extra_bytes": 251660288
+  },
+  {
+    "stage": "cached_context",
+    "wall_ms": 0.3276499919593334,
+    "peak_extra_bytes": 33555456
+  }
+]

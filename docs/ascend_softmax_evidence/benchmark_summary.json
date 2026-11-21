@@ -1,0 +1,2359 @@
+[
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_acceptance1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9951953614842407,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_acceptance1_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.1165038675593244,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_acceptance1_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 103.43000292778015,
+        "liger_us": 115.47999829053879,
+        "ratio": 1.1165038675593244,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_acceptance2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9894242614948335,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_acceptance2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9904213538374382,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_allocation1_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.0567289982436054,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_allocation1_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 165.7000035047531,
+        "liger_us": 175.09999871253967,
+        "ratio": 1.0567289982436054,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_allocation1_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.0016514632684392,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_allocation1_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 96.8800038099289,
+        "liger_us": 97.03999757766724,
+        "ratio": 1.0016514632684392,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_allocation2_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.0163295799840255,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_allocation2_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v3",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 241.28000438213348,
+        "liger_us": 245.22000551223755,
+        "ratio": 1.0163295799840255,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_allocation2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 205.04999160766602,
+        "liger_us": 206.90999925136566,
+        "ratio": 1.0090709959513604,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_allocation2_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.293163401677805,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_allocation2_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 34.52000021934509,
+        "liger_us": 44.64000090956688,
+        "ratio": 1.293163401677805,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_autotune1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.989140635352452,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_autotune1_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.3283662124759776,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_autotune1_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 36.91000118851662,
+        "liger_us": 49.02999848127365,
+        "ratio": 1.3283662124759776,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_autotune2_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.0159922889498325,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_autotune2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 196.97000086307526,
+        "liger_us": 200.1200020313263,
+        "ratio": 1.0159922889498325,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_autotune2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9846274714412637,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_calibrated1_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.0024554752068224,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_calibrated1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 175.11999607086182,
+        "liger_us": 175.54999887943268,
+        "ratio": 1.0024554752068224,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_calibrated1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9791086464381744,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_calibrated2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9903426281020695,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_calibrated2_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.038229411928803,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_calibrated2_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "2048",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 114.30999636650085,
+        "liger_us": 118.68000030517578,
+        "ratio": 1.038229411928803,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_family1_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.0936973190333457,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_family1_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 162.90000081062317,
+        "liger_us": 168.7600016593933,
+        "ratio": 1.0359729945955163,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_family1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 100.74999928474426,
+        "liger_us": 110.1900041103363,
+        "ratio": 1.0936973190333457,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_family1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9830047145430215,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_family2_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.0039343950736273,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_family2_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "llama_2_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 122.00000137090683,
+        "liger_us": 122.47999757528305,
+        "ratio": 1.0039343950736273,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_family2_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.5732557736583,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_family2_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 34.40000116825104,
+        "liger_us": 54.12000045180321,
+        "ratio": 1.5732557736583,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_hostdict1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9980993219849308,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_hostdict1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9678641001994212,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_hostdict2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9849618688837819,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_hostdict2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9792721765023206,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_numalocal1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9927516857430106,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_numalocal1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.994919708384421,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_numalocal2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9984610105776036,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_numalocal2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9803352773646952,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_optimized1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9968375514546213,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_optimized1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9970967948341318,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_optimized2_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.0048818407191977,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_optimized2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_72b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 434.2600107192993,
+        "liger_us": 436.379998922348,
+        "ratio": 1.0048818407191977,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_optimized2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9879355011332316,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_persistent1_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.008607280833478,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_persistent1_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 152.11999416351318,
+        "liger_us": 153.30000221729279,
+        "ratio": 1.0077570871618047,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_persistent1_model_config.csv",
+        "mode": "full",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 1037.4900102615356,
+        "liger_us": 1046.4199781417847,
+        "ratio": 1.008607280833478,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_persistent1_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.6181557629455632,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_persistent1_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 41.63999855518341,
+        "liger_us": 67.38000363111496,
+        "ratio": 1.6181557629455632,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_persistent2_model_config.csv",
+    "configurations": 21,
+    "passed": 18,
+    "max_ratio": 1.1008954485627496,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_persistent2_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "llama_2_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 89.68000113964081,
+        "liger_us": 94.42000091075897,
+        "ratio": 1.052854590888525,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_persistent2_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "llama_3_8b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 88.60999345779419,
+        "liger_us": 92.28000044822693,
+        "ratio": 1.0414175291885197,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_persistent2_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 83.75000208616257,
+        "liger_us": 92.19999611377716,
+        "ratio": 1.1008954485627496,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_persistent2_token_length.csv",
+    "configurations": 12,
+    "passed": 10,
+    "max_ratio": 1.0320550549060472,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_persistent2_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 68.31999868154526,
+        "liger_us": 70.50999999046326,
+        "ratio": 1.0320550549060472,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_persistent2_token_length.csv",
+        "mode": "full",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 603.3599972724915,
+        "liger_us": 605.7199835777283,
+        "ratio": 1.0039114066492727,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_pinned_probe_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.1785846740260588,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_pinned_probe_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 107.96000063419342,
+        "liger_us": 127.24000215530396,
+        "ratio": 1.1785846740260588,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_pinned_probe_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 194.52999532222748,
+        "liger_us": 206.8600058555603,
+        "ratio": 1.0633835954856674,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_pinned_probe_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9839199080762243,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_robust1_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.0060594026374305,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_robust1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "llama_3_8b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 194.73999738693237,
+        "liger_us": 195.92000544071198,
+        "ratio": 1.0060594026374305,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_robust1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9661923631369898,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_robust2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9979751409078851,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_robust2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9889461131244333,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_round2_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.2714995282378394,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_round2_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 128.83999943733215,
+        "liger_us": 163.81999850273132,
+        "ratio": 1.2714995282378394,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_round2_model_config.csv",
+        "mode": "full",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 1024.9700546264648,
+        "liger_us": 1042.9199934005737,
+        "ratio": 1.0175126470213323,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_round2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9838185122771195,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_splitrows1_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.0969291671623773,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_splitrows1_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 97.24000096321106,
+        "liger_us": 99.10000115633011,
+        "ratio": 1.0191279326891691,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_splitrows1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 149.80000257492065,
+        "liger_us": 164.3199920654297,
+        "ratio": 1.0969291671623773,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_splitrows1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9813352897787218,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_splitrows2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9971718221307573,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_splitrows2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.992353232782523,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_tuned1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9970086743350257,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_tuned1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9815235742514143,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_tuned2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9995621527019399,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_tuned2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9869286552978637,
+    "failures": []
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+    "configurations": 21,
+    "passed": 15,
+    "max_ratio": 2.617292338161479,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 123.91999363899231,
+        "liger_us": 135.87000966072083,
+        "ratio": 1.09643331693949,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 174.82998967170715,
+        "liger_us": 184.52000617980957,
+        "ratio": 1.055425367960601,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 59.67999994754791,
+        "liger_us": 156.20000660419464,
+        "ratio": 2.617292338161479,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v3",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 236.8600070476532,
+        "liger_us": 255.76001405715942,
+        "ratio": 1.0797939983414075,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 255.8099925518036,
+        "liger_us": 290.4199957847595,
+        "ratio": 1.1352957438750058,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "full",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 1056.6599369049072,
+        "liger_us": 1058.3899021148682,
+        "ratio": 1.0016372014775428,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_upstream_numalocal_model_config.csv",
+    "configurations": 21,
+    "passed": 15,
+    "max_ratio": 1.2386275728533098,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_numalocal_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 104.37999665737152,
+        "liger_us": 111.12000048160553,
+        "ratio": 1.064571795747016,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_numalocal_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 155.64000606536865,
+        "liger_us": 192.780002951622,
+        "ratio": 1.2386275728533098,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_numalocal_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v3",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 248.6799955368042,
+        "liger_us": 269.0199911594391,
+        "ratio": 1.0817918448917803,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_numalocal_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 176.5899956226349,
+        "liger_us": 180.24000525474548,
+        "ratio": 1.0206694021325562,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_numalocal_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 266.1399841308594,
+        "liger_us": 298.799991607666,
+        "ratio": 1.122717402210214,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_numalocal_model_config.csv",
+        "mode": "full",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 1038.1500720977783,
+        "liger_us": 1049.1900444030762,
+        "ratio": 1.0106342739860235,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_upstream_numalocal_token_length.csv",
+    "configurations": 12,
+    "passed": 10,
+    "max_ratio": 1.813411357558804,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_numalocal_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 55.44999986886978,
+        "liger_us": 99.16000068187714,
+        "ratio": 1.7882777442087356,
+        "passed": false
+      },
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_numalocal_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 90.52000194787979,
+        "liger_us": 164.14999961853027,
+        "ratio": 1.813411357558804,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_upstream_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.3028223820478995,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_upstream_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 115.15000462532043,
+        "liger_us": 150.02000331878662,
+        "ratio": 1.3028223820478995,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_user_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.186392093538424,
+    "failures": [
+      {
+        "platform": "A2",
+        "file": "all_benchmark_data_softmax_user_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 132.56999850273132,
+        "liger_us": 157.27999806404114,
+        "ratio": 1.186392093538424,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A2",
+    "file": "all_benchmark_data_softmax_user_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9836910123878381,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_acceptance1_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.0124651330160794,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_acceptance1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 53.75000089406967,
+        "liger_us": 54.420001804828644,
+        "ratio": 1.0124651330160794,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_acceptance1_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.10915500242758,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_acceptance1_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 62.47999891638756,
+        "liger_us": 69.30000334978104,
+        "ratio": 1.10915500242758,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_acceptance2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9752090890745292,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_acceptance2_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.1726135225279082,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_acceptance2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 43.15999895334244,
+        "liger_us": 50.609998404979706,
+        "ratio": 1.1726135225279082,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_allocation1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9774206953098163,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_allocation1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9804529636157768,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_allocation2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9769540997129254,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_allocation2_token_length.csv",
+    "configurations": 12,
+    "passed": 10,
+    "max_ratio": 1.20183484117457,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_allocation2_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 37.060000002384186,
+        "liger_us": 44.53999921679497,
+        "ratio": 1.20183484117457,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_allocation2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 31.08000010251999,
+        "liger_us": 35.14000028371811,
+        "ratio": 1.1306306360297897,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_autotune1_model_config.csv",
+    "configurations": 21,
+    "passed": 18,
+    "max_ratio": 1.0855041757685837,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_autotune1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "llama_2_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 58.159999549388885,
+        "liger_us": 58.46000090241432,
+        "ratio": 1.005158207622933,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_autotune1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 53.279999643564224,
+        "liger_us": 57.739999145269394,
+        "ratio": 1.083708699916328,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_autotune1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 47.600001096725464,
+        "liger_us": 51.669999957084656,
+        "ratio": 1.0855041757685837,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_autotune1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9826513442459441,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_autotune2_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.1324468974077873,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_autotune2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 79.10999655723572,
+        "liger_us": 88.48000317811966,
+        "ratio": 1.118442763603267,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_autotune2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v3",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 115.8200055360794,
+        "liger_us": 131.16000592708588,
+        "ratio": 1.1324468974077873,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_autotune2_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.6066048144736376,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_autotune2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 34.52000021934509,
+        "liger_us": 55.45999854803085,
+        "ratio": 1.6066048144736376,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_calibrated1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9731045070082927,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_calibrated1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9824461042405044,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_calibrated2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.974542003378897,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_calibrated2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9817397036029423,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_contextprobe4_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.2357449845608346,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_contextprobe4_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 56.63000047206879,
+        "liger_us": 63.53999674320221,
+        "ratio": 1.1220200638094924,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_contextprobe4_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 53.49000170826912,
+        "liger_us": 66.10000133514404,
+        "ratio": 1.2357449845608346,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_contextprobe4_token_length.csv",
+    "configurations": 12,
+    "passed": 10,
+    "max_ratio": 1.1030311954851215,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_contextprobe4_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 65.32000005245209,
+        "liger_us": 72.04999774694443,
+        "ratio": 1.1030311954851215,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_contextprobe4_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "2048",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 90.59999883174896,
+        "liger_us": 93.77999603748322,
+        "ratio": 1.0350993073591508,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_family1_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.0130235673449794,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_family1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 56.82000145316124,
+        "liger_us": 57.56000056862831,
+        "ratio": 1.0130235673449794,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_family1_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.0307187010347374,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_family1_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 33.53000059723854,
+        "liger_us": 34.55999866127968,
+        "ratio": 1.0307187010347374,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_family2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9793081941748683,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_family2_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.0834379756668888,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_family2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 63.759997487068176,
+        "liger_us": 69.08000260591507,
+        "ratio": 1.0834379756668888,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_host1_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.243860557985067,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_host1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 35.020001232624054,
+        "liger_us": 43.55999827384949,
+        "ratio": 1.243860557985067,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_host1_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.1399014357965513,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_host1_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 40.6000018119812,
+        "liger_us": 46.28000035881996,
+        "ratio": 1.1399014357965513,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_host2_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.2095156022824958,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_host2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 34.88999977707863,
+        "liger_us": 42.1999990940094,
+        "ratio": 1.2095156022824958,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_host2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9818711878793097,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_hostdict1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9997801038198358,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_hostdict1_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.5329851062623001,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_hostdict1_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 51.6900010406971,
+        "liger_us": 79.24000173807144,
+        "ratio": 1.5329851062623001,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_hostdict2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9714548085597072,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_hostdict2_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.3811801196180549,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_hostdict2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 31.35000169277191,
+        "liger_us": 43.299999088048935,
+        "ratio": 1.3811801196180549,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_optimized1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9775290035900731,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_optimized1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9990381226058498,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_optimized2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9775818662331106,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_optimized2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9837243049192732,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_persistent1_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.2886014395521943,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_persistent1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 49.47999864816666,
+        "liger_us": 63.759997487068176,
+        "ratio": 1.2886014395521943,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_persistent1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 55.16999959945679,
+        "liger_us": 59.050001204013824,
+        "ratio": 1.0703281064478245,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_persistent1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9938505244663564,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_persistent2_model_config.csv",
+    "configurations": 21,
+    "passed": 17,
+    "max_ratio": 1.1337570892564406,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_persistent2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "llama_2_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 83.61999690532684,
+        "liger_us": 84.01000499725342,
+        "ratio": 1.00466405293423,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_persistent2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "llama_3_8b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 70.75999677181244,
+        "liger_us": 77.78000086545944,
+        "ratio": 1.099208654803719,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_persistent2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 67.65999644994736,
+        "liger_us": 76.71000063419342,
+        "ratio": 1.1337570892564406,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_persistent2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 71.80000096559525,
+        "liger_us": 75.07999986410141,
+        "ratio": 1.0456824352979863,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_persistent2_token_length.csv",
+    "configurations": 12,
+    "passed": 10,
+    "max_ratio": 1.3384912425474798,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_persistent2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 97.76999801397324,
+        "liger_us": 116.15999788045883,
+        "ratio": 1.188094509972858,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_persistent2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "2048",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 67.21000373363495,
+        "liger_us": 89.9600014090538,
+        "ratio": 1.3384912425474798,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_pinned_probe_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.0286831560542038,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_pinned_probe_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "llama_2_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 61.36000156402588,
+        "liger_us": 63.120000064373016,
+        "ratio": 1.0286831560542038,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_pinned_probe_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 76.37999951839447,
+        "liger_us": 77.7600035071373,
+        "ratio": 1.0180676092883516,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_pinned_probe_token_length.csv",
+    "configurations": 12,
+    "passed": 10,
+    "max_ratio": 1.637500061565795,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_pinned_probe_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 41.600000113248825,
+        "liger_us": 68.12000274658203,
+        "ratio": 1.637500061565795,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_pinned_probe_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "2048",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 58.10999870300293,
+        "liger_us": 74.68000054359436,
+        "ratio": 1.2851488936573519,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_robust1_model_config.csv",
+    "configurations": 21,
+    "passed": 19,
+    "max_ratio": 1.1465954671850775,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_robust1_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 39.36000168323517,
+        "liger_us": 45.12999951839447,
+        "ratio": 1.1465954671850775,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_robust1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "llama_2_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 85.84000170230865,
+        "liger_us": 88.10000121593475,
+        "ratio": 1.0263280460019528,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_robust1_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.0432555602130518,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_robust1_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 35.14000028371811,
+        "liger_us": 36.660000681877136,
+        "ratio": 1.0432555602130518,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_robust2_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.107506108393864,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_robust2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 41.29999876022339,
+        "liger_us": 45.740000903606415,
+        "ratio": 1.107506108393864,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_robust2_token_length.csv",
+    "configurations": 12,
+    "passed": 10,
+    "max_ratio": 1.0934343328762084,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_robust2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 71.28000259399414,
+        "liger_us": 77.94000208377838,
+        "ratio": 1.0934343328762084,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_robust2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "2048",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 67.84000247716904,
+        "liger_us": 71.37999683618546,
+        "ratio": 1.0521815187168924,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_round2_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.107761882363642,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_round2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 53.0799999833107,
+        "liger_us": 58.800000697374344,
+        "ratio": 1.107761882363642,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_round2_token_length.csv",
+    "configurations": 12,
+    "passed": 10,
+    "max_ratio": 1.2686274612589143,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_round2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 86.69999986886978,
+        "liger_us": 109.99000072479248,
+        "ratio": 1.2686274612589143,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_round2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "2048",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 66.02999567985535,
+        "liger_us": 74.0400031208992,
+        "ratio": 1.1213086167668427,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_tuned1_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.1499855722000611,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_tuned1_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 34.46999937295914,
+        "liger_us": 39.64000195264816,
+        "ratio": 1.1499855722000611,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_tuned1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.99139724248944,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_tuned2_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.1429417683682654,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_tuned2_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 33.720001578330994,
+        "liger_us": 38.53999823331833,
+        "ratio": 1.1429417683682654,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_tuned2_token_length.csv",
+    "configurations": 12,
+    "passed": 11,
+    "max_ratio": 1.2711646359004964,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_tuned2_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 46.539999544620514,
+        "liger_us": 59.16000157594681,
+        "ratio": 1.2711646359004964,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+    "configurations": 21,
+    "passed": 8,
+    "max_ratio": 3.4178640039015002,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "llama_2_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 54.099999368190765,
+        "liger_us": 118.28000098466873,
+        "ratio": 2.18632167035133,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "llama_3_8b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 54.13000285625458,
+        "liger_us": 118.72000247240067,
+        "ratio": 2.1932384298531935,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 46.98000103235245,
+        "liger_us": 129.97999787330627,
+        "ratio": 2.7667091319090535,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 65.77999889850616,
+        "liger_us": 86.2400010228157,
+        "ratio": 1.3110368268001624,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 34.49999913573265,
+        "liger_us": 103.56999933719635,
+        "ratio": 3.002029041500059,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "forward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v3",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 84.3999981880188,
+        "liger_us": 117.66000092029572,
+        "ratio": 1.394075870217239,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "llama_2_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 66.0799965262413,
+        "liger_us": 174.7400015592575,
+        "ratio": 2.644370622656824,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "llama_3_8b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 54.23999950289726,
+        "liger_us": 166.58000648021698,
+        "ratio": 3.071165339360282,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_7b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 51.500000059604645,
+        "liger_us": 176.01999640464783,
+        "ratio": 3.4178640039015002,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 81.74999803304672,
+        "liger_us": 127.27999687194824,
+        "ratio": 1.5569418952217762,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 48.340000212192535,
+        "liger_us": 155.95000982284546,
+        "ratio": 3.2261069329393806,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v3",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 121.4199960231781,
+        "liger_us": 135.5299949645996,
+        "ratio": 1.116208198019773,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_model_config.csv",
+        "mode": "full",
+        "sweep": "model_config",
+        "configuration": "qwen2.5_14b",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 1208.8199853897095,
+        "liger_us": 1209.6799612045288,
+        "ratio": 1.0007114176016392,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_upstream_token_length.csv",
+    "configurations": 12,
+    "passed": 7,
+    "max_ratio": 4.419521628898235,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 34.15999934077263,
+        "liger_us": 95.26000171899796,
+        "ratio": 2.7886417903204612,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "2048",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 55.93999847769737,
+        "liger_us": 103.0299961566925,
+        "ratio": 1.8417947615384611,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 30.939999967813492,
+        "liger_us": 136.73999905586243,
+        "ratio": 4.419521628898235,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "2048",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 68.18999350070953,
+        "liger_us": 124.82000142335892,
+        "ratio": 1.8304738718307714,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_upstream_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "4096",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 137.4800056219101,
+        "liger_us": 145.34999430179596,
+        "ratio": 1.0572446054557887,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_user_model_config.csv",
+    "configurations": 21,
+    "passed": 20,
+    "max_ratio": 1.1020066731288203,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_user_model_config.csv",
+        "mode": "backward",
+        "sweep": "model_config",
+        "configuration": "deepseek_v2_lite",
+        "extra": "{\"bsz\": 1, \"seq_len\": 2048}",
+        "torch_us": 29.899999499320984,
+        "liger_us": 32.94999897480011,
+        "ratio": 1.1020066731288203,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_user_token_length.csv",
+    "configurations": 12,
+    "passed": 10,
+    "max_ratio": 1.685037113828102,
+    "failures": [
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_user_token_length.csv",
+        "mode": "forward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 33.74999761581421,
+        "liger_us": 56.8699985742569,
+        "ratio": 1.685037113828102,
+        "passed": false
+      },
+      {
+        "platform": "A3",
+        "file": "all_benchmark_data_softmax_user_token_length.csv",
+        "mode": "backward",
+        "sweep": "BT",
+        "configuration": "1024",
+        "extra": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+        "torch_us": 74.96000081300735,
+        "liger_us": 80.11999726295471,
+        "ratio": 1.068836664807666,
+        "passed": false
+      }
+    ]
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_warmprobe1_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9779060642972618,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_warmprobe1_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9790667934629678,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_warmprobe2_model_config.csv",
+    "configurations": 21,
+    "passed": 21,
+    "max_ratio": 0.9772721784457064,
+    "failures": []
+  },
+  {
+    "platform": "A3",
+    "file": "all_benchmark_data_softmax_warmprobe2_token_length.csv",
+    "configurations": 12,
+    "passed": 12,
+    "max_ratio": 0.9839118289871428,
+    "failures": []
+  }
+]

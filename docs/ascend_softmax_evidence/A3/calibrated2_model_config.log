@@ -1,0 +1,406 @@
+/workspace/softmax1802/user/benchmark/scripts/benchmark_model_configs.py:282: UserWarning: Cannot create tensor with interal format while allow_internel_format=False, tensor will be created with base format. (Triggered internally at build/CMakeFiles/torch_npu.dir/compiler_depend.ts:338.)
+  y.backward(torch.randn_like(y))
+**************************************
+     BENCHMARKING SPEED for SOFTMAX
+**************************************
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "model_config",
+    "x_label": "model configuration",
+    "x_values": [
+      "llama_2_7b",
+      "llama_3_8b",
+      "qwen2.5_7b",
+      "qwen2.5_14b",
+      "qwen2.5_72b",
+      "deepseek_v2_lite",
+      "deepseek_v3"
+    ],
+    "y_values_50": [
+      0.05917000025510788,
+      0.0589900016784668,
+      0.049059998244047165,
+      0.06955999881029129,
+      0.10955999791622162,
+      0.038920000195503235,
+      0.091559998691082
+    ],
+    "y_values_20": [
+      0.058823999017477036,
+      0.05862399935722351,
+      0.048792000859975815,
+      0.06932400166988373,
+      0.10898800194263458,
+      0.03859600052237511,
+      0.09096000343561172
+    ],
+    "y_values_80": [
+      0.05951999872922897,
+      0.059539999812841415,
+      0.049327999353408813,
+      0.06989199668169022,
+      0.11013200134038925,
+      0.039367999881505966,
+      0.0919400006532669
+    ],
+    "timestamp": "2026-11-16 05:28:38",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"bsz\": 1, \"seq_len\": 2048}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "model_config",
+    "x_label": "model configuration",
+    "x_values": [
+      "llama_2_7b",
+      "llama_3_8b",
+      "qwen2.5_7b",
+      "qwen2.5_14b",
+      "qwen2.5_72b",
+      "deepseek_v2_lite",
+      "deepseek_v3"
+    ],
+    "y_values_50": [
+      0.041189998388290405,
+      0.04100000113248825,
+      0.03838000074028969,
+      0.06334000080823898,
+      0.08433999866247177,
+      0.022299999371170998,
+      0.07593999803066254
+    ],
+    "y_values_20": [
+      0.04089599847793579,
+      0.040720000863075256,
+      0.038019999861717224,
+      0.06319999694824219,
+      0.0839800015091896,
+      0.022007999941706657,
+      0.07558000087738037
+    ],
+    "y_values_80": [
+      0.041443999856710434,
+      0.0412600003182888,
+      0.038759998977184296,
+      0.06360000371932983,
+      0.08476399630308151,
+      0.022711999714374542,
+      0.07622399926185608
+    ],
+    "timestamp": "2026-11-16 05:28:44",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"bsz\": 1, \"seq_len\": 2048}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "model_config",
+    "x_label": "model configuration",
+    "x_values": [
+      "llama_2_7b",
+      "llama_3_8b",
+      "qwen2.5_7b",
+      "qwen2.5_14b",
+      "qwen2.5_72b",
+      "deepseek_v2_lite",
+      "deepseek_v3"
+    ],
+    "y_values_50": [
+      0.0656300038099289,
+      0.06512999534606934,
+      0.05991999804973602,
+      0.08608999848365784,
+      0.1367799937725067,
+      0.036410000175237656,
+      0.12307000160217285
+    ],
+    "y_values_20": [
+      0.06522000581026077,
+      0.06449200212955475,
+      0.05964000150561333,
+      0.08570399880409241,
+      0.13624000549316406,
+      0.03603599965572357,
+      0.12256000190973282
+    ],
+    "y_values_80": [
+      0.06643600016832352,
+      0.06564800441265106,
+      0.06072000041604042,
+      0.08636400103569031,
+      0.13731999695301056,
+      0.03675999864935875,
+      0.12355200201272964
+    ],
+    "timestamp": "2026-11-16 05:28:44",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"bsz\": 1, \"seq_len\": 2048}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "model_config",
+    "x_label": "model configuration",
+    "x_values": [
+      "llama_2_7b",
+      "llama_3_8b",
+      "qwen2.5_7b",
+      "qwen2.5_14b",
+      "qwen2.5_72b",
+      "deepseek_v2_lite",
+      "deepseek_v3"
+    ],
+    "y_values_50": [
+      0.0625700056552887,
+      0.062780000269413,
+      0.056279998272657394,
+      0.0821399986743927,
+      0.13147999346256256,
+      0.03350000083446503,
+      0.11699999868869781
+    ],
+    "y_values_20": [
+      0.06216000020503998,
+      0.06251199543476105,
+      0.0560000017285347,
+      0.08163999766111374,
+      0.13114799559116364,
+      0.03325200080871582,
+      0.11664799600839615
+    ],
+    "y_values_80": [
+      0.06294000148773193,
+      0.06319600343704224,
+      0.05676399916410446,
+      0.08246000111103058,
+      0.13197600841522217,
+      0.0338280014693737,
+      0.11798799782991409
+    ],
+    "timestamp": "2026-11-16 05:28:44",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"bsz\": 1, \"seq_len\": 2048}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "model_config",
+    "x_label": "model configuration",
+    "x_values": [
+      "llama_2_7b",
+      "llama_3_8b",
+      "qwen2.5_7b",
+      "qwen2.5_14b",
+      "qwen2.5_72b",
+      "deepseek_v2_lite",
+      "deepseek_v3"
+    ],
+    "y_values_50": [
+      0.9787700176239014,
+      0.9792499542236328,
+      0.8553400039672852,
+      1.2098400592803955,
+      1.9234600067138672,
+      0.5116199851036072,
+      1.6830600500106812
+    ],
+    "y_values_20": [
+      0.9781239628791809,
+      0.9775159955024719,
+      0.8534719944000244,
+      1.208191990852356,
+      1.922171950340271,
+      0.5107280015945435,
+      1.681931972503662
+    ],
+    "y_values_80": [
+      0.9803760051727295,
+      0.980292022228241,
+      0.8587119579315186,
+      1.2113840579986572,
+      1.925387978553772,
+      0.5118319988250732,
+      1.6848920583724976
+    ],
+    "timestamp": "2026-11-16 05:28:44",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"bsz\": 1, \"seq_len\": 2048}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "model_config",
+    "x_label": "model configuration",
+    "x_values": [
+      "llama_2_7b",
+      "llama_3_8b",
+      "qwen2.5_7b",
+      "qwen2.5_14b",
+      "qwen2.5_72b",
+      "deepseek_v2_lite",
+      "deepseek_v3"
+    ],
+    "y_values_50": [
+      0.9388800263404846,
+      0.9395999908447266,
+      0.8327499628067017,
+      1.1790399551391602,
+      1.8457399606704712,
+      0.4759100079536438,
+      1.6335400342941284
+    ],
+    "y_values_20": [
+      0.9386280179023743,
+      0.9394720196723938,
+      0.8322439789772034,
+      1.1788159608840942,
+      1.8451520204544067,
+      0.4751800000667572,
+      1.6330159902572632
+    ],
+    "y_values_80": [
+      0.9399160146713257,
+      0.9397599697113037,
+      0.8329319953918457,
+      1.1792160272598267,
+      1.846336007118225,
+      0.4763599932193756,
+      1.6338200569152832
+    ],
+    "timestamp": "2026-11-16 05:28:44",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"bsz\": 1, \"seq_len\": 2048}",
+    "liger_version": "0.8.2"
+  }
+]
+**************************************
+     BENCHMARKING MEMORY for SOFTMAX
+**************************************
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "model_config",
+    "x_label": "model configuration",
+    "x_values": [
+      "llama_2_7b",
+      "llama_3_8b",
+      "qwen2.5_7b",
+      "qwen2.5_14b",
+      "qwen2.5_72b",
+      "deepseek_v2_lite",
+      "deepseek_v3"
+    ],
+    "y_values_50": [
+      96.00390625,
+      96.00390625,
+      84.00390625,
+      120.00390625,
+      192.00390625,
+      48.00390625,
+      168.00390625
+    ],
+    "y_values_20": [
+      96.00390625,
+      96.00390625,
+      84.00390625,
+      120.00390625,
+      192.00390625,
+      48.00390625,
+      168.00390625
+    ],
+    "y_values_80": [
+      96.00390625,
+      96.00390625,
+      84.00390625,
+      120.00390625,
+      192.00390625,
+      48.00390625,
+      168.00390625
+    ],
+    "timestamp": "2026-11-16 05:28:44",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"bsz\": 1, \"seq_len\": 2048}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910_9382",
+    "x_name": "model_config",
+    "x_label": "model configuration",
+    "x_values": [
+      "llama_2_7b",
+      "llama_3_8b",
+      "qwen2.5_7b",
+      "qwen2.5_14b",
+      "qwen2.5_72b",
+      "deepseek_v2_lite",
+      "deepseek_v3"
+    ],
+    "y_values_50": [
+      96.00390625,
+      96.00390625,
+      84.00390625,
+      120.00390625,
+      192.00390625,
+      48.00390625,
+      168.00390625
+    ],
+    "y_values_20": [
+      96.00390625,
+      96.00390625,
+      84.00390625,
+      120.00390625,
+      192.00390625,
+      48.00390625,
+      168.00390625
+    ],
+    "y_values_80": [
+      96.00390625,
+      96.00390625,
+      84.00390625,
+      120.00390625,
+      192.00390625,
+      48.00390625,
+      168.00390625
+    ],
+    "timestamp": "2026-11-16 05:28:44",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"bsz\": 1, \"seq_len\": 2048}",
+    "liger_version": "0.8.2"
+  }
+]

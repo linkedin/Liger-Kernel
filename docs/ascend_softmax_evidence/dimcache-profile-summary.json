@@ -1,0 +1,76 @@
+{
+  "A2": {
+    "results/profile_dimcache_torch_1024/62625727ee28_189149_20261116120751167_ascend_pt/ASCEND_PROFILER_OUTPUT/kernel_details.csv": {
+      "aclnnSoftmax_SoftmaxAiCore_SoftmaxV2": {
+        "median_us": 34.11,
+        "samples": 10
+      },
+      "aclnnSoftmaxBackward_SoftmaxGrad_SoftmaxGrad": {
+        "median_us": 33.269999999999996,
+        "samples": 10
+      }
+    },
+    "results/profile_dimcache_liger_1024/62625727ee28_189554_20261116120812347_ascend_pt/ASCEND_PROFILER_OUTPUT/kernel_details.csv": {
+      "_softmax_a2_forward": {
+        "median_us": 16.96,
+        "samples": 10
+      },
+      "split_backward": {
+        "median_us": 16.810000000000002,
+        "samples": 10
+      }
+    },
+    "results/profile_dimcache_torch_2048/62625727ee28_189940_20261116120833164_ascend_pt/ASCEND_PROFILER_OUTPUT/kernel_details.csv": {
+      "aclnnSoftmax_SoftmaxAiCore_SoftmaxV2": {
+        "median_us": 58.9,
+        "samples": 10
+      },
+      "aclnnSoftmaxBackward_SoftmaxGrad_SoftmaxGrad": {
+        "median_us": 55.099999999999994,
+        "samples": 10
+      }
+    },
+    "results/profile_dimcache_liger_2048/62625727ee28_190331_20261116120854694_ascend_pt/ASCEND_PROFILER_OUTPUT/kernel_details.csv": {
+      "_softmax_a2_forward": {
+        "median_us": 29.17,
+        "samples": 10
+      },
+      "split_backward": {
+        "median_us": 28.990000000000002,
+        "samples": 10
+      }
+    }
+  },
+  "A3": {
+    "results/profile_namecache_torch/f290a33aa378_248622_20261116115058441_ascend_pt/ASCEND_PROFILER_OUTPUT/kernel_details.csv": {
+      "aclnnSoftmax_SoftmaxAiCore_SoftmaxV2": {
+        "median_us": 54.432,
+        "samples": 10
+      },
+      "aclnnSoftmaxBackward_SoftmaxGrad_SoftmaxGrad": {
+        "median_us": 53.092,
+        "samples": 10
+      }
+    },
+    "results/profile_namecache_liger/f290a33aa378_249023_20261116115115191_ascend_pt/ASCEND_PROFILER_OUTPUT/kernel_details.csv": {
+      "_softmax_ascend_forward": {
+        "median_us": 26.430999999999997,
+        "samples": 10
+      },
+      "_softmax_ascend_backward": {
+        "median_us": 24.871000000000002,
+        "samples": 10
+      }
+    },
+    "results/profile_dimcache_liger/f290a33aa378_251400_20261116120230472_ascend_pt/ASCEND_PROFILER_OUTPUT/kernel_details.csv": {
+      "_softmax_ascend_forward": {
+        "median_us": 26.661,
+        "samples": 10
+      },
+      "_softmax_ascend_backward": {
+        "median_us": 24.820999999999998,
+        "samples": 10
+      }
+    }
+  }
+}

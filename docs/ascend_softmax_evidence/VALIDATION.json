@@ -1,0 +1,24 @@
+{
+  "commit": "79353a8b7d72b61dfec479dede28da72ef6f9d63",
+  "950": "pending server allocation",
+  "platforms": {
+    "A2": {
+      "stage": "numalocal",
+      "cpu_affinity": "NUMA node 0, CPU 0-31",
+      "pytest_passed": 123,
+      "speed_pairs": 66,
+      "memory_pairs": 22,
+      "max_liger_torch_ratio": 0.9984610105776036,
+      "source_hashes_match": true
+    },
+    "A3": {
+      "stage": "calibrated",
+      "cpu_affinity": "default",
+      "pytest_passed": 123,
+      "speed_pairs": 66,
+      "memory_pairs": 22,
+      "max_liger_torch_ratio": 0.9824461042405044,
+      "source_hashes_match": true
+    }
+  }
+}
