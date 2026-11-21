@@ -7,10 +7,17 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 from liger_kernel.ops.utils import set_large_grf_mode
 from liger_kernel.utils import is_npu_available
+
+_BLOCK_ROW_MAX_BLOCK_SIZE = 256
+_BLOCK_ROW_MIN_ROWS = 4096
+_BLOCK_ROW_ELEMENTS = 4096
+_BLOCK_ROW_MAX_ROWS = 64
+_BLOCK_ROW_BWD_PROGRAMS_PER_SM = 4
 
 if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
     try:
@@ -174,13 +181,140 @@ def _layer_norm_backward_kernel(
         tl.store(DB_ptr + row_block_id * stride_db + cols, db_row, mask=mask)
 
 
-def layer_norm_forward(X, W, B, eps):
+@triton.jit
+def _block_layer_norm_forward_kernel(
+    Y_ptr,
+    Y_row_stride,
+    X_ptr,
+    X_row_stride,
+    W_ptr,
+    W_row_stride,
+    B_ptr,
+    B_row_stride,
+    Mean_ptr,
+    Mean_row_stride,
+    RSTD_ptr,
+    RSTD_row_stride,
+    n_rows,
+    n_cols,
+    eps,
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_ROW: tl.constexpr,
+):
+    """
+    Block-row LayerNorm forward kernel: tiles BLOCK_ROW rows per program for narrow feature widths
+    (BLOCK_SIZE <= 256) with many rows.
+    """
+    row_idx = tl.program_id(0).to(tl.int64) * BLOCK_ROW + tl.arange(0, BLOCK_ROW)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    row_mask = row_idx < n_rows
+    col_mask = col_offsets < n_cols
+    mask = row_mask[:, None] & col_mask[None, :]
+
+    W_f32 = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0).to(tl.float32)
+    B_f32 = tl.load(B_ptr + col_offsets, mask=col_mask, other=0.0).to(tl.float32)
+
+    X_row = tl.load(
+        X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
+        mask=mask,
+        other=0.0,
+    )
+    X_f32 = X_row.to(tl.float32)
+
+    mean = tl.sum(X_f32, axis=1) / n_cols
+    X_centered = X_f32 - mean[:, None]
+    X_centered_masked = tl.where(mask, X_centered, 0.0)
+    var = tl.sum(X_centered_masked * X_centered_masked, axis=1) / n_cols
+    rstd = rsqrt(var + tl.cast(eps, tl.float32))
+
+    tl.store(Mean_ptr + row_idx * Mean_row_stride, mean, mask=row_mask)
+    tl.store(RSTD_ptr + row_idx * RSTD_row_stride, rstd, mask=row_mask)
+
+    Y_f32 = X_centered * rstd[:, None] * W_f32[None, :] + B_f32[None, :]
+
+    tl.store(
+        Y_ptr + row_idx[:, None] * Y_row_stride + col_offsets[None, :],
+        Y_f32.to(X_row.dtype),
+        mask=mask,
+    )
+
+
+@triton.jit
+def _block_layer_norm_backward_kernel(
+    X_ptr,
+    stride_x,
+    W_ptr,
+    Mean_ptr,
+    stride_mean,
+    RSTD_ptr,
+    stride_rstd,
+    DX_ptr,
+    stride_dx,
+    DW_ptr,
+    stride_dw,
+    DB_ptr,
+    stride_db,
+    DY_ptr,
+    stride_dy,
+    n_rows,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_ROW: tl.constexpr,
+    COMPUTE_DW: tl.constexpr = True,
+    COMPUTE_DB: tl.constexpr = True,
+):
+    """
+    Block-row persistent LayerNorm backward kernel for narrow feature widths (BLOCK_SIZE <= 256).
+    """
+    pid = tl.program_id(0).to(tl.int64)
+    num_programs = tl.num_programs(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    col_mask = cols < n_cols
+
+    if COMPUTE_DW:
+        dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    if COMPUTE_DB:
+        db_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+
+    w_f32 = tl.load(W_ptr + cols, mask=col_mask, other=0.0).to(tl.float32)
+
+    for start in range(pid * BLOCK_ROW, n_rows, num_programs * BLOCK_ROW):
+        row_idx = start + tl.arange(0, BLOCK_ROW)
+        row_mask = row_idx < n_rows
+        mask = row_mask[:, None] & col_mask[None, :]
+
+        x_f32 = tl.load(X_ptr + row_idx[:, None] * stride_x + cols[None, :], mask=mask, other=0.0).to(tl.float32)
+        dy_f32 = tl.load(DY_ptr + row_idx[:, None] * stride_dy + cols[None, :], mask=mask, other=0.0).to(tl.float32)
+        mean_f32 = tl.load(Mean_ptr + row_idx * stride_mean, mask=row_mask, other=0.0).to(tl.float32)
+        rstd_f32 = tl.load(RSTD_ptr + row_idx * stride_rstd, mask=row_mask, other=0.0).to(tl.float32)
+
+        x_hat = tl.where(mask, (x_f32 - mean_f32[:, None]) * rstd_f32[:, None], 0.0)
+        wdy = w_f32[None, :] * dy_f32
+        c1 = tl.sum(x_hat * wdy, axis=1) / n_cols
+        c2 = tl.sum(wdy, axis=1) / n_cols
+        dx = (wdy - (x_hat * c1[:, None] + c2[:, None])) * rstd_f32[:, None]
+
+        tl.store(DX_ptr + row_idx[:, None] * stride_dx + cols[None, :], dx, mask=mask)
+
+        if COMPUTE_DW:
+            dW_row += tl.sum(tl.where(mask, dy_f32 * x_hat, 0.0), axis=0)
+        if COMPUTE_DB:
+            db_row += tl.sum(tl.where(mask, dy_f32, 0.0), axis=0)
+
+    if COMPUTE_DW:
+        tl.store(DW_ptr + pid * stride_dw + cols, dW_row, mask=col_mask)
+    if COMPUTE_DB:
+        tl.store(DB_ptr + pid * stride_db + cols, db_row, mask=col_mask)
+
+
+def layer_norm_forward(X, W, B, eps, row_mode=None):
     """
     Args:
         X: Input tensor of shape (..., hidden_size)
         W: Weight tensor of shape (hidden_size,)
         B: Bias tensor of shape (hidden_size,)
         eps: Small constant for numerical stability
+        row_mode: If truthy, force the single-row-per-program path
 
     Returns:
         Tuple of (output, input, mean, rstd, block_size, num_warps)
@@ -210,32 +344,55 @@ def layer_norm_forward(X, W, B, eps):
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
 
-    # Launch kernel with one thread block per row for optimal performance
-    grid = (n_rows,)
-    _layer_norm_forward_kernel[grid](
-        Y,
-        Y.stride(0),
-        X,
-        X.stride(0),
-        W,
-        W.stride(0),
-        B,
-        B.stride(0),
-        Mean,
-        Mean.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        n_cols,
-        eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        **kernel_args,
-    )
+    with device_context(X.device):
+        if BLOCK_SIZE > _BLOCK_ROW_MAX_BLOCK_SIZE or n_rows < _BLOCK_ROW_MIN_ROWS or row_mode:
+            _layer_norm_forward_kernel[(n_rows,)](
+                Y,
+                Y.stride(0),
+                X,
+                X.stride(0),
+                W,
+                W.stride(0),
+                B,
+                B.stride(0),
+                Mean,
+                Mean.stride(0),
+                RSTD,
+                RSTD.stride(0),
+                n_cols,
+                eps,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
+                **kernel_args,
+            )
+        else:
+            BLOCK_ROW = min(_BLOCK_ROW_MAX_ROWS, _BLOCK_ROW_ELEMENTS // max(1, BLOCK_SIZE))
+            _block_layer_norm_forward_kernel[(triton.cdiv(n_rows, BLOCK_ROW),)](
+                Y,
+                Y.stride(0),
+                X,
+                X.stride(0),
+                W,
+                W.stride(0),
+                B,
+                B.stride(0),
+                Mean,
+                Mean.stride(0),
+                RSTD,
+                RSTD.stride(0),
+                n_rows,
+                n_cols,
+                eps,
+                BLOCK_SIZE=BLOCK_SIZE,
+                BLOCK_ROW=BLOCK_ROW,
+                num_warps=num_warps,
+                **kernel_args,
+            )
 
     return Y.view(*shape), X, Mean, RSTD, BLOCK_SIZE, num_warps
 
 
-def layer_norm_backward(dY, X, W, B, Mean, RSTD, needs_dw=None, needs_db=None):
+def layer_norm_backward(dY, X, W, B, Mean, RSTD, row_mode=None, needs_dw=None, needs_db=None):
     """
     Args:
         dY: Gradient of output
@@ -244,6 +401,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD, needs_dw=None, needs_db=None):
         B: Bias tensor
         Mean: Pre-computed mean
         RSTD: Pre-computed reciprocal standard deviation
+        row_mode: If truthy, force the single-row-per-program path
         needs_dw: Whether to compute gradient of weight
         needs_db: Whether to compute gradient of bias
 
@@ -266,16 +424,21 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD, needs_dw=None, needs_db=None):
     elif X.device.type == "npu":
         sm_count = get_npu_core_count()
 
-    # fp32 for numerical stability especially.
-    _DW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device) if compute_dw else None
-    _DB = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device) if compute_db else None
-
     # Calculate optimal block size and warp configuration
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     if n_cols > BLOCK_SIZE:
         raise RuntimeError(f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}.")
-    rows_per_program = math.ceil(n_rows / sm_count)
-    grid = (sm_count,)
+
+    use_single_row = BLOCK_SIZE > _BLOCK_ROW_MAX_BLOCK_SIZE or n_rows < _BLOCK_ROW_MIN_ROWS or bool(row_mode)
+    if use_single_row:
+        n_programs = sm_count
+    else:
+        BLOCK_ROW = min(_BLOCK_ROW_MAX_ROWS, _BLOCK_ROW_ELEMENTS // max(1, BLOCK_SIZE))
+        n_programs = max(1, min(sm_count * _BLOCK_ROW_BWD_PROGRAMS_PER_SM, triton.cdiv(n_rows, BLOCK_ROW)))
+
+    # fp32 for numerical stability especially.
+    _DW = torch.empty((n_programs, n_cols), dtype=torch.float32, device=W.device) if compute_dw else None
+    _DB = torch.empty((n_programs, n_cols), dtype=torch.float32, device=W.device) if compute_db else None
 
     # Allocate gradient tensors
     DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
@@ -286,31 +449,58 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD, needs_dw=None, needs_db=None):
         kernel_args.update({"num_warps": 32, "num_stages": 4})
         set_large_grf_mode(kernel_args)
 
-    # Launch kernel with one thread block per row for optimal performance
-    _layer_norm_backward_kernel[grid](
-        X,
-        X.stride(0),
-        W,
-        Mean,
-        Mean.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        DX,
-        DX.stride(0),
-        _DW,
-        _DW.stride(0) if compute_dw else 0,
-        _DB,
-        _DB.stride(0) if compute_db else 0,
-        dY,
-        dY.stride(0),
-        n_rows,
-        n_cols,
-        rows_per_program=rows_per_program,
-        BLOCK_SIZE=BLOCK_SIZE,
-        COMPUTE_DW=compute_dw,
-        COMPUTE_DB=compute_db,
-        **kernel_args,
-    )
+    with device_context(X.device):
+        if use_single_row:
+            rows_per_program = math.ceil(n_rows / sm_count)
+            _layer_norm_backward_kernel[(n_programs,)](
+                X,
+                X.stride(0),
+                W,
+                Mean,
+                Mean.stride(0),
+                RSTD,
+                RSTD.stride(0),
+                DX,
+                DX.stride(0),
+                _DW,
+                _DW.stride(0) if compute_dw else 0,
+                _DB,
+                _DB.stride(0) if compute_db else 0,
+                dY,
+                dY.stride(0),
+                n_rows,
+                n_cols,
+                rows_per_program=rows_per_program,
+                BLOCK_SIZE=BLOCK_SIZE,
+                COMPUTE_DW=compute_dw,
+                COMPUTE_DB=compute_db,
+                **kernel_args,
+            )
+        else:
+            _block_layer_norm_backward_kernel[(n_programs,)](
+                X,
+                X.stride(0),
+                W,
+                Mean,
+                Mean.stride(0),
+                RSTD,
+                RSTD.stride(0),
+                DX,
+                DX.stride(0),
+                _DW,
+                _DW.stride(0) if compute_dw else 0,
+                _DB,
+                _DB.stride(0) if compute_db else 0,
+                dY,
+                dY.stride(0),
+                n_rows,
+                n_cols,
+                BLOCK_SIZE=BLOCK_SIZE,
+                BLOCK_ROW=BLOCK_ROW,
+                COMPUTE_DW=compute_dw,
+                COMPUTE_DB=compute_db,
+                **kernel_args,
+            )
 
     DX = DX.view(*shape)
     DW = _DW.sum(dim=0).to(W.dtype) if compute_dw else None
@@ -322,8 +512,9 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD, needs_dw=None, needs_db=None):
 class LigerLayerNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, B, eps):
-        Y, X, Mean, RSTD, BLOCK_SIZE, num_warps = layer_norm_forward(X, W, B, eps)
+    def forward(ctx, X, W, B, eps, row_mode=None):
+        Y, X, Mean, RSTD, BLOCK_SIZE, num_warps = layer_norm_forward(X, W, B, eps, row_mode=row_mode)
+        ctx.row_mode = row_mode
         ctx.save_for_backward(X, W, B, Mean, RSTD)
         return Y
 
@@ -333,5 +524,7 @@ class LigerLayerNormFunction(torch.autograd.Function):
         X, W, B, Mean, RSTD = ctx.saved_tensors
         needs_dw = ctx.needs_input_grad[1]
         needs_db = ctx.needs_input_grad[2]
-        DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD, needs_dw=needs_dw, needs_db=needs_db)
-        return DX, DW, DB, None
+        DX, DW, DB = layer_norm_backward(
+            dY, X, W, B, Mean, RSTD, row_mode=ctx.row_mode, needs_dw=needs_dw, needs_db=needs_db
+        )
+        return DX, DW, DB, None, None
