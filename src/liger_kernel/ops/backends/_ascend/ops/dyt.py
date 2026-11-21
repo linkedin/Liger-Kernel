@@ -21,7 +21,7 @@ def _dyt_fwd_kernel(
     Gamma,
     Beta,
     HAVE_BETA: tl.constexpr,
-    M: tl.constexpr,
+    M,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
@@ -76,7 +76,7 @@ def _dyt_bwd_kernel(
     Alpha,
     Gamma,
     HAVE_BETA: tl.constexpr,
-    M: tl.constexpr,
+    M,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
