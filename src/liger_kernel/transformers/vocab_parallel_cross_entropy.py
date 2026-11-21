@@ -18,7 +18,7 @@ so the kernel only needs ``alpha_eff = alpha`` (PyTorch) or ``alpha_eff = alpha 
 Averaging scope at TP>1 (irrelevant at TP=1 since V_local == V_global):
 
   - ``"global"`` (default): ``H(u, p)`` averaged over V_global. Adds one AllReduce on
-    ``sum(log_softmax_local, dim=-1)``. Exact result — matches a single-rank reference
+    the per-token sum of the shifted logits. Exact result — matches a single-rank reference
     computed on the full logits.
   - ``"partition"``: ``H(u, p)`` averaged over V_local on each rank. No extra
     AllReduce. Loss tensor differs per rank under this mode — this mirrors Megatron's

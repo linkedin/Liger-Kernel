@@ -523,6 +523,53 @@ def test_vp_class_correctness_with_label_smoothing_and_ignore_index(
 
 
 @pytest.mark.parametrize(
+    "ce_cls, reference",
+    [
+        (LigerVocabParallelCrossEntropy, _reference_pytorch_loss),
+        (LigerMegatronCrossEntropy, _reference_megatron_loss),
+    ],
+)
+@pytest.mark.parametrize("gap", [120.0, 1e4])
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-4),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported"),
+        ),
+    ],
+)
+def test_label_smoothing_with_logits_far_below_the_max(ce_cls, reference, gap, dtype, atol, rtol):
+    """exp(x - max) underflows to 0 in fp32 once a logit is ~104 below the row max (a masked
+    vocabulary, for example). The smoothing term must stay finite there, like F.cross_entropy."""
+    s, b, v = 8, 2, 512
+    n_low = 64
+    ignore_index = -100
+    label_smoothing = 0.1
+    ce = ce_cls(ignore_index=ignore_index, label_smoothing=label_smoothing)
+
+    base = torch.randn(s, b, v, device=device, dtype=dtype)
+    base[..., v - n_low :] -= gap
+    target = torch.randint(0, v - n_low, (s, b), device=device, dtype=torch.long)
+    _assign_ignore_index(target, ignore_index, frac=0.25)
+
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+
+    ref = reference(h_ref, target, ignore_index=ignore_index, label_smoothing=label_smoothing)
+    got = ce(h_got, target)
+    assert torch.isfinite(got).all()
+    assert_verbose_allclose(got.float(), ref.float(), atol=atol, rtol=rtol)
+
+    ref.sum().backward()
+    got.sum().backward()
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
     "s, b, v",
     [
         (16, 1, 4096),
