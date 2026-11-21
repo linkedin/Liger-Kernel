@@ -24,6 +24,9 @@ if infer_device() == "npu":
 else:
     MAX_FUSED_SIZE = 65536
 
+# The backward kernel works in fp32. A wider block made the launch about ten times slower on a B200.
+MAX_FUSED_SIZE_BACKWARD = 16384
+
 
 @triton.jit
 def _group_norm_forward_kernel(
@@ -150,20 +153,22 @@ def _group_norm_backward_kernel(
         dW = 0.0
         dB = 0.0
         # Move the pointers to the correct channel
-        W = tl.load(W_ptr + channel_idx)
+        W = tl.load(W_ptr + channel_idx).to(tl.float32)
         for i in tl.range(0, hidden_size, BLOCK_SIZE):
             hidden_size_offsets = i + block_range
             mask = hidden_size_offsets < hidden_size
+            # upcast before the sums, as the forward does: an fp16 tl.sum over a channel can overflow
+            # and a bf16 tl.sum only keeps 8 bits
             X = tl.load(
                 X_ptr + channel_idx * X_col_stride + hidden_size_offsets,
                 mask=mask,
                 other=0.0,
-            )
+            ).to(tl.float32)
             UPSTREAM_grad = tl.load(
                 UPSTREAM_ptr + channel_idx * X_col_stride + hidden_size_offsets,
                 mask=mask,
                 other=0.0,
-            )
+            ).to(tl.float32)
 
             x_hat = (X - mean) * rstd
             dW += tl.sum(UPSTREAM_grad * x_hat)
@@ -183,7 +188,7 @@ def _group_norm_backward_kernel(
 
     for channel_idx in tl.range(group_idx * channels_per_group, (group_idx + 1) * channels_per_group):
         # Move the pointers to the correct channel
-        W = tl.load(W_ptr + channel_idx)
+        W = tl.load(W_ptr + channel_idx).to(tl.float32)
         for i in range(0, hidden_size, BLOCK_SIZE):
             hidden_size_offsets = i + block_range
             mask = hidden_size_offsets < hidden_size
@@ -191,12 +196,12 @@ def _group_norm_backward_kernel(
                 X_ptr + channel_idx * X_col_stride + hidden_size_offsets,
                 mask=mask,
                 other=0.0,
-            )
+            ).to(tl.float32)
             UPSTREAM_grad = tl.load(
                 UPSTREAM_ptr + channel_idx * X_col_stride + hidden_size_offsets,
                 mask=mask,
                 other=0.0,
-            )
+            ).to(tl.float32)
 
             x_hat = (X - mean) * rstd
             wdy = W * UPSTREAM_grad
@@ -213,8 +218,9 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     hidden_size = X.shape[-1]
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(hidden_size))
     Y = torch.empty((batch_size, num_groups, hidden_size), dtype=X.dtype, device=X.device)
-    Mean = torch.zeros((batch_size, num_groups), dtype=X.dtype, device=X.device)
-    RSTD = torch.zeros((batch_size, num_groups), dtype=X.dtype, device=X.device)
+    # The statistics are computed in fp32; keep them in fp32 for the backward pass.
+    Mean = torch.zeros((batch_size, num_groups), dtype=torch.float32, device=X.device)
+    RSTD = torch.zeros((batch_size, num_groups), dtype=torch.float32, device=X.device)
 
     _group_norm_forward_kernel[(batch_size, num_groups)](
         Y,
@@ -257,7 +263,7 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
     DB = torch.zeros((num_channels), dtype=B.dtype, device=B.device)
     triton_dtype = tl.float32 if X.dtype == torch.float32 else tl.bfloat16
 
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(hidden_size))
+    BLOCK_SIZE = min(MAX_FUSED_SIZE_BACKWARD, triton.next_power_of_2(hidden_size))
     _group_norm_backward_kernel[(batch_size, num_groups)](
         X,
         X.stride(0),
