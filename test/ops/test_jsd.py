@@ -220,6 +220,30 @@ _TRITON_IN = any(i in _REGISTERED_IMPLS for i in ("nvidia-triton", "triton"))
 _CUTILE_IN = any(i in _REGISTERED_IMPLS for i in ("nvidia-cutile", "cutile"))
 
 
+@pytest.mark.skipif(not _CUTILE_IN, reason="needs cutile")
+@pytest.mark.parametrize("beta", [0.3, 0.5, 0.7])
+def test_cutile_jsd_mixture_underflow_is_finite(beta):
+    """Entries far below exp's fp32 range under both distributions make the mixture M exactly
+    zero; the kernel must not turn ``M * log(M)`` into ``0 * -inf = NaN``."""
+    impl = next(i for i in ("nvidia-cutile", "cutile") if i in _REGISTERED_IMPLS)
+    log_q = torch.tensor([[0.0, -120.0, -150.0, -1.0]], device="cuda").log_softmax(-1).requires_grad_()
+    log_p = torch.tensor([[0.5, -130.0, -160.0, -2.0]], device="cuda").log_softmax(-1)
+
+    out = functional_jsd(log_q, log_p, None, beta=beta, ignore_index=-100, impl=impl)
+    out.backward()
+
+    # float64 keeps every probability here representable, so the reference needs no guard.
+    log_q_ref = log_q.detach().double().requires_grad_()
+    q, p = log_q_ref.exp(), log_p.double().exp()
+    log_m = torch.log(beta * p + (1.0 - beta) * q)
+    ref = (beta * p * (log_p.double() - log_m) + (1.0 - beta) * q * (log_q_ref - log_m)).sum()
+    ref.backward()
+
+    assert torch.isfinite(out) and torch.isfinite(log_q.grad).all()
+    torch.testing.assert_close(out.double(), ref, atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(log_q.grad.double(), log_q_ref.grad, atol=1e-6, rtol=1e-5)
+
+
 @pytest.mark.skipif(not (_TRITON_IN and _CUTILE_IN), reason="needs both triton + cutile")
 @pytest.mark.parametrize("dtype", _DTYPES)
 @pytest.mark.parametrize("shape", _SHAPES)

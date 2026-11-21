@@ -120,7 +120,9 @@ def _jsd_kernel_ct(
             beta_p = beta * p_prob
             one_minus_beta_q = (1.0 - beta) * q_prob
             m_prob = beta_p + one_minus_beta_q
-            log_m = ct.log(m_prob)
+            # Bound log's input below by the smallest normal fp32 (2**-126): a mixture that
+            # underflows to zero/subnormal otherwise yields log(0) = -inf and 0 * -inf = NaN.
+            log_m = ct.log(ct.maximum(m_prob, 1.1754943508222875e-38))
             loss_tile = beta_p * y_f32 + one_minus_beta_q * x_f32 - m_prob * log_m
             dx_tile = one_minus_beta_q * (x_f32 - log_m)
 
