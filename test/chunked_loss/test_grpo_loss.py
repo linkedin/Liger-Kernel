@@ -804,6 +804,58 @@ def test_correctness_with_vllm_is_ratio(loss_type, beta):
     assert_verbose_allclose(input3.grad, input4.grad, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+def test_vespo_zero_vllm_is_ratio_drops_only_that_token(compiled):
+    """A token whose vLLM IS ratio is 0 (TRL ``token_mask`` mode) is dropped from the VESPO sequence
+    weight and from the loss, exactly as if it were masked out, instead of vetoing its whole sequence.
+
+    Reference: TRL GRPOTrainer (huggingface/trl#8108).
+    """
+    torch.compiler.reset()
+    set_seed()
+    B, T, H, V = 3, 6, 8, 16
+    dtype = torch.float32
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[2, -2:] = 0
+    advantages = torch.tensor([0.7, -0.4, 1.1], device=device, dtype=dtype)
+    with torch.no_grad():
+        logps = torch.log_softmax(_input @ weight.t(), dim=-1).gather(-1, selected_token_ids.unsqueeze(-1)).squeeze(-1)
+    old_per_token_logps = logps + 0.05 * torch.randn(B, T, device=device, dtype=dtype)
+    num_items_in_batch = attention_mask.sum()
+
+    vllm_is_ratio = torch.ones(B, T, device=device)
+    vllm_is_ratio[0, 2] = 0.0  # rejected token
+    dropped_mask = attention_mask.clone()
+    dropped_mask[0, 2] = 0.0  # the same token removed from the loss mask instead
+
+    def run(mask, ratio):
+        x = _input.detach().clone().requires_grad_(True)
+        loss_fn = LigerFusedLinearGRPOLoss(beta=0.0, loss_type="vespo", use_ref_model=False, compiled=compiled)
+        loss, _ = loss_fn(
+            x,
+            weight,
+            selected_token_ids,
+            mask,
+            advantages,
+            old_per_token_logps=old_per_token_logps,
+            vllm_is_ratio=ratio,
+            num_items_in_batch=num_items_in_batch,
+        )
+        loss.backward()
+        return loss, x.grad
+
+    loss_rejected, grad_rejected = run(attention_mask, vllm_is_ratio)
+    loss_dropped, grad_dropped = run(dropped_mask, torch.ones(B, T, device=device))
+
+    assert_verbose_allclose(loss_rejected, loss_dropped, atol=1e-6, rtol=1e-5)
+    assert_verbose_allclose(grad_rejected, grad_dropped, atol=1e-6, rtol=1e-5)
+    # The other tokens of the sequence keep their gradient.
+    assert grad_rejected[0, [0, 1, 3, 4, 5]].abs().sum() > 1e-3
+
+
 @pytest.mark.parametrize("loss_type", ["dapo", "cispo", "vespo"])
 def test_num_items_in_batch_normalizer(loss_type):
     """``num_items_in_batch`` overrides the dapo/cispo/vespo normalizer.

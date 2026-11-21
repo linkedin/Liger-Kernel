@@ -37,6 +37,9 @@ def get_gamma_weights(
 
     if importance_sampling_ratio is not None:
         log_is_ratio = torch.clamp(torch.log(importance_sampling_ratio), lower_clamp, 20.0)
+        if log_is_ratio.shape[-1] == mask.shape[-1]:
+            # Token-level ratios only count the tokens kept by ``mask``; a (B, 1) sequence-level ratio counts once.
+            log_is_ratio = log_is_ratio * mask
         seq_log_ratio = seq_log_ratio + torch.sum(log_is_ratio, dim=-1, keepdim=True)
 
     log_w_seq = torch.clamp(seq_log_ratio, lower_clamp, 20.0)
@@ -181,17 +184,20 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # Reference: TRL grpo_trainer.get_gamma_weights. The vllm correction for
             # distribution mismatch is folded into phi_seq via ``importance_sampling_ratio``
             # rather than multiplying per_token_loss.
+            # A token whose ratio is 0 (e.g. rejected by TRL's ``token_mask`` mode) is dropped from both the
+            # sequence weight and the loss, instead of collapsing phi_seq for its whole sequence.
+            vespo_mask = attention_mask if vllm_is_ratio is None else attention_mask * (vllm_is_ratio > 0)
             phi_seq = get_gamma_weights(
                 advantages=advantages,
                 log_ratio_per_token=log_ratio,
-                mask=attention_mask,
+                mask=vespo_mask,
                 importance_sampling_ratio=vllm_is_ratio,
                 k_pos=vespo_k_pos,
                 lambda_pos=vespo_lambda_pos,
                 k_neg=vespo_k_neg,
                 lambda_neg=vespo_lambda_neg,
             )
-            per_token_loss = -phi_seq * advantages.unsqueeze(1) * per_token_logps
+            per_token_loss = -phi_seq * advantages.unsqueeze(1) * per_token_logps * vespo_mask
         else:
             # Apply delta (two-sided clipping from INTELLECT-2) to coef_1
             if delta is not None:
