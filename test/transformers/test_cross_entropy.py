@@ -1656,3 +1656,30 @@ def test_none_reduction_loss_dtype_float32_backward_keeps_input_dtype(in_place):
         logits.clone().requires_grad_(True), target, None, -100, 0.0, 0.0, "none", None, False
     )[4]
     assert torch.equal(grad, (unscaled.float() * g_seen.float().unsqueeze(1)).to(torch.bfloat16))
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+def test_cross_entropy_non_contiguous_input_backward(reduction):
+    torch.manual_seed(0)
+    N, V = 37, 257
+    logits_base = torch.randn((V, N), device=device, dtype=torch.float32)
+    target = torch.randint(0, V, (N,), device=device, dtype=torch.int64)
+
+    # Non-contiguous view of shape (N, V) with stride(-1) != 1
+    leaf_liger = logits_base.clone().requires_grad_(True)
+    x_liger = leaf_liger.t()
+    assert x_liger.shape == (N, V) and x_liger.stride(-1) != 1
+
+    loss_liger = liger_cross_entropy(x_liger, target, reduction=reduction)
+    loss_liger.sum().backward()
+    grad_liger = leaf_liger.grad.t()
+
+    # PyTorch reference
+    leaf_ref = logits_base.clone().requires_grad_(True)
+    x_ref = leaf_ref.t()
+    loss_ref = F.cross_entropy(x_ref, target, reduction=reduction)
+    loss_ref.sum().backward()
+    grad_ref = leaf_ref.grad.t()
+
+    assert not torch.equal(grad_liger, logits_base.t()), "Gradient should not match raw input logits!"
+    torch.testing.assert_close(grad_liger, grad_ref, rtol=1e-5, atol=1e-5)
