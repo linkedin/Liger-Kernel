@@ -1017,3 +1017,11 @@ class GrpoLossFunction(torch.autograd.Function):
             None,  # num_items_in_batch
             None,  # phi_seq
         )
+
+
+# [LIGER_TRITON_ONLINE_ENTROPY_V1]
+from liger_kernel.ops._grpo_online_entropy import LigerSelectiveLogSoftmaxEntropyFunction  # noqa: E402, F401
+from liger_kernel.ops._grpo_online_entropy import _selective_log_softmax_bwd_kernel  # noqa: E402, F401
+from liger_kernel.ops._grpo_online_entropy import compute_high_entropy_mask  # noqa: E402, F401
+from liger_kernel.ops._grpo_online_entropy import selective_log_softmax_with_entropy  # noqa: E402, F401
+from liger_kernel.ops._grpo_online_entropy import triton_grpo_loss_with_entropy  # noqa: E402, F401
