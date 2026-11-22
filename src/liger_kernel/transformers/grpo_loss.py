@@ -85,7 +85,7 @@ def triton_grpo_loss(
 
     # VESPO: pre-compute phi_seq (detached, sequence-level gamma weighting). The vllm
     # importance-sampling correction is folded into phi_seq via log_is_ratio rather than
-    # multiplied onto per_token_loss, so we drop vllm_is_ratio for the kernel call.
+    # multiplied onto per_token_loss; the kernel only uses vllm_is_ratio to drop tokens whose ratio is 0.
     phi_seq = None
     if loss_type == "vespo":
         if importance_sampling_level == "sequence":
@@ -106,6 +106,10 @@ def triton_grpo_loss(
         vllm_for_phi = vllm_is_ratio
         if vllm_for_phi is not None and vllm_for_phi.dim() == 1:
             vllm_for_phi = vllm_for_phi.unsqueeze(-1)
+        if vllm_for_phi is not None:
+            # A token whose ratio is 0 (e.g. rejected by TRL's ``token_mask`` mode) is dropped from the
+            # sequence weight here and from the loss in the kernel.
+            mask = mask * (vllm_for_phi > 0)
         phi_seq = get_gamma_weights(
             advantages=advantages,
             log_ratio_per_token=log_ratio,
@@ -116,8 +120,6 @@ def triton_grpo_loss(
             k_neg=vespo_k_neg,
             lambda_neg=vespo_lambda_neg,
         )  # (B, 1)
-        # vllm correction is folded into phi_seq; do not pass it to the kernel separately.
-        vllm_is_ratio = None
 
     result = GrpoLossFunction.apply(
         logits,
