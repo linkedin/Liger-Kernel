@@ -93,13 +93,14 @@ declare_op_locations(
     ),
 )
 
-# RoPE: Triton (universal) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
+# RoPE: Triton (universal), CuTe DSL (Hopper+), and Ascend Triton / TileLang.
 declare_op_locations(
     "rope",
     (
         "liger_kernel.ops.backends._triton.rope",
         "liger_kernel.ops.backends._cutedsl.rope",
         "liger_kernel.ops.backends._ascend.rope",
+        "liger_kernel.ops.tilelang.ascend.rope",
     ),
 )
 
@@ -403,6 +404,7 @@ def rope(
     position_ids: Optional[torch.Tensor] = None,
     unsqueeze_dim: int = 1,
     *,
+    rotary_dim: Optional[int] = None,
     impl: Optional[str] = None,
     mode: Optional[str] = None,
     backend: Optional[str] = None,  # legacy back-compat alias for impl=
@@ -423,7 +425,9 @@ def rope(
             ``(bsz, seq_len, head_dim)``.
         sin: sine tensor, same shape as ``cos``.
         position_ids: accepted for API parity (unused by the kernels).
-        unsqueeze_dim: accepted for API parity (unused by the kernels).
+        unsqueeze_dim: accepted for API parity.
+        rotary_dim: number of leading head entries to rotate. Defaults to the
+            width inferred from cos/sin. Pass it explicitly for half-width tables.
         impl: explicit implementation name (``"nvidia-cutedsl"``,
             ``"nvidia-triton"``). Legacy bare names accepted and translated.
         backend: Legacy back-compat alias for ``impl=``.
@@ -431,6 +435,7 @@ def rope(
     """
     if impl is None and backend is not None:
         impl = backend
+    options = {} if rotary_dim is None else {"rotary_dim": rotary_dim}
     return dispatch(
         "rope",
         q,
@@ -441,6 +446,7 @@ def rope(
         unsqueeze_dim,
         impl=impl,
         mode=mode,
+        **options,
     )
 
 
