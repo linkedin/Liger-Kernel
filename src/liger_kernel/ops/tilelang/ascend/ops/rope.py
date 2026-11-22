@@ -55,8 +55,8 @@ def _launch(x, cos, sin, backward=False):
             S,
             D,
             cos.shape[0],
-            str(x.dtype).removeprefix("torch."),
-            str(cos.dtype).removeprefix("torch."),
+            dtype,
+            phase_dtype,
             backward,
             cores,
             strides,
@@ -65,34 +65,9 @@ def _launch(x, cos, sin, backward=False):
     return out
 
 
-def _grouped_pair_shape_gate(q, k, cos):
-    """Reject shapes that cannot use grouped-pair before querying NPU properties."""
-    B, Hq, S, D = q.shape
-    Hk = k.shape[1]
-    group, rows = 4, 32
-    dtype = str(q.dtype).removeprefix("torch.")
-    phase_dtype = str(cos.dtype).removeprefix("torch.")
-    item_bytes = 4 if dtype == "float32" else 2
-    phase_bytes = 4 if phase_dtype == "float32" else 2
-    half = D // 2
-    return (
-        min(B, Hq, Hk, S) > 0
-        and S >= 2048
-        and S % rows == 0
-        and Hq % group == 0
-        and Hk % group == 0
-        and D <= 128
-        and dtype in ("float16", "bfloat16", "float32")
-        and half * item_bytes % 32 == 0
-        and half * phase_bytes % 32 == 0
-    )
-
-
 def _launch_pair(q, k, cos, sin, backward=False):
     """Use an eligible pair builder; keep all other paths on single launches."""
-    if q is None or k is None or q.dtype != k.dtype:
-        return _launch(q, cos, sin, backward), _launch(k, cos, sin, backward)
-    if not q.numel() or not k.numel():
+    if q is None or k is None or q.dtype != k.dtype or not q.numel() or not k.numel():
         return _launch(q, cos, sin, backward), _launch(k, cos, sin, backward)
     B, Hq, S, D = q.shape
     Hk = k.shape[1]
@@ -100,48 +75,20 @@ def _launch_pair(q, k, cos, sin, backward=False):
     phase_dtype = str(cos.dtype).removeprefix("torch.")
     with torch.npu.device(q.device):
         cores = torch.npu.get_device_properties(q.device).vector_core_num
-        if _grouped_pair_shape_gate(q, k, cos) and all(
-            x.is_contiguous() or x.transpose(1, 2).is_contiguous() for x in (q, k)
-        ):
-            builders = (kernels.rope_grouped_pair_kernel,)
-            if S >= 8192:
-                builders = (kernels.rope_sequence_pair_kernel, *builders)
-            for builder in builders:
-                kernel = builder(
-                    B,
-                    Hq,
-                    Hk,
-                    S,
-                    D,
-                    cos.shape[0],
-                    dtype,
-                    phase_dtype,
-                    backward,
-                    cores,
-                    tuple(q.stride()) if not q.is_contiguous() else None,
-                    tuple(k.stride()) if not k.is_contiguous() else None,
-                )
-                if kernel is not None:
-                    qo = torch.empty(q.shape, dtype=q.dtype, device=q.device)
-                    ko = torch.empty(k.shape, dtype=k.dtype, device=k.device)
-                    kernel(q, k, cos, sin, qo, ko)
-                    return qo, ko
-        builder = kernels.rope_pair_kernel
-        kernel = builder(
-            B,
-            Hq,
-            Hk,
-            S,
-            D,
-            cos.shape[0],
-            str(q.dtype).removeprefix("torch."),
-            str(cos.dtype).removeprefix("torch."),
-            backward,
-            cores,
-        )
+        args = (B, Hq, Hk, S, D, cos.shape[0], dtype, phase_dtype, backward, cores)
+        kernel = None
+        if S >= 2048 and all(x.is_contiguous() or x.transpose(1, 2).is_contiguous() for x in (q, k)):
+            kernel = kernels.rope_long_pair_kernel(
+                *args,
+                tuple(q.stride()) if not q.is_contiguous() else None,
+                tuple(k.stride()) if not k.is_contiguous() else None,
+            )
+        if kernel is None:
+            kernel = kernels.rope_pair_kernel(*args)
+            if kernel is not None:
+                q, k = q.contiguous(), k.contiguous()
         if kernel is None:
             return _launch(q, cos, sin, backward), _launch(k, cos, sin, backward)
-        q, k = q.contiguous(), k.contiguous()
         qo = torch.empty(q.shape, dtype=q.dtype, device=q.device)
         ko = torch.empty(k.shape, dtype=k.dtype, device=k.device)
         kernel(q, k, cos, sin, qo, ko)
@@ -164,11 +111,16 @@ def _prepare_phases(cos, sin, head_dim, rotary_dim):
         sin = torch.cat((sin[..., : width // 2], sin[..., : width // 2]), dim=-1)
     if cos.dtype != sin.dtype:
         cos, sin = cos.float(), sin.float()
-    return cos[..., :width].contiguous(), sin[..., :width].contiguous(), width
+    if cos.shape[-1] > width:
+        cos, sin = cos[..., :width], sin[..., :width]
+    return cos.contiguous(), sin.contiguous(), width
 
 
 def _rotate_prefix(q, k, cos, sin, width, backward):
-    partial = width < (q if q is not None else k).shape[-1]
+    ref = q if q is not None else k
+    if ref is None:
+        return None, None
+    partial = width < ref.shape[-1]
     q_prefix = q[..., :width] if partial and q is not None else q
     k_prefix = k[..., :width] if partial and k is not None else k
     q_out, k_out = _launch_pair(q_prefix, k_prefix, cos, sin, backward)
@@ -207,5 +159,5 @@ class LigerRopeFunction(torch.autograd.Function):
     @once_differentiable
     def backward(ctx, dq, dk):
         cos, sin = ctx.saved_tensors
-        dq_out, dk_out = rope_backward(dq, dk, cos, sin)
+        dq_out, dk_out = _rotate_prefix(dq, dk, cos, sin, cos.shape[-1], True)
         return (dq_out, dk_out, None, None, None, None, None)[: len(ctx.needs_input_grad)]

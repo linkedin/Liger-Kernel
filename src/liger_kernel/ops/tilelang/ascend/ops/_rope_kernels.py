@@ -4,6 +4,107 @@ import tilelang
 import tilelang.ascend.language as T
 
 
+def _simd_rows(half, dtype, phase_dtype, backward):
+    chunks = tilelang.cdiv(half, 64)
+
+    @T.macro
+    def compute(x, c, s, y, valid):
+        with T.SimdVF():
+            convert_mask = T.simd.pset(16)
+            for row in T.serial(valid):
+                for chunk in T.serial(chunks):
+                    lane = chunk * 64
+                    mask = T.simd.update_mask(T.min(64, half - lane), 32)
+                    if dtype == "float32":
+                        a = T.simd.vld(x[row, lane])
+                        bval = T.simd.vld(x[row, lane + half])
+                    else:
+                        ar = T.simd.vld(x[row, lane], dist="UNPK_B16")
+                        br = T.simd.vld(x[row, lane + half], dist="UNPK_B16")
+                        a = T.simd.vcvt(ar, "float32", convert_mask, part=0)
+                        bval = T.simd.vcvt(br, "float32", convert_mask, part=0)
+                    if phase_dtype == "float32":
+                        ca = T.simd.vld(c[row, lane])
+                        sa = T.simd.vld(s[row, lane])
+                    else:
+                        car = T.simd.vld(c[row, lane], dist="UNPK_B16")
+                        sar = T.simd.vld(s[row, lane], dist="UNPK_B16")
+                        ca = T.simd.vcvt(car, "float32", convert_mask, part=0)
+                        sa = T.simd.vcvt(sar, "float32", convert_mask, part=0)
+                    ac = T.simd.vmul(a, ca, mask)
+                    bc = T.simd.vmul(bval, ca, mask)
+                    bs = T.simd.vmul(bval, sa, mask)
+                    ass = T.simd.vmul(a, sa, mask)
+                    if backward:
+                        first = T.simd.vadd(ac, bs, mask)
+                        second = T.simd.vsub(bc, ass, mask)
+                    else:
+                        first = T.simd.vsub(ac, bs, mask)
+                        second = T.simd.vadd(bc, ass, mask)
+                    if dtype == "float32":
+                        T.simd.vsts(y[row, lane], first, mask)
+                        T.simd.vsts(y[row, lane + half], second, mask)
+                    else:
+                        # NOSAT preserves the reference's infinity on overflow.
+                        first_out = T.simd.vcvt(first, dtype, mask, sat=False)
+                        second_out = T.simd.vcvt(second, dtype, mask, sat=False)
+                        T.simd.vsts(y[row, lane], first_out, mask, dist="PK_B32")
+                        T.simd.vsts(y[row, lane + half], second_out, mask, dist="PK_B32")
+
+    return compute
+
+
+def _simd_group(half, dtype, phase_dtype, backward, *, unroll=False):
+    chunks = tilelang.cdiv(half, 64)
+
+    @T.macro
+    def compute_group(x, c, s, y, valid, heads):
+        with T.SimdVF():
+            convert_mask = T.simd.pset(16)
+            for row in T.serial(valid):
+                for chunk in T.serial(chunks):
+                    lane = chunk * 64
+                    mask = T.simd.update_mask(T.min(64, half - lane), 32)
+                    if phase_dtype == "float32":
+                        ca = T.simd.vld(c[row, lane])
+                        sa = T.simd.vld(s[row, lane])
+                    else:
+                        car = T.simd.vld(c[row, lane], dist="UNPK_B16")
+                        sar = T.simd.vld(s[row, lane], dist="UNPK_B16")
+                        ca = T.simd.vcvt(car, "float32", convert_mask, part=0)
+                        sa = T.simd.vcvt(sar, "float32", convert_mask, part=0)
+                    for hi in T.unroll(heads, explicit=True) if unroll else T.serial(heads):
+                        if dtype == "float32":
+                            a = T.simd.vld(x[hi, row, lane])
+                            bval = T.simd.vld(x[hi, row, lane + half])
+                        else:
+                            ar = T.simd.vld(x[hi, row, lane], dist="UNPK_B16")
+                            br = T.simd.vld(x[hi, row, lane + half], dist="UNPK_B16")
+                            a = T.simd.vcvt(ar, "float32", convert_mask, part=0)
+                            bval = T.simd.vcvt(br, "float32", convert_mask, part=0)
+                        ac = T.simd.vmul(a, ca, mask)
+                        bc = T.simd.vmul(bval, ca, mask)
+                        bs = T.simd.vmul(bval, sa, mask)
+                        ass = T.simd.vmul(a, sa, mask)
+                        if backward:
+                            first = T.simd.vadd(ac, bs, mask)
+                            second = T.simd.vsub(bc, ass, mask)
+                        else:
+                            first = T.simd.vsub(ac, bs, mask)
+                            second = T.simd.vadd(bc, ass, mask)
+                        if dtype == "float32":
+                            T.simd.vsts(y[hi, row, lane], first, mask)
+                            T.simd.vsts(y[hi, row, lane + half], second, mask)
+                        else:
+                            # NOSAT preserves the reference's infinity on overflow.
+                            first_out = T.simd.vcvt(first, dtype, mask, sat=False)
+                            second_out = T.simd.vcvt(second, dtype, mask, sat=False)
+                            T.simd.vsts(y[hi, row, lane], first_out, mask, dist="PK_B32")
+                            T.simd.vsts(y[hi, row, lane + half], second_out, mask, dist="PK_B32")
+
+    return compute_group
+
+
 @tilelang.jit(target="ascend")
 def _ungrouped_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores):
     """Build a non-mutating BNSD rotation (or its transpose Jacobian).
@@ -30,6 +131,8 @@ def _ungrouped_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores):
     tasks = B * H * tiles
     cores = min(num_cores, tasks)
 
+    compute = _simd_rows(half, dtype, phase_dtype, backward)
+
     @T.prim_func
     def main(
         X: T.Tensor((B, H, S, D), dtype),
@@ -54,51 +157,7 @@ def _ungrouped_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores):
                     T.copy(Cos[cb, begin : begin + valid, :], c[:valid, :D])
                     T.copy(Sin[cb, begin : begin + valid, :], s[:valid, :D])
                     if use_simd:
-                        # Adapted explicit register flow from example_vecadd.py and
-                        # test_tilelang_ascend_simdvf_cast.py; no planar intermediates.
-                        with T.SimdVF():
-                            convert_mask = T.simd.pset(16)
-                            for row in T.serial(valid):
-                                for chunk in T.serial(chunks):
-                                    lane = chunk * 64
-                                    mask = T.simd.update_mask(T.min(64, half - lane), 32)
-                                    if dtype == "float32":
-                                        a = T.simd.vld(x[row, lane])
-                                        bval = T.simd.vld(x[row, lane + half])
-                                    else:
-                                        ar = T.simd.vld(x[row, lane], dist="UNPK_B16")
-                                        br = T.simd.vld(x[row, lane + half], dist="UNPK_B16")
-                                        a = T.simd.vcvt(ar, "float32", convert_mask, part=0)
-                                        bval = T.simd.vcvt(br, "float32", convert_mask, part=0)
-                                    if phase_dtype == "float32":
-                                        ca = T.simd.vld(c[row, lane])
-                                        sa = T.simd.vld(s[row, lane])
-                                    else:
-                                        car = T.simd.vld(c[row, lane], dist="UNPK_B16")
-                                        sar = T.simd.vld(s[row, lane], dist="UNPK_B16")
-                                        ca = T.simd.vcvt(car, "float32", convert_mask, part=0)
-                                        sa = T.simd.vcvt(sar, "float32", convert_mask, part=0)
-                                    ac = T.simd.vmul(a, ca, mask)
-                                    bc = T.simd.vmul(bval, ca, mask)
-                                    if backward:
-                                        bs = T.simd.vmul(bval, sa, mask)
-                                        ass = T.simd.vmul(a, sa, mask)
-                                        first = T.simd.vadd(ac, bs, mask)
-                                        second = T.simd.vsub(bc, ass, mask)
-                                    else:
-                                        bs = T.simd.vmul(bval, sa, mask)
-                                        ass = T.simd.vmul(a, sa, mask)
-                                        first = T.simd.vsub(ac, bs, mask)
-                                        second = T.simd.vadd(bc, ass, mask)
-                                    if dtype == "float32":
-                                        T.simd.vsts(y[row, lane], first, mask)
-                                        T.simd.vsts(y[row, lane + half], second, mask)
-                                    else:
-                                        # NOSAT preserves the reference's infinity on overflow.
-                                        first_out = T.simd.vcvt(first, dtype, mask, sat=False)
-                                        second_out = T.simd.vcvt(second, dtype, mask, sat=False)
-                                        T.simd.vsts(y[row, lane], first_out, mask, dist="PK_B32")
-                                        T.simd.vsts(y[row, lane + half], second_out, mask, dist="PK_B32")
+                        compute(x, c, s, y, valid)
                     else:
                         with T.SimtVF(threads=128):
                             for row, lane in T.Parallel(rows, half):
@@ -119,150 +178,6 @@ def _ungrouped_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores):
 
 
 @tilelang.jit(target="ascend")
-def _resident_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores, stages):
-    """Full R64 tiles, Hg4 phase reuse; only complete outer waves are pipelined."""
-    rows, group = 64, 4
-    half = D // 2
-    chunks = tilelang.cdiv(half, 64)
-    pitch = tilelang.cdiv(max(D, half + chunks * 64), 64) * 64
-    groups = H // group
-    tiles = S // rows
-    tasks = B * groups * tiles
-    cores = min(num_cores, tasks)
-    full_waves = tasks // cores
-
-    @T.macro
-    def compute(x, c, s, y, valid):
-        with T.SimdVF():
-            convert_mask = T.simd.pset(16)
-            for row in T.serial(valid):
-                for chunk in T.serial(chunks):
-                    lane = chunk * 64
-                    mask = T.simd.update_mask(T.min(64, half - lane), 32)
-                    if dtype == "float32":
-                        a = T.simd.vld(x[row, lane])
-                        bval = T.simd.vld(x[row, lane + half])
-                    else:
-                        ar = T.simd.vld(x[row, lane], dist="UNPK_B16")
-                        br = T.simd.vld(x[row, lane + half], dist="UNPK_B16")
-                        a = T.simd.vcvt(ar, "float32", convert_mask, part=0)
-                        bval = T.simd.vcvt(br, "float32", convert_mask, part=0)
-                    if phase_dtype == "float32":
-                        ca = T.simd.vld(c[row, lane])
-                        sa = T.simd.vld(s[row, lane])
-                    else:
-                        car = T.simd.vld(c[row, lane], dist="UNPK_B16")
-                        sar = T.simd.vld(s[row, lane], dist="UNPK_B16")
-                        ca = T.simd.vcvt(car, "float32", convert_mask, part=0)
-                        sa = T.simd.vcvt(sar, "float32", convert_mask, part=0)
-                    ac = T.simd.vmul(a, ca, mask)
-                    bc = T.simd.vmul(bval, ca, mask)
-                    if backward:
-                        bs = T.simd.vmul(bval, sa, mask)
-                        ass = T.simd.vmul(a, sa, mask)
-                        first = T.simd.vadd(ac, bs, mask)
-                        second = T.simd.vsub(bc, ass, mask)
-                    else:
-                        bs = T.simd.vmul(bval, sa, mask)
-                        ass = T.simd.vmul(a, sa, mask)
-                        first = T.simd.vsub(ac, bs, mask)
-                        second = T.simd.vadd(bc, ass, mask)
-                    if dtype == "float32":
-                        T.simd.vsts(y[row, lane], first, mask)
-                        T.simd.vsts(y[row, lane + half], second, mask)
-                    else:
-                        # NOSAT preserves the reference's infinity on overflow.
-                        first_out = T.simd.vcvt(first, dtype, mask, sat=False)
-                        second_out = T.simd.vcvt(second, dtype, mask, sat=False)
-                        T.simd.vsts(y[row, lane], first_out, mask, dist="PK_B32")
-                        T.simd.vsts(y[row, lane + half], second_out, mask, dist="PK_B32")
-
-    @T.macro
-    def serial_group(X, Cos, Sin, Y, x, c, s, y, task):
-        b = task // (groups * tiles)
-        hbegin = (task // tiles) % groups * group
-        begin = task % tiles * rows
-        cb = b if Cb != 1 else 0
-        T.copy(Cos[cb, begin : begin + rows, :], c[:, :D])
-        T.copy(Sin[cb, begin : begin + rows, :], s[:, :D])
-        for hi in T.serial(group):
-            T.copy(X[b, hbegin + hi, begin : begin + rows, :], x[:, :D])
-            compute(x, c, s, y, rows)
-            T.copy(y[:, :D], Y[b, hbegin + hi, begin : begin + rows, :])
-
-    @T.prim_func
-    def main(
-        X: T.Tensor((B, H, S, D), dtype),
-        Cos: T.Tensor((Cb, S, D), phase_dtype),
-        Sin: T.Tensor((Cb, S, D), phase_dtype),
-        Y: T.Tensor((B, H, S, D), dtype),
-    ):
-        with T.Kernel(cores) as core:
-            x = T.alloc_shared((rows, pitch), dtype)
-            y = T.alloc_shared((rows, pitch), dtype)
-            c = T.alloc_shared((rows, pitch), phase_dtype)
-            s = T.alloc_shared((rows, pitch), phase_dtype)
-            # Adapted example_vecadd automatic multi-version pattern.
-            T.annotate_buffer_versions({x: stages, y: stages, c: 1, s: 1})
-            for wave in T.serial(full_waves):
-                task = wave * cores + core
-                b = task // (groups * tiles)
-                hbegin = (task // tiles) % groups * group
-                begin = task % tiles * rows
-                cb = b if Cb != 1 else 0
-                T.copy(Cos[cb, begin : begin + rows, :], c[:, :D])
-                T.copy(Sin[cb, begin : begin + rows, :], s[:, :D])
-                for hi in T.Pipelined(group, num_stages=stages):
-                    T.copy(X[b, hbegin + hi, begin : begin + rows, :], x[:, :D])
-                    compute(x, c, s, y, rows)
-                    T.copy(y[:, :D], Y[b, hbegin + hi, begin : begin + rows, :])
-            if tasks % cores != 0 or H % group != 0:
-                xt = T.alloc_shared((rows, pitch), dtype)
-                yt = T.alloc_shared((rows, pitch), dtype)
-                T.annotate_buffer_versions({xt: 1, yt: 1})
-                if tasks % cores != 0:
-                    task = full_waves * cores + core
-                    if task < tasks:
-                        serial_group(X, Cos, Sin, Y, xt, c, s, yt, task)
-                if H % group != 0:
-                    tail_tasks = B * (H % group) * tiles
-                    for wave in T.serial(tilelang.cdiv(tail_tasks, cores)):
-                        task = wave * cores + core
-                        if task < tail_tasks:
-                            b = task // ((H % group) * tiles)
-                            h = groups * group + task // tiles % (H % group)
-                            begin = task % tiles * rows
-                            cb = b if Cb != 1 else 0
-                            T.copy(Cos[cb, begin : begin + rows, :], c[:, :D])
-                            T.copy(Sin[cb, begin : begin + rows, :], s[:, :D])
-                            T.copy(X[b, h, begin : begin + rows, :], xt[:, :D])
-                            compute(xt, c, s, yt, rows)
-                            T.copy(yt[:, :D], Y[b, h, begin : begin + rows, :])
-
-    return main
-
-
-def _fallback_rope_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores):
-    """Group four heads for aligned long sequences with a full core wave."""
-    half = D // 2
-    item_bytes = 4 if dtype == "float32" else 2
-    phase_bytes = 4 if phase_dtype == "float32" else 2
-    aligned = half * item_bytes % 32 == 0 and half * phase_bytes % 32 == 0
-    eligible = aligned and D <= 128 and S % 64 == 0 and H >= 4 and B * (H // 4) * (S // 64) >= num_cores
-    if eligible:
-        # Lowering places xt/yt after the two-version main storage; they
-        # do not alias it. Guard the complete allocation, including both tails.
-        pitch = tilelang.cdiv(max(D, half + tilelang.cdiv(half, 64) * 64), 64) * 64
-        grouped_tasks = B * (H // 4) * (S // 64)
-        has_tail = grouped_tasks % num_cores != 0 or H % 4 != 0
-        resident_bytes = 64 * pitch * (4 * item_bytes + 2 * phase_bytes + (2 * item_bytes if has_tail else 0))
-        eligible = resident_bytes <= 248 * 1024
-    if eligible:
-        return _resident_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores, 2)
-    return _ungrouped_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores)
-
-
-@tilelang.jit(target="ascend")
 def _pair_kernel(B, Hq, Hk, S, D, Cb, dtype, phase_dtype, backward, num_cores):
     """Single-stage combined-head tasks; Q/K scalar branches stay outside VF."""
     rows = 32
@@ -273,51 +188,7 @@ def _pair_kernel(B, Hq, Hk, S, D, Cb, dtype, phase_dtype, backward, num_cores):
     tasks = B * (Hq + Hk) * tiles
     cores = min(num_cores, tasks)
 
-    @T.macro
-    def compute(x, c, s, y, valid):
-        with T.SimdVF():
-            convert_mask = T.simd.pset(16)
-            for row in T.serial(valid):
-                for chunk in T.serial(chunks):
-                    lane = chunk * 64
-                    mask = T.simd.update_mask(T.min(64, half - lane), 32)
-                    if dtype == "float32":
-                        a = T.simd.vld(x[row, lane])
-                        bval = T.simd.vld(x[row, lane + half])
-                    else:
-                        ar = T.simd.vld(x[row, lane], dist="UNPK_B16")
-                        br = T.simd.vld(x[row, lane + half], dist="UNPK_B16")
-                        a = T.simd.vcvt(ar, "float32", convert_mask, part=0)
-                        bval = T.simd.vcvt(br, "float32", convert_mask, part=0)
-                    if phase_dtype == "float32":
-                        ca = T.simd.vld(c[row, lane])
-                        sa = T.simd.vld(s[row, lane])
-                    else:
-                        car = T.simd.vld(c[row, lane], dist="UNPK_B16")
-                        sar = T.simd.vld(s[row, lane], dist="UNPK_B16")
-                        ca = T.simd.vcvt(car, "float32", convert_mask, part=0)
-                        sa = T.simd.vcvt(sar, "float32", convert_mask, part=0)
-                    ac = T.simd.vmul(a, ca, mask)
-                    bc = T.simd.vmul(bval, ca, mask)
-                    if backward:
-                        bs = T.simd.vmul(bval, sa, mask)
-                        ass = T.simd.vmul(a, sa, mask)
-                        first = T.simd.vadd(ac, bs, mask)
-                        second = T.simd.vsub(bc, ass, mask)
-                    else:
-                        bs = T.simd.vmul(bval, sa, mask)
-                        ass = T.simd.vmul(a, sa, mask)
-                        first = T.simd.vsub(ac, bs, mask)
-                        second = T.simd.vadd(bc, ass, mask)
-                    if dtype == "float32":
-                        T.simd.vsts(y[row, lane], first, mask)
-                        T.simd.vsts(y[row, lane + half], second, mask)
-                    else:
-                        # NOSAT preserves the reference's infinity on overflow.
-                        first_out = T.simd.vcvt(first, dtype, mask, sat=False)
-                        second_out = T.simd.vcvt(second, dtype, mask, sat=False)
-                        T.simd.vsts(y[row, lane], first_out, mask, dist="PK_B32")
-                        T.simd.vsts(y[row, lane + half], second_out, mask, dist="PK_B32")
+    compute = _simd_rows(half, dtype, phase_dtype, backward)
 
     @T.macro
     def process_head(Input, Output, Cos, Sin, x, y, c, s, b, h, begin, valid):
@@ -383,52 +254,7 @@ def _grouped_phase_kernel(
     cores = min(num_cores, tasks)
     full_waves = tasks // cores
 
-    @T.macro
-    def compute_group(x, c, s, y, valid, heads):
-        with T.SimdVF():
-            convert_mask = T.simd.pset(16)
-            for row in T.serial(valid):
-                for chunk in T.serial(chunks):
-                    lane = chunk * 64
-                    mask = T.simd.update_mask(T.min(64, half - lane), 32)
-                    if phase_dtype == "float32":
-                        ca = T.simd.vld(c[row, lane])
-                        sa = T.simd.vld(s[row, lane])
-                    else:
-                        car = T.simd.vld(c[row, lane], dist="UNPK_B16")
-                        sar = T.simd.vld(s[row, lane], dist="UNPK_B16")
-                        ca = T.simd.vcvt(car, "float32", convert_mask, part=0)
-                        sa = T.simd.vcvt(sar, "float32", convert_mask, part=0)
-                    for hi in T.serial(heads):
-                        if dtype == "float32":
-                            a = T.simd.vld(x[hi, row, lane])
-                            bval = T.simd.vld(x[hi, row, lane + half])
-                        else:
-                            ar = T.simd.vld(x[hi, row, lane], dist="UNPK_B16")
-                            br = T.simd.vld(x[hi, row, lane + half], dist="UNPK_B16")
-                            a = T.simd.vcvt(ar, "float32", convert_mask, part=0)
-                            bval = T.simd.vcvt(br, "float32", convert_mask, part=0)
-                        ac = T.simd.vmul(a, ca, mask)
-                        bc = T.simd.vmul(bval, ca, mask)
-                        if backward:
-                            bs = T.simd.vmul(bval, sa, mask)
-                            ass = T.simd.vmul(a, sa, mask)
-                            first = T.simd.vadd(ac, bs, mask)
-                            second = T.simd.vsub(bc, ass, mask)
-                        else:
-                            bs = T.simd.vmul(bval, sa, mask)
-                            ass = T.simd.vmul(a, sa, mask)
-                            first = T.simd.vsub(ac, bs, mask)
-                            second = T.simd.vadd(bc, ass, mask)
-                        if dtype == "float32":
-                            T.simd.vsts(y[hi, row, lane], first, mask)
-                            T.simd.vsts(y[hi, row, lane + half], second, mask)
-                        else:
-                            # NOSAT preserves the reference's infinity on overflow.
-                            first_out = T.simd.vcvt(first, dtype, mask, sat=False)
-                            second_out = T.simd.vcvt(second, dtype, mask, sat=False)
-                            T.simd.vsts(y[hi, row, lane], first_out, mask, dist="PK_B32")
-                            T.simd.vsts(y[hi, row, lane + half], second_out, mask, dist="PK_B32")
+    compute_group = _simd_group(half, dtype, phase_dtype, backward)
 
     @T.macro
     def tail_group(X, Cos, Sin, Y, xt, ct, st, yt, b, hbegin, begin, valid, heads):
@@ -532,51 +358,7 @@ def _grouped_pair_phase_kernel(
     cores = min(num_cores, tasks)
     full_waves = tasks // cores
 
-    @T.macro
-    def compute_group(x, c, s, y, valid, heads):
-        with T.SimdVF():
-            convert_mask = T.simd.pset(16)
-            for row in T.serial(valid):
-                for chunk in T.serial(chunks):
-                    lane = chunk * 64
-                    mask = T.simd.update_mask(T.min(64, half - lane), 32)
-                    if phase_dtype == "float32":
-                        ca = T.simd.vld(c[row, lane])
-                        sa = T.simd.vld(s[row, lane])
-                    else:
-                        car = T.simd.vld(c[row, lane], dist="UNPK_B16")
-                        sar = T.simd.vld(s[row, lane], dist="UNPK_B16")
-                        ca = T.simd.vcvt(car, "float32", convert_mask, part=0)
-                        sa = T.simd.vcvt(sar, "float32", convert_mask, part=0)
-                    for hi in T.serial(heads):
-                        if dtype == "float32":
-                            a = T.simd.vld(x[hi, row, lane])
-                            bval = T.simd.vld(x[hi, row, lane + half])
-                        else:
-                            ar = T.simd.vld(x[hi, row, lane], dist="UNPK_B16")
-                            br = T.simd.vld(x[hi, row, lane + half], dist="UNPK_B16")
-                            a = T.simd.vcvt(ar, "float32", convert_mask, part=0)
-                            bval = T.simd.vcvt(br, "float32", convert_mask, part=0)
-                        ac = T.simd.vmul(a, ca, mask)
-                        bc = T.simd.vmul(bval, ca, mask)
-                        if backward:
-                            bs = T.simd.vmul(bval, sa, mask)
-                            ass = T.simd.vmul(a, sa, mask)
-                            first = T.simd.vadd(ac, bs, mask)
-                            second = T.simd.vsub(bc, ass, mask)
-                        else:
-                            bs = T.simd.vmul(bval, sa, mask)
-                            ass = T.simd.vmul(a, sa, mask)
-                            first = T.simd.vsub(ac, bs, mask)
-                            second = T.simd.vadd(bc, ass, mask)
-                        if dtype == "float32":
-                            T.simd.vsts(y[hi, row, lane], first, mask)
-                            T.simd.vsts(y[hi, row, lane + half], second, mask)
-                        else:
-                            first_out = T.simd.vcvt(first, dtype, mask, sat=False)
-                            second_out = T.simd.vcvt(second, dtype, mask, sat=False)
-                            T.simd.vsts(y[hi, row, lane], first_out, mask, dist="PK_B32")
-                            T.simd.vsts(y[hi, row, lane + half], second_out, mask, dist="PK_B32")
+    compute_group = _simd_group(half, dtype, phase_dtype, backward)
 
     @T.macro
     def process_group(Input, Output, Cos, Sin, x, y, c, s, b, hbegin, begin, valid):
@@ -705,51 +487,7 @@ def _sequence_pair_phase_kernel(
     cores = min(num_cores, tasks)
     full_waves = tasks // cores
 
-    @T.macro
-    def compute_group(x, c, s, y, valid):
-        with T.SimdVF():
-            convert_mask = T.simd.pset(16)
-            for row in T.serial(valid):
-                for chunk in T.serial(chunks):
-                    lane = chunk * 64
-                    mask = T.simd.update_mask(T.min(64, half - lane), 32)
-                    if phase_dtype == "float32":
-                        ca = T.simd.vld(c[row, lane])
-                        sa = T.simd.vld(s[row, lane])
-                    else:
-                        car = T.simd.vld(c[row, lane], dist="UNPK_B16")
-                        sar = T.simd.vld(s[row, lane], dist="UNPK_B16")
-                        ca = T.simd.vcvt(car, "float32", convert_mask, part=0)
-                        sa = T.simd.vcvt(sar, "float32", convert_mask, part=0)
-                    for hi in T.unroll(group, explicit=True):
-                        if dtype == "float32":
-                            a = T.simd.vld(x[hi, row, lane])
-                            bval = T.simd.vld(x[hi, row, lane + half])
-                        else:
-                            ar = T.simd.vld(x[hi, row, lane], dist="UNPK_B16")
-                            br = T.simd.vld(x[hi, row, lane + half], dist="UNPK_B16")
-                            a = T.simd.vcvt(ar, "float32", convert_mask, part=0)
-                            bval = T.simd.vcvt(br, "float32", convert_mask, part=0)
-                        ac = T.simd.vmul(a, ca, mask)
-                        bc = T.simd.vmul(bval, ca, mask)
-                        if backward:
-                            bs = T.simd.vmul(bval, sa, mask)
-                            ass = T.simd.vmul(a, sa, mask)
-                            first = T.simd.vadd(ac, bs, mask)
-                            second = T.simd.vsub(bc, ass, mask)
-                        else:
-                            bs = T.simd.vmul(bval, sa, mask)
-                            ass = T.simd.vmul(a, sa, mask)
-                            first = T.simd.vsub(ac, bs, mask)
-                            second = T.simd.vadd(bc, ass, mask)
-                        if dtype == "float32":
-                            T.simd.vsts(y[hi, row, lane], first, mask)
-                            T.simd.vsts(y[hi, row, lane + half], second, mask)
-                        else:
-                            first_out = T.simd.vcvt(first, dtype, mask, sat=False)
-                            second_out = T.simd.vcvt(second, dtype, mask, sat=False)
-                            T.simd.vsts(y[hi, row, lane], first_out, mask, dist="PK_B32")
-                            T.simd.vsts(y[hi, row, lane + half], second_out, mask, dist="PK_B32")
+    compute_group = _simd_group(half, dtype, phase_dtype, backward, unroll=True)
 
     @T.macro
     def process_group(Input, Output, x, y, c, s, batch, hbegin, begin):
@@ -759,7 +497,7 @@ def _sequence_pair_phase_kernel(
                 x[hi, :, :D],
                 l2_cache_ctrl="NOTALLOC_KEEP",
             )
-        compute_group(x, c, s, y, rows)
+        compute_group(x, c, s, y, rows, group)
         for hi in T.unroll(group, explicit=True):
             T.copy(y[hi, :, :D], Output[batch, hbegin + hi, begin : begin + rows, :])
 
@@ -801,124 +539,28 @@ def _sequence_pair_phase_kernel(
     return main
 
 
-def rope_sequence_pair_kernel(
-    B,
-    Hq,
-    Hk,
-    S,
-    D,
-    Cb,
-    dtype,
-    phase_dtype,
-    backward,
-    num_cores,
-    strides_q=None,
-    strides_k=None,
-):
-    """Return a sequence-grouped Q/K kernel when the complete shared footprint fits UB."""
-    group, rows, stages = 4, 32, 3
+def rope_long_pair_kernel(B, Hq, Hk, S, D, Cb, dtype, phase_dtype, backward, num_cores, strides_q, strides_k):
+    """Select a Q/K schedule from the shape and full buffered UB footprint."""
+    group, rows = 4, 32
     item_bytes = 4 if dtype == "float32" else 2
     phase_bytes = 4 if phase_dtype == "float32" else 2
     half = D // 2
-    aligned = half * item_bytes % 32 == 0 and half * phase_bytes % 32 == 0
-    eligible = (
-        min(B, Hq, Hk, S) > 0
-        and S >= 8192
-        and S % rows == 0
-        and Hq % group == 0
-        and Hk % group == 0
-        and D <= 128
-        and dtype in ("float16", "bfloat16", "float32")
-        and aligned
-    )
-    if not eligible:
+    if S < 2048 or S % rows or Hq % group or Hk % group or D > 128 or half * item_bytes % 32 or half * phase_bytes % 32:
         return None
+
     pitch = tilelang.cdiv(max(D, half + tilelang.cdiv(half, 64) * 64), 64) * 64
-    main_bytes = rows * pitch * (4 * group * item_bytes + 4 * phase_bytes)
-    # Tail tasks reuse the same stage buffers, so there is no second tail allocation.
-    if main_bytes > 248 * 1024:
-        return None
-    tasks = B * (S // rows)
+    per_stage = rows * pitch * (2 * group * item_bytes + 2 * phase_bytes)
+    args = (B, Hq, Hk, S, D, Cb, dtype, phase_dtype, backward, num_cores, strides_q, strides_k, group, rows)
+    sequence_tasks = B * (S // rows)
+    if S >= 8192 and sequence_tasks >= num_cores and 3 * per_stage <= 248 * 1024:
+        return _sequence_pair_phase_kernel(*args, 3)
+
+    tasks = sequence_tasks * (Hq // group + Hk // group)
     cores = min(num_cores, tasks)
-    # Preserve one independent sequence tile per available vector core.
-    if cores <= 0 or tasks < num_cores:
-        return None
-    return _sequence_pair_phase_kernel(
-        B,
-        Hq,
-        Hk,
-        S,
-        D,
-        Cb,
-        dtype,
-        phase_dtype,
-        backward,
-        num_cores,
-        strides_q,
-        strides_k,
-        group,
-        rows,
-        stages,
-    )
-
-
-def rope_grouped_pair_kernel(
-    B,
-    Hq,
-    Hk,
-    S,
-    D,
-    Cb,
-    dtype,
-    phase_dtype,
-    backward,
-    num_cores,
-    strides_q=None,
-    strides_k=None,
-):
-    """Return a G4/R32 long Q/K pair kernel when full groups and tiles fit UB."""
-    group, rows, stages = 4, 32, 2
-    item_bytes = 4 if dtype == "float32" else 2
-    phase_bytes = 4 if phase_dtype == "float32" else 2
-    half = D // 2
-    aligned = half * item_bytes % 32 == 0 and half * phase_bytes % 32 == 0
-    eligible = (
-        min(B, Hq, Hk, S) > 0
-        and S >= 2048
-        and S % rows == 0
-        and Hq % group == 0
-        and Hk % group == 0
-        and D <= 128
-        and dtype in ("float16", "bfloat16", "float32")
-        and aligned
-    )
-    if eligible:
-        groups = Hq // group + Hk // group
-        tasks = B * groups * (S // rows)
-        cores = min(num_cores, tasks)
-        pitch = tilelang.cdiv(max(D, half + tilelang.cdiv(half, 64) * 64), 64) * 64
-        main_bytes = rows * pitch * (4 * group * item_bytes + 4 * phase_bytes)
-        tail_bytes = rows * pitch * (2 * group * item_bytes + 2 * phase_bytes) if tasks % cores else 0
-        eligible = main_bytes + tail_bytes <= 248 * 1024
-    if not eligible:
-        return None
-    return _grouped_pair_phase_kernel(
-        B,
-        Hq,
-        Hk,
-        S,
-        D,
-        Cb,
-        dtype,
-        phase_dtype,
-        backward,
-        num_cores,
-        strides_q,
-        strides_k,
-        group,
-        rows,
-        stages,
-    )
+    tail_bytes = per_stage if tasks % cores else 0
+    if 2 * per_stage + tail_bytes <= 248 * 1024:
+        return _grouped_pair_phase_kernel(*args, 2)
+    return None
 
 
 @tilelang.jit(target="ascend")
@@ -1059,7 +701,7 @@ def _dense_rope_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores):
         eligible = main_bytes + tail_bytes <= 248 * 1024
     if eligible:
         return _grouped_phase_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores, 2)
-    return _fallback_rope_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores)
+    return _ungrouped_kernel(B, H, S, D, Cb, dtype, phase_dtype, backward, num_cores)
 
 
 def _grouped_footprint(B, H, S, D, dtype, phase_dtype, num_cores, group, rows):
