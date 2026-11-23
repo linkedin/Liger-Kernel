@@ -128,12 +128,14 @@ void validate(const BackwardTpParamsSm100<100>& params) {
 		" token waves");
 }
 
-template <bool ReturnEntropy, bool EnableLocalReduce, bool RequiresRemote>
+template <bool ReturnEntropy, bool EnableLocalReduce, bool RequiresRemote, class ElementDw>
 void launch_instance(
 		const BackwardTpParamsSm100<100>& params,
 		const liger_cute::detail::TpReducePlan& reduce,
 		cudaStream_t stream) {
-	using Smem = BackwardGemmSmemSm100<100, ReturnEntropy>;
+	using Smem = BackwardGemmSmemSm100<100, ReturnEntropy, ElementDw>;
+	using TypedBundle = decltype(backward_sm100::make_tma_bundle<ElementDw>(
+		std::declval<const backward_sm100::TmaOperands&>()));
 
 	const auto& gemm = params.gemm;
 	int padded_vocab = HostLaunch::padded_vocab(gemm.local_vocab);
@@ -145,7 +147,7 @@ void launch_instance(
 		RequiresRemote,
 		EnableLocalReduce,
 		HostCommConfig,
-		Bundle>;
+		TypedBundle>;
 	constexpr int kSmemBytes = static_cast<int>(sizeof(Smem));
 	ClusterLaunch::prepare(kernel, kSmemBytes);
 
@@ -206,7 +208,7 @@ void launch_instance(
 		backward_sm100::operands_of(gemm);
 	tma_operands.dx_staging = comm.partial;
 	tma_operands.dx_staging_rows = backward_sm100::dx_staging_rows();
-	Bundle bundle = backward_sm100::make_tma_bundle(tma_operands);
+	TypedBundle bundle = backward_sm100::make_tma_bundle<ElementDw>(tma_operands);
 
 	BackwardWaveWorkspaceSm100<100> wave_workspace =
 		reserve_backward_signals_sm100();
@@ -374,7 +376,7 @@ void launch_instance(
 	}
 }
 
-template <bool ReturnEntropy>
+template <bool ReturnEntropy, class ElementDw>
 void dispatch_instance(
 		const BackwardTpParamsSm100<100>& params,
 		const liger_cute::detail::TpReducePlan& reduce,
@@ -401,7 +403,7 @@ void dispatch_instance(
 			reduce.team_size ==
 				reduce.nvls.size * reduce.remote.size,
 			"inconsistent SM100 hierarchical reduction topology");
-		launch_instance<ReturnEntropy, true, true>(
+		launch_instance<ReturnEntropy, true, true, ElementDw>(
 			params, reduce, stream);
 	} else {
 		LIGER_CHECK(
@@ -409,7 +411,7 @@ void dispatch_instance(
 				reduce.nvls.size == 4 || reduce.nvls.size == 8,
 			"the SM100 node-local backward supports TP1/2/4/8, got ",
 			reduce.nvls.size);
-		launch_instance<ReturnEntropy, true, false>(
+		launch_instance<ReturnEntropy, true, false, ElementDw>(
 			params, reduce, stream);
 	}
 }
@@ -428,7 +430,11 @@ void fused_linear_scaled_cross_entropy_backward_sm100(
 
 	liger_cute::detail::TpReducePlan reduce =
 		liger_cute::detail::tp_reduce_plan();
-	dispatch_instance<ReturnEntropy>(params, reduce, stream);
+	if (params.gemm.accum_fp32) {
+		dispatch_instance<ReturnEntropy, float>(params, reduce, stream);
+	} else {
+		dispatch_instance<ReturnEntropy, HostElement>(params, reduce, stream);
+	}
 }
 
 template void fused_linear_scaled_cross_entropy_backward_sm100<false, 100>(

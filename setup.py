@@ -56,6 +56,9 @@ def get_optional_dependencies():
     ]
     cutile_tileiras_deps = [
         "cuda-tile[tileiras]>=1.5.0",
+        # Hopper (sm_90) requires tileiras 13.3+. Constrain the toolkit so
+        # tileiras, nvcc, and nvvm resolve to matching compiler versions.
+        "cuda-toolkit[tileiras,nvcc,nvvm]>=13.3",
     ]
     cutedsl_deps = [
         "nvidia-cutlass-dsl>=4.6.0",

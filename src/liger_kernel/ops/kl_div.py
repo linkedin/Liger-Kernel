@@ -70,7 +70,7 @@ def _kldiv_kernel_forward(
     # fp32, but Inductor specializes it to fp64; mixing an fp64 scalar into the loop body
     # promotes the whole expression -- including tl.log -- to float64, and re-assigns the
     # fp32 loop-carried `loss_sum` to fp64. This cast is a no-op on the eager path.
-    eps = eps.to(tl.float32)
+    eps = tl.cast(eps, tl.float32)
 
     loss_sum = 0.0
     for i in range(0, n_cols, BLOCK_SIZE):
@@ -229,6 +229,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
             torch.Tensor: The computed KL Divergence Loss, with shape (BT, V) if `reduction` is "none", else a scalar.
         """
         ctx.save_for_backward(y_true)
+        ctx.input_dtype = y_pred.dtype
         ctx.reduction = reduction
         ctx.log_target = log_target
         return kldiv_forward_triton(y_pred, y_true, log_target=log_target, reduction=reduction, eps=eps)
@@ -247,7 +248,8 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         """
         (y_true,) = ctx.saved_tensors
 
-        new_grads = torch.empty_like(y_true)
+        grad_dtype = torch.promote_types(torch.float32, torch.promote_types(ctx.input_dtype, y_true.dtype))
+        new_grads = torch.empty_like(y_true, dtype=grad_dtype)
 
         derivative = kldiv_backward_triton(y_true, grad_output, new_grads, ctx.log_target)
 
@@ -259,7 +261,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
             derivative = derivative / (y_true.shape[0] * y_true.shape[1])
 
         return (
-            derivative,
+            derivative.to(ctx.input_dtype),
             None,
             None,
             None,

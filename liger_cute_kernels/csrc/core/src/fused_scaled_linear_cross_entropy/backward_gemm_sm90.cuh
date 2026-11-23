@@ -252,7 +252,8 @@ struct BackwardGemmParamsSm90 {
 	const float* entropy_grad = nullptr;   // FP32 [tokens], upstream entropy scale
 
 	void* grad_input = nullptr;   // X.dtype [tokens, hidden], BF16 on SM90
-	void* grad_weight = nullptr;  // BF16 [local_vocab, hidden], rank local
+	void* grad_weight = nullptr;  // BF16 or FP32 [local_vocab, hidden], rank local
+	bool accum_fp32 = false;
 
 	// Internal scratch, launcher owned (see BackwardSymmetricNames).
 	void* dz_workspace = nullptr;  // BF16 [kWaveRows, padded_local_vocab]
