@@ -174,9 +174,9 @@ def _group_norm_backward_kernel(
             dW += tl.sum(UPSTREAM_grad * x_hat)
             dB += tl.sum(UPSTREAM_grad)
 
-            wdy = W * UPSTREAM_grad
-            c1 += tl.sum(x_hat * wdy)
-            c2 += tl.sum(wdy)
+        # W is one scalar per channel, so the group sums are W times the two channel sums
+        c1 += W * dW
+        c2 += W * dB
 
         # Need to ensure additions to the same channel are atomic
         tl.atomic_add(DW_ptr + channel_idx, dW.to(dtype))
