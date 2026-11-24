@@ -218,6 +218,9 @@ void backward_dx_dw_direct_peer_wave_kernel_sm90(
 		__grid_constant__ const liger_cute::detail::DirectPeerReduceView mapping,
 		int wave) {
 	using Traits = BackwardGemmTraitsSm90<Compute>;
+	using DwTraits = BackwardGemmTraitsSm90<
+		Compute, Traits::kStages, Traits::kDwStoreTileN, Traits::kDwStoreStages,
+		typename Bundle::ElementDw>;
 	using Config = typename Traits::Config;
 	using Launch = BackwardGemmLaunchSm90<Compute>;
 	using Smem = BackwardDxDwSmemSm90<Compute>;
@@ -298,7 +301,7 @@ void backward_dx_dw_direct_peer_wave_kernel_sm90(
 			int dw_tiles = dw_total > cta
 				? ceil_div(dw_total - cta, num_ctas)
 				: 0;
-			DwPhaseSm90<Compute>::template produce<ReturnEntropy>(
+			DwPhaseSm90<Compute, DwTraits>::template produce<ReturnEntropy>(
 				pipe,
 				state,
 				smem,
@@ -376,7 +379,7 @@ void backward_dx_dw_direct_peer_wave_kernel_sm90(
 		int dw_tiles = dw_total > cta
 			? ceil_div(dw_total - cta, num_ctas)
 			: 0;
-		DwPhaseSm90<Compute>::template consume<ReturnEntropy>(
+		DwPhaseSm90<Compute, DwTraits>::template consume<ReturnEntropy>(
 			pipe,
 			read_state,
 			release_state,
@@ -575,8 +578,9 @@ template <
 	int TilesPerReduce,
 	bool ReturnEntropy,
 	bool RunDx = true,
-	bool RunDw = true>
-void launch_typed(
+	bool RunDw = true,
+	class ElementDw = HostElement>
+void launch_output_typed(
 		const BackwardGemmParamsSm90<90>& params,
 		const DxReduceWorkspace<float>& comm,
 		const liger_cute::detail::DirectPeerReduceView& mapping,
@@ -586,10 +590,13 @@ void launch_typed(
 	using CommConfig =
 		DxCommConfig<HostConfig, kDxRingStages, TilesPerReduce, 90>;
 	using Smem = BackwardDxDwSmemSm90<90>;
+	using HostTraits = BackwardGemmTraitsSm90<
+		90, HostConfig::kMainloopStages, HostConfig::kDwStoreTileN,
+		HostConfig::kDwStoreStages, ElementDw>;
 
 	auto* w = static_cast<const HostElement*>(params.weight);
 	auto* dz = static_cast<HostElement*>(params.dz_workspace);
-	auto* dw = static_cast<HostElement*>(params.grad_weight);
+	auto* dw = static_cast<ElementDw*>(params.grad_weight);
 	int padded_vocab = HostLaunch::padded_vocab(params.local_vocab);
 
 	auto tma_dz_load =
@@ -619,7 +626,8 @@ void launch_typed(
 		decltype(tma_dzt),
 		decltype(tma_xt),
 		decltype(tma_dw_store),
-		decltype(tma_dw_add)>;
+		decltype(tma_dw_add),
+		ElementDw>;
 	Bundle bundle{
 		tma_dz_load,
 		tma_wt,
@@ -666,6 +674,23 @@ void launch_typed(
 	check_cuda(
 		cudaGetLastError(),
 		"backward_dx_dw_direct_peer_wave_kernel_sm90 launch");
+}
+
+template <int TilesPerReduce, bool ReturnEntropy>
+void launch_typed(
+		const BackwardGemmParamsSm90<90>& params,
+		const DxReduceWorkspace<float>& comm,
+		const liger_cute::detail::DirectPeerReduceView& mapping,
+		int grid,
+		cudaStream_t stream,
+		int wave) {
+	if (params.accum_fp32) {
+		launch_output_typed<TilesPerReduce, ReturnEntropy, true, true, float>(
+			params, comm, mapping, grid, stream, wave);
+	} else {
+		launch_output_typed<TilesPerReduce, ReturnEntropy>(
+			params, comm, mapping, grid, stream, wave);
+	}
 }
 
 }  // namespace

@@ -3,6 +3,7 @@
 import pytest
 import torch
 
+from test.utils import require_highest_float32_matmul_precision
 from test.utils import set_seed
 
 pytestmark = pytest.mark.skipif(
@@ -33,18 +34,18 @@ def _reference(x, weight, target, temperature, return_entropy, selected_ids, pro
     return outputs
 
 
-def _assert_gradients(x, weight, xr, wr, projection_gradient, chunk_size=None):
+def _assert_gradients(x, weight, xr, wr, projection_gradient, chunk_size=None, accum_dtype=None):
     # Model BF16 dZ, partial-gradient, and cross-chunk rounding independently.
     # Keep the separate error bound against unrounded autograd.
     staged = projection_gradient.to(torch.bfloat16).float()
     chunk_size = x.shape[0] if chunk_size is None else chunk_size
-    staged_weight_gradient = torch.zeros_like(weight)
+    staged_weight_gradient = torch.zeros_like(weight, dtype=accum_dtype or weight.dtype)
     for start in range(0, x.shape[0], chunk_size):
         partial = staged[start : start + chunk_size].t() @ x.detach()[start : start + chunk_size].float()
-        staged_weight_gradient.add_(partial.to(weight.dtype))
+        staged_weight_gradient.add_(partial.to(staged_weight_gradient.dtype))
     staged_gradients = (
         (staged @ weight.detach().float()).to(x.dtype),
-        staged_weight_gradient,
+        staged_weight_gradient.to(weight.dtype),
     )
     for actual, reference, expected in zip((x, weight), (xr, wr), staged_gradients):
         if not actual.requires_grad:
@@ -58,7 +59,8 @@ def _assert_gradients(x, weight, xr, wr, projection_gradient, chunk_size=None):
 
 @pytest.mark.parametrize("shape", [(17, 64, 97), (193, 70, 517), (513, 128, 1024), (513, 512, 4096)])
 @pytest.mark.parametrize("mode", ["nll", "entropy", "selected", "combined"])
-def test_sm100_outputs_and_signed_gradients(shape, mode, monkeypatch):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_sm100_outputs_and_signed_gradients(shape, mode, accum_dtype, monkeypatch):
     module = _module()
     monkeypatch.setattr(module, "_use_wide_input_gradient", lambda a, b: True)
     set_seed(42)
@@ -74,7 +76,7 @@ def test_sm100_outputs_and_signed_gradients(shape, mode, monkeypatch):
     temperature = 0.7
 
     actual = module.LigerFusedScaledCrossEntropySM100Function.apply(
-        x, weight, target, temperature, -100, 1, return_entropy, selected_ids
+        x, weight, target, temperature, -100, 1, return_entropy, selected_ids, accum_dtype
     )
     actual = actual if isinstance(actual, tuple) else (actual,)
     xr, wr = x.detach().clone().requires_grad_(), weight.detach().clone().requires_grad_()
@@ -90,7 +92,32 @@ def test_sm100_outputs_and_signed_gradients(shape, mode, monkeypatch):
     torch.autograd.backward(used_actual, upstream)
     torch.autograd.backward(used_expected, upstream)
 
-    _assert_gradients(x, weight, xr, wr, projection_gradients[0], chunk_size=256)
+    _assert_gradients(x, weight, xr, wr, projection_gradients[0], chunk_size=256, accum_dtype=accum_dtype)
+
+
+def test_sm100_fp32_accumulation_many_chunks_and_dtype_cache(monkeypatch):
+    module = _module()
+    tokens, hidden, vocab = 65537, 64, 128
+    monkeypatch.setattr(module, "_BACKWARD_WORKSPACE_BYTES", 256 * vocab * 2)
+    target = torch.zeros(tokens, device="cuda", dtype=torch.int64)
+    target[::7] = -100
+    gradients = []
+    for accum_dtype in (None, torch.float32, torch.bfloat16, torch.float32):
+        x = torch.full((tokens, hidden), 0.125, device="cuda", dtype=torch.bfloat16)
+        weight = torch.zeros(vocab, hidden, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+        nll = module.LigerFusedScaledCrossEntropySM100Function.apply(
+            x, weight, target, 1.0, -100, 1, False, None, accum_dtype
+        )
+        nll.sum().backward()
+        assert weight.grad.dtype == weight.dtype
+        gradients.append(weight.grad)
+    expected = torch.full_like(weight, 1 / vocab, dtype=torch.float32)
+    expected[0] -= 1
+    expected *= (target != -100).sum() * 0.125
+    torch.testing.assert_close(gradients[1], expected.bfloat16(), atol=0, rtol=0)
+    torch.testing.assert_close(gradients[3], gradients[1], atol=0, rtol=0)
+    torch.testing.assert_close(gradients[0], gradients[2], atol=0, rtol=0)
+    assert not torch.equal(gradients[0], gradients[1])
 
 
 @pytest.mark.parametrize(
@@ -144,6 +171,7 @@ def test_sm100_forward_chunk_schedule_matches_unchunked(tokens, hidden, vocab, c
 @pytest.mark.parametrize("backend", ["sm100", "cutile"])
 @pytest.mark.parametrize("mode", ["selected", "combined"])
 @pytest.mark.parametrize("tokens,chunk_size,seed", [(513, 256, 42), (4097, 256, 43), (4097, 2048, 43)])
+@require_highest_float32_matmul_precision
 def test_matched_bf16_selected_gradients_against_fp32(backend, mode, tokens, chunk_size, seed, monkeypatch):
     if backend == "sm100":
         module = _module()
@@ -155,7 +183,6 @@ def test_matched_bf16_selected_gradients_against_fp32(backend, mode, tokens, chu
 
         monkeypatch.setattr(module, "_calculate_token_chunk_size", lambda *args, **kwargs: chunk_size)
         function = module.LigerFusedLinearScaledCrossEntropyFunction
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     set_seed(seed)
     x = (torch.randn(tokens, 128, device="cuda", dtype=torch.bfloat16) * 0.25).requires_grad_()
     weight = (torch.randn(1024, 128, device="cuda", dtype=torch.bfloat16) / 128**0.5).requires_grad_()

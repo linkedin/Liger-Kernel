@@ -171,7 +171,8 @@ template <
 	int TilesPerReduce,
 	bool ReturnEntropy,
 	liger_cute::detail::LocalReduceBackend Backend,
-	bool RequiresRemote>
+	bool RequiresRemote,
+	class ElementDw>
 void launch_instance(
 		const BackwardTpParamsSm90<90>& params,
 		const liger_cute::detail::TpReducePlan& reduce,
@@ -184,6 +185,7 @@ void launch_instance(
 	using CommConfig =
 		DxCommConfig<HostConfig, kDxRingStages, TilesPerReduce, 90>;
 	using DzSmem = BackwardDzHandoffSmemSm90<90, ReturnEntropy>;
+	using HostCombinedDwTraits = BackwardGemmTraitsSm90<90, 4, 64, 2, ElementDw>;
 	static constexpr bool kUseCluster = kUseNvls;
 
 	const auto& gemm = params.gemm;
@@ -192,7 +194,7 @@ void launch_instance(
 	auto* x = static_cast<const HostElement*>(gemm.x);
 	auto* w = static_cast<const HostElement*>(gemm.weight);
 	auto* dz = static_cast<HostElement*>(gemm.dz_workspace);
-	auto* dw_out = static_cast<HostElement*>(gemm.grad_weight);
+	auto* dw_out = static_cast<ElementDw*>(gemm.grad_weight);
 	DxReduceWorkspace<float> comm = {};
 
 	int resident_ctas = backward_dx_resident_cta_capacity();
@@ -269,7 +271,8 @@ void launch_instance(
 		decltype(cluster_tma_dzt),
 		decltype(cluster_tma_xt),
 		decltype(cluster_tma_dw_store),
-		decltype(cluster_tma_dw_add)>;
+		decltype(cluster_tma_dw_add),
+		ElementDw>;
 	ClusterBundle cluster_bundle{
 		cluster_tma_dz,
 		cluster_tma_wt,
@@ -477,7 +480,7 @@ void launch_instance(
 	liger_cute::detail::end_tp_reduce(stream);
 }
 
-template <int TilesPerReduce, bool ReturnEntropy>
+template <int TilesPerReduce, bool ReturnEntropy, class ElementDw>
 void dispatch_instance(
 		const BackwardTpParamsSm90<90>& params,
 		const liger_cute::detail::TpReducePlan& reduce,
@@ -489,20 +492,32 @@ void dispatch_instance(
 				TilesPerReduce,
 				ReturnEntropy,
 				liger_cute::detail::LocalReduceBackend::kNvls,
-				true>(params, reduce, stream);
+				true, ElementDw>(params, reduce, stream);
 		} else {
 			launch_instance<
 				TilesPerReduce,
 				ReturnEntropy,
 				liger_cute::detail::LocalReduceBackend::kNvls,
-				false>(params, reduce, stream);
+				false, ElementDw>(params, reduce, stream);
 		}
 	} else {
 		launch_instance<
 			TilesPerReduce,
 			ReturnEntropy,
 			liger_cute::detail::LocalReduceBackend::kDirectPeer,
-			false>(params, reduce, stream);
+			false, ElementDw>(params, reduce, stream);
+	}
+}
+
+template <int TilesPerReduce, bool ReturnEntropy>
+void dispatch_accum(
+		const BackwardTpParamsSm90<90>& params,
+		const liger_cute::detail::TpReducePlan& reduce,
+		cudaStream_t stream) {
+	if (params.gemm.accum_fp32) {
+		dispatch_instance<TilesPerReduce, ReturnEntropy, float>(params, reduce, stream);
+	} else {
+		dispatch_instance<TilesPerReduce, ReturnEntropy, HostElement>(params, reduce, stream);
 	}
 }
 
@@ -521,13 +536,13 @@ void fused_linear_scaled_cross_entropy_backward(
 		liger_cute::detail::tp_reduce_plan();
 	switch (params.tiles_per_reduce) {
 		case 1:
-			dispatch_instance<1, ReturnEntropy>(params, reduce, stream);
+			dispatch_accum<1, ReturnEntropy>(params, reduce, stream);
 			break;
 		case 2:
-			dispatch_instance<2, ReturnEntropy>(params, reduce, stream);
+			dispatch_accum<2, ReturnEntropy>(params, reduce, stream);
 			break;
 		default:
-			dispatch_instance<4, ReturnEntropy>(params, reduce, stream);
+			dispatch_accum<4, ReturnEntropy>(params, reduce, stream);
 			break;
 	}
 }
