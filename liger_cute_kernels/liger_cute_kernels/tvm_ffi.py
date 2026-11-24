@@ -591,16 +591,20 @@ def fused_linear_scaled_cross_entropy_backward(
     team_handle: int,
     tiles_per_reduce: int,
     return_entropy: bool,
+    accum_dtype: torch.dtype | None = None,
 ):
     """Run the persistent tensor-parallel fused backward.
 
     ``lse`` and ``entropy`` must be the outputs saved from the matching
     forward. The result is the globally reduced BF16 ``grad_input`` and this
-    rank's local BF16 ``grad_weight``. On SM100, TP16 uses node-local NVLS,
+    rank's local ``grad_weight`` in ``accum_dtype`` (BF16 by default).
+    On SM100, TP16 uses node-local NVLS,
     the matching-rank inter-host ring, and an all-CTA warp-1 FP32 merge.
     """
+    if accum_dtype not in (None, torch.bfloat16, torch.float32):
+        raise ValueError("accum_dtype must be None, torch.bfloat16, or torch.float32")
     grad_input = torch.empty_like(x)
-    grad_weight = torch.empty_like(weight)
+    grad_weight = torch.empty_like(weight, dtype=accum_dtype or weight.dtype)
     _load_module().fused_linear_scaled_cross_entropy_backward(
         grad_output,
         entropy_grad,

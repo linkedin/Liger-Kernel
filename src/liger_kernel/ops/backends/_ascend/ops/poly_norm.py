@@ -23,7 +23,7 @@ def _poly_norm_forward_kernel_no_tiling(
     B_ptr,  # bias: scalar
     RSTD_ptr,  # cache rstd for backward: shape (n_rows, 3)
     RSTD_row_stride,
-    n_rows: tl.constexpr,
+    n_rows,
     n_cols: tl.constexpr,
     eps,
     BLOCK_SIZE_M: tl.constexpr,
@@ -121,7 +121,7 @@ def _poly_norm_forward_kernel_npu(
     B_ptr,  # bias: scalar
     RSTD_ptr,  # cache rstd for backward: shape (n_rows, 3)
     RSTD_row_stride,
-    n_rows: tl.constexpr,
+    n_rows,
     n_cols: tl.constexpr,
     eps,
     BLOCK_SIZE: tl.constexpr,
@@ -240,7 +240,7 @@ def _poly_norm_backward_kernel_no_tiling(
     dW_scratch_ptr,  # shape: (n_programs, 3)
     dW_scratch_stride,
     dB_scratch_ptr,  # shape: (n_programs,)
-    n_rows: tl.constexpr,
+    n_rows,
     n_cols: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
@@ -375,7 +375,7 @@ def _poly_norm_backward_kernel_npu(
     RSTD_row_stride,
     dW_ptr,
     dB_ptr,
-    n_rows: tl.constexpr,
+    n_rows,
     n_cols: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):

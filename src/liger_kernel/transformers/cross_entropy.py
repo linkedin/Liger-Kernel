@@ -54,7 +54,7 @@ class LigerCrossEntropyLoss(torch.nn.Module):
         if self.loss_dtype is not None or self.in_place:
             device = _input.device if _input.is_cuda else None
             impl_name = resolve_impl("cross_entropy", device=device).impl_name
-            if impl_name != "nvidia-triton":
+            if impl_name not in ("nvidia-triton", "ascend-triton"):
                 raise ValueError(
                     f"loss_dtype and in_place are only supported by the Triton cross_entropy backend, but '{impl_name}' was selected."
                 )

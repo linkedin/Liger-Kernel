@@ -187,14 +187,16 @@ struct TmaOperands {
 	const HostElement* x = nullptr;
 	const HostElement* weight = nullptr;
 	HostElement* dz = nullptr;
-	HostElement* grad_weight = nullptr;
+	void* grad_weight = nullptr;
 	std::int64_t tokens = 0;
 	std::int64_t hidden = 0;
 	std::int64_t local_vocab = 0;
 	std::int64_t padded_vocab = 0;
 };
 
+template <class ElementDw = HostElement>
 inline auto make_tma_bundle(const TmaOperands& op) {
+	using DwOutput = BackwardDwOutputSm100<ElementDw>;
 	const std::int64_t wave_rows =
 		HostConfig::kWaveRows * HostConfig::kDzWorkspaceSlots;
 
@@ -283,17 +285,17 @@ inline auto make_tma_bundle(const TmaOperands& op) {
 		typename HostDxTraits::SmemLayoutStoreTile{});
 
 	auto tensor_dw = make_tensor(
-		make_gmem_ptr(op.grad_weight),
+		make_gmem_ptr(static_cast<ElementDw*>(op.grad_weight)),
 		make_shape(op.local_vocab, op.hidden),
 		make_stride(op.hidden, Int<1>{}));
 	auto tma_dw_store = make_tma_copy(
 		SM90_TMA_STORE{},
 		tensor_dw,
-		typename HostTraits::SmemLayoutStoreSlot{});
+		typename DwOutput::SmemLayout{});
 	auto tma_dw_add = make_tma_copy(
 		SM90_TMA_REDUCE_ADD{},
 		tensor_dw,
-		typename HostTraits::SmemLayoutStoreSlot{});
+		typename DwOutput::SmemLayout{});
 
 	using Bundle = BackwardTmaBundleSm100<
 		decltype(tma_x),
@@ -305,7 +307,8 @@ inline auto make_tma_bundle(const TmaOperands& op) {
 		decltype(tma_dzt),
 		decltype(tma_xt),
 		decltype(tma_dw_store),
-		decltype(tma_dw_add)>;
+		decltype(tma_dw_add),
+		ElementDw>;
 	return Bundle{
 		tma_x,
 		tma_w,

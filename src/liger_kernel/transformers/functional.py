@@ -141,8 +141,9 @@ def liger_fused_linear_scaled_cross_entropy_tp(
     ignore_index: int = -100,
     tiles_per_reduce: int = 1,
     return_entropy: bool = False,
+    accum_dtype: Optional[torch.dtype] = None,
 ):
-    """Return per-token TP negative log-likelihood and optional entropy."""
+    """Return per-token TP NLL/entropy; optionally accumulate dW in FP32."""
     return LigerFusedLinearScaledCrossEntropyTPFunction.apply(
         input,
         weight,
@@ -152,6 +153,7 @@ def liger_fused_linear_scaled_cross_entropy_tp(
         ignore_index,
         tiles_per_reduce,
         return_entropy,
+        accum_dtype,
     )
 
 

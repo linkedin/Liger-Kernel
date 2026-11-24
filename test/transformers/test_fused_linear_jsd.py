@@ -568,3 +568,32 @@ def test_logits_projection_is_not_rounded_to_input_dtype(dtype, beta):
             f"{name} deviates {relative_error:.2%} from the float32-projection reference, "
             f"which means the projection rounded its logits to {dtype}"
         )
+
+
+@pytest.mark.parametrize("layout", ["weight", "input"])
+def test_scaled_gradient_respects_column_stride(layout):
+    # the cached gradients keep the layout of the parameter they were zeros_like'd from, so a transposed
+    # parameter has a non-unit column stride and every element must still be scaled
+    set_seed(42)
+    H, V = 4, 3
+    x = (
+        torch.randn(H, 2, device=device).t().requires_grad_(True)
+        if layout == "input"
+        else torch.randn(2, H, device=device, requires_grad=True)
+    )
+    weight = (
+        torch.randn(H, V, device=device).t().requires_grad_(True)
+        if layout == "weight"
+        else torch.randn(V, H, device=device, requires_grad=True)
+    )
+    assert (x.stride(-1) if layout == "input" else weight.stride(-1)) != 1
+
+    teacher_input = torch.randn(2, H, device=device)
+    teacher_weight = torch.randn(V, H, device=device)
+    loss = LigerFusedLinearJSDFunction.apply(
+        x, weight, teacher_input, teacher_weight, None, 0.5, -100, 1.0, None, None, None
+    )
+    (0.0 * loss).backward()
+
+    assert_verbose_allclose(x.grad, torch.zeros_like(x.grad))
+    assert_verbose_allclose(weight.grad, torch.zeros_like(weight.grad))

@@ -302,7 +302,12 @@ def test_frontend_forwards_selection_and_preserves_default_contract(monkeypatch)
         def apply(*args):
             calls.append(args)
 
-    monkeypatch.setattr(_FRONTEND, "_resolve_implementation", lambda _: Stub)
+    def resolve_implementation(device, dtype):
+        assert device == x.device
+        assert dtype == x.dtype
+        return Stub
+
+    monkeypatch.setattr(_FRONTEND, "_resolve_implementation", resolve_implementation)
     x, weight, target = torch.randn(2, 3), torch.randn(4, 3), torch.tensor([0, 1])
     _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction.apply(x, weight, target)
     _FRONTEND.LigerFusedLinearScaledCrossEntropyFunction.apply(x, weight, target, selected_token_ids=ids)
