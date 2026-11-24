@@ -20,10 +20,16 @@ ITERS = 20
 
 def run(kernel: str):
     dev = "cuda"
+    # copy and mul are baselines: plain PyTorch ops that read and write the same tensors as rmsnorm and swiglu
     if kernel == "copy":
-        x = torch.randn(TOKENS, INTERMEDIATE, device=dev, dtype=DTYPE)
+        x = torch.randn(TOKENS, HIDDEN, device=dev, dtype=DTYPE)
         out = torch.empty_like(x)
         fn = lambda: torch.mul(x, 1.0, out=out)
+    elif kernel == "mul":
+        a = torch.randn(TOKENS, INTERMEDIATE, device=dev, dtype=DTYPE)
+        b = torch.randn(TOKENS, INTERMEDIATE, device=dev, dtype=DTYPE)
+        c = torch.empty_like(a)
+        fn = lambda: torch.mul(a, b, out=c)
     elif kernel == "rmsnorm":
         x = torch.randn(TOKENS, HIDDEN, device=dev, dtype=DTYPE)
         m = LigerRMSNorm(HIDDEN, eps=1e-6).to(dev).to(DTYPE)
@@ -46,5 +52,5 @@ def run(kernel: str):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--kernel", choices=["copy", "rmsnorm", "swiglu"], required=True)
+    p.add_argument("--kernel", choices=["copy", "mul", "rmsnorm", "swiglu"], required=True)
     run(p.parse_args().kernel)

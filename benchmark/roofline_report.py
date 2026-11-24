@@ -11,11 +11,14 @@ from pathlib import Path
 
 # Must match benchmark_roofline.py
 T, H, INTER, B = 4096, 4096, 14336, 2  # tokens, hidden, intermediate, bytes/elem (fp16)
-MODEL_BYTES = {  # simple model: compulsory reads + writes only
-    "copy": 2 * T * INTER * B,  # read x, write out
-    "rmsnorm": 2 * T * H * B,  # read x, write y (weight/rstd ignored)
-    "swiglu": 3 * T * INTER * B,  # read a, b, write c
+MODEL_BYTES = {  # simple model: compulsory (reads, writes) only
+    "copy": (T * H * B, T * H * B),  # read x, write out
+    "mul": (2 * T * INTER * B, T * INTER * B),  # read a, b, write c
+    "rmsnorm": (T * H * B, T * H * B),  # read x, write y (weight/rstd ignored)
+    "swiglu": (2 * T * INTER * B, T * INTER * B),  # read a, b, write c
 }
+# Each Liger kernel is compared with a plain PyTorch op that reads and writes the same tensors
+BASELINE = {"rmsnorm": "copy", "swiglu": "mul"}
 
 
 def load(path):
@@ -31,31 +34,22 @@ def load(path):
 
 
 def main(d):
-    res = {k: load(Path(d) / f"{k}.csv") for k in ["copy", "rmsnorm", "swiglu"]}
-    peak = res["copy"]["dram__bytes.sum.per_second"]
-    out = [
-        [
-            "Kernel",
-            "Achieved GB/s",
-            "% of copy peak",
-            "L2 hit %",
-            "DRAM MB (measured)",
-            "DRAM MB (model)",
-            "Measured/Model",
-        ]
-    ]
-    for k, m in res.items():
-        bw = m["dram__bytes.sum.per_second"]
-        mb = m["dram__bytes.sum"]
+    res = {k: load(Path(d) / f"{k}.csv") for k in MODEL_BYTES}
+
+    def gbps(k):  # modeled bytes / kernel time; bytes per ns == GB/s
+        return sum(MODEL_BYTES[k]) / res[k]["gpu__time_duration.sum"]
+
+    out = [["Kernel", "Baseline", "Time (us)", "GB/s", "Baseline GB/s", "% of baseline", "DRAM reads / model"]]
+    for k, base in BASELINE.items():
         out.append(
             [
                 k,
-                f"{bw / 1e9:.1f}",
-                f"{100 * bw / peak:.1f}",
-                f"{m['lts__t_sector_hit_rate.pct']:.1f}",
-                f"{mb / 1e6:.1f}",
-                f"{MODEL_BYTES[k] / 1e6:.1f}",
-                f"{mb / MODEL_BYTES[k]:.2f}",
+                base,
+                f"{res[k]['gpu__time_duration.sum'] / 1e3:.2f}",
+                f"{gbps(k):.1f}",
+                f"{gbps(base):.1f}",
+                f"{100 * gbps(k) / gbps(base):.1f}",
+                f"{res[k]['dram__bytes_read.sum'] / MODEL_BYTES[k][0]:.2f}",
             ]
         )
     for r in out:
