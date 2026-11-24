@@ -61,13 +61,12 @@ class TorchSparseMultiTokenAttention(torch.nn.Module):
         tau = torch.where(k_sparsemax == 0, torch.full_like(tau, float("inf")), tau)
 
         probs = torch.clamp(z - tau, min=0)
+        probs = torch.nn.functional.pad(probs, (self.K // 2, self.K // 2, self.K - 1, 0))
 
         weight_compute = self.weight.to(self.compute_dtype)
         bias_compute = self.bias.to(self.compute_dtype) if self.bias is not None else None
 
-        out_c = torch.nn.functional.conv2d(
-            probs, weight_compute, bias_compute, stride=1, padding=self.K // 2, groups=self.groups
-        )
+        out_c = torch.nn.functional.conv2d(probs, weight_compute, bias_compute, groups=self.groups)
         return out_c.masked_fill(~mask, zero).to(scores.dtype)
 
 

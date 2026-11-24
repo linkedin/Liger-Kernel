@@ -17,7 +17,7 @@ def _element_mul_kernel(
     X_ptr,
     X_stride,
     grad_output_ptr,
-    n_rows: tl.constexpr,
+    n_rows,
     n_cols: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):

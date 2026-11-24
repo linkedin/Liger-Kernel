@@ -39,7 +39,7 @@ def _tv_distance_kernel(
     label_ptr,
     ignore_index: tl.constexpr,
     n_cols,  # V
-    total_rows: tl.constexpr,  # BT
+    total_rows,  # BT
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
     reduction: tl.constexpr,  # 0 none; 1/2/3 reduced, scaled on the host

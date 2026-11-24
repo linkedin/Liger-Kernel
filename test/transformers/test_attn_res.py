@@ -189,3 +189,43 @@ def test_correctness_functional(N, B, T, D, dtype, atol, rtol):
     y2.backward(grad)
 
     assert_verbose_allclose(V1.grad, V2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
+def test_attn_res_int32_offset_overflow():
+    # Regression: V/dV global-memory offsets must be int64. For
+    # N * (B*T) * D > 2**31 the previous int32 offset arithmetic overflowed,
+    # causing an illegal memory access / silently wrong output on large shapes.
+    total_gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    if total_gib < 20:
+        pytest.skip("needs >=20 GiB GPU to cross the 2**31 offset threshold")
+    dev, dt = "cuda", torch.bfloat16
+    N, B, T, D = 4, 1, 140_000, 4096
+    assert N * (B * T) * D > 2**31
+    set_seed(42)
+    V = torch.randn(N, B, T, D, device=dev, dtype=dt, requires_grad=True)
+    wq = torch.randn(D, device=dev, dtype=dt)
+    wn = torch.randn(D, device=dev, dtype=dt)
+
+    def ref_chunked(V, wq, wn, eps=1e-6, chunk=2048):
+        # memory-lean, token-chunked equivalent of pytorch_attn_res
+        # (each token position is independent across the T dim)
+        _, _, Tt, Dd = V.shape
+        wqf = wq.float()
+        out = torch.empty(V.shape[1], Tt, Dd, device=V.device, dtype=V.dtype)
+        with torch.no_grad():
+            for s in range(0, Tt, chunk):
+                e = min(s + chunk, Tt)
+                Vcf = V[:, :, s:e, :].float()
+                rms = torch.sqrt(Vcf.pow(2).mean(-1, keepdim=True) + eps)
+                K = (Vcf / rms).to(V.dtype) * wn
+                a = torch.einsum("d,nbcd->nbc", wqf, K.float()).softmax(0)
+                out[:, s:e, :] = torch.einsum("nbc,nbcd->bcd", a, Vcf).to(V.dtype)
+        return out
+
+    out = LigerAttnResFunction.apply(V, wq, wn, 1e-6)
+    exp = ref_chunked(V, wq, wn)
+    assert_verbose_allclose(out, exp, atol=1e-1, rtol=1e-2)
+    out.sum().backward()
+    torch.cuda.synchronize()
+    assert torch.isfinite(V.grad).all()
