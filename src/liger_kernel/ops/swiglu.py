@@ -369,15 +369,15 @@ def swiglu_fused_gate_up_forward(y):
         raise ValueError(f"fused gate-up input must have an even trailing dim; got {fused_size}.")
     ffn_size = fused_size // 2
 
-    y = y.view(-1, fused_size)
-    n_rows = y.shape[0]
+    y_2d = y.view(-1, fused_size)
+    n_rows = y_2d.shape[0]
     c = torch.empty(n_rows, ffn_size, dtype=y.dtype, device=y.device)
 
     BLOCK_SIZE, num_warps = calculate_settings(ffn_size)
     _swiglu_fused_gate_up_forward_kernel[(n_rows,)](
-        y,
+        y_2d,
         c,
-        y.stride(-2),
+        y_2d.stride(-2),
         c.stride(-2),
         ffn_size=ffn_size,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -397,24 +397,25 @@ def swiglu_fused_gate_up_backward(y, dc, in_place=False):
     """
     fused_size = y.shape[-1]
     ffn_size = fused_size // 2
+    ori_shape = y.shape if len(y.shape) > 2 or len(y.shape) >= len(dc.shape) else (*dc.shape[:-1], fused_size)
 
-    y = y.view(-1, fused_size)
-    dc = dc.view(-1, ffn_size)
-    n_rows = dc.shape[0]
-    dy = y if in_place else torch.empty_like(y)
+    y_2d = y.view(-1, fused_size)
+    dc_2d = dc.view(-1, ffn_size)
+    n_rows = dc_2d.shape[0]
+    dy_2d = y_2d if in_place else torch.empty_like(y_2d)
 
     BLOCK_SIZE, num_warps = calculate_settings(ffn_size)
     _swiglu_fused_gate_up_backward_kernel[(n_rows,)](
-        dc,
-        y,
-        dy,
-        y.stride(-2),
-        dc.stride(-2),
+        dc_2d,
+        y_2d,
+        dy_2d,
+        y_2d.stride(-2),
+        dc_2d.stride(-2),
         ffn_size=ffn_size,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    return dy
+    return dy_2d.view(*ori_shape)
 
 
 class LigerFusedGateUpSiLUMulFunction(torch.autograd.Function):
@@ -428,8 +429,10 @@ class LigerFusedGateUpSiLUMulFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, y, in_place=False):
+        ori_shape = y.shape
         y, c = swiglu_fused_gate_up_forward(y)
         ctx.save_for_backward(y)
+        ctx.ori_shape = ori_shape
         ctx.in_place = in_place
         ctx.already_backward = False
         return c
@@ -448,4 +451,7 @@ class LigerFusedGateUpSiLUMulFunction(torch.autograd.Function):
                     "Use in_place=False for retain_graph=True or double-backward."
                 )
             ctx.already_backward = True
-        return swiglu_fused_gate_up_backward(y, dc, ctx.in_place), None
+        dy = swiglu_fused_gate_up_backward(y, dc, ctx.in_place)
+        if hasattr(ctx, "ori_shape") and dy.shape != ctx.ori_shape:
+            dy = dy.view(*ctx.ori_shape)
+        return dy, None
