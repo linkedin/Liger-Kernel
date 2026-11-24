@@ -197,7 +197,7 @@ def available_impls(op_name: str, device=None) -> List[str]:
     ``sys.modules`` hits after first import; the shipped predicates are pure
     host-info checks — see ``Capability``'s own design note that evaluation is
     negligible-cost host work). Including the resolved device in the key keeps
-    heterogeneous multi-GPU selections from aliasing to one device's cc.
+    heterogeneous multi-GPU selections from aliasing to one device's cc or arch.
     ``_discover`` still runs via ``list_registered`` on a memo miss, so
     first-call discovery semantics are unchanged; explicit-``impl`` resolution
     never uses the memo.
@@ -213,7 +213,18 @@ def available_impls(op_name: str, device=None) -> List[str]:
         # fall back to CPU routing. Unexpected errors propagate.
         logger.debug("CUDA capability probe failed (%s); routing as CUDA-unavailable.", exc)
         cuda_ok, cc = False, None
-    memo_key = (op_name, _device_memo_key(device), cc, cuda_ok)
+    # Capability.archs is not derivable from (device, cc): key on the arch too.
+    arch: Optional[str] = None
+    if cuda_ok:
+        try:
+            from liger_kernel.backends.capability import _device_index
+            from liger_kernel.utils import infer_device_arch
+
+            index = _device_index(device)
+            arch = None if index is None else infer_device_arch(index)
+        except Exception as exc:  # pragma: no cover - arch probe is best-effort
+            logger.debug("Device arch probe failed (%s); omitting it from the memo key.", exc)
+    memo_key = (op_name, _device_memo_key(device), cc, cuda_ok, arch)
     with _AVAILABLE_MEMO_LOCK:
         cached = _AVAILABLE_MEMO.get(memo_key)
     if cached is not None:

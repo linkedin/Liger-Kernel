@@ -509,6 +509,8 @@ class TestArchFallback:
 
         # Pretend we're on H100 (sm_90).
         with (
+            # sm_90 is an NVIDIA device: cc gates are CUDA-only, so pin non-ROCm.
+            mock.patch("torch.version.hip", None),
             mock.patch("torch.cuda.is_available", return_value=True),
             mock.patch("torch.cuda.get_device_capability", return_value=(9, 0)),
         ):
@@ -528,6 +530,8 @@ class TestArchFallback:
             return x
 
         with (
+            # sm_90 is an NVIDIA device: cc gates are CUDA-only, so pin non-ROCm.
+            mock.patch("torch.version.hip", None),
             mock.patch("torch.cuda.is_available", return_value=True),
             mock.patch("torch.cuda.get_device_capability", return_value=(9, 0)),
         ):
@@ -799,3 +803,52 @@ class TestLegacyRMSNormCompatibilityBoundary:
         cls = getattr(rms_mod, subclass_name)
         with pytest.raises(TypeError):
             cls(64, **{dispatch_kwarg: "nvidia-triton"})
+
+
+class TestArchGateThroughDispatch:
+    """The arch gate must work through dispatch, not only on ``Capability``."""
+
+    def test_arch_gated_impl_is_filtered_out_and_falls_back(self, isolated_registry, clean_env):
+        @register_op(
+            "arch_dispatch_op", backend="fake_rocm", capability=Capability(archs=("cdna3",)), preference_rank=1
+        )
+        def _rocm_impl(x):
+            return "rocm"
+
+        @register_op("arch_dispatch_op", backend="fake_triton", capability=Capability(), preference_rank=50)
+        def _triton_impl(x):
+            return "triton"
+
+        with (
+            mock.patch("torch.cuda.is_available", return_value=True),
+            mock.patch("torch.cuda.current_device", return_value=0),
+            mock.patch("liger_kernel.utils.infer_device_arch", return_value="hopper"),
+        ):
+            assert available_backends("arch_dispatch_op") == ["fake_triton"]
+
+        clear_available_cache()
+        with (
+            mock.patch("torch.cuda.is_available", return_value=True),
+            mock.patch("torch.cuda.current_device", return_value=0),
+            mock.patch("liger_kernel.utils.infer_device_arch", return_value="cdna3"),
+        ):
+            assert available_backends("arch_dispatch_op") == ["fake_rocm", "fake_triton"]
+
+    def test_memo_does_not_alias_across_archs(self, isolated_registry, clean_env):
+        """With no explicit device, a change of current device must not reuse the other arch's entry."""
+
+        @register_op("arch_memo_op", backend="fake_rocm", capability=Capability(archs=("cdna3",)), preference_rank=1)
+        def _rocm_impl(x):
+            return "rocm"
+
+        def _arch_by_index(index):
+            return "cdna3" if index == 0 else "cdna2"
+
+        for current, expected in ((0, ["fake_rocm"]), (1, [])):
+            with (
+                mock.patch("torch.cuda.is_available", return_value=True),
+                mock.patch("torch.cuda.get_device_capability", return_value=(9, 0)),
+                mock.patch("torch.cuda.current_device", return_value=current),
+                mock.patch("liger_kernel.utils.infer_device_arch", side_effect=_arch_by_index),
+            ):
+                assert available_backends("arch_memo_op") == expected
