@@ -609,7 +609,9 @@ def test_scaled_gradient_respects_column_stride(layout):
 
     teacher_input = torch.randn(2, H, device=device)
     teacher_weight = torch.randn(V, H, device=device)
-    loss = LigerFusedLinearJSDFunction.apply(x, weight, teacher_input, teacher_weight, None, 0.5, -100, 1.0, None)
+    loss = LigerFusedLinearJSDFunction.apply(
+        x, weight, teacher_input, teacher_weight, None, 0.5, -100, 1.0, None, None, None
+    )
     (0.0 * loss).backward()
 
     assert_verbose_allclose(x.grad, torch.zeros_like(x.grad))

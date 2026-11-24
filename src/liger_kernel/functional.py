@@ -161,11 +161,15 @@ declare_op_locations(
 )
 
 # fused_linear_jsd: one Triton kernel computes the JSD from the logit gap, so the
-# gradient stays accurate near the teacher; it no longer composes the per-backend
-# ``jsd_loss_and_grad`` primitive.
+# gradient stays accurate near the teacher. The CuTe DSL and cuTile registrations
+# are kept so existing impl names still resolve; they run the same kernel.
 declare_op_locations(
     "fused_linear_jsd",
-    ("liger_kernel.ops.backends._triton.fused_linear_jsd",),
+    (
+        "liger_kernel.ops.backends._triton.fused_linear_jsd",
+        "liger_kernel.ops.backends._cutedsl.fused_linear_jsd",
+        "liger_kernel.ops.backends._cutile.fused_linear_jsd",
+    ),
 )
 
 # fused_linear_cross_entropy: Triton (universal) + Ascend Triton on NPU.
@@ -642,8 +646,8 @@ def fused_linear_jsd(
         jsd_beta: JSD mixing coefficient in ``[0, 1]``.
         ignore_index: label value to ignore.
         temperature: softmax temperature scaling.
-        impl: explicit implementation name (``"nvidia-triton"``). Legacy bare
-            names accepted and translated.
+        impl: explicit implementation name (``"nvidia-cutedsl"``,
+            ``"nvidia-triton"``). Legacy bare names accepted and translated.
         backend: Legacy back-compat alias for ``impl=``.
         mode: implementation-specific kernel-variant selection.
     """

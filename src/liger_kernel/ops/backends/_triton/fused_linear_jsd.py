@@ -52,7 +52,10 @@ def fused_linear_jsd_triton(
     error.
     """
     if mode not in (None, "default"):
-        raise ValueError(f"Triton fused_linear_jsd has only mode='default'; got mode={mode!r}.")
+        raise ValueError(
+            f"Triton fused_linear_jsd has only mode='default'; got mode={mode!r}. "
+            f"Pass impl='nvidia-cutedsl' to use the CuTe DSL variant."
+        )
     return LigerFusedLinearJSDFunction.apply(
         student_input,
         student_weight,
@@ -62,4 +65,7 @@ def fused_linear_jsd_triton(
         jsd_beta,
         ignore_index,
         temperature,
+        None,
+        "nvidia-triton",
+        mode,
     )

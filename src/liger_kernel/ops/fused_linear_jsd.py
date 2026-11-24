@@ -488,6 +488,8 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         ignore_index: int = -100,
         temperature: float = 1.0,
         accum_dtype: Optional[torch.dtype] = None,
+        jsd_impl=None,
+        jsd_mode=None,
     ):
         """
         Args:
@@ -500,6 +502,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             jsd_beta (float): coefficient beta of generalized JSD in the interval [0, 1]. It implements forward/reverse KL when beta equals 0 and 1 respectively. Default: `0.5`
             ignore_index (int): the index to ignore. Default: -100
             temperature (float): temperature in softmax function to control the output probability distribution. Default: `1.0`
+            jsd_impl, jsd_mode: ignored, kept for backward compatibility.
 
         Returns:
             loss (torch.Tensor): generalized JSD
@@ -536,4 +539,4 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         (grad_input, grad_weight) = ctx.saved_tensors
         grad_input, grad_weight = fused_linear_jsd_backward(grad_output, grad_input, grad_weight)
-        return (grad_input, grad_weight, None, None, None, None, None, None, None)
+        return (grad_input, grad_weight, None, None, None, None, None, None, None, None, None)
