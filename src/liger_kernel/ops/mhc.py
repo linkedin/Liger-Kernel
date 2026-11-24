@@ -195,7 +195,7 @@ def mhc_mm_norm_fwd(
 #   grad_x   = grad_z @ phi^T + factor * x
 #   grad_phi = x^T @ grad_z
 #
-# grad_phi is accumulated into FP32 with atomic adds (split over N-chunks).
+# grad_phi uses atomic adds by default, or ordered FP32 partials in deterministic mode.
 # -------------------------------------------------------------------------------------------------
 
 
@@ -228,6 +228,7 @@ def _mhc_mm_norm_bwd_fused_kernel(
     BLOCK_K: tl.constexpr,
     BLOCK_M: tl.constexpr,
     CAST_FP32: tl.constexpr,
+    ATOMIC_GRAD_PHI: tl.constexpr,
 ):
     pid_n = tl.program_id(0).to(tl.int64)
     pid_k = tl.program_id(1)
@@ -281,12 +282,13 @@ def _mhc_mm_norm_bwd_fused_kernel(
 
         acc += tl.dot(grad_z, tl.trans(phi))
 
-        dphi = tl.dot(tl.trans(x), grad_z)
-        tl.atomic_add(
-            grad_phi_ptr + k_offs[:, None] * stride_gpk + m_offs[None, :] * stride_gpm,
-            dphi,
-            mask=(k_offs[:, None] < K) & (m_offs[None, :] < M),
-        )
+        if ATOMIC_GRAD_PHI:
+            dphi = tl.dot(tl.trans(x), grad_z)
+            tl.atomic_add(
+                grad_phi_ptr + k_offs[:, None] * stride_gpk + m_offs[None, :] * stride_gpm,
+                dphi,
+                mask=(k_offs[:, None] < K) & (m_offs[None, :] < M),
+            )
 
     g = g_acc / invr
     invr3 = invr * invr * invr
@@ -308,6 +310,100 @@ def _mhc_mm_norm_bwd_fused_kernel(
         )
 
 
+# Limit token-group parallelism as well as bytes; unlike per-token-block partials,
+# this workspace does not grow with the sequence length. A single group writes
+# directly to the supplied output and therefore needs no partial buffer.
+_MHC_GRAD_PHI_WORKSPACE_BYTES = 16 * 1024 * 1024
+_MHC_GRAD_PHI_MAX_GROUPS = 32
+
+
+def _mhc_mm_norm_bwd_num_groups(n: int, k: int, m: int, block_n: int) -> int:
+    partial_bytes = k * m * 4
+    return max(
+        1,
+        min(
+            triton.cdiv(n, block_n),
+            _MHC_GRAD_PHI_MAX_GROUPS,
+            _MHC_GRAD_PHI_WORKSPACE_BYTES // max(1, partial_bytes),
+        ),
+    )
+
+
+@triton.jit
+def _mhc_mm_norm_grad_phi_partial_kernel(
+    x_ptr,
+    phi_ptr,
+    invr_ptr,
+    grad_mix_ptr,
+    partial_ptr,
+    grad_phi_ptr,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    M: tl.constexpr,
+    stride_gpk: tl.constexpr,
+    stride_gpm: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    NUM_GROUPS: tl.constexpr,
+    CAST_FP32: tl.constexpr,
+):
+    pid_k = tl.program_id(0).to(tl.int64)
+    pid_m = tl.program_id(1).to(tl.int64)
+    group = tl.program_id(2).to(tl.int64)
+    k = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
+    m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    blocks_per_group = tl.cdiv(tl.cdiv(N, BLOCK_N), NUM_GROUPS)
+    acc = tl.zeros((BLOCK_K, BLOCK_M), tl.float32)
+    for block in range(blocks_per_group):
+        n = (group * blocks_per_group + block) * BLOCK_N + tl.arange(0, BLOCK_N)
+        x = tl.load(x_ptr + n[:, None] * K + k[None, :], (n[:, None] < N) & (k[None, :] < K), 0)
+        invr = tl.load(invr_ptr + n, n < N, 0).to(tl.float32)
+        grad_mix = tl.load(
+            grad_mix_ptr + n[:, None] * M + m[None, :],
+            (n[:, None] < N) & (m[None, :] < M),
+            0,
+        ).to(tl.float32)
+        grad_z = grad_mix * invr[:, None]
+        if CAST_FP32:
+            x = x.to(tl.float32)
+        else:
+            grad_z = grad_z.to(phi_ptr.dtype.element_ty)
+        acc += tl.dot(tl.trans(x), grad_z)
+
+    mask = (k[:, None] < K) & (m[None, :] < M)
+    if NUM_GROUPS == 1:
+        out = grad_phi_ptr + k[:, None] * stride_gpk + m[None, :] * stride_gpm
+        initial = tl.load(out, mask, 0).to(tl.float32)
+        tl.store(out, initial + acc, mask)
+    else:
+        out = partial_ptr + (group * K + k[:, None]) * M + m[None, :]
+        tl.store(out, acc, mask)
+
+
+@triton.jit
+def _mhc_mm_norm_grad_phi_reduce_kernel(
+    partial_ptr,
+    grad_phi_ptr,
+    K: tl.constexpr,
+    M: tl.constexpr,
+    stride_gpk: tl.constexpr,
+    stride_gpm: tl.constexpr,
+    NUM_GROUPS: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    offset = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    mask = offset < K * M
+    # Each output element has one owner. Both the group partition and its
+    # reduction order are fixed; scheduling cannot change the accumulation.
+    acc = tl.full((BLOCK,), 0, tl.float32)
+    for group in range(NUM_GROUPS):
+        acc += tl.load(partial_ptr + group * K * M + offset, mask, 0)
+    out = grad_phi_ptr + (offset // M) * stride_gpk + (offset % M) * stride_gpm
+    initial = tl.load(out, mask, 0).to(tl.float32)
+    tl.store(out, initial + acc, mask)
+
+
 def mhc_mm_norm_bwd(
     x: torch.Tensor,
     phi: torch.Tensor,
@@ -327,13 +423,15 @@ def mhc_mm_norm_bwd(
 
     Returns:
         grad_x: [N, K] same dtype as x
-        grad_phi: [K, M] FP32 (safe for atomic adds; cast on return if needed)
+        grad_phi: [K, M] same dtype as phi. A supplied out_grad_phi is
+            accumulated into in place before any return-time dtype conversion.
 
     Note:
-        grad_phi is accumulated via atomic_add in FP32. For very large N
-        (batch * sequence length > 1M), accumulated rounding errors may
-        become noticeable. This is typically not an issue for standard
-        training configurations.
+        By default grad_phi uses atomic_add. With PyTorch deterministic
+        algorithms enabled, fixed token groups and ordered FP32 reduction
+        avoid scheduling-dependent accumulation. The optional partial buffer
+        is bounded by 16 MiB independently of N. This only controls the
+        projection backward, not the other mHC reductions.
     """
     assert (
         x.is_contiguous()
@@ -356,6 +454,33 @@ def mhc_mm_norm_bwd(
         out_grad_phi = torch.zeros((K, M), device=x.device, dtype=torch.float32)
 
     use_tc = (x.dtype == phi.dtype) and (x.dtype in (torch.float16, torch.bfloat16))
+
+    deterministic = torch.are_deterministic_algorithms_enabled()
+    num_groups = _mhc_mm_norm_bwd_num_groups(N, K, M, block_n) if deterministic else 1
+    partials = None
+    if deterministic and N and num_groups > 1:
+        partials = torch.empty((num_groups, K, M), device=x.device, dtype=torch.float32)
+
+    if deterministic and N:
+        _mhc_mm_norm_grad_phi_partial_kernel[(triton.cdiv(K, block_k), triton.cdiv(M, block_m), num_groups)](
+            x,
+            phi,
+            invr,
+            grad_mix,
+            partials if partials is not None else out_grad_phi,
+            out_grad_phi,
+            N=N,
+            K=K,
+            M=M,
+            stride_gpk=out_grad_phi.stride(0),
+            stride_gpm=out_grad_phi.stride(1),
+            BLOCK_N=block_n,
+            BLOCK_K=block_k,
+            BLOCK_M=block_m,
+            NUM_GROUPS=num_groups,
+            CAST_FP32=not use_tc,
+            num_warps=num_warps,
+        )
 
     grid = (triton.cdiv(N, block_n), triton.cdiv(K, block_k))
     _mhc_mm_norm_bwd_fused_kernel[grid](
@@ -386,8 +511,21 @@ def mhc_mm_norm_bwd(
         BLOCK_K=block_k,
         BLOCK_M=block_m,
         CAST_FP32=not use_tc,
+        ATOMIC_GRAD_PHI=not deterministic,
         num_warps=num_warps,
     )
+
+    if deterministic and N and num_groups > 1:
+        _mhc_mm_norm_grad_phi_reduce_kernel[(triton.cdiv(K * M, 256),)](
+            partials,
+            out_grad_phi,
+            K=K,
+            M=M,
+            stride_gpk=out_grad_phi.stride(0),
+            stride_gpm=out_grad_phi.stride(1),
+            NUM_GROUPS=num_groups,
+            BLOCK=256,
+        )
 
     if out_grad_phi.dtype != phi.dtype:
         out_grad_phi = out_grad_phi.to(phi.dtype)
