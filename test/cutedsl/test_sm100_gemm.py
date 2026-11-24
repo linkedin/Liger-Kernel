@@ -4,7 +4,7 @@ import pytest
 import torch
 
 cutedsl_available = importlib.util.find_spec("cutlass") is not None and torch.cuda.is_available()
-sm100_available = cutedsl_available and torch.cuda.get_device_capability() == (10, 0)
+sm100_available = cutedsl_available and torch.cuda.get_device_capability() in ((10, 0), (10, 3))
 
 pytestmark = pytest.mark.skipif(not sm100_available, reason="SM100 CuTe DSL GEMM requires an NVIDIA SM100 GPU")
 

@@ -101,6 +101,36 @@ def test_liger_dyt_correctness(B, T, hidden_size, beta, init_alpha, dtype, atol,
 
 
 @pytest.mark.parametrize("beta", [False, True])
+def test_liger_dyt_more_rows_than_grid_dimension_limit(beta):
+    # CUDA limits grid dimensions 1 and 2 to 65535 programs, and this input has 65538 rows.
+    B, T, hidden_size = 2, 32769, 8
+    _input = torch.randn(B, T, hidden_size, device=device, dtype=torch.float32)
+    x1 = _input.clone().requires_grad_(True)
+    x2 = _input.clone().requires_grad_(True)
+
+    torch_dyt = TorchDyT(hidden_size=hidden_size, beta=beta).to(device)
+    liger_dyt = LigerDyT(hidden_size=hidden_size, beta=beta).to(device)
+
+    torch_output = torch_dyt(x1)
+    liger_output = liger_dyt(x2)
+    assert_verbose_allclose(torch_output, liger_output, rtol=1e-5, atol=1e-5, extra_info="[output]")
+
+    grad_output = torch.randn_like(_input)
+    torch_output.backward(grad_output)
+    liger_output.backward(grad_output)
+    assert_verbose_allclose(x1.grad, x2.grad, rtol=1e-5, atol=1e-5, extra_info="[input.grad]")
+
+    # These gradients are sums over all the rows, so they carry more fp32 rounding error.
+    rtol, atol = 1e-3, 1e-3
+    assert_verbose_allclose(torch_dyt.alpha.grad, liger_dyt.alpha.grad, rtol=rtol, atol=atol, extra_info="[alpha.grad]")
+    assert_verbose_allclose(torch_dyt.gamma.grad, liger_dyt.gamma.grad, rtol=rtol, atol=atol, extra_info="[gamma.grad]")
+    if beta:
+        assert_verbose_allclose(
+            torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol, extra_info="[beta.grad]"
+        )
+
+
+@pytest.mark.parametrize("beta", [False, True])
 @pytest.mark.parametrize(
     "B, T, hidden_size",
     [

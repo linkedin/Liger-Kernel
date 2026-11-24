@@ -32,9 +32,9 @@ else:
 )
 @triton.jit
 def _dyt_fwd_kernel(X, Y, Alpha, Gamma, Beta, HAVE_BETA: tl.constexpr, N: tl.constexpr, BLOCK_N: tl.constexpr):
-    col = tl.cast(tl.program_id(0), tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
+    col = tl.cast(tl.program_id(1), tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     mask = col < N
-    row_id = tl.cast(tl.program_id(1), tl.int64)
+    row_id = tl.cast(tl.program_id(0), tl.int64)
 
     X += row_id * N
     Y += row_id * N
@@ -107,7 +107,8 @@ def liger_dyt_fwd(x, alpha, gamma, beta):
 
     y = torch.empty_like(x)
 
-    grid = lambda meta: (triton.cdiv(N, meta["BLOCK_N"]), M)
+    # CUDA limits grid dimensions 1 and 2 to 65535 programs, so the row count has to go on dimension 0.
+    grid = lambda meta: (M, triton.cdiv(N, meta["BLOCK_N"]))
     _dyt_fwd_kernel[grid](
         x,
         y,

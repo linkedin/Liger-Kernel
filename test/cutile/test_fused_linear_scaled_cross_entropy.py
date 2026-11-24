@@ -41,7 +41,8 @@ _CUTILE_ENABLED = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower() == "cu
     ],
     ids=["fp32-ragged", "bf16-multichunk"],
 )
-def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype, atol, rtol):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype, atol, rtol, accum_dtype):
     if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
         pytest.skip("BF16 is not supported")
 
@@ -67,6 +68,8 @@ def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype
         -100,
         3,
         True,
+        None,
+        accum_dtype,
     )
     torch.autograd.backward((actual_nll, actual_entropy), (grad_nll, grad_entropy))
 
@@ -79,6 +82,8 @@ def test_cutile_matches_verl_fallback_forward_and_combined_backward(shape, dtype
         temperature,
         -100,
         True,
+        None,
+        accum_dtype,
     )
     torch.autograd.backward((expected_nll, expected_entropy), (grad_nll, grad_entropy))
 

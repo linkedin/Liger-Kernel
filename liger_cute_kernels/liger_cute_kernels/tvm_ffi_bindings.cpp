@@ -683,7 +683,9 @@ void fused_linear_scaled_cross_entropy_backward(
   RequireCudaTensor(lse, 1, f32, "lse");
   RequireCudaTensor(entropy, 1, f32, "entropy");
   RequireCudaTensor(grad_input, 2, bf16, "grad_input");
-  RequireCudaTensor(grad_weight, 2, bf16, "grad_weight");
+  bool accum_fp32 = grad_weight.dtype().code == kDLFloat &&
+      grad_weight.dtype().bits == 32;
+  RequireCudaTensor(grad_weight, 2, accum_fp32 ? f32 : bf16, "grad_weight");
   RequireSameCudaDevice(entropy_grad, x, "entropy_grad");
   RequireSameCudaDevice(weight, x, "weight");
   RequireSameCudaDevice(target, x, "target");
@@ -731,6 +733,7 @@ void fused_linear_scaled_cross_entropy_backward(
     params.gemm.entropy_grad = static_cast<const float*>(entropy_grad.data_ptr());
     params.gemm.grad_input = grad_input.data_ptr();
     params.gemm.grad_weight = grad_weight.data_ptr();
+    params.gemm.accum_fp32 = accum_fp32;
     params.gemm.dz_workspace = scratch.dz_workspace;
     params.gemm.dz_workspace_bytes = scratch.dz_workspace_bytes;
     params.gemm.tokens = static_cast<int>(tokens);

@@ -37,7 +37,12 @@ def get_default_dependencies():
             "torch>=2.6.0",
         ]
     elif platform == "npu":
-        return ["torch==2.9.0", "torch_npu==2.9.0", "triton-ascend==3.2.2"]
+        return [
+            "torch==2.10.0",
+            "torch_npu==2.10.0.post7",
+            "torchvision==0.25.0",
+            "triton-ascend==3.6.0",
+        ]
 
 
 def get_optional_dependencies():
@@ -51,6 +56,9 @@ def get_optional_dependencies():
     ]
     cutile_tileiras_deps = [
         "cuda-tile[tileiras]>=1.5.0",
+        # Hopper (sm_90) requires tileiras 13.3+. Constrain the toolkit so
+        # tileiras, nvcc, and nvvm resolve to matching compiler versions.
+        "cuda-toolkit[tileiras,nvcc,nvvm]>=13.3",
     ]
     cutedsl_deps = [
         "nvidia-cutlass-dsl>=4.6.0",

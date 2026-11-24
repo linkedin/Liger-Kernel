@@ -9,7 +9,9 @@ import torch
 from liger_kernel.ops.cutile.ops.utils import LOG2E
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.cutile.ops.utils import _select_cross_entropy_block_size
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import _accumulate_fp32_grad_weight
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import _scaled_ce_outputs
+from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_accum_dtype
 from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_selected_token_ids
 from liger_kernel.utils import infer_device_arch
 
@@ -335,6 +337,7 @@ def fused_scaled_cross_entropy_backward(
     grad_entropy=None,
     selected_token_ids=None,
     grad_selected=None,
+    accum_dtype=None,
 ):
     """Compute gradients for per-token NLL and optional entropy outputs.
 
@@ -343,6 +346,7 @@ def fused_scaled_cross_entropy_backward(
     ``grad_entropy`` are needed only when entropy contributes to the gradient.
     """
     _validate_input_metadata(_input, weight, target)
+    accum_dtype = _validate_accum_dtype(accum_dtype, weight.dtype)
     _validate_temperature(temperature)
     if grad_nll is None and grad_entropy is None and grad_selected is None:
         raise ValueError("at least one output gradient must be provided")
@@ -370,7 +374,9 @@ def fused_scaled_cross_entropy_backward(
     block_size = _select_cross_entropy_block_size(V)
 
     grad_input = torch.empty_like(_input) if _input.requires_grad else None
-    grad_weight = torch.empty_like(weight) if weight.requires_grad else None
+    grad_weight = torch.empty_like(weight, dtype=accum_dtype) if weight.requires_grad else None
+    if grad_weight is not None and accum_dtype != weight.dtype:
+        grad_weight.zero_()
     grad_logits_workspace = torch.empty(
         min(BT, chunk_size),
         V,
@@ -422,19 +428,32 @@ def fused_scaled_cross_entropy_backward(
         if grad_input is not None:
             torch.mm(grad_logits_chunk, weight, out=grad_input[start:end])
         if grad_weight is not None:
-            if start == 0:
+            if grad_weight.dtype != grad_logits_chunk.dtype:
+                _accumulate_fp32_grad_weight(grad_weight, grad_logits_chunk, input_chunk)
+            elif start == 0:
                 torch.mm(grad_logits_chunk.t(), input_chunk, out=grad_weight)
             else:
                 # Accumulate the GEMM directly into grad_weight instead of
                 # materializing a full V x H temporary for every token chunk.
                 torch.addmm(grad_weight, grad_logits_chunk.t(), input_chunk, out=grad_weight)
 
-    return grad_input, grad_weight
+    return grad_input, grad_weight.to(weight.dtype) if grad_weight is not None else None
 
 
 class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, _input, weight, target, temperature, ignore_index, return_entropy, selected_token_ids=None):
+    def forward(
+        ctx,
+        _input,
+        weight,
+        target,
+        temperature,
+        ignore_index,
+        return_entropy,
+        selected_token_ids=None,
+        accum_dtype=None,
+    ):
+        ctx.accum_dtype = _validate_accum_dtype(accum_dtype, weight.dtype)
         ctx.set_materialize_grads(False)
         outputs = fused_scaled_cross_entropy_forward(
             _input,
@@ -473,8 +492,9 @@ class _LigerFusedLinearScaledCrossEntropyCuTileFunction(torch.autograd.Function)
             grad_entropy=grad_entropy,
             selected_token_ids=selected_token_ids,
             grad_selected=grad_selected,
+            accum_dtype=ctx.accum_dtype,
         )
-        return grad_input, grad_weight, None, None, None, None, None
+        return grad_input, grad_weight, None, None, None, None, None, None
 
 
 class LigerFusedLinearScaledCrossEntropyFunction:
@@ -495,6 +515,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
         m_tiles_per_cluster=1,
         return_entropy=False,
         selected_token_ids=None,
+        accum_dtype=None,
     ):
         if not isinstance(m_tiles_per_cluster, int) or isinstance(m_tiles_per_cluster, bool):
             raise TypeError("m_tiles_per_cluster must be an int")
@@ -511,4 +532,5 @@ class LigerFusedLinearScaledCrossEntropyFunction:
             ignore_index,
             return_entropy,
             selected_token_ids,
+            accum_dtype,
         )

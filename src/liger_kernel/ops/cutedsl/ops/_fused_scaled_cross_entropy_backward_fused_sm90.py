@@ -639,6 +639,7 @@ class _FusedBackwardSM90:
         dz_layout = LayoutEnum.from_tensor(dz)
         dzt_layout = LayoutEnum.from_tensor(dzt)
         dw_layout = LayoutEnum.from_tensor(dw)
+        dw_dtype = dw.element_type
 
         atom_layout = (NUM_MMA_WARP_GROUPS, 1, 1)
 
@@ -679,7 +680,7 @@ class _FusedBackwardSM90:
         dw_a = hopper_helpers.make_smem_layout_a(dzt_layout, self.tile_shape, BFloat16, self.stages)
         dw_b = hopper_helpers.make_smem_layout_b(xt_layout, self.tile_shape, BFloat16, self.stages)
         dw_st = hopper_helpers.make_smem_layout_epi(
-            BFloat16, dw_layout, (self.tile_m, self.dw_store_tile_n), self.dw_store_stages
+            dw_dtype, dw_layout, (self.tile_m, self.dw_store_tile_n), self.dw_store_stages
         )
 
         # ---- TMA atoms ---------------------------------------------------
@@ -740,7 +741,7 @@ class _FusedBackwardSM90:
         class DwStorage:
             sA: cute.struct.Align[cute.struct.MemRange[BFloat16, cute.cosize(dw_a)], self.buffer_align]
             sB: cute.struct.Align[cute.struct.MemRange[BFloat16, cute.cosize(dw_b)], self.buffer_align]
-            sD: cute.struct.Align[cute.struct.MemRange[BFloat16, cute.cosize(dw_st)], self.buffer_align]
+            sD: cute.struct.Align[cute.struct.MemRange[dw_dtype, cute.cosize(dw_st)], self.buffer_align]
 
         self.bar_storage = BarrierStorage
         self.dz_storage = DzStorage
@@ -1491,7 +1492,9 @@ class _FusedBackwardSM90:
                         cute.arch.cp_async_bulk_wait_group(self.dw_store_stages - 1, read=True)
                     self.dw_store_bar.arrive_and_wait()
                     for j in cutlass.range_constexpr(d_size):
-                        d_frag[j] = BFloat16(accum[self._sub_src(self.dw_store_tile_n, self.tile_n, sub, j)])
+                        d_frag[j] = accum[self._sub_src(self.dw_store_tile_n, self.tile_n, sub, j)].to(
+                            d_frag.element_type
+                        )
                     cute.autovec_copy(d_frag, tDsD_frag[(None, None, None, stage)])
                     cute.arch.fence_proxy("async.shared", space="cta")
                     self.dw_store_bar.arrive_and_wait()
@@ -1881,10 +1884,12 @@ class _FusedBackwardSM90:
             c_frag = cute.make_rmem_tensor(thr_sx.partition_shape_C((self.tile_m, self.dx_store_tile_n)), BFloat16)
             # dX and dW never stage at the same time; when their store tiles
             # are the same width the fragment is literally the same registers.
-            if cutlass.const_expr(self.dw_store_tile_n == self.dx_store_tile_n):
+            if cutlass.const_expr(self.dw_store_tile_n == self.dx_store_tile_n and sWD.element_type == BFloat16):
                 d_frag = c_frag
             else:
-                d_frag = cute.make_rmem_tensor(thr_sw.partition_shape_C((self.tile_m, self.dw_store_tile_n)), BFloat16)
+                d_frag = cute.make_rmem_tensor(
+                    thr_sw.partition_shape_C((self.tile_m, self.dw_store_tile_n)), sWD.element_type
+                )
 
             row_base_in_tile = mma_wg * 64 + local_warp * 16 + lane // 4
             col_base_in_tile = (lane % 4) * 2
@@ -2040,15 +2045,21 @@ def fused_backward_one_kernel(
     max_clusters=None,
     selected_token_ids=None,
     selected_grad=None,
+    accum_dtype=None,
 ):
     """One-launch dZ+dX+dW backward.  Returns ``(grad_input, grad_weight)``.
 
     Mirrors :func:`fused_scaled_cross_entropy_backward`'s token-wave semantics
-    exactly (BF16 dZ wave workspace, BF16 HBM dW accumulator with TMA
-    reduce-add), but performs every wave inside a single persistent kernel.
+    exactly (BF16 dZ wave workspace, selectable BF16/FP32 HBM dW accumulator
+    with TMA reduce-add), but performs every wave inside a single persistent kernel.
     """
     if config is None:
         config = FusedBackwardConfig()
+    from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_accum_dtype
+
+    accum_dtype = _validate_accum_dtype(accum_dtype, weight_padded.dtype)
+    if accum_dtype == torch.float32:
+        config = FusedBackwardConfig(**{**config.__dict__, "dw_store_tile_n": config.dw_store_tile_n // 2})
     config.validate()
     ensure_cuda_context()
 
@@ -2103,7 +2114,7 @@ def fused_backward_one_kernel(
 
     dz_ws = torch.empty((wave_rows, vocab_padded), device=device, dtype=torch.bfloat16)
     grad_input_padded = torch.empty((tokens, hidden_padded), device=device, dtype=torch.bfloat16)
-    grad_weight_padded = torch.empty((vocab_padded, hidden_padded), device=device, dtype=torch.bfloat16)
+    grad_weight_padded = torch.empty((vocab_padded, hidden_padded), device=device, dtype=accum_dtype)
 
     num_m_tiles = m_tiles_per_wave
     num_n_tiles = (vocab_size + config.tile_n - 1) // config.tile_n
@@ -2165,7 +2176,7 @@ def fused_backward_one_kernel(
     bar_c = to_cute_tensor(barrier, assumed_align=4)
 
     stream = _cute_stream()
-    key = ("fused_bwd_one_kernel", config, plan, clusters)
+    key = ("fused_bwd_one_kernel", config, plan, clusters, accum_dtype)
     compiled = _compile_cache.get(key)
     if compiled is None:
         compiled = cute.compile(
@@ -2227,7 +2238,7 @@ def fused_backward_one_kernel(
     grad_weight = grad_weight_padded
     if (vocab_size, hidden_size) != tuple(grad_weight_padded.shape):
         grad_weight = grad_weight_padded[:vocab_size, :hidden_size].contiguous()
-    return grad_input, grad_weight
+    return grad_input, grad_weight.to(weight_padded.dtype)
 
 
 __all__ = [

@@ -239,3 +239,50 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset
 
     assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
     assert torch.allclose(r1.grad, r2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_torch_compile_matches_eager(dtype):
+    """Compiled fused add+RMSNorm must match eager for both low-precision dtypes."""
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    hidden = 1024
+    model = (
+        LigerFusedAddRMSNorm(hidden_size=hidden, offset=0.0, casting_mode="llama", in_place=False)
+        .to(device=device)
+        .to(dtype)
+    )
+    x = torch.randn(64, hidden, device=device, dtype=dtype)
+    residual = torch.randn(64, hidden, device=device, dtype=dtype)
+    with torch.no_grad():
+        expected = model(x, residual)
+        actual = torch.compile(model)(x, residual)
+    if isinstance(expected, tuple):
+        for got, want in zip(actual, expected):
+            torch.testing.assert_close(got, want, atol=1e-2, rtol=1e-2)
+    else:
+        torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_torch_compile_dynamic_batch_matches_eager(dtype):
+    """Dynamic batch must not silently return uninitialized memory.
+
+    On the pre-fix code ``torch.compile`` returned uninitialized output here in
+    both static and dynamic mode: ``eps`` reached the kernel as a
+    ``tl.constexpr``, the CompilationError was swallowed, and the output buffer
+    was never written. This case covers the dynamic-batch path.
+    """
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    hidden = 1024
+    model = LigerFusedAddRMSNorm(hidden_size=hidden, in_place=False).to(device=device).to(dtype)
+    compiled = torch.compile(model, dynamic=True)
+    for rows in (1, 2, 4):
+        x = torch.randn(rows, hidden, device=device, dtype=dtype)
+        residual = torch.randn(rows, hidden, device=device, dtype=dtype)
+        with torch.no_grad():
+            expected = model(x, residual)
+            actual = compiled(x, residual)
+        for got, want in zip(actual, expected):
+            torch.testing.assert_close(got, want, atol=1e-2, rtol=1e-2)

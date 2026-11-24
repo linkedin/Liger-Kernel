@@ -134,6 +134,19 @@ def require_deterministic(test_case):
     return wrapper
 
 
+def require_highest_float32_matmul_precision(test_case):
+    @wraps(test_case)
+    def wrapper(*args, **kwargs):
+        original_precision = torch.get_float32_matmul_precision()
+        try:
+            torch.set_float32_matmul_precision("highest")
+            return test_case(*args, **kwargs)
+        finally:
+            torch.set_float32_matmul_precision(original_precision)
+
+    return wrapper
+
+
 @torch.no_grad
 def get_logprobs(tensor):
     return torch.nn.functional.log_softmax(tensor, dim=-1, dtype=torch.float32)
