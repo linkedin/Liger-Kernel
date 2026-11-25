@@ -351,3 +351,26 @@ def test_sparse_multi_token_attention_functional(B, C_in, C_out, L, K, groups, b
     assert_verbose_allclose(weight1.grad, ref_attn.weight.grad, atol=atol, rtol=rtol)
     if bias:
         assert_verbose_allclose(bias1.grad, ref_attn.bias.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
+def test_mask_kernels_int32_batch_offset_overflow():
+    # Regression for #1659: the mask kernels offset each L x L matrix by
+    # batch_id * stride_b. With an int32 batch_id this wraps once
+    # batch_id * L * L >= 2**31 and the kernel touches memory before the tensor.
+    from liger_kernel.ops.multi_token_attention import _mask_zero_backward
+    from liger_kernel.ops.multi_token_attention import _mask_zero_forward
+
+    if torch.cuda.mem_get_info()[0] / (1024**3) < 5:
+        pytest.skip("needs >=5 GiB free GPU memory to cross the 2**31 offset threshold")
+    N, L = 32769, 256  # last matrix starts at 32768 * 256 * 256 = 2**31
+    assert (N - 1) * L * L >= 2**31
+    x = torch.ones((N, L, L), device="cuda", dtype=torch.int8)
+    expected = torch.tril(torch.ones((L, L), device="cuda", dtype=torch.int8))
+
+    for fn in (_mask_zero_forward, _mask_zero_backward):
+        out = fn(x)
+        torch.cuda.synchronize()
+        torch.testing.assert_close(out[0], expected, rtol=0, atol=0)
+        torch.testing.assert_close(out[-1], expected, rtol=0, atol=0)
+        del out
