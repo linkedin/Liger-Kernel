@@ -134,7 +134,7 @@ def _fused_neighborhood_attention_qk_kernel(
     Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M), cdiv(seq_len, BLOCK_SIZE_N))
     Each program computes a tile of the attention score matrix.
     """
-    batch_head_id = tl.program_id(0)
+    batch_head_id = tl.program_id(0).to(tl.int64)
     tile_m = tl.program_id(1)
     tile_n = tl.program_id(2)
 
@@ -247,7 +247,7 @@ def _fused_neighborhood_attention_av_kernel(
     Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M), cdiv(head_dim, BLOCK_SIZE_N))
     Each program computes a tile of the output matrix.
     """
-    batch_head_id = tl.program_id(0)
+    batch_head_id = tl.program_id(0).to(tl.int64)
     tile_m = tl.program_id(1)
     tile_n = tl.program_id(2)
 
@@ -355,7 +355,7 @@ def _fused_neighborhood_attention_grad_qk_kernel(
     Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M), cdiv(head_dim, BLOCK_SIZE_N))
     Each program computes a tile of the query gradient matrix.
     """
-    batch_head_id = tl.program_id(0)
+    batch_head_id = tl.program_id(0).to(tl.int64)
     tile_m = tl.program_id(1)
     tile_n = tl.program_id(2)
 
@@ -465,7 +465,7 @@ def _fused_neighborhood_attention_grad_k_kernel(
     Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M), cdiv(head_dim, BLOCK_SIZE_N))
     Each program computes a tile of the key gradient matrix.
     """
-    batch_head_id = tl.program_id(0)
+    batch_head_id = tl.program_id(0).to(tl.int64)
     tile_m = tl.program_id(1)
     tile_n = tl.program_id(2)
 
@@ -573,7 +573,7 @@ def _fused_neighborhood_attention_grad_v_kernel(
     Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M), cdiv(head_dim, BLOCK_SIZE_N))
     Each program computes a tile of the value gradient matrix.
     """
-    batch_head_id = tl.program_id(0)
+    batch_head_id = tl.program_id(0).to(tl.int64)
     tile_m = tl.program_id(1)
     tile_n = tl.program_id(2)
 
@@ -680,7 +680,7 @@ def _fused_neighborhood_attention_grad_attn_kernel(
     Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M), cdiv(seq_len, BLOCK_SIZE_N))
     Each program computes a tile of the attention gradient matrix.
     """
-    batch_head_id = tl.program_id(0)
+    batch_head_id = tl.program_id(0).to(tl.int64)
     tile_m = tl.program_id(1)
     tile_n = tl.program_id(2)
 
