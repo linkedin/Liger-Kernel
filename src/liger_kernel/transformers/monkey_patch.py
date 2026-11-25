@@ -12,7 +12,7 @@ from packaging import version
 from transformers import PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
-from liger_kernel.transformers.functional import liger_cross_entropy
+from liger_kernel.transformers.functional import liger_fixed_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.geglu import LigerGEGLUMLPForGemma4
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
@@ -59,6 +59,32 @@ if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
         f"liger-kernel requires transformers >= {MIN_SUPPORTED_TRANSFORMERS_VERSION}, got {transformers.__version__}. "
         "Please install an older version of liger-kernel that is compatible with your transformers version."
     )
+
+
+# `transformers.loss.loss_utils.fixed_cross_entropy` as it was before `_patch_hf_cross_entropy` replaced it.
+_hf_fixed_cross_entropy = None
+
+
+def _patch_hf_cross_entropy():
+    # Scope the Liger cross entropy to the Hugging Face model losses: every loss in `transformers.loss.loss_utils`
+    # (ForCausalLMLoss, ForMaskedLMLoss, ...) calls the module-level `fixed_cross_entropy`. Rebinding
+    # `torch.nn.functional.cross_entropy` instead would route unrelated callers into the Liger kernel, which writes
+    # the gradient into requires-grad logits in place (https://github.com/linkedin/Liger-Kernel/issues/1639).
+    global _hf_fixed_cross_entropy
+    from transformers.loss import loss_utils
+
+    if loss_utils.fixed_cross_entropy is not liger_fixed_cross_entropy:
+        _hf_fixed_cross_entropy = loss_utils.fixed_cross_entropy
+        loss_utils.fixed_cross_entropy = liger_fixed_cross_entropy
+
+
+def _revert_hf_cross_entropy():
+    # Undo `_patch_hf_cross_entropy`. The patch lives on `transformers.loss.loss_utils`, so reloading a modeling
+    # module does not remove it.
+    from transformers.loss import loss_utils
+
+    if _hf_fixed_cross_entropy is not None and loss_utils.fixed_cross_entropy is liger_fixed_cross_entropy:
+        loss_utils.fixed_cross_entropy = _hf_fixed_cross_entropy
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
@@ -224,9 +250,7 @@ def apply_liger_kernel_to_granite(
         modeling_granite.apply_rotary_pos_emb = liger_rotary_pos_emb
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         raise NotImplementedError("LigerFusedLinearCrossEntropy is not available for Granite models.")
@@ -292,9 +316,7 @@ def apply_liger_kernel_to_llama(
         modeling_llama.LlamaMLP = LigerSwiGLUMLP
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -359,9 +381,7 @@ def apply_liger_kernel_to_smollm3(
         modeling_smollm3.SmolLM3MLP = LigerSwiGLUMLP
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -418,9 +438,7 @@ def apply_liger_kernel_to_llava(
     from transformers.models.llava import modeling_llava
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(llava_lce_forward, model)
@@ -601,9 +619,7 @@ def apply_liger_kernel_to_mllama(
     if swiglu:
         modeling_mllama.MllamaTextMLP = LigerSwiGLUMLP
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(mllama_lce_forward, model)
@@ -863,9 +879,7 @@ def apply_liger_kernel_to_mixtral(
     if rms_norm:
         modeling_mixtral.MixtralRMSNorm = LigerRMSNorm
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -939,9 +953,7 @@ def apply_liger_kernel_to_muse_glimmer(
         modeling_muse_glimmer.MuseGlimmerTextMLP = LigerSwiGLUMLPForMuseGlimmer
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if layer_norm and model is None:
         # MuseGlimmer vision LayerNorm uses torch.nn.LayerNorm directly, so patching requires a model instance.
@@ -1099,9 +1111,7 @@ def apply_liger_kernel_to_gemma(
     if rms_norm:
         modeling_gemma.GemmaRMSNorm = LigerRMSNormForGemma
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if geglu:
         modeling_gemma.GemmaMLP = LigerGEGLUMLP
     if fused_linear_cross_entropy:
@@ -1171,9 +1181,7 @@ def apply_liger_kernel_to_gemma2(
         # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
         modeling_gemma2.Gemma2RMSNorm = LigerRMSNormForGemma2
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(gemma2_lce_forward, model)
@@ -1252,9 +1260,7 @@ def apply_liger_kernel_to_gemma3_text(
 
     # Handle loss function
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -1480,9 +1486,7 @@ def apply_liger_kernel_to_gemma4_text(
 
     # Handle loss function
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -1601,9 +1605,7 @@ def apply_liger_kernel_to_gemma4(
     )
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -1772,9 +1774,7 @@ def apply_liger_kernel_to_qwen2(
         modeling_qwen2.Qwen2RMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -1830,9 +1830,7 @@ def apply_liger_kernel_to_qwen3(
         modeling_qwen3.Qwen3RMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -1889,9 +1887,7 @@ def apply_liger_kernel_to_qwen3_moe(
         modeling_qwen3_moe.Qwen3MoeRMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -1961,9 +1957,7 @@ def apply_liger_kernel_to_gpt_oss(
         modeling_gpt_oss.GptOssRMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -2209,9 +2203,7 @@ def apply_liger_kernel_to_qwen3_vl(
         modeling_qwen3_vl.Qwen3VLTextRMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -2287,9 +2279,7 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         modeling_qwen3_vl_moe.Qwen3VLMoeTextRMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -2370,9 +2360,7 @@ def apply_liger_kernel_to_phi3(
     if swiglu:
         modeling_phi3.Phi3MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(phi3_lce_forward, model)
@@ -2437,9 +2425,7 @@ def apply_liger_kernel_to_olmo2(
     if swiglu:
         modeling_olmo2.Olmo2MLP = LigerSwiGLUMLP
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(olmo2_lce_forward, model)
@@ -2505,9 +2491,7 @@ def apply_liger_kernel_to_olmo3(
     if swiglu:
         modeling_olmo3.Olmo3MLP = LigerSwiGLUMLP
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(olmo3_lce_forward, model)
@@ -2572,9 +2556,7 @@ def apply_liger_kernel_to_glm4(
     if swiglu:
         modeling_glm4.Glm4MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(glm4_lce_forward, model)
@@ -2642,9 +2624,7 @@ def apply_liger_kernel_to_glm4v(
     if rms_norm:
         modeling_glm4v.Glm4vRMSNorm = LigerRMSNormForGlm4
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(glm4v_lce_forward, model)
@@ -2732,9 +2712,7 @@ def apply_liger_kernel_to_glm4v_moe(
         modeling_glm4v_moe.Glm4vMoeRMSNorm = LigerRMSNormForGlm4
         modeling_glm4v_moe.Glm4vMoeTextRMSNorm = LigerRMSNormForGlm4
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(glm4v_moe_lce_forward, model)
@@ -2837,9 +2815,7 @@ def apply_liger_kernel_to_internvl(
     if cross_entropy:
         logger.info("Apply liger cross entropy")
 
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         modeling_internvl.InternVLForConditionalGeneration.forward = internvl_lce_forward
     if rms_norm:
@@ -2946,9 +2922,7 @@ def apply_liger_kernel_to_smolvlm(
     if cross_entropy:
         logger.info("Apply liger cross entropy")
 
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(smolvlm_lce_forward, model)
@@ -3046,9 +3020,7 @@ def apply_liger_kernel_to_falcon_h1(
 
     if cross_entropy:
         logger.info("Apply liger cross entropy")
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -3116,9 +3088,7 @@ def apply_liger_kernel_to_qwen3_next(
     if rms_norm:
         modeling_qwen3_next.Qwen3NextRMSNorm = LigerRMSNormForQwen3Next
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             if isinstance(model, Qwen3NextForCausalLM):
@@ -3223,9 +3193,7 @@ def apply_liger_kernel_to_qwen3_5(
         modeling_qwen3_5.Qwen3_5RMSNorm = LigerRMSNormForQwen3Next
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -3324,9 +3292,7 @@ def apply_liger_kernel_to_qwen3_5_moe(
     if rms_norm:
         modeling_qwen3_5_moe.Qwen3_5MoeRMSNorm = LigerRMSNormForQwen3Next
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
     if fused_linear_cross_entropy:
         if model is not None:
             if isinstance(model, Qwen3_5MoeForCausalLM):
@@ -3409,9 +3375,7 @@ def apply_liger_kernel_to_hunyuan_v1_dense(
         modeling_hunyuan_v1_dense.HunYuanDenseV1RMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -3466,9 +3430,7 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
         modeling_hunyuan_v1_moe.HunYuanMoEV1RMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -3554,9 +3516,7 @@ def apply_liger_kernel_to_deepseek_v2(
         modeling_deepseek_v2.DeepseekV2RMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -3643,9 +3603,7 @@ def apply_liger_kernel_to_deepseek_v3(
         modeling_deepseek_v3.DeepseekV3RMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -3729,9 +3687,7 @@ def apply_liger_kernel_to_deepseek_v4(
         modeling_deepseek_v4.DeepseekV4RMSNorm = LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -3801,9 +3757,7 @@ def apply_liger_kernel_to_exaone4(
         modeling_exaone4.Exaone4RMSNorm = Exaone4LigerRMSNorm
 
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        _patch_hf_cross_entropy()
 
     if fused_linear_cross_entropy:
         if model is not None:
