@@ -109,3 +109,57 @@ def test_liger_group_norm_low_precision_statistics(shape, num_groups, offset, dt
 
     assert torch.isfinite(liger_output).all()
     assert torch.allclose(liger_output.float(), torch_output, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "shape, num_groups, offset, upstream, dtype, atol, rtol",
+    [
+        # fp16: sum(W * dY) over one 65536-element channel exceeds the fp16 max (65504) when dY is all ones
+        ((1, 16, 256, 256), 4, 0.0, "ones", torch.float16, 1e-3, 1e-2),
+        # bf16: the backward reductions keep 8 bits and read a mean/rstd rounded to 8 bits
+        pytest.param(
+            (1, 16, 256, 256),
+            4,
+            0.0,
+            "ones",
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        pytest.param(
+            (2, 8, 16),
+            4,
+            16.0,
+            "randn",
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_liger_group_norm_low_precision_backward(shape, num_groups, offset, upstream, dtype, atol, rtol):
+    # the backward sums and the cached mean/rstd must stay in fp32 even for fp16/bf16 inputs
+    torch.manual_seed(0)
+    x = (torch.randn(*shape, device=device) + offset).to(dtype)
+    num_channels = shape[1]
+
+    liger_x = x.clone().requires_grad_(True)
+    liger_gn = LigerGroupNorm(num_channels, num_groups, eps=1e-6).to(dtype).to(device)
+    liger_output = liger_gn(liger_x)
+    grad_output = torch.ones_like(liger_output) if upstream == "ones" else torch.randn_like(liger_output)
+    liger_output.backward(grad_output)
+
+    ref_x = x.float().requires_grad_(True)
+    ref_weight = liger_gn.weight.detach().float().requires_grad_(True)
+    ref_bias = liger_gn.bias.detach().float().requires_grad_(True)
+    ref_output = torch.nn.functional.group_norm(ref_x, num_groups, ref_weight, ref_bias, eps=1e-6)
+    ref_output.backward(grad_output.float())
+
+    assert torch.isfinite(liger_x.grad).all()
+    assert torch.allclose(liger_x.grad.float(), ref_x.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(liger_gn.weight.grad.float(), ref_weight.grad, atol=atol, rtol=rtol)
+    # the bias gradient is the plain sum of dY; it stays comparable only where the dtype can represent it
+    representable = ref_bias.grad.abs() <= torch.finfo(dtype).max
+    assert torch.allclose(liger_gn.bias.grad.float()[representable], ref_bias.grad[representable], atol=atol, rtol=rtol)
