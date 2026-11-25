@@ -142,7 +142,11 @@ def lce_forward(
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
-        image_hidden_states=outputs.image_hidden_states,
+        # `image_hidden_states` is a deprecated property on newer transformers that returns
+        # `image_outputs.pooler_output`; for text-only batches `image_outputs` is None, so a
+        # direct access raises AttributeError. getattr falls back to None in that case and
+        # stays compatible with older transformers where it is a plain field.
+        image_hidden_states=getattr(outputs, "image_hidden_states", None),
         token_accuracy=token_accuracy,
         predicted_tokens=predicted_tokens,
     )
