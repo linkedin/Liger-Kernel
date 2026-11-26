@@ -1477,3 +1477,31 @@ def test_triton_sequence_level_rejects_unsupported_loss_types(loss_type):
             loss_type=loss_type,
             reduce=True,
         )
+
+
+def test_leading_masked_block_stays_finite():
+    """A fully -inf leading vocabulary block must not make log-probs, the loss or its gradient NaN."""
+    V = 8192 + 1  # whole blocks of -inf at every BLOCK_N in use, then one finite logit
+    logits = torch.full((1, 2, V), -torch.inf, device=device)
+    logits[..., -1] = 0.0
+    completion_ids = torch.full((1, 1), V - 1, device=device)
+
+    logp = fused_selective_log_softmax(logits.clone(), completion_ids, temperature=1.0)
+    assert torch.equal(logp, torch.zeros_like(logp))
+
+    logits.requires_grad_()
+    per_token_loss, _, _ = triton_grpo_loss(
+        logits=logits,
+        old_logp=None,
+        ref_logp=None,
+        completion_ids=completion_ids,
+        advantages=torch.ones(1, device=device),
+        temperature=1.0,
+        beta=0.0,
+        inplace=False,
+    )
+    per_token_loss.sum().backward()
+
+    # The only finite token is selected: ratio 1, loss -advantage, and log_softmax has zero gradient
+    assert torch.equal(per_token_loss, -torch.ones_like(per_token_loss))
+    assert torch.equal(logits.grad, torch.zeros_like(logits.grad))
