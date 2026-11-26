@@ -1,3 +1,5 @@
+import dataclasses
+
 from typing import Optional
 from typing import Tuple
 from typing import Union
@@ -136,17 +138,29 @@ def lce_forward(
                 **kwargs,
             )
 
-    return LigerMuseGlimmerCausalLMOutputWithPast(
-        loss=loss,
-        logits=logits,
-        past_key_values=outputs.past_key_values,
-        hidden_states=outputs.hidden_states,
-        attentions=outputs.attentions,
-        # `image_hidden_states` is a deprecated property on newer transformers that returns
-        # `image_outputs.pooler_output`; for text-only batches `image_outputs` is None, so a
-        # direct access raises AttributeError. getattr falls back to None in that case and
-        # stays compatible with older transformers where it is a plain field.
-        image_hidden_states=getattr(outputs, "image_hidden_states", None),
-        token_accuracy=token_accuracy,
-        predicted_tokens=predicted_tokens,
-    )
+    # The base transformers output contract shifts across versions: `past_key_values` was
+    # renamed to `cache`, and `image_hidden_states` became a read-only property backed by the
+    # native `image_outputs`/`video_outputs`/`audio_outputs` fields. Forward only the keyword
+    # arguments the installed dataclass actually accepts so the patched forward stays
+    # compatible across transformers versions (otherwise construction raises TypeError on an
+    # unexpected keyword, or AttributeError from the deprecated property on text-only batches).
+    valid_fields = {field.name for field in dataclasses.fields(LigerMuseGlimmerCausalLMOutputWithPast)}
+    past_key_values = getattr(outputs, "past_key_values", None)
+    candidate_kwargs = {
+        "loss": loss,
+        "logits": logits,
+        "hidden_states": outputs.hidden_states,
+        "attentions": outputs.attentions,
+        "token_accuracy": token_accuracy,
+        "predicted_tokens": predicted_tokens,
+        "cache": past_key_values,
+        "past_key_values": past_key_values,
+    }
+    # Only read image_hidden_states when it is a real field (older transformers); on newer
+    # versions it is a deprecated property that raises for text-only batches.
+    for field in ("image_outputs", "video_outputs", "audio_outputs", "image_hidden_states"):
+        if field in valid_fields:
+            candidate_kwargs[field] = getattr(outputs, field, None)
+
+    output_kwargs = {key: value for key, value in candidate_kwargs.items() if key in valid_fields}
+    return LigerMuseGlimmerCausalLMOutputWithPast(**output_kwargs)

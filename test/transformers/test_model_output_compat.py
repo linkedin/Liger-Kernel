@@ -112,3 +112,70 @@ def test_multimodal_forward_handles_removed_rope_output(
     else:
         assert isinstance(output, tuple)
         torch.testing.assert_close(output[0], expected_logits)
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+@pytest.mark.parametrize("return_dict", [False, True])
+def test_muse_glimmer_forward_builds_output_across_contracts(multimodal, return_dict):
+    """The patched MuseGlimmer forward must construct its output using only the keyword
+    arguments the installed transformers dataclass accepts. Newer versions renamed
+    ``past_key_values`` to ``cache`` and turned ``image_hidden_states`` into a read-only
+    property (replaced by native ``image_outputs``/``video_outputs``/``audio_outputs``),
+    so passing ``image_hidden_states=`` raised ``TypeError`` for both text-only and
+    multimodal outputs. This covers the construction path without a GPU.
+    """
+    pytest.importorskip("transformers.models.muse_glimmer.modeling_muse_glimmer")
+    from liger_kernel.transformers.model.muse_glimmer import lce_forward
+    from liger_kernel.transformers.model.output_classes import LigerMuseGlimmerCausalLMOutputWithPast
+
+    hidden_states = torch.randn(1, 2, 4)
+    sentinel = SimpleNamespace(pooler_output=torch.randn(1, 4)) if multimodal else None
+    outputs = SimpleNamespace(
+        last_hidden_state=hidden_states,
+        past_key_values=None,
+        hidden_states=None,
+        attentions=None,
+        image_outputs=sentinel,
+        video_outputs=None,
+        audio_outputs=None,
+        # Only read on older transformers where it is a real field.
+        image_hidden_states=sentinel,
+    )
+    text_config = SimpleNamespace(
+        output_multiplier=1.0,
+        final_logit_softcapping=30.0,
+        hidden_size=4,
+        vocab_size=8,
+    )
+    config = PretrainedConfig(return_dict=return_dict)
+    config.text_config = text_config
+    model = SimpleNamespace(
+        config=config,
+        model=Mock(return_value=outputs),
+        lm_head=torch.nn.Linear(4, 8, bias=False),
+        training=False,
+    )
+
+    output = lce_forward(model, input_ids=torch.tensor([[0, 1]]), return_dict=return_dict)
+
+    logits = model.lm_head(hidden_states)
+    logits = logits * text_config.output_multiplier
+    logits = logits / text_config.final_logit_softcapping
+    logits = torch.tanh(logits)
+    expected_logits = logits * text_config.final_logit_softcapping
+
+    if return_dict:
+        assert isinstance(output, LigerMuseGlimmerCausalLMOutputWithPast)
+        assert output.loss is None
+        assert output.token_accuracy is None
+        assert output.predicted_tokens is None
+        torch.testing.assert_close(output.logits, expected_logits)
+
+        valid_fields = {field.name for field in fields(LigerMuseGlimmerCausalLMOutputWithPast)}
+        if "image_outputs" in valid_fields:
+            assert output.image_outputs is sentinel
+        else:
+            assert output.image_hidden_states is sentinel
+    else:
+        assert isinstance(output, tuple)
+        torch.testing.assert_close(output[0], expected_logits)
