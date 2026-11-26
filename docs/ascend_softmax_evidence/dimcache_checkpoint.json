@@ -1,0 +1,90 @@
+{
+  "stage": "dimcache-port",
+  "published_head": "9aab386dd76f9991ae72dfb9666fd0e55147113f",
+  "all_pass": false,
+  "functional": {
+    "A2": 143,
+    "A3": 143
+  },
+  "speed_pairs_passed": {
+    "A2": [
+      32,
+      32
+    ],
+    "A3": [
+      33,
+      33
+    ]
+  },
+  "speed_pairs_per_round": 33,
+  "source_verified_identical": true,
+  "baseline_source_verified_against_git": true,
+  "files": {
+    "A2": {
+      "all_benchmark_data_softmax_dimcache_port1_model_config.csv": "f6d25f18011372daee7a37ac88bd431519b934c22120e5727859f14098c44093",
+      "all_benchmark_data_softmax_dimcache_port1_token_length.csv": "30d7aece0abc6b1b6e35b683a885053e0ecda76a8cb67551aad987c3249dd2d5",
+      "all_benchmark_data_softmax_dimcache_port2_model_config.csv": "a0db68e761e7b879440bb6cdf23b25e3a4dd17bb2b41e5bd15bbaa9bf8c75d3c",
+      "all_benchmark_data_softmax_dimcache_port2_token_length.csv": "412fb34a4f594ce659f5bdac82bc40f6a7c252a5561eaadaf5811e20a9dd8cf9",
+      "all_benchmark_data_softmax_threadbound_baseline_model_config.csv": "bd211f4898010e11602d001b2b3942e35325173415dea8675e520653e49b3a18",
+      "all_benchmark_data_softmax_threadbound_baseline_token_length.csv": "591688d737f49109f96e809e17db8d6886a54ce14b447ac39cebe3f79a439f3a",
+      "dimcache-port-runner.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dimcache-port-sha256.txt": "ea7a5dbb9c97bd8447c656d183a0d94672bd07438295a9a067eae40e8fcf1970",
+      "dimcache-port1-model_config-affinity.json": "54bfb9e04197262affc459e81b177adac7e3af6ad2abed883954cbcdfebc4729",
+      "dimcache-port1-model_config.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "dimcache-port1-model_config.log": "d42d421b0f10a31ff030afb9a7c6c42267d79bceea4615d73c516c55d2c480e5",
+      "dimcache-port1-token_length-affinity.json": "a2f328babb6d6d54a10e00ffe77c5e795adfa143fa6942c190cc6728bce5039c",
+      "dimcache-port1-token_length.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "dimcache-port1-token_length.log": "d1aef74021c0d9abd09c0f336a55680edd9f762f87c9915bee61ec58bbcb4210",
+      "dimcache-port2-model_config-affinity.json": "48f794535570633c77029eec6fc4d1bf9ad1ed9e247d18e2c381fd0a5ee17e50",
+      "dimcache-port2-model_config.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "dimcache-port2-model_config.log": "b32545c8b8e119b904f9a7e8b9aa425d2e09d934fd7f3be58ea32f7824fb0e9f",
+      "dimcache-port2-token_length-affinity.json": "5646da30b16e62ba9d77ff49467f480d6466a2e00150496f2bc2cd9bde299fab",
+      "dimcache-port2-token_length.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "dimcache-port2-token_length.log": "33ca7845b7300f91c1ce066a1da193996a500db10cbc077de15f9d18edd3fe47",
+      "dimcache-profiling.tar.gz": "9ab516b8d42d08f19972a9acf280437679cc41105fc922c4436d67ad9b24c698",
+      "pytest-dimcache-port.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "pytest-dimcache-port.log": "66ca3194ba318f5df920a33f24f47b997b40ee04d791aebbe96da14ced13cda5",
+      "threadbound-baseline-model_config-affinity.json": "34320ebfd39485c51d473cf73d80179f59ebd3335b1619b0622a8e0979168bff",
+      "threadbound-baseline-model_config.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "threadbound-baseline-model_config.log": "55f25ba8084a13fb6574ebfcf1342cebfd3d9225da8c72f8fde904f7d33cafe5",
+      "threadbound-baseline-runner.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "threadbound-baseline-sha256.txt": "4fc26f9da080cc5ccb1e82ba651988cc2091a543f674056f593514a6e8e5f921",
+      "threadbound-baseline-token_length-affinity.json": "dca1a3fff0693c0cfc8bcbc74f8e79b10d71ee8f6f28ef90f05f2f8704e8b354",
+      "threadbound-baseline-token_length.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "threadbound-baseline-token_length.log": "1808b64506164e811a846ed33369d7ee3b260348ee81233a9021705dead1e051"
+    },
+    "A3": {
+      "all_benchmark_data_softmax_dimcache_port1_model_config.csv": "79e7475eca77f9f32ad1f12251cf5f68d1715f9ae5473bee530823bb25d6bf66",
+      "all_benchmark_data_softmax_dimcache_port1_token_length.csv": "798a57fd7c967f6eeb1927c96edc7ae4a090c183459c01b394fd98b1c9783f2e",
+      "all_benchmark_data_softmax_dimcache_port2_model_config.csv": "d56bed19402241295d73565bd8aae769426ad78516451017dd94a1eb1e29f61b",
+      "all_benchmark_data_softmax_dimcache_port2_token_length.csv": "09c6344e87ae2c0a17f6af699495703c1e2e76558b30b5d6fc77462e84d6cf7d",
+      "all_benchmark_data_softmax_threadbound_baseline_model_config.csv": "d222643f012942972c7963a699a05bf3ed2f01a0643a40b69f32aeed8e6e3100",
+      "all_benchmark_data_softmax_threadbound_baseline_token_length.csv": "d0d7d85f0c132c474bc56359174f43e5b7f88fe94d8f435db4e27dd81afdba66",
+      "dimcache-port-runner.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dimcache-port-sha256.txt": "ea7a5dbb9c97bd8447c656d183a0d94672bd07438295a9a067eae40e8fcf1970",
+      "dimcache-port1-model_config-affinity.json": "c281efff1b75f5bad2fa44af843abf2e48b89d44933449e9ea5084ab24bc6cc9",
+      "dimcache-port1-model_config.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "dimcache-port1-model_config.log": "c665b3b58d7a7fb2b1f3f732472a4635f01e4554574cc7b223450157eb48b560",
+      "dimcache-port1-token_length-affinity.json": "8abfc6f8d574334916ece38c08a03afa97d2a7525af6dd12328cd894e3b9b769",
+      "dimcache-port1-token_length.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "dimcache-port1-token_length.log": "2f3db5081a9007accc5adf90403033b6bcb92214a76d751c1e93d16f091b3324",
+      "dimcache-port2-model_config-affinity.json": "1d804fe39c7d166ba82bf1d4d656fdc79f2f90a2a9ffeb1742867e5d548f1d12",
+      "dimcache-port2-model_config.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "dimcache-port2-model_config.log": "869f7146253948d67b245e196246c2035a3bc039d939f48744ca7ae7a0784299",
+      "dimcache-port2-token_length-affinity.json": "ec6371c0c09638576b5b33a56eda22de3b662f9fc7f3da357efc6088471c1550",
+      "dimcache-port2-token_length.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "dimcache-port2-token_length.log": "7bac5bee33aad63b83cd6bafa7165ec51b64835af5395e15b2ff66546742ff4c",
+      "dimcache-profiling.tar.gz": "8498d1abdcf15dfe1657b853870e6db5626547fc4e93821844a504ba5c9010f8",
+      "pytest-dimcache-port.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "pytest-dimcache-port.log": "ee439ed08f4d332fe983b88b500a2975eaece98879c119d4ff56b22bcf1dd2a6",
+      "threadbound-baseline-model_config-affinity.json": "d3e9a0cab69a7897e107f6bb562ab16f64211a2752819766ffdcdd48e2a8ff4c",
+      "threadbound-baseline-model_config.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "threadbound-baseline-model_config.log": "a24a6760dff34237439f1a91658083d11dbe7e1da0a63b1e58c534cb4a4f9801",
+      "threadbound-baseline-runner.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "threadbound-baseline-sha256.txt": "4fc26f9da080cc5ccb1e82ba651988cc2091a543f674056f593514a6e8e5f921",
+      "threadbound-baseline-token_length-affinity.json": "4986a22107b3712b4585169c4e860995ffb8fc59426345948d3f50480f8f2c19",
+      "threadbound-baseline-token_length.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "threadbound-baseline-token_length.log": "66321adbbf94fa877972d5e08d4622c2dde154ed3cbf2b73f4dc99632c4925b3"
+    }
+  }
+}

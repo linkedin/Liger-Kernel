@@ -1,0 +1,9 @@
+........................................................................ [ 55%]
+..........................................................               [100%]
+=============================== warnings summary ===============================
+test/transformers/test_softmax_ascend.py::test_numerical_gradient
+  /workspace/relu1803/venv/lib/python3.11/site-packages/torch/autograd/gradcheck.py:923: UserWarning: Input #0 requires gradient and is not a double precision floating point or complex. This check will likely fail if all the inputs are not of double precision floating point or complex. 
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+130 passed, 1 warning in 54.43s

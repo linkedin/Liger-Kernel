@@ -1,0 +1,526 @@
+[
+  {
+    "profile": "profile_acceptance_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.71309999999999
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 35.96130000000001
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 13.529
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 6.775999999999999
+      },
+      "(anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 35.289
+      },
+      "autograd::engine::evaluate_function: (anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 41.848
+      }
+    }
+  },
+  {
+    "profile": "profile_allocation_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.505000000000003
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 35.4857
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 8.165000000000001
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 7.165000000000001
+      },
+      "LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 32.263999999999996
+      },
+      "autograd::engine::evaluate_function: LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 38.164
+      }
+    }
+  },
+  {
+    "profile": "profile_autotune_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.744999999999997
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 28.8011
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 8.767
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 6.263
+      },
+      "LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 30.881999999999998
+      },
+      "autograd::engine::evaluate_function: LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 36.00699999999999
+      }
+    }
+  },
+  {
+    "profile": "profile_calibrated_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.538999999999998
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 35.6632
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 7.714
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 6.68
+      },
+      "LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 26.951999999999998
+      },
+      "autograd::engine::evaluate_function: LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 32.35600000000001
+      }
+    }
+  },
+  {
+    "profile": "profile_family_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.512999999999998
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 35.855399999999996
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 13.877
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 11.010000000000002
+      },
+      "LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 34.423
+      },
+      "autograd::engine::evaluate_function: LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 39.991
+      }
+    }
+  },
+  {
+    "profile": "profile_final_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.623
+      },
+      "_softmax_ascend_backward": {
+        "count": 10,
+        "mean_us": 24.9189
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 15.728
+      },
+      "_softmax_ascend_backward": {
+        "count": 10,
+        "mean_us": 12.402000000000003
+      },
+      "(anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 49.719
+      },
+      "autograd::engine::evaluate_function: (anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 59.910000000000004
+      }
+    }
+  },
+  {
+    "profile": "profile_final_torch",
+    "kernels": {
+      "aclnnSoftmax_SoftmaxAiCore_SoftmaxV2": {
+        "count": 10,
+        "mean_us": 53.806000000000004
+      },
+      "aclnnSoftmaxBackward_SoftmaxGrad_SoftmaxGrad": {
+        "count": 10,
+        "mean_us": 52.04209999999999
+      }
+    },
+    "cpu": {
+      "aclnnSoftmax": {
+        "count": 10,
+        "mean_us": 7.038000000000001
+      },
+      "aten::_softmax": {
+        "count": 10,
+        "mean_us": 31.586999999999996
+      },
+      "aten::softmax": {
+        "count": 10,
+        "mean_us": 37.942
+      },
+      "aclnnSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 6.02
+      },
+      "aten::_softmax_backward_data": {
+        "count": 10,
+        "mean_us": 21.823
+      },
+      "SoftmaxBackward0": {
+        "count": 10,
+        "mean_us": 26.498999999999995
+      },
+      "autograd::engine::evaluate_function: SoftmaxBackward0": {
+        "count": 10,
+        "mean_us": 33.006
+      }
+    }
+  },
+  {
+    "profile": "profile_host_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.475000000000005
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 35.845600000000005
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 14.785000000000002
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 12.490999999999998
+      },
+      "LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 55.2
+      },
+      "autograd::engine::evaluate_function: LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 67.89699999999999
+      }
+    }
+  },
+  {
+    "profile": "profile_hostdict_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.695
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 35.7335
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 12.618000000000002
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 10.657
+      },
+      "LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 28.775
+      },
+      "autograd::engine::evaluate_function: LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 33.85
+      }
+    }
+  },
+  {
+    "profile": "profile_optimized_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.537
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 35.567400000000006
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 8.479000000000001
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 6.9159999999999995
+      },
+      "(anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 31.168999999999993
+      },
+      "autograd::engine::evaluate_function: (anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 37.690000000000005
+      }
+    }
+  },
+  {
+    "profile": "profile_persistent_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.573200000000003
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 28.7712
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 15.264000000000001
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 11.525
+      },
+      "(anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 41.227
+      },
+      "autograd::engine::evaluate_function: (anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 51.374
+      }
+    }
+  },
+  {
+    "profile": "profile_robust_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.7592
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 35.827600000000004
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 16.272
+      },
+      "_softmax_persistent_backward": {
+        "count": 10,
+        "mean_us": 11.667
+      },
+      "LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 42.671
+      },
+      "autograd::engine::evaluate_function: LigerSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 51.477999999999994
+      }
+    }
+  },
+  {
+    "profile": "profile_small_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 15.696800000000001
+      },
+      "_softmax_ascend_backward": {
+        "count": 10,
+        "mean_us": 23.0469
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 18.116
+      },
+      "_softmax_ascend_backward": {
+        "count": 10,
+        "mean_us": 7.696000000000001
+      },
+      "(anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 40.39399999999999
+      },
+      "autograd::engine::evaluate_function: (anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 48.664
+      }
+    }
+  },
+  {
+    "profile": "profile_tuned_liger",
+    "kernels": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 26.399
+      },
+      "_softmax_ascend_backward": {
+        "count": 10,
+        "mean_us": 29.091200000000004
+      }
+    },
+    "cpu": {
+      "_softmax_ascend_forward": {
+        "count": 10,
+        "mean_us": 13.526
+      },
+      "_softmax_ascend_backward": {
+        "count": 10,
+        "mean_us": 6.932
+      },
+      "(anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 37.33
+      },
+      "autograd::engine::evaluate_function: (anonymous namespace)::SoftmaxBackward": {
+        "count": 10,
+        "mean_us": 45.04600000000001
+      }
+    }
+  },
+  {
+    "profile": "profile_upstream_liger",
+    "kernels": {
+      "_softmax_single_block_forward_kernel": {
+        "count": 10,
+        "mean_us": 30.621200000000005
+      },
+      "_softmax_single_block_backward_kernel": {
+        "count": 10,
+        "mean_us": 26.0751
+      }
+    },
+    "cpu": {
+      "_softmax_single_block_forward_kernel": {
+        "count": 10,
+        "mean_us": 12.095999999999998
+      },
+      "LigerSoftmaxFunction": {
+        "count": 10,
+        "mean_us": 203.12400000000002
+      },
+      "_softmax_single_block_backward_kernel": {
+        "count": 10,
+        "mean_us": 9.061
+      },
+      "LigerSoftmaxFunctionBackward": {
+        "count": 10,
+        "mean_us": 161.96999999999997
+      },
+      "autograd::engine::evaluate_function: LigerSoftmaxFunctionBackward": {
+        "count": 10,
+        "mean_us": 169.87600000000003
+      }
+    }
+  },
+  {
+    "profile": "profile_upstream_torch",
+    "kernels": {
+      "aclnnSoftmax_SoftmaxAiCore_SoftmaxV2": {
+        "count": 10,
+        "mean_us": 54.776300000000006
+      },
+      "aclnnSoftmaxBackward_SoftmaxGrad_SoftmaxGrad": {
+        "count": 10,
+        "mean_us": 52.12800000000001
+      }
+    },
+    "cpu": {
+      "aclnnSoftmax": {
+        "count": 10,
+        "mean_us": 7.843000000000001
+      },
+      "aten::_softmax": {
+        "count": 10,
+        "mean_us": 41.641
+      },
+      "aten::softmax": {
+        "count": 10,
+        "mean_us": 49.115
+      },
+      "aclnnSoftmaxBackward": {
+        "count": 10,
+        "mean_us": 6.08
+      },
+      "aten::_softmax_backward_data": {
+        "count": 10,
+        "mean_us": 20.999000000000002
+      },
+      "SoftmaxBackward0": {
+        "count": 10,
+        "mean_us": 25.785000000000004
+      },
+      "autograd::engine::evaluate_function: SoftmaxBackward0": {
+        "count": 10,
+        "mean_us": 32.01
+      }
+    }
+  }
+]

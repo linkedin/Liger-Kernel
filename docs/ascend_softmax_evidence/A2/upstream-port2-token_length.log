@@ -1,0 +1,308 @@
+**************************************
+     BENCHMARKING SPEED for SOFTMAX
+**************************************
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "B*T",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.049539998173713684,
+      0.10807999968528748,
+      0.2773200273513794,
+      0.5622600317001343
+    ],
+    "y_values_20": [
+      0.04879999905824661,
+      0.10626000165939331,
+      0.27388399839401245,
+      0.5557079911231995
+    ],
+    "y_values_80": [
+      0.05231200158596039,
+      0.11082000285387039,
+      0.28903600573539734,
+      0.5862520337104797
+    ],
+    "timestamp": "2026-11-16 06:34:45",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "B*T",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.045499999076128006,
+      0.09128999710083008,
+      0.24466000497341156,
+      0.5202999711036682
+    ],
+    "y_values_20": [
+      0.04230000078678131,
+      0.08752000331878662,
+      0.2388319969177246,
+      0.512499988079071
+    ],
+    "y_values_80": [
+      0.048239998519420624,
+      0.09402000159025192,
+      0.2536559998989105,
+      0.5267800092697144
+    ],
+    "timestamp": "2026-11-16 06:34:49",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "B*T",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.08721999824047089,
+      0.21605999767780304,
+      0.4355599880218506,
+      0.8685599565505981
+    ],
+    "y_values_20": [
+      0.08528000116348267,
+      0.21014800667762756,
+      0.4322440028190613,
+      0.8579199910163879
+    ],
+    "y_values_80": [
+      0.08781199902296066,
+      0.23732000589370728,
+      0.44028401374816895,
+      0.8808199763298035
+    ],
+    "timestamp": "2026-11-16 06:34:49",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "B*T",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.06768999993801117,
+      0.2061000019311905,
+      0.4091600179672241,
+      0.8254899978637695
+    ],
+    "y_values_20": [
+      0.059112001210451126,
+      0.1920119971036911,
+      0.40593600273132324,
+      0.8167799711227417
+    ],
+    "y_values_80": [
+      0.07502800226211548,
+      0.21216800808906555,
+      0.4264879822731018,
+      0.8290200233459473
+    ],
+    "timestamp": "2026-11-16 06:34:49",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "B*T",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.5952000021934509,
+      1.2229599952697754,
+      2.3951799869537354,
+      4.830319881439209
+    ],
+    "y_values_20": [
+      0.5947720408439636,
+      1.2167680263519287,
+      2.383228063583374,
+      4.830319881439209
+    ],
+    "y_values_80": [
+      0.5991640090942383,
+      1.229308009147644,
+      2.409219980239868,
+      4.830319881439209
+    ],
+    "timestamp": "2026-11-16 06:34:49",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "B*T",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.5690799951553345,
+      1.172379970550537,
+      2.329699993133545,
+      4.7275800704956055
+    ],
+    "y_values_20": [
+      0.5590440034866333,
+      1.1704199314117432,
+      2.3148438930511475,
+      4.7275800704956055
+    ],
+    "y_values_80": [
+      0.5735520124435425,
+      1.1730159521102905,
+      2.3309478759765625,
+      4.7275800704956055
+    ],
+    "timestamp": "2026-11-16 06:34:49",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  }
+]
+**************************************
+     BENCHMARKING MEMORY for SOFTMAX
+**************************************
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "B*T",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "y_values_20": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "y_values_80": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "timestamp": "2026-11-16 06:34:50",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "softmax",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "B*T",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "y_values_20": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "y_values_80": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "timestamp": "2026-11-16 06:34:50",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  }
+]

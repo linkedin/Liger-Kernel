@@ -427,8 +427,8 @@ def liger_swiglu(a, b):
     return LigerSiLUMulFunction.apply(a, b)
 
 
-def liger_softmax(x):
-    return LigerSoftmaxFunction.apply(x)
+def liger_softmax(x, dim=-1):
+    return LigerSoftmaxFunction.apply(x, dim)
 
 
 def liger_dyt(x, alpha, gamma, beta):
