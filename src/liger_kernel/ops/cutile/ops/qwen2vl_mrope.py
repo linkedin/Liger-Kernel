@@ -134,9 +134,15 @@ def _qwen2vl_mrope_kernel_ct(
     ct.scatter(key, k_i_idx, new_k_i, mask=k_mask, check_bounds=False, latency=1)
 
 
-def _qwen2vl_mrope_forward(q, k, cos, sin, mrope_section):
-    q = q.transpose(1, 2).contiguous()
-    k = k.transpose(1, 2).contiguous()
+def _qwen2vl_mrope_forward(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
+    if unsqueeze_dim == 1:
+        q = q.transpose(1, 2).contiguous()
+        k = k.transpose(1, 2).contiguous()
+    elif unsqueeze_dim == 2:
+        q = q.contiguous()
+        k = k.contiguous()
+    else:
+        raise ValueError(f"unsqueeze_dim must be 1 or 2, got {unsqueeze_dim}")
 
     batch_size, seq_len, n_q_head, head_dim = q.shape
     n_kv_head = k.shape[2]
@@ -175,12 +181,20 @@ def _qwen2vl_mrope_forward(q, k, cos, sin, mrope_section):
         ),
     )
 
-    return q.transpose(1, 2), k.transpose(1, 2), cos, sin
+    if unsqueeze_dim == 1:
+        return q.transpose(1, 2), k.transpose(1, 2), cos, sin
+    return q, k, cos, sin
 
 
-def _qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section):
-    dq = dq.transpose(1, 2).contiguous()
-    dk = dk.transpose(1, 2).contiguous()
+def _qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section, unsqueeze_dim=1):
+    if unsqueeze_dim == 1:
+        dq = dq.transpose(1, 2).contiguous()
+        dk = dk.transpose(1, 2).contiguous()
+    elif unsqueeze_dim == 2:
+        dq = dq.contiguous()
+        dk = dk.contiguous()
+    else:
+        raise ValueError(f"unsqueeze_dim must be 1 or 2, got {unsqueeze_dim}")
 
     batch_size, seq_len, n_q_head, head_dim = dq.shape
     n_kv_head = dk.shape[2]
@@ -216,20 +230,26 @@ def _qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section):
         ),
     )
 
-    return dq.transpose(1, 2), dk.transpose(1, 2)
+    if unsqueeze_dim == 1:
+        return dq.transpose(1, 2), dk.transpose(1, 2)
+    return dq, dk
 
 
 class LigerQwen2VLMRopeFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, cos, sin, mrope_section, unsqueeze_dim=1):
-        q, k, cos, sin = _qwen2vl_mrope_forward(q, k, cos, sin, mrope_section)
+        if unsqueeze_dim not in (1, 2):
+            raise ValueError(f"unsqueeze_dim must be 1 or 2, got {unsqueeze_dim}")
+        q, k, cos, sin = _qwen2vl_mrope_forward(q, k, cos, sin, mrope_section, unsqueeze_dim=unsqueeze_dim)
         ctx.save_for_backward(cos, sin)
         ctx.mrope_section = mrope_section
+        ctx.unsqueeze_dim = unsqueeze_dim
         return q, k
 
     @staticmethod
     def backward(ctx, dq, dk):
         cos, sin = ctx.saved_tensors
         mrope_section = ctx.mrope_section
-        dq, dk = _qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section)
+        unsqueeze_dim = ctx.unsqueeze_dim
+        dq, dk = _qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section, unsqueeze_dim=unsqueeze_dim)
         return dq, dk, None, None, None, None

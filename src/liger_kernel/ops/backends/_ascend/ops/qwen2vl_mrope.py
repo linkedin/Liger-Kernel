@@ -153,10 +153,13 @@ def get_optimal_block_size_mrope(pad_n_q_head, pad_n_kv_head, pad_hd, dtype_size
     return BLOCK_Q, BLOCK_K
 
 
-def qwen2vl_mrope_forward(q, k, cos, sin, mrope_section):
+def qwen2vl_mrope_forward(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
     # transpose it back to the physical shape because Triton looks at the physical storage
-    q = q.transpose(1, 2)
-    k = k.transpose(1, 2)
+    if unsqueeze_dim == 1:
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+    elif unsqueeze_dim != 2:
+        raise ValueError(f"unsqueeze_dim must be 1 or 2, got {unsqueeze_dim}")
 
     batch_size, seq_len, n_q_head, head_dim = q.shape
     n_kv_head = k.shape[2]
@@ -197,12 +200,17 @@ def qwen2vl_mrope_forward(q, k, cos, sin, mrope_section):
         BLOCK_K,
         BACKWARD_PASS=False,
     )
-    return q.transpose(1, 2), k.transpose(1, 2), cos, sin
+    if unsqueeze_dim == 1:
+        return q.transpose(1, 2), k.transpose(1, 2), cos, sin
+    return q, k, cos, sin
 
 
-def qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section):
-    dq = dq.transpose(1, 2)
-    dk = dk.transpose(1, 2)
+def qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section, unsqueeze_dim=1):
+    if unsqueeze_dim == 1:
+        dq = dq.transpose(1, 2)
+        dk = dk.transpose(1, 2)
+    elif unsqueeze_dim != 2:
+        raise ValueError(f"unsqueeze_dim must be 1 or 2, got {unsqueeze_dim}")
 
     batch_size, seq_len, n_q_head, head_dim = dq.shape
     n_kv_head = dk.shape[2]
@@ -241,32 +249,38 @@ def qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section):
         BLOCK_K,
         BACKWARD_PASS=True,
     )
-    return dq.transpose(1, 2), dk.transpose(1, 2)
+    if unsqueeze_dim == 1:
+        return dq.transpose(1, 2), dk.transpose(1, 2)
+    return dq, dk
 
 
 class LigerQwen2VLMRopeFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, cos, sin, mrope_section, unsqueeze_dim=1):
         """
-        q size: (bsz, n_q_head, seq_len, head_dim)
-        k size: (bsz, n_kv_head, seq_len, head_dim)
+        q size: (bsz, n_q_head, seq_len, head_dim) if unsqueeze_dim == 1 else (bsz, seq_len, n_q_head, head_dim)
+        k size: (bsz, n_kv_head, seq_len, head_dim) if unsqueeze_dim == 1 else (bsz, seq_len, n_kv_head, head_dim)
         cos size: (3, bsz, seq_len, head_dim)
         sin size: (3, bsz, seq_len, head_dim)
         """
-        q, k, cos, sin = qwen2vl_mrope_forward(q, k, cos, sin, mrope_section)
+        if unsqueeze_dim not in (1, 2):
+            raise ValueError(f"unsqueeze_dim must be 1 or 2, got {unsqueeze_dim}")
+        q, k, cos, sin = qwen2vl_mrope_forward(q, k, cos, sin, mrope_section, unsqueeze_dim=unsqueeze_dim)
         ctx.save_for_backward(cos, sin)
         ctx.mrope_section = mrope_section
+        ctx.unsqueeze_dim = unsqueeze_dim
         return q, k
 
     @staticmethod
     def backward(ctx, dq, dk):
         """
-        dq size: (bsz, n_q_head, seq_len, head_dim)
-        dk size: (bsz, n_kv_head, seq_len, head_dim)
+        dq size: (bsz, n_q_head, seq_len, head_dim) if unsqueeze_dim == 1 else (bsz, seq_len, n_q_head, head_dim)
+        dk size: (bsz, n_kv_head, seq_len, head_dim) if unsqueeze_dim == 1 else (bsz, seq_len, n_kv_head, head_dim)
         cos size: (3, bsz, seq_len, head_dim)
         sin size: (3, bsz, seq_len, head_dim)
         """
         cos, sin = ctx.saved_tensors
         mrope_section = ctx.mrope_section
-        dq, dk = qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section)
+        unsqueeze_dim = ctx.unsqueeze_dim
+        dq, dk = qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section, unsqueeze_dim=unsqueeze_dim)
         return dq, dk, None, None, None, None
