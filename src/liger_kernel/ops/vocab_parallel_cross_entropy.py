@@ -91,8 +91,12 @@ def liger_vocab_parallel_ce_forward_kernel(
 
     m = tl.load(logits_max_ptr + program_id).cast(tl.float32)
 
-    target_off_rank = (y_global < vocab_start) | (y_global >= vocab_start + n_cols)
-    y_local = y_global - vocab_start  # only used when on-rank
+    # Widen shard bounds to int64 before adding so vocab_start + n_cols cannot
+    # wrap in int32 when vocab_start < 2**31 <= vocab_start + n_cols.
+    vocab_start_i64 = tl.cast(vocab_start, tl.int64)
+    vocab_end_i64 = vocab_start_i64 + tl.cast(n_cols, tl.int64)
+    target_off_rank = (y_global < vocab_start_i64) | (y_global >= vocab_end_i64)
+    y_local = y_global - vocab_start_i64  # only used when on-rank
 
     # Predicted logit — shifted by the global max. Off-rank / ignored positions
     # store 0; the AllReduce(SUM) gathers the one nonzero contribution.
@@ -151,8 +155,10 @@ def liger_vocab_parallel_ce_backward_kernel(
             tl.store(EXP_ptr + X_offsets, 0.0, mask=X_offsets < n_cols)
         return
 
-    target_off_rank = (y_global < vocab_start) | (y_global >= vocab_start + n_cols)
-    y_local = y_global - vocab_start
+    vocab_start_i64 = tl.cast(vocab_start, tl.int64)
+    vocab_end_i64 = vocab_start_i64 + tl.cast(n_cols, tl.int64)
+    target_off_rank = (y_global < vocab_start_i64) | (y_global >= vocab_end_i64)
+    y_local = y_global - vocab_start_i64
     sum_exp_global = tl.load(sum_exp_ptr + program_id)
     grad_out = tl.load(grad_out_ptr + program_id).cast(tl.float32)
 
