@@ -557,3 +557,25 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.vespo_lambda_neg,
             num_items_in_batch,
         )
+
+
+# [LIGER_TRITON_ONLINE_ENTROPY_V1]
+def _liger_chunk_logps_and_entropy_triton(
+    logits_chunk,
+    selected_token_ids_chunk,
+    temperature: float = 1.0,
+    attention_mask_chunk=None,
+    return_entropy: bool = True,
+    entropy_requires_grad: bool = False,
+):
+    """Compute per-token selected log-probs and exact FP32 entropy in one Triton pass on `logits_chunk`."""
+    from liger_kernel.ops._grpo_online_entropy import selective_log_softmax_with_entropy
+
+    return selective_log_softmax_with_entropy(
+        logits=logits_chunk,
+        index=selected_token_ids_chunk,
+        temperature=temperature,
+        mask=attention_mask_chunk,
+        return_entropy=return_entropy,
+        entropy_requires_grad=entropy_requires_grad,
+    )
