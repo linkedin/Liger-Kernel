@@ -137,6 +137,7 @@ def test_rms_norm_explicit_backend_unavailable():
         # Pretend we're on H100/H200 (sm_90).
         with (
             mock.patch("torch.cuda.is_available", return_value=True),
+            mock.patch("torch.version.hip", None),
             mock.patch("torch.cuda.get_device_capability", return_value=(9, 0)),
         ):
             with pytest.raises(BackendNotAvailableError) as ei:

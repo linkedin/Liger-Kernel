@@ -88,6 +88,8 @@ def isolated_registry(monkeypatch) -> Iterator[None]:
     clear_available_cache()
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", _fake_get_device_capability)
+    # The faked GPUs are NVIDIA: pin a non-ROCm build (cc gates are CUDA-only).
+    monkeypatch.setattr(torch.version, "hip", None)
     try:
         yield
     finally:
