@@ -380,3 +380,31 @@ def test_signature_matches_megatron_positional_order():
 
     params = list(inspect.signature(LigerMegatronSwiGLU.forward).parameters)
     assert params == ["self", "input", "bias", "fp8_input_store", "cpu_offload_input"]
+
+
+@pytest.mark.parametrize("in_place", [False, True])
+@pytest.mark.parametrize("shape", [(2, 32, 256), (3, 4, 16, 128)])
+def test_fused_gate_up_silu_mul_function_nd_backward(shape, in_place):
+    """Direct application of LigerFusedGateUpSiLUMulFunction on 3D/ND tensors must
+    return gradients matching input shape (#1675)."""
+    g = torch.Generator(device=device).manual_seed(42)
+    y_ref = torch.randn(shape, device=device, dtype=torch.bfloat16, generator=g, requires_grad=True)
+    y_liger = y_ref.detach().clone().requires_grad_(True)
+
+    # Reference
+    g_ref, u_ref = torch.chunk(y_ref, 2, -1)
+    out_ref = F.silu(g_ref) * u_ref
+
+    # Liger Function directly on ND tensor
+    out_liger = LigerFusedGateUpSiLUMulFunction.apply(y_liger, in_place)
+
+    assert out_liger.shape == out_ref.shape
+    assert_verbose_allclose(out_liger, out_ref, atol=1e-2, rtol=1e-2)
+
+    do = torch.randn_like(out_ref)
+    out_ref.backward(do)
+    out_liger.backward(do)
+
+    assert y_liger.grad is not None
+    assert y_liger.grad.shape == y_ref.shape
+    assert_verbose_allclose(y_liger.grad, y_ref.grad, atol=1e-2, rtol=1e-2)
