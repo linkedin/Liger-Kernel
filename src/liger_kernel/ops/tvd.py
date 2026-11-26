@@ -223,9 +223,12 @@ class LigerTVDLossFunction(torch.autograd.Function):
             grad_output (torch.Tensor): The gradient of the loss with respect to the output.
 
         Returns:
-            tuple[torch.Tensor, None, None, None, None]: The gradient of the loss with respect to the inputs.
+            tuple[torch.Tensor, torch.Tensor, None, None, None]: The gradients with respect to p and q,
+            followed by None for the label, reduction and ignore_index arguments.
         """
         (grads,) = ctx.saved_tensors
         grads = tvd_backward_triton(grad_output, grads)
 
-        return grads, None, None, None, None
+        # TVD = 0.5 * |p - q|, so dL/dq = -dL/dp. The forward kernel already saves
+        # the scaled dL/dp; returning None here silently drops q's gradient.
+        return grads, -grads, None, None, None
