@@ -110,6 +110,8 @@ def _make_modulation(shape, hd, scale_mode, dtype):
     [
         (2, 128, 512),
         (5, 123, 123),
+        # more modulation rows than SMs
+        (160, 4, 64),
     ],
 )
 @pytest.mark.parametrize(
@@ -328,3 +330,23 @@ def test_torch_compile_dynamic_batch_matches_eager(dtype):
             expected = model(x, scale)
             actual = compiled(x, scale)
         torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.parametrize("scale_mode", ["global", "batch"])
+def test_backward_bitwise_reproducible(scale_mode):
+    bs, sl, hd = 2, 2048, 512
+    shape = (bs, sl, hd)
+    X = torch.randn(shape, device=device, requires_grad=True)
+    W = torch.ones(hd, device=device, requires_grad=True)
+    scale, shift = _make_modulation(shape, hd, scale_mode, torch.float32)
+    scale.requires_grad_(True)
+    shift.requires_grad_(True)
+    grad_output = torch.randn(shape, device=device)
+
+    Y = LigerModulatedRMSNormFunction.apply(X, W, scale, shift, 1e-6, 0.0, "llama", False)
+    inputs = (X, W, scale, shift)
+    expected = torch.autograd.grad(Y, inputs, grad_output, retain_graph=True)
+    for _ in range(9):
+        grads = torch.autograd.grad(Y, inputs, grad_output, retain_graph=True)
+        for grad, ref in zip(grads, expected):
+            assert torch.equal(grad, ref)
