@@ -1,5 +1,7 @@
 """Correctness checks for the sole SM90 fragment forward."""
 
+from unittest.mock import Mock
+
 import pytest
 import torch
 
@@ -42,8 +44,9 @@ def _assert_matches_oracle(
     ignore_index,
     return_entropy,
     config,
+    selected_token_ids=None,
 ):
-    actual_nll, actual_entropy, actual_lse = scaled_ce_forward_fragment(
+    outputs = scaled_ce_forward_fragment(
         x,
         weight,
         target,
@@ -51,7 +54,9 @@ def _assert_matches_oracle(
         ignore_index,
         return_entropy,
         config,
+        selected_token_ids=selected_token_ids,
     )
+    actual_nll, actual_entropy, actual_lse = outputs[:3]
     expected_nll, expected_lse, expected_entropy = _torch_oracle(
         x,
         weight,
@@ -69,6 +74,11 @@ def _assert_matches_oracle(
         assert_verbose_allclose(actual_entropy.float(), expected_entropy, atol=5e-2, rtol=5e-2)
     else:
         assert actual_entropy is None
+    if selected_token_ids is not None:
+        logits = (x.float() @ weight.float().t()).half().float() / temperature
+        expected_selected = logits.log_softmax(dim=-1)[:, selected_token_ids]
+        expected_selected[target == ignore_index] = 0.0
+        torch.testing.assert_close(outputs[3], expected_selected, atol=2e-4, rtol=2e-4)
     return actual_nll, actual_entropy, actual_lse
 
 
@@ -101,6 +111,45 @@ def test_fragment_auto_split_uses_hardware_cluster_capacity(monkeypatch):
 
     assert calls == [CLUSTER_M]
     assert (split_n, base_split_n, extra_m_pairs) == (9, 8, 2)
+
+
+@pytest.mark.parametrize("return_entropy", [False, True], ids=["nll", "entropy"])
+@pytest.mark.parametrize("with_selected", [False, True], ids=["no-selected", "selected"])
+def test_fragment_reuses_compiled_kernels_across_runtime_splits(monkeypatch, return_entropy, with_selected):
+    set_seed(162)
+    hidden_size, vocab_size = 70, 1937
+    temperature, ignore_index = 0.7, -17
+    weight = torch.randn(vocab_size, hidden_size, device="cuda", dtype=torch.bfloat16) / hidden_size**0.5
+    selected_ids = (
+        torch.tensor([vocab_size - 1, 0, 320, 320], device="cuda", dtype=torch.int64) if with_selected else None
+    )
+    monkeypatch.setattr(fragment_module, "_compile_cache", {})
+    monkeypatch.setattr(fragment_module, "_max_active_clusters", lambda _: 7)
+    compile_spy = Mock(wraps=fragment_module.cute.compile)
+    monkeypatch.setattr(fragment_module.cute, "compile", compile_spy)
+
+    # Cross M128 tiles and M256 pairs, including remainder-only changes and
+    # transitions between uniform, uneven, and explicit split policies.
+    cases = [(tokens, None) for tokens in (255, 256, 257, 512, 513, 769, 1025, 1281, 1793)]
+    cases += [
+        (513, ScaledCEForwardFragmentConfig(split_n=2)),
+        (513, ScaledCEForwardFragmentConfig(split_n=3, base_split_n=2, extra_m_pairs=1)),
+        (513, ScaledCEForwardFragmentConfig(target_cluster_pairs=6, max_split_n=2)),
+    ]
+    for tokens, config in cases:
+        x = torch.randn(tokens, hidden_size, device="cuda", dtype=torch.bfloat16) * 0.15
+        target = torch.randint(vocab_size, (tokens,), device="cuda", dtype=torch.long)
+        target[::7] = ignore_index
+        target[-1] = vocab_size - 1
+
+        nll, entropy, _ = _assert_matches_oracle(
+            x, weight, target, temperature, ignore_index, return_entropy, config, selected_ids
+        )
+
+        assert compile_spy.call_count == 2, f"unexpected compilation for tokens={tokens}, config={config}"
+        assert nll[target == ignore_index].count_nonzero().item() == 0
+        if return_entropy:
+            assert entropy[target == ignore_index].count_nonzero().item() == 0
 
 
 def test_fragment_uneven_split_entropy_matches_torch_oracle():

@@ -46,7 +46,7 @@ def _attn_res_fwd_kernel(
     MAX_BLOCKS: tl.constexpr,
 ):
     """Forward: one program per token position."""
-    tok = tl.program_id(0)
+    tok = tl.program_id(0).to(tl.int64)
     cols = tl.arange(0, BLOCK_D)
     d_mask = cols < D
 
@@ -64,7 +64,7 @@ def _attn_res_fwd_kernel(
 
     for i in tl.static_range(0, MAX_BLOCKS):
         if i < n_blocks:
-            v_off = i * n_tokens * D + tok * D
+            v_off = (i * n_tokens + tok) * D
             v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
 
             # RMSNorm: k = v * rstd * w_norm
@@ -99,7 +99,7 @@ def _attn_res_fwd_kernel(
     h = tl.zeros((BLOCK_D,), dtype=tl.float32)
     for i in tl.static_range(0, MAX_BLOCKS):
         if i < n_blocks:
-            v_off = i * n_tokens * D + tok * D
+            v_off = (i * n_tokens + tok) * D
             v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
             a_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, alpha, 0.0))
             h += a_i * v
@@ -132,7 +132,7 @@ def _attn_res_bwd_kernel(
     MAX_BLOCKS: tl.constexpr,
 ):
     """Backward: one program per token."""
-    tok = tl.program_id(0)
+    tok = tl.program_id(0).to(tl.int64)
     cols = tl.arange(0, BLOCK_D)
     d_mask = cols < D
 
@@ -146,7 +146,7 @@ def _attn_res_bwd_kernel(
 
     for i in tl.static_range(0, MAX_BLOCKS):
         if i < n_blocks:
-            v_off = i * n_tokens * D + tok * D
+            v_off = (i * n_tokens + tok) * D
             v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
             a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
 
@@ -164,7 +164,7 @@ def _attn_res_bwd_kernel(
 
     for i in tl.static_range(0, MAX_BLOCKS):
         if i < n_blocks:
-            v_off = i * n_tokens * D + tok * D
+            v_off = (i * n_tokens + tok) * D
             v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
             a_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, alpha, 0.0))
             ds_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, d_scores, 0.0))

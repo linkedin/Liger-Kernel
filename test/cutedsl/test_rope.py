@@ -8,9 +8,14 @@ using *real* rotary embeddings (whose two head-dim halves are duplicated).
 
 import importlib.util
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from unittest.mock import Mock
+
 import pytest
 import torch
 
+from torch.utils.checkpoint import checkpoint
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
@@ -247,3 +252,195 @@ def test_cutedsl_vision_2d_cos_sin(seq_len, num_heads, head_dim, dtype, atol, rt
 
     assert torch.allclose(q_cu_grad, q_hf_grad, atol=atol, rtol=rtol)
     assert torch.allclose(k_cu_grad, k_hf_grad, atol=atol, rtol=rtol)
+
+
+@pytest.fixture
+def cached_rope():
+    import liger_kernel.ops.cutedsl.ops.rope as module
+
+    module._tma_supported_cached.cache_clear()
+    yield module
+    module._tma_supported_cached.cache_clear()
+
+
+def test_tma_support_cache_resolves_current_device_and_preserves_shape_gates(cached_rope, monkeypatch):
+    current_device = [0]
+    capability = Mock(side_effect=lambda dev: (9, 0) if dev.index == 0 else (8, 0))
+    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: current_device[0])
+
+    for _ in range(2):
+        assert cached_rope._tma_supported(torch.bfloat16, 128)
+        assert cached_rope._tma_supported(torch.bfloat16, 128, torch.device("cuda"))
+        assert cached_rope._tma_supported(torch.bfloat16, 128, torch.device("cuda:0"))
+        assert cached_rope._tma_supported(torch.bfloat16, 128, 0)
+        assert cached_rope._tma_supported(torch.bfloat16, 128, "cuda:0")
+    assert capability.call_count == 1
+
+    current_device[0] = 1
+    assert not cached_rope._tma_supported(torch.bfloat16, 128)
+    assert not cached_rope._tma_supported(torch.bfloat16, 128, torch.device("cuda"))
+    assert cached_rope._tma_supported(torch.bfloat16, 128, torch.device("cuda:0"))
+    assert capability.call_count == 2
+    assert cached_rope._tma_supported(torch.float32, 8, torch.device("cuda:0"))
+    assert not cached_rope._tma_supported(torch.bfloat16, 8, torch.device("cuda:0"))
+    assert not cached_rope._tma_supported(torch.bfloat16, 92, torch.device("cuda:0"))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert not cached_rope._tma_supported(torch.bfloat16, 128, torch.device("cuda:0"))
+
+
+@pytest.fixture(params=[False, True], ids=["pointer", "tvm-ffi"])
+def tma_rope(request, monkeypatch):
+    if torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("TMA requires Hopper or newer")
+    import liger_kernel.ops.cutedsl.ops.rope as module
+
+    if request.param and not module._TVM_FFI_PRESENT:
+        pytest.skip("apache-tvm-ffi is not installed")
+    monkeypatch.setattr(module, "_TVM_FFI_PRESENT", request.param)
+    return module
+
+
+def _tma_tables(seq, head_dim, dtype):
+    angles = torch.randn(1, seq, head_dim // 2, device=device)
+    angles = torch.cat((angles, angles), dim=-1)
+    return angles.cos().to(dtype), angles.sin().to(dtype)
+
+
+def _tma_reference(x, cos, sin, backward=False):
+    x32 = x.float()
+    first, second = x32.chunk(2, dim=-1)
+    rotated = torch.cat((-second, first), dim=-1)
+    sign = -1 if backward else 1
+    return x32 * cos.float()[:, None] + sign * rotated * sin.float()[:, None]
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("checkpointed", [False, True])
+def test_tma_repeated_calls_bind_fresh_tensors_and_gradients(tma_rope, dtype, checkpointed):
+    seq, head_dim = 129, 128
+    cos, sin = _tma_tables(seq, head_dim, dtype)
+    retained = []
+    tolerance = 1e-5 if dtype == torch.float32 else 2e-2
+    for iteration, batch in enumerate((1, 2, 1)):
+        if iteration == 2:
+            cos, sin = _tma_tables(seq, head_dim, dtype)
+        qb = torch.randn(batch, seq, 16, head_dim, device=device, dtype=dtype, requires_grad=True)
+        kb = torch.randn(batch, seq, 8, head_dim, device=device, dtype=dtype, requires_grad=True)
+        qr = qb.detach().float().requires_grad_()
+        kr = kb.detach().float().requires_grad_()
+
+        def rotate(qb, kb):
+            return tma_rope.LigerRopeCuteDSLFunction.apply((qb * 1).transpose(1, 2), (kb * 1).transpose(1, 2), cos, sin)
+
+        actual = checkpoint(rotate, qb, kb, use_reentrant=False) if checkpointed else rotate(qb, kb)
+        expected = (_tma_reference(qr.transpose(1, 2), cos, sin), _tma_reference(kr.transpose(1, 2), cos, sin))
+        gq, gk = torch.randn_like(qb).transpose(1, 2), torch.randn_like(kb).transpose(1, 2)
+        actual_grads = torch.autograd.grad(actual, (qb, kb), (gq.clone(), gk.clone()))
+        expected_grads = torch.autograd.grad(expected, (qr, kr), (gq.float(), gk.float()))
+        for value, ref in zip((*actual, *actual_grads), (*expected, *expected_grads)):
+            torch.testing.assert_close(value.float(), ref, atol=tolerance, rtol=tolerance)
+        # Keep old allocations alive so address recycling cannot hide stale bindings.
+        retained.append((qb, kb, *actual))
+
+
+@pytest.mark.parametrize("backward", [False, True])
+def test_tma_bindings_handle_offset_views_and_current_stream(tma_rope, backward):
+    seq, heads, dim, offset = 33, 8, 128, 16
+    count = seq * heads * dim
+    q_storage = torch.zeros(count + 2 * offset, device=device)
+    k_storage = torch.zeros_like(q_storage)
+    q = q_storage[offset:-offset].view(1, seq, heads, dim).transpose(1, 2)
+    k = k_storage[offset:-offset].view(1, seq, heads, dim).transpose(1, 2)
+    cos, sin = torch.zeros(1, seq, dim, device=device), torch.ones(1, seq, dim, device=device)
+    run = tma_rope.rope_backward if backward else tma_rope.rope_forward
+    run(q, k, cos, sin)
+    torch.cuda.synchronize()
+
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
+        torch.cuda._sleep(5_000_000)
+        q.fill_(1)
+        k.fill_(2)
+        actual = run(q, k, cos, sin)[:2]
+    stream.synchronize()
+
+    expected = (
+        _tma_reference(torch.ones_like(q), cos, sin, backward),
+        _tma_reference(torch.full_like(k, 2), cos, sin, backward),
+    )
+    for value, ref in zip(actual, expected):
+        torch.testing.assert_close(value, ref, atol=0, rtol=0)
+    for storage in (q_storage, k_storage):
+        assert torch.count_nonzero(storage[:offset]) == 0
+        assert torch.count_nonzero(storage[-offset:]) == 0
+
+
+def test_tma_bindings_are_independent_across_host_threads(tma_rope, monkeypatch):
+    monkeypatch.setattr(tma_rope, "_COMPILE_CACHE", {})
+    cos, sin = _tma_tables(33, 128, torch.float32)
+    batches = [
+        (
+            torch.randn(1, 33, 8, 128, device=device).transpose(1, 2),
+            torch.randn(1, 33, 8, 128, device=device).transpose(1, 2),
+        )
+        for _ in range(2)
+    ]
+    tma_rope.rope_forward(batches[0][0].clone(), batches[0][1].clone(), cos, sin)
+    expected = [(_tma_reference(q, cos, sin), _tma_reference(k, cos, sin)) for q, k in batches]
+    torch.cuda.synchronize()
+    barrier = Barrier(2)
+
+    def wrap(compiled):
+        def launch(*args):
+            barrier.wait(timeout=30)
+            return compiled(*args)
+
+        return launch
+
+    for key, compiled in list(tma_rope._COMPILE_CACHE.items()):
+        monkeypatch.setitem(tma_rope._COMPILE_CACHE, key, wrap(compiled))
+    cuda_device = batches[0][0].device
+
+    def worker(batch):
+        with torch.cuda.device(cuda_device):
+            stream = torch.cuda.Stream(device=cuda_device)
+            with torch.cuda.stream(stream):
+                result = tma_rope.rope_forward(*batch, cos, sin)[:2]
+            stream.synchronize()
+            return result
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        actual = list(executor.map(worker, batches))
+    for result, refs in zip(actual, expected):
+        for value, ref in zip(result, refs):
+            torch.testing.assert_close(value, ref, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("backward", [False, True])
+def test_tma_cuda_graph_replay_uses_updated_contents(tma_rope, backward):
+    q = torch.zeros(1, 33, 8, 128, device=device).transpose(1, 2)
+    k = torch.zeros_like(q)
+    cos, sin = _tma_tables(33, 128, torch.float32)
+    run = tma_rope.rope_backward if backward else tma_rope.rope_forward
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for _ in range(3):
+            run(q, k, cos, sin)
+    stream.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = run(q, k, cos, sin)[:2]
+    for _ in range(3):
+        q.normal_()
+        k.normal_()
+        new_cos, new_sin = _tma_tables(33, 128, torch.float32)
+        cos.copy_(new_cos)
+        sin.copy_(new_sin)
+        expected = (_tma_reference(q, cos, sin, backward), _tma_reference(k, cos, sin, backward))
+        graph.replay()
+        torch.cuda.synchronize()
+        for value, ref in zip(actual, expected):
+            torch.testing.assert_close(value, ref, atol=1e-5, rtol=1e-5)

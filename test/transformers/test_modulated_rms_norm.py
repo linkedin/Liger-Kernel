@@ -292,3 +292,39 @@ def test_correctness_functional(dtype, atol, rtol, in_place, has_shift, elementw
         assert_verbose_allclose(shift1.grad, shift2.grad, atol=atol, rtol=rtol)
     if elementwise_affine:
         assert_verbose_allclose(w1.grad, w2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_torch_compile_matches_eager(dtype):
+    """Compiled modulated RMSNorm must match eager for both low-precision dtypes."""
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    hidden = 1024
+    model = LigerModulatedRMSNorm(hidden_size=hidden).to(device=device).to(dtype)
+    x = torch.randn(64, hidden, device=device, dtype=dtype)
+    scale = torch.randn(hidden, device=device, dtype=dtype) * 0.5 + 1.0
+    with torch.no_grad():
+        expected = model(x, scale)
+        actual = torch.compile(model)(x, scale)
+    torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_torch_compile_dynamic_batch_matches_eager(dtype):
+    """Dynamic batch must not silently return uninitialized memory.
+
+    The pre-fix code returned uninitialized output under ``torch.compile`` in
+    both static and dynamic mode (see the fused-add test for the mechanism).
+    """
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    hidden = 1024
+    model = LigerModulatedRMSNorm(hidden_size=hidden).to(device=device).to(dtype)
+    compiled = torch.compile(model, dynamic=True)
+    for rows in (1, 2, 4):
+        x = torch.randn(rows, hidden, device=device, dtype=dtype)
+        scale = torch.randn(hidden, device=device, dtype=dtype) * 0.5 + 1.0
+        with torch.no_grad():
+            expected = model(x, scale)
+            actual = compiled(x, scale)
+        torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)

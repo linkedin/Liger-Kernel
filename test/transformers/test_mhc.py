@@ -520,3 +520,33 @@ def test_mhc_mini_lm_output_match(vocab_size, hc, c, tmax):
         rtol=5e-2,
         extra_info="[head.weight.grad]",
     )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
+def test_mhc_mm_norm_int32_offset_overflow():
+    # Regression: MHC kernels index [N, K]/[N, M] activations with an int32 row
+    # program id. For N * K > 2**31 the offset n_offs * stride overflowed INT_MAX
+    # and wrapped negative, causing an illegal memory access on large-N inputs.
+    total_gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    if total_gib < 20:
+        pytest.skip("needs >=20 GiB GPU to cross the 2**31 offset threshold")
+    from liger_kernel.ops.mhc import mhc_mm_norm_fwd
+
+    dev, dt = "cuda", torch.bfloat16
+    N, K, M = 600_000, 4096, 64  # N * K = 2.46e9 > 2**31
+    assert N * K > 2**31
+    torch.manual_seed(0)
+    x = torch.randn(N, K, device=dev, dtype=dt)
+    phi = torch.randn(K, M, device=dev, dtype=dt)
+    mix, _ = mhc_mm_norm_fwd(x, phi, 1e-6)
+
+    out = torch.empty(N, M, device=dev, dtype=torch.float32)
+    phif = phi.float()
+    with torch.no_grad():
+        for s in range(0, N, 16384):
+            e = min(s + 16384, N)
+            xc = x[s:e].float()
+            ivr = torch.rsqrt(xc.pow(2).mean(1, keepdim=True) + 1e-6)
+            out[s:e] = (xc @ phif) * ivr
+    torch.cuda.synchronize()
+    assert (mix - out).abs().max().item() < 1e-1

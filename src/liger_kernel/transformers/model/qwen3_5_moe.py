@@ -243,7 +243,7 @@ def lce_forward_conditional_generation(
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
-        rope_deltas=outputs.rope_deltas,
+        rope_deltas=getattr(outputs, "rope_deltas", getattr(self.model, "rope_deltas", None)),
         router_logits=outputs.router_logits,
         token_accuracy=token_accuracy,
         predicted_tokens=predicted_tokens,

@@ -147,7 +147,11 @@ class LigerFusedLinearScaledCrossEntropyNativeTPFunction(torch.autograd.Function
         tiles_per_reduce,
         return_entropy,
         tp_group,
+        accum_dtype=None,
     ):
+        from liger_kernel.ops.fused_linear_scaled_cross_entropy import _validate_accum_dtype
+
+        ctx.accum_dtype = _validate_accum_dtype(accum_dtype, weight.dtype)
         ctx.set_materialize_grads(False)
         _validate_temperature(temperature)
         _validate_inputs(x, weight, target, vocab_start, tiles_per_reduce, return_entropy)
@@ -205,6 +209,7 @@ class LigerFusedLinearScaledCrossEntropyNativeTPFunction(torch.autograd.Function
             )
 
         with _cuda_device_context(x):
+            accum_args = (ctx.accum_dtype,) if ctx.accum_dtype != weight.dtype else ()
             grad_input, grad_weight = _get_tvm_ffi().fused_linear_scaled_cross_entropy_backward(
                 grad_nll,
                 grad_entropy,
@@ -219,11 +224,13 @@ class LigerFusedLinearScaledCrossEntropyNativeTPFunction(torch.autograd.Function
                 ctx.team_handle,
                 ctx.tiles_per_reduce,
                 ctx.return_entropy,
+                *accum_args,
             )
         if ctx.hidden != x.shape[1]:
             grad_input = grad_input[:, : ctx.hidden].contiguous()
             grad_weight = grad_weight[:, : ctx.hidden].contiguous()
-        return grad_input, grad_weight, None, None, None, None, None, None, None
+        grad_weight = grad_weight.to(weight.dtype)
+        return grad_input, grad_weight, None, None, None, None, None, None, None, None
 
 
 __all__ = ["LigerFusedLinearScaledCrossEntropyNativeTPFunction", "is_available"]

@@ -9,6 +9,12 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+if device == "npu":
+    pytest.skip(
+        "NPU does not provide this kernel yet.",
+        allow_module_level=True,
+    )
+
 
 def torch_ce_tvd(student_logits, teacher_logits, target, ignore_index=-100):
     """Eager reference: per-token CE and TVD, both computed in float32."""
