@@ -8,7 +8,6 @@ from triton.language.math import tanh
 
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 from liger_kernel.ops.utils import get_npu_core_count
-from liger_kernel.ops.utils import target_nll
 
 # log2(e): e^x = 2^(x * LOG2_E)
 LOG2_E = tl.constexpr(1.4426950408889634)
@@ -125,8 +124,6 @@ def liger_cross_entropy_forward_kernel(
 
             m = float("-inf")
             d = 0.0
-            # d without the target term, so the loss survives once softmax(x_y) rounds to 1
-            d_others = 0.0
             argmax_idx = tl.full((), 0, dtype=tl.int64)
             ori_X_y = tl.load(logits_row_ptr + y).cast(tl.float32)
             if HAS_SOFTCAPPING:
@@ -162,17 +159,13 @@ def liger_cross_entropy_forward_kernel(
                         scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -ls_eps * X_block, 0.0))
 
                 m_new = tl.maximum(m, block_max)
-                alpha = tl.exp(m - m_new)
-                exp_block = tl.exp(X_block - m_new)
-                d = d * alpha + tl.sum(exp_block)
-                d_others = d_others * alpha + tl.sum(tl.where(X_offsets != y, exp_block, 0.0))
+                d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
                 m = m_new
 
             lse = m + tl.log(d)
             if RETURN_LSE:
                 tl.store(lse_row_ptr, lse)
-            # lse - x_y rounds to 0 once softmax(x_y) rounds to 1
-            loss = target_nll(ori_X_y, m, d_others)
+            loss = lse - ori_X_y
             if HAS_WEIGHT:
                 loss = weight_y * loss
 
@@ -261,31 +254,23 @@ def liger_cross_entropy_forward_kernel_plain(
             x_y = tl.load(logits_row_ptr + y_idx).cast(tl.float32)
             m = float("-inf")
             d = 0.0
-            d_others = 0.0
             for i in tl.range(0, n_full, BLOCK_SIZE):
                 x = tl.load(logits_row_ptr + i + cols).cast(tl.float32)
                 block_max = tl.max(x)
                 m_new = tl.maximum(m, block_max)
-                alpha = tl.exp(m - m_new)
-                e = tl.exp(x - m_new)
-                d = d * alpha + tl.sum(e)
-                d_others = d_others * alpha + tl.sum(tl.where(i + cols != y_idx, e, 0.0))
+                d = d * tl.exp(m - m_new) + tl.sum(tl.exp(x - m_new))
                 m = m_new
             if HAS_TAIL:
                 offs = n_full + cols
                 x = tl.load(logits_row_ptr + offs, mask=offs < n_cols, other=float("-inf")).cast(tl.float32)
                 block_max = tl.max(x)
                 m_new = tl.maximum(m, block_max)
-                alpha = tl.exp(m - m_new)
-                e = tl.exp(x - m_new)
-                d = d * alpha + tl.sum(e)
-                d_others = d_others * alpha + tl.sum(tl.where(offs != y_idx, e, 0.0))
+                d = d * tl.exp(m - m_new) + tl.sum(tl.exp(x - m_new))
                 m = m_new
             lse = m + tl.log(d)
             if RETURN_LSE:
                 tl.store(lse_ptr + row_i64, lse)
-            # lse - x_y rounds to 0 once softmax(x_y) rounds to 1
-            loss = target_nll(x_y, m, d_others)
+            loss = lse - x_y
             if reduction == "mean":
                 loss = loss * inv_n
             tl.store(loss_ptr + row_i64, loss)
@@ -381,21 +366,15 @@ def liger_cross_entropy_backward_kernel_no_weight(
                 else:
                     lse = loss_row + x_y
 
-            # 1 - softmax(x_y) as the mass of the other classes, since softmax(x_y) - 1 cancels once it rounds to 1
-            p_others = 0.0
             for i in tl.range(0, n_full, BLOCK_SIZE):
                 x = tl.load(logits_row_ptr + i + cols).cast(tl.float32)
-                p = tl.exp(x - lse)
-                p_others += tl.sum(tl.where(i + cols != y_idx, p, 0.0))
-                tl.store(dX_row_ptr + i + cols, p * final_scale)
+                tl.store(dX_row_ptr + i + cols, tl.exp(x - lse) * final_scale)
             if HAS_TAIL:
                 offs = n_full + cols
                 x = tl.load(logits_row_ptr + offs, mask=offs < n_cols, other=float("-inf")).cast(tl.float32)
-                p = tl.exp(x - lse)
-                p_others += tl.sum(tl.where(offs != y_idx, p, 0.0))
-                tl.store(dX_row_ptr + offs, p * final_scale, mask=offs < n_cols)
-            tl.debug_barrier()
-            tl.store(dX_row_ptr + y_idx, -p_others * final_scale)
+                tl.store(dX_row_ptr + offs, tl.exp(x - lse) * final_scale, mask=offs < n_cols)
+            dx_y = (tl.exp(x_y - lse) - 1.0) * final_scale
+            tl.store(dX_row_ptr + y_idx, dx_y)
 
 
 @triton.jit
@@ -484,8 +463,6 @@ def liger_cross_entropy_backward_kernel(
             z_scale = 1.0 + 2.0 * lse_square_scale * lse
             one_minus_ls = 1.0 - label_smoothing
             z_deriv = 2.0 * lse_square_scale * lse
-            # 1 - softmax(x_y) as the mass of the other classes, since softmax(x_y) - 1 cancels once it rounds to 1
-            p_others = 0.0
 
             for i in range(0, n_cols, BLOCK_SIZE):
                 X_offsets = i + tl.arange(0, BLOCK_SIZE)
@@ -499,7 +476,6 @@ def liger_cross_entropy_backward_kernel(
                     X_block = softcap * intermediate
 
                 softmax_X = tl.exp(X_block - lse)
-                p_others += tl.sum(tl.where(X_offsets != y, softmax_X, 0.0))
                 if not HAS_WEIGHT:
                     X_block = softmax_X * z_scale - eps
                     if y >= i and y < i + BLOCK_SIZE:
@@ -527,30 +503,6 @@ def liger_cross_entropy_backward_kernel(
 
                 X_block = X_block * grad_scale
                 tl.store(dX_ptr + dX_ptr_offset + X_offsets, X_block, mask=X_offsets < n_cols)
-
-            # Redo the target entry with softmax(x_y) - 1 = -p_others
-            x_y = tl.load(X_ptr + X_ptr_offset + y).cast(tl.float32)
-            if HAS_SOFTCAPPING:
-                intermediate_y = tanh(x_y / softcap)
-                x_y = softcap * intermediate_y
-            softmax_y = tl.exp(x_y - lse)
-            if not HAS_WEIGHT:
-                dx_y = label_smoothing - p_others + softmax_y * z_deriv - eps
-                if reduction == "mean":
-                    dx_y = dx_y * inv_n_non_ignore
-            else:
-                dloss_ori_y = -one_minus_ls * p_others * weight_y
-                dloss_smooth_y = -eps * weight_y + softmax_y * eps_weight_sum
-                dz_loss_y = z_deriv * softmax_y
-                if reduction == "mean":
-                    dloss_ori_y = dloss_ori_y * inv_sum_non_ignore_weight
-                    dloss_smooth_y = dloss_smooth_y * inv_sum_non_ignore_weight
-                    dz_loss_y = dz_loss_y * inv_n_non_ignore
-                dx_y = dloss_ori_y + dloss_smooth_y + dz_loss_y
-            if HAS_SOFTCAPPING:
-                dx_y = dx_y * (1 - intermediate_y * intermediate_y)
-            tl.debug_barrier()
-            tl.store(dX_ptr + dX_ptr_offset + y, dx_y * grad_scale)
 
 
 def get_optimal_block_size(n_cols, has_gradients=True):
@@ -875,26 +827,22 @@ def _plain_none_grad_kernel(
                 tl.store(dX_row_ptr + offs, 0.0, mask=offs < n_cols)
         else:
             logits_row_ptr = X_ptr + row_i64 * X_stride
+            x_y = tl.load(logits_row_ptr + y).cast(tl.float32)
             m = float("-inf")
             d = 0.0
-            d_others = 0.0
             for i in range(0, n_cols, BLOCK_SIZE):
                 offs = i + tl.arange(0, BLOCK_SIZE)
                 x = tl.load(logits_row_ptr + offs, mask=offs < n_cols, other=float("-inf")).cast(tl.float32)
                 block_max = tl.max(x)
                 m_new = tl.maximum(m, block_max)
-                alpha = tl.exp2((m - m_new) * LOG2_E)
-                e = tl.exp2((x - m_new) * LOG2_E)
-                d = d * alpha + tl.sum(e)
-                d_others = d_others * alpha + tl.sum(tl.where(offs != y, e, 0.0))
+                d = d * tl.exp2((m - m_new) * LOG2_E) + tl.sum(tl.exp2((x - m_new) * LOG2_E))
                 m = m_new
             for i in range(0, n_cols, BLOCK_SIZE):
                 offs = i + tl.arange(0, BLOCK_SIZE)
                 x = tl.load(logits_row_ptr + offs, mask=offs < n_cols, other=float("-inf")).cast(tl.float32)
                 tl.store(dX_row_ptr + offs, tl.exp2((x - m) * LOG2_E) / d, mask=offs < n_cols)
             tl.debug_barrier()
-            # softmax(x_y) - 1 from the other classes, without the cancellation
-            tl.store(dX_row_ptr + y, -d_others / d)
+            tl.store(dX_row_ptr + y, tl.exp2((x_y - m) * LOG2_E) / d - 1.0)
             if scale != 1.0:
                 tl.debug_barrier()
                 for i in range(0, n_cols, BLOCK_SIZE):

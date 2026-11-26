@@ -4,8 +4,6 @@ import triton.language as tl
 
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 from liger_kernel.ops.utils import ensure_contiguous
-from liger_kernel.ops.utils import exp_excess
-from liger_kernel.ops.utils import expm1
 from liger_kernel.ops.utils import get_npu_core_count
 
 # Loss type mapping for Triton constexpr branching
@@ -294,7 +292,7 @@ def _grpo_loss_fwd_kernel(
                 REF_LOGP_local = REF_LOGP + token_idx
                 KL_local = KL + token_idx
                 ref_logp = tl.load(REF_LOGP_local).to(tl.float32)
-                kl = exp_excess(ref_logp - logp)
+                kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
                 if USE_BIAS_CORRECTION_KL:
                     kl = kl * tl.exp(logp - old_logp)
                 per_token_loss += BETA * kl
@@ -399,7 +397,7 @@ def _grpo_loss_fwd_kernel_seq(
                 REF_LOGP_local = REF_LOGP + token_idx
                 KL_local = KL + token_idx
                 ref_logp = tl.load(REF_LOGP_local).to(tl.float32)
-                kl = exp_excess(ref_logp - logp)
+                kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
                 if USE_BIAS_CORRECTION_KL:
                     kl = kl * coef_1_raw
                 per_token_loss += BETA * kl
@@ -504,7 +502,7 @@ def _grpo_loss_bwd_kernel_seq(
                 if USE_BIAS_CORRECTION_KL:
                     dlogp += BETA * coef_1 * (logp - ref_logp) * dloss
                 else:
-                    dlogp += BETA * -expm1(ref_logp - logp) * dloss
+                    dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
             dlogp = dlogp * inv_temp
             for start_n in tl.range(0, N, BLOCK_N):
@@ -635,7 +633,7 @@ def _grpo_loss_bwd_kernel(
                 if USE_BIAS_CORRECTION_KL:
                     dlogp += BETA * coef_1 * (logp - ref_logp)
                 else:
-                    dlogp += BETA * -expm1(ref_logp - logp)
+                    dlogp += BETA * (1 - tl.exp(ref_logp - logp))
 
             dlogp = dlogp * dloss * inv_temp
             for start_n in tl.range(0, N, BLOCK_N):
