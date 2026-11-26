@@ -38,6 +38,7 @@ declare_op_locations(
         "liger_kernel.ops.backends._cutedsl.rms_norm",
         "liger_kernel.ops.backends._ascend.rms_norm",
         "liger_kernel.ops.backends._cutile.rms_norm",
+        "liger_kernel.ops.tilelang.ascend.rms_norm",
     ),
 )
 
@@ -81,23 +82,25 @@ declare_op_locations(
     ),
 )
 
-# SwiGLU: Triton (universal) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
+# SwiGLU: Triton (universal), CuTe DSL (Hopper+), and Ascend Triton / TileLang.
 declare_op_locations(
     "swiglu",
     (
         "liger_kernel.ops.backends._triton.swiglu",
         "liger_kernel.ops.backends._cutedsl.swiglu",
         "liger_kernel.ops.backends._ascend.swiglu",
+        "liger_kernel.ops.tilelang.ascend.swiglu",
     ),
 )
 
-# RoPE: Triton (universal) + CuTe DSL (Hopper+) + Ascend Triton on NPU.
+# RoPE: Triton (universal), CuTe DSL (Hopper+), and Ascend Triton / TileLang.
 declare_op_locations(
     "rope",
     (
         "liger_kernel.ops.backends._triton.rope",
         "liger_kernel.ops.backends._cutedsl.rope",
         "liger_kernel.ops.backends._ascend.rope",
+        "liger_kernel.ops.tilelang.ascend.rope",
     ),
 )
 
@@ -108,6 +111,7 @@ declare_op_locations(
         "liger_kernel.ops.backends._triton.cross_entropy",
         "liger_kernel.ops.backends._cutedsl.cross_entropy",
         "liger_kernel.ops.backends._ascend.cross_entropy",
+        "liger_kernel.ops.tilelang.ascend.cross_entropy",
     ),
 )
 
@@ -209,8 +213,8 @@ def rms_norm(
             as ``(offset + weight)`` inside the kernel).
         casting_mode: ``"llama"`` (cast to fp32 only inside reduction),
             ``"gemma"`` (cast everything to fp32), or ``"none"`` (no casting).
-        in_place: if True, the gradient computation reuses ``x``'s storage.
-            Has no effect on the forward output.
+        in_place: if True, reuse the upstream gradient buffer for the input
+            gradient during backward. Has no effect on the forward output.
         row_mode: legacy Liger Triton kernel knob; passed through unchanged.
         impl: explicit implementation name in the new hyphenated form,
             e.g. ``"nvidia-cutile"``, ``"nvidia-cutedsl"``, ``"nvidia-triton"``.
@@ -400,6 +404,7 @@ def rope(
     position_ids: Optional[torch.Tensor] = None,
     unsqueeze_dim: int = 1,
     *,
+    rotary_dim: Optional[int] = None,
     impl: Optional[str] = None,
     mode: Optional[str] = None,
     backend: Optional[str] = None,  # legacy back-compat alias for impl=
@@ -420,7 +425,9 @@ def rope(
             ``(bsz, seq_len, head_dim)``.
         sin: sine tensor, same shape as ``cos``.
         position_ids: accepted for API parity (unused by the kernels).
-        unsqueeze_dim: accepted for API parity (unused by the kernels).
+        unsqueeze_dim: accepted for API parity.
+        rotary_dim: number of leading head entries to rotate. Defaults to the
+            width inferred from cos/sin. Pass it explicitly for half-width tables.
         impl: explicit implementation name (``"nvidia-cutedsl"``,
             ``"nvidia-triton"``). Legacy bare names accepted and translated.
         backend: Legacy back-compat alias for ``impl=``.
@@ -428,6 +435,7 @@ def rope(
     """
     if impl is None and backend is not None:
         impl = backend
+    options = {} if rotary_dim is None else {"rotary_dim": rotary_dim}
     return dispatch(
         "rope",
         q,
@@ -438,6 +446,7 @@ def rope(
         unsqueeze_dim,
         impl=impl,
         mode=mode,
+        **options,
     )
 
 

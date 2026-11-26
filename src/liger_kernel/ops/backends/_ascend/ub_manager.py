@@ -6,8 +6,11 @@ for running Triton kernels on Ascend NPU. It automatically calculates
 optimal block sizes based on UB capacity constraints to prevent UB overflow.
 """
 
+import configparser
 import os
+import platform
 
+from pathlib import Path
 from typing import Optional
 from typing import Tuple
 from typing import Union
@@ -16,6 +19,28 @@ import torch
 import triton
 
 from liger_kernel.utils import is_npu_available
+
+
+def _ascend950_ub_capacity_from_config(soc_info):
+    """Read the active CANN's exact SoC entry without importing TBE's TVM."""
+    if not soc_info.startswith("Ascend950"):
+        return None
+    for env_name in ("ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME"):
+        root = os.getenv(env_name)
+        if not root:
+            continue
+        for directory in (Path(root), Path(root) / f"{platform.machine()}-linux"):
+            path = directory / "data" / "platform_config" / f"{soc_info}.ini"
+            config = configparser.ConfigParser(interpolation=None, strict=False)
+            try:
+                if not config.read(path) or config.get("version", "SoC_version", fallback=None) != soc_info:
+                    continue
+                size = config.getint("AICoreSpec", "ub_size", fallback=0)
+                if size > 0:
+                    return size * 8
+            except (OSError, ValueError, configparser.Error):
+                continue
+    return None
 
 
 def _normalize_tiling_dims(tiling_dim: Union[int, Tuple[int, ...]]) -> set:
@@ -201,12 +226,16 @@ class UBManager:
         # Try to get from get_soc_spec (returns bytes, convert to bits)
         if is_npu_available():
             try:
+                device = getattr(torch, "npu")
+                soc_info = device.get_device_name(device.current_device())
+                capacity = _ascend950_ub_capacity_from_config(soc_info)
+                if capacity is not None:
+                    return capacity
+
                 from tbe.common.platform import get_soc_spec
                 from tbe.common.platform import set_current_compile_soc_info
 
-                # Set current SOC info for get_soc_spec to work correctly
-                device = getattr(torch, "npu")
-                soc_info = device.get_device_name(device.current_device())
+                # Preserve the existing TBE query for other SoCs/config layouts.
                 set_current_compile_soc_info(soc_info)
 
                 # Query UB size (get_soc_spec returns size in bytes)
