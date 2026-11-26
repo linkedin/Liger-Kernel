@@ -1477,3 +1477,49 @@ def test_triton_sequence_level_rejects_unsupported_loss_types(loss_type):
             loss_type=loss_type,
             reduce=True,
         )
+
+
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+@pytest.mark.parametrize(
+    "ratio_val, adv_val, desc",
+    [
+        (1.4, -1.0, "neg_adv_unclipped_branch2"),
+        (1.6, -1.0, "neg_adv_clipped_branch2"),
+        (1.4, 1.0, "pos_adv_clamped_delta"),
+        (1.1, 1.0, "pos_adv_unclipped_branch1"),
+    ],
+)
+def test_grpo_loss_delta_unclipped_branch_gradient(importance_sampling_level, ratio_val, adv_val, desc):
+    """Test gradient with delta when unclipped branch wins for negative and positive advantages."""
+    import math
+
+    logits = torch.zeros(1, 2, 2, device=device, requires_grad=True)
+    old_logp = torch.tensor([[-math.log(2.0) - math.log(ratio_val)]], device=device)
+    ids = torch.tensor([[0]], device=device)
+    adv = torch.tensor([adv_val], device=device)
+
+    loss, _ = triton_grpo_loss(
+        logits,
+        old_logp,
+        None,
+        ids,
+        adv,
+        temperature=1.0,
+        beta=0.0,
+        eps_low=0.25,
+        eps_high=0.5,
+        inplace=False,
+        loss_type="grpo",
+        reduce=True,
+        delta=1.25,
+        importance_sampling_level=importance_sampling_level,
+    )
+    loss.backward()
+
+    ref_logits = logits.detach().clone().requires_grad_()
+    ratio = (ref_logits[:, :-1].log_softmax(-1)[..., 0] - old_logp).exp()
+    ref = -torch.minimum(ratio.clamp(max=1.25) * adv, ratio.clamp(0.75, 1.5) * adv).mean()
+    ref.backward()
+
+    assert_verbose_allclose(loss, ref, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(logits.grad, ref_logits.grad, atol=1e-5, rtol=1e-5)
