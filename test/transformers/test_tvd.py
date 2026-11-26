@@ -285,3 +285,34 @@ def test_torch_compile_matches_eager(reduction):
         out1.backward()
         out2.backward()
         assert torch.equal(x1.grad, x2.grad)
+
+
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
+def test_gradients_with_tied_target(reduction):
+    # `q` used to receive None from LigerTVDLossFunction.backward, while tied
+    # coordinates could get a non-zero subgradient. Both must match PyTorch.
+    torch.manual_seed(0)
+    B, T, V = 2, 4, 1271
+    dtype = torch.float32
+    device = infer_device()
+
+    p = torch.randn(B * T, V, device=device, dtype=dtype).softmax(dim=-1)
+    q = torch.randn(B * T, V, device=device, dtype=dtype).softmax(dim=-1)
+    n_tied = V // 10
+    q[:, -n_tied:] = p[:, -n_tied:]
+
+    p_liger = p.detach().clone().requires_grad_(True)
+    q_liger = q.detach().clone().requires_grad_(True)
+    p_ref = p.detach().clone().requires_grad_(True)
+    q_ref = q.detach().clone().requires_grad_(True)
+
+    out_liger = LigerTVDLoss(reduction=reduction)(p_liger, q_liger)
+    out_ref = TorchTVDLoss(reduction=reduction)(p_ref, q_ref)
+    if reduction == "none":
+        out_liger = out_liger.sum()
+        out_ref = out_ref.sum()
+    out_liger.backward()
+    out_ref.backward()
+
+    assert torch.allclose(p_liger.grad, p_ref.grad, atol=1e-8, rtol=1e-6)
+    assert torch.allclose(q_liger.grad, q_ref.grad, atol=1e-8, rtol=1e-6)
