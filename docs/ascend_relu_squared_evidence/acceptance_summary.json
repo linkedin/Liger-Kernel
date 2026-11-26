@@ -1,0 +1,58 @@
+[
+  {
+    "platform": "A2",
+    "round": 1,
+    "sweep": "token_length",
+    "count": 12,
+    "max_ratio": 0.9301210095072884
+  },
+  {
+    "platform": "A2",
+    "round": 2,
+    "sweep": "token_length",
+    "count": 12,
+    "max_ratio": 0.9318435205074825
+  },
+  {
+    "platform": "A2",
+    "round": 1,
+    "sweep": "model_config",
+    "count": 21,
+    "max_ratio": 0.9138401137419138
+  },
+  {
+    "platform": "A2",
+    "round": 2,
+    "sweep": "model_config",
+    "count": 21,
+    "max_ratio": 0.9180183347044789
+  },
+  {
+    "platform": "A3",
+    "round": 1,
+    "sweep": "token_length",
+    "count": 12,
+    "max_ratio": 0.9532556421619515
+  },
+  {
+    "platform": "A3",
+    "round": 2,
+    "sweep": "token_length",
+    "count": 12,
+    "max_ratio": 0.9417341618874514
+  },
+  {
+    "platform": "A3",
+    "round": 1,
+    "sweep": "model_config",
+    "count": 21,
+    "max_ratio": 0.9721918665011994
+  },
+  {
+    "platform": "A3",
+    "round": 2,
+    "sweep": "model_config",
+    "count": 21,
+    "max_ratio": 0.9476935398036357
+  }
+]

@@ -42,6 +42,7 @@ def get_default_dependencies():
             "torch_npu==2.10.0.post7",
             "torchvision==0.25.0",
             "triton-ascend==3.6.0",
+            "ninja>=1.10",
         ]
 
 

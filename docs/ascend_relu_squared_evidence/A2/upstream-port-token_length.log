@@ -1,0 +1,308 @@
+**************************************
+     BENCHMARKING SPEED for RELU_SQUARED
+**************************************
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.04481999948620796,
+      0.11050000041723251,
+      0.2416200041770935,
+      0.5068600177764893
+    ],
+    "y_values_20": [
+      0.043783999979496,
+      0.09978000074625015,
+      0.22448000311851501,
+      0.49922001361846924
+    ],
+    "y_values_80": [
+      0.045451998710632324,
+      0.11593999713659286,
+      0.24579200148582458,
+      0.5093799829483032
+    ],
+    "timestamp": "2026-11-16 06:09:04",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.07846000045537949,
+      0.1770399957895279,
+      0.3481200039386749,
+      0.6590399742126465
+    ],
+    "y_values_20": [
+      0.07609599828720093,
+      0.1717360019683838,
+      0.3466640114784241,
+      0.6575959920883179
+    ],
+    "y_values_80": [
+      0.08048000186681747,
+      0.1781039983034134,
+      0.35212400555610657,
+      0.6712760329246521
+    ],
+    "timestamp": "2026-11-16 06:09:04",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.09233000129461288,
+      0.18106000125408173,
+      0.42333999276161194,
+      0.8248000144958496
+    ],
+    "y_values_20": [
+      0.0914200022816658,
+      0.17877599596977234,
+      0.4035159945487976,
+      0.8077800273895264
+    ],
+    "y_values_80": [
+      0.09538000077009201,
+      0.18782399594783783,
+      0.42948397994041443,
+      0.8399400115013123
+    ],
+    "timestamp": "2026-11-16 06:09:04",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.14331001043319702,
+      0.3225800096988678,
+      0.6726800203323364,
+      1.5926599502563477
+    ],
+    "y_values_20": [
+      0.142084002494812,
+      0.3205600082874298,
+      0.6477600336074829,
+      1.5858440399169922
+    ],
+    "y_values_80": [
+      0.14718399941921234,
+      0.3243600130081177,
+      0.6744679808616638,
+      1.6035720109939575
+    ],
+    "timestamp": "2026-11-16 06:09:04",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.5625200271606445,
+      1.1719199419021606,
+      2.388619899749756,
+      4.770279884338379
+    ],
+    "y_values_20": [
+      0.5609760284423828,
+      1.1708240509033203,
+      2.3764278888702393,
+      4.770279884338379
+    ],
+    "y_values_80": [
+      0.5749759674072266,
+      1.1729519367218018,
+      2.3914520740509033,
+      4.770279884338379
+    ],
+    "timestamp": "2026-11-16 06:09:04",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      0.6346200108528137,
+      1.2930599451065063,
+      2.6123199462890625,
+      5.742080211639404
+    ],
+    "y_values_20": [
+      0.6316800117492676,
+      1.2886959314346313,
+      2.6090919971466064,
+      5.742080211639404
+    ],
+    "y_values_80": [
+      0.6386560201644897,
+      1.298035979270935,
+      2.6133038997650146,
+      5.742080211639404
+    ],
+    "timestamp": "2026-11-16 06:09:05",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  }
+]
+**************************************
+     BENCHMARKING MEMORY for RELU_SQUARED
+**************************************
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "y_values_20": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "y_values_80": [
+      48.00390625,
+      96.00390625,
+      192.00390625,
+      384.00390625
+    ],
+    "timestamp": "2026-11-16 06:09:05",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  },
+  {
+    "kernel_name": "relu_squared",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "BT",
+    "x_label": "total tokens",
+    "x_values": [
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "y_values_50": [
+      64.00390625,
+      128.00390625,
+      256.00390625,
+      512.00390625
+    ],
+    "y_values_20": [
+      64.00390625,
+      128.00390625,
+      256.00390625,
+      512.00390625
+    ],
+    "y_values_80": [
+      64.00390625,
+      128.00390625,
+      256.00390625,
+      512.00390625
+    ],
+    "timestamp": "2026-11-16 06:09:05",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"hidden_size\": 4096, \"dtype\": \"torch.bfloat16\", \"bsz\": 1, \"seq_len\": 8192}",
+    "liger_version": "0.8.2"
+  }
+]
