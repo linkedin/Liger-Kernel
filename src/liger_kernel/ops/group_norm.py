@@ -6,6 +6,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import torch_to_triton_dtype
 from liger_kernel.utils import infer_device
 from liger_kernel.utils import is_npu_available
 
@@ -255,7 +256,7 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
     )
     DW = torch.zeros((num_channels), dtype=W.dtype, device=W.device)
     DB = torch.zeros((num_channels), dtype=B.dtype, device=B.device)
-    triton_dtype = tl.float32 if X.dtype == torch.float32 else tl.bfloat16
+    triton_dtype = torch_to_triton_dtype.get(W.dtype, tl.bfloat16)
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(hidden_size))
     _group_norm_backward_kernel[(batch_size, num_groups)](

@@ -109,3 +109,27 @@ def test_liger_group_norm_low_precision_statistics(shape, num_groups, offset, dt
 
     assert torch.isfinite(liger_output).all()
     assert torch.allclose(liger_output.float(), torch_output, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "shape, num_channels, num_groups",
+    [
+        ((2, 16, 8, 8), 16, 4),
+        ((2, 8, 16), 8, 4),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float16, 2e-2, 2e-2),
+        pytest.param(
+            torch.bfloat16,
+            2e-1,
+            5e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_liger_group_norm_low_precision_backward(shape, num_channels, num_groups, dtype, atol, rtol):
+    """Verify that weight/bias gradients in float16 preserve precision and match PyTorch (#1676)."""
+    _test_liger_group_norm(shape, num_channels, num_groups, dtype, atol, rtol)
