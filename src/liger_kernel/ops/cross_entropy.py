@@ -413,6 +413,8 @@ def cross_entropy_forward(
         if weight.stride(-1) != 1:
             weight = weight.contiguous()
 
+    input_requires_grad = _input.requires_grad
+
     # ensure _input and target are contiguous in the last dimension
     if _input.stride(-1) != 1:
         _input = _input.contiguous()
@@ -465,7 +467,7 @@ def cross_entropy_forward(
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_WEIGHT=True if weight is not None else False,
         HAS_SOFTCAPPING=True if softcap is not None else False,
-        HAS_GRADIENTS=_input.requires_grad,
+        HAS_GRADIENTS=input_requires_grad,
         num_warps=ce_num_warps,
     )
 
