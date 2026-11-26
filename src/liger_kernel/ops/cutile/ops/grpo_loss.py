@@ -28,9 +28,28 @@ import torch
 from cuda.tile import ByTarget
 from cuda.tile.tune import exhaustive_search
 
+from liger_kernel.ops.cutile.ops.cross_entropy import _target_nll
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 
 LOG2E = 1.4426950408889634
+
+
+def _expm1(x):
+    # Kahan's expm1 from exp/log, exact for tiny x without an expm1 intrinsic
+    u = ct.exp(x)
+    um1 = u - 1.0
+    big = ct.equal(u, math.inf)
+    is_one = ct.equal(u, 1.0)
+    safe_u = ct.where(is_one, 2.0, ct.where(big, 2.0, u))
+    return ct.where(big, u, ct.where(is_one, x, ct.where(ct.equal(um1, -1.0), -1.0, um1 * (x / ct.log(safe_u)))))
+
+
+def _exp_excess(x):
+    # K3 KL e^x - 1 - x, keeping its O(x^2) value near 0 where the direct form cancels (arXiv 2611.18511)
+    s = ct.minimum(ct.maximum(x, -0.5), 0.5)
+    series = s * s * (0.5 + s * (1 / 6 + s * (1 / 24 + s * (1 / 120 + s * (1 / 720 + s * (1 / 5040 + s / 40320))))))
+    return ct.where(ct.less_equal(ct.abs(x), 0.5), series, ct.exp(x) - 1.0 - x)
+
 
 _LOSS_TYPE_GRPO = 0
 _LOSS_TYPE_CISPO = 1
@@ -60,7 +79,7 @@ def _grpo_loss_fwd_ct(
     vllm_is_ratio,  # (B, L) or dummy (1,) float32
     phi_seq_input,  # (B,) VESPO per-sequence gamma weight (or dummy (1,))
     loss_output,  # (B, L) float32 output
-    lse_cache,  # (B, L) float32 cached log-sum-exp
+    logp_cache,  # (B, L) float32 cached logp of the sampled token
     kl_output,  # (B, L) float32 or dummy (1,)
     is_clipped_output,  # (B, L) float32
     B: ct.Constant[int],
@@ -101,9 +120,13 @@ def _grpo_loss_fwd_ct(
     n_chunks = (N + BLOCK_N - 1) // BLOCK_N
     inv_temperature = 1.0 / temperature
 
-    # ---- Compute logsumexp via online algorithm (fold trick) ----
+    idx_raw = ct.load(input_ids, (off_b, off_l), shape=())
+    idx = ct.astype(idx_raw, ct.int32)
+
+    # ---- Online max and sum of exp over the classes other than the target ----
+    # x - lse rounds to 0 once p_target rounds to 1, so logp comes from the other classes' mass (arXiv 2610.31642).
     m_i = ct.full((), -math.inf, dtype=ct.float32)
-    l_i = ct.full((), 0.0, dtype=ct.float32)
+    l_others = ct.full((), 0.0, dtype=ct.float32)
 
     for ci in range(n_chunks):
         col_idx = ct.add(ct.arange(BLOCK_N, dtype=ct.int32), ci * BLOCK_N)
@@ -116,18 +139,15 @@ def _grpo_loss_fwd_ct(
         chunk_max = ct.max(logits_scaled, 0, keepdims=False)
         new_m = ct.maximum(m_i, chunk_max)
         alpha = ct.exp2(ct.mul(m_i - new_m, LOG2E))
-        l_i = ct.add(ct.mul(l_i, alpha), ct.sum(ct.exp2(ct.mul(logits_scaled - new_m, LOG2E)), 0, keepdims=False))
+        e = ct.exp2(ct.mul(logits_scaled - new_m, LOG2E))
+        l_others = ct.add(ct.mul(l_others, alpha), ct.sum(ct.where(ct.equal(col_idx, idx), 0.0, e), 0, keepdims=False))
         m_i = new_m
 
-    lse = m_i + ct.log(l_i)
-
     # ---- Load logit at target token ----
-    idx_raw = ct.load(input_ids, (off_b, off_l), shape=())
-    idx = ct.astype(idx_raw, ct.int32)
     idx_tile = ct.add(ct.arange(1, dtype=ct.int32), idx)
     x_tile = ct.astype(ct.gather(logits_input, (logits_row, idx_tile), check_bounds=False), ct.float32)
     x = ct.sum(x_tile, 0, keepdims=False) * inv_temperature
-    logp = x - lse
+    logp = -_target_nll(x, m_i, l_others)
 
     # ---- Load old_logp ----
     if HAS_OLD_LOGP:
@@ -190,7 +210,7 @@ def _grpo_loss_fwd_ct(
     # ---- KL penalty (optional, beta != 0 is compile-time) ----
     if beta != 0.0:
         ref_logp = ct.astype(ct.load(ref_logp_input, (off_b, off_l), shape=()), ct.float32)
-        kl = ct.exp(ref_logp - logp) - (ref_logp - logp) - 1.0
+        kl = _exp_excess(ref_logp - logp)
         if use_bias_correction_kl:
             # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= coef_1
             kl = kl * coef_1
@@ -199,7 +219,7 @@ def _grpo_loss_fwd_ct(
 
     # ---- Store outputs ----
     ct.scatter(loss_output, (off_b, off_l), ct.astype(per_token_loss, loss_output.dtype))
-    ct.scatter(lse_cache, (off_b, off_l), ct.astype(lse, lse_cache.dtype))
+    ct.scatter(logp_cache, (off_b, off_l), ct.astype(logp, logp_cache.dtype))
     ct.scatter(is_clipped_output, (off_b, off_l), ct.astype(is_clipped, is_clipped_output.dtype))
 
 
@@ -213,7 +233,7 @@ def _grpo_loss_bwd_ct(
     input_ids,  # (B, L) int64
     advantages,  # (B,) float32
     completion_mask,  # (B, L) int32 or dummy (1,)
-    lse_cache,  # (B, L) float32 saved lse
+    logp_cache,  # (B, L) float32 saved logp
     vllm_is_ratio,  # (B, L) or dummy (1,)
     phi_seq_input,  # (B,) VESPO per-sequence gamma weight (or dummy (1,))
     B: ct.Constant[int],
@@ -252,14 +272,14 @@ def _grpo_loss_bwd_ct(
             return
 
     dloss = ct.astype(ct.load(dloss_input, (off_b, off_l), shape=()), ct.float32)
-    lse = ct.astype(ct.load(lse_cache, (off_b, off_l), shape=()), ct.float32)
+    logp = ct.astype(ct.load(logp_cache, (off_b, off_l), shape=()), ct.float32)
 
     idx_raw = ct.load(input_ids, (off_b, off_l), shape=())
     idx = ct.astype(idx_raw, ct.int32)
     idx_tile = ct.add(ct.arange(1, dtype=ct.int32), idx)
     x_tile = ct.astype(ct.gather(logits_input, (logits_row, idx_tile), check_bounds=False), ct.float32)
     x = ct.sum(x_tile, 0, keepdims=False) * inv_temperature
-    logp = x - lse
+    lse = x - logp
 
     if HAS_OLD_LOGP:
         old_logp = ct.astype(ct.load(old_logp_input, (off_b, off_l), shape=()), ct.float32)
@@ -315,7 +335,7 @@ def _grpo_loss_bwd_ct(
             # d(kl * coef_1)/d(logp) = coef_1 * (logp - ref_logp), where coef_1 = exp(logp - old_logp)
             dlogp = dlogp + beta * coef_1 * (logp - ref_logp)
         else:
-            dlogp = dlogp + beta * (1.0 - ct.exp(ref_logp - logp))
+            dlogp = dlogp + beta * (-_expm1(ref_logp - logp))
 
     dlogp_scaled = dlogp * dloss * inv_temperature
 
@@ -328,10 +348,9 @@ def _grpo_loss_bwd_ct(
         )
         probs = ct.exp(logits * inv_temperature - lse)
 
-        # dlogits[j] = (indicator(j==idx) - prob[j]) * dlogp
+        # dlogits[j] = (indicator(j==idx) - prob[j]) * dlogp, with 1 - p_target from the accurate logp
         idx_tile_b = ct.add(ct.arange(BLOCK_N, dtype=ct.int32), ci * BLOCK_N)
-        is_target = ct.astype(idx_tile_b == idx, ct.float32)
-        dlogits = (is_target - probs) * dlogp_scaled
+        dlogits = ct.where(ct.equal(idx_tile_b, idx), -_expm1(logp), -probs) * dlogp_scaled
 
         ct.scatter(
             dlogits_output,
@@ -405,7 +424,7 @@ def _grpo_loss_forward_ct(
     logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
 
     loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
-    lse = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
+    logp_cache = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
     is_clipped = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
 
     has_beta = float(beta) != 0.0
@@ -440,7 +459,7 @@ def _grpo_loss_forward_ct(
         vllm_arg,
         phi_seq_arg,
         loss,
-        lse,
+        logp_cache,
         kl_arg,
         is_clipped,
         int(B),
@@ -475,7 +494,7 @@ def _grpo_loss_forward_ct(
     kernel = _tuned_fwd_kernel(stream, cache_key, grid, fwd_args)
     ct.launch(stream, grid, kernel, fwd_args)
 
-    return loss, lse, is_clipped, kl
+    return loss, logp_cache, is_clipped, kl
 
 
 def _grpo_loss_backward_ct(
@@ -486,7 +505,7 @@ def _grpo_loss_backward_ct(
     completion_ids,
     advantages,
     completion_mask,
-    lse,
+    logp_cache,
     temperature,
     beta,
     eps_low,
@@ -538,7 +557,7 @@ def _grpo_loss_backward_ct(
             completion_ids.contiguous(),
             advantages.contiguous(),
             mask_arg,
-            lse,
+            logp_cache,
             vllm_arg,
             phi_seq_arg,
             int(B),
@@ -584,7 +603,7 @@ def _grpo_loss_fwd_seq_ct(
     is_clipped_seq,  # (B,) clipping indicator
     vllm_is_ratio,  # (B, L)/(B, 1) or dummy (1,)
     loss_output,  # (B, L)
-    lse_cache,  # (B, L)
+    logp_cache,  # (B, L) logp of the sampled token
     kl_output,  # (B, L) or dummy (1,)
     is_clipped_output,  # (B, L)
     B: ct.Constant[int],
@@ -611,8 +630,10 @@ def _grpo_loss_fwd_seq_ct(
     n_chunks = (N + BLOCK_N - 1) // BLOCK_N
     inv_temperature = 1.0 / temperature
 
+    idx = ct.astype(ct.load(input_ids, (off_b, off_l), shape=()), ct.int32)
+    # Mass of the classes other than the target, so logp survives once p_target rounds to 1
     m_i = ct.full((), -math.inf, dtype=ct.float32)
-    l_i = ct.full((), 0.0, dtype=ct.float32)
+    l_others = ct.full((), 0.0, dtype=ct.float32)
     for ci in range(n_chunks):
         col_idx = ct.add(ct.arange(BLOCK_N, dtype=ct.int32), ci * BLOCK_N)
         logits = ct.astype(
@@ -623,11 +644,10 @@ def _grpo_loss_fwd_seq_ct(
         chunk_max = ct.max(logits_scaled, 0, keepdims=False)
         new_m = ct.maximum(m_i, chunk_max)
         alpha = ct.exp2(ct.mul(m_i - new_m, LOG2E))
-        l_i = ct.add(ct.mul(l_i, alpha), ct.sum(ct.exp2(ct.mul(logits_scaled - new_m, LOG2E)), 0, keepdims=False))
+        e = ct.exp2(ct.mul(logits_scaled - new_m, LOG2E))
+        l_others = ct.add(ct.mul(l_others, alpha), ct.sum(ct.where(ct.equal(col_idx, idx), 0.0, e), 0, keepdims=False))
         m_i = new_m
-    lse = m_i + ct.log(l_i)
 
-    idx = ct.astype(ct.load(input_ids, (off_b, off_l), shape=()), ct.int32)
     idx_tile = ct.add(ct.arange(1, dtype=ct.int32), idx)
     x = (
         ct.sum(
@@ -637,7 +657,7 @@ def _grpo_loss_fwd_seq_ct(
         )
         * inv_temperature
     )
-    logp = x - lse
+    logp = -_target_nll(x, m_i, l_others)
 
     coef_1_v = ct.astype(ct.load(coef_1, off_b, shape=()), ct.float32)
     coef_2_v = ct.astype(ct.load(coef_2, off_b, shape=()), ct.float32)
@@ -658,14 +678,14 @@ def _grpo_loss_fwd_seq_ct(
 
     if beta != 0.0:
         ref_logp = ct.astype(ct.load(ref_logp_input, (off_b, off_l), shape=()), ct.float32)
-        kl = ct.exp(ref_logp - logp) - (ref_logp - logp) - 1.0
+        kl = _exp_excess(ref_logp - logp)
         if use_bias_correction_kl:
             kl = kl * ct.astype(ct.load(coef_1_raw, off_b, shape=()), ct.float32)
         per_token_loss = per_token_loss + beta * kl
         ct.scatter(kl_output, (off_b, off_l), ct.astype(kl, kl_output.dtype))
 
     ct.scatter(loss_output, (off_b, off_l), ct.astype(per_token_loss, loss_output.dtype))
-    ct.scatter(lse_cache, (off_b, off_l), ct.astype(lse, lse_cache.dtype))
+    ct.scatter(logp_cache, (off_b, off_l), ct.astype(logp, logp_cache.dtype))
     ct.scatter(is_clipped_output, (off_b, off_l), ct.astype(is_clip_v, is_clipped_output.dtype))
 
 
@@ -679,7 +699,7 @@ def _grpo_loss_bwd_seq_ct(
     input_ids,  # (B, L) int64
     advantages,  # (B,) float32
     completion_mask,  # (B, L) int32 or dummy (1,)
-    lse_cache,  # (B, L)
+    logp_cache,  # (B, L) logp of the sampled token
     coef_1,  # (B,) per-sequence importance weight (pre delta-clamp)
     seq_len,  # (B,) valid tokens per sequence
     B: ct.Constant[int],
@@ -716,7 +736,7 @@ def _grpo_loss_bwd_seq_ct(
 
     dloss = ct.astype(ct.load(dloss_input, (off_b, off_l), shape=()), ct.float32)
     dloss_sum = ct.astype(ct.load(dloss_sum_input, off_b, shape=()), ct.float32)
-    lse = ct.astype(ct.load(lse_cache, (off_b, off_l), shape=()), ct.float32)
+    logp = ct.astype(ct.load(logp_cache, (off_b, off_l), shape=()), ct.float32)
     coef_1_v = ct.astype(ct.load(coef_1, off_b, shape=()), ct.float32)
     seq_len_v = ct.astype(ct.load(seq_len, off_b, shape=()), ct.float32)
 
@@ -730,7 +750,7 @@ def _grpo_loss_bwd_seq_ct(
         )
         * inv_temperature
     )
-    logp = x - lse
+    lse = x - logp
     advantage = ct.astype(ct.load(advantages, off_b, shape=()), ct.float32)
 
     coef_2 = ct.minimum(ct.maximum(coef_1_v, 1.0 - eps_low), 1.0 + eps_high)
@@ -749,7 +769,7 @@ def _grpo_loss_bwd_seq_ct(
         if use_bias_correction_kl:
             dlogp = dlogp + beta * coef_1_v * (logp - ref_logp) * dloss
         else:
-            dlogp = dlogp + beta * (1.0 - ct.exp(ref_logp - logp)) * dloss
+            dlogp = dlogp + beta * (-_expm1(ref_logp - logp)) * dloss
 
     dlogp_scaled = dlogp * inv_temperature
     for ci in range(n_chunks):
@@ -759,8 +779,8 @@ def _grpo_loss_bwd_seq_ct(
             ct.float32,
         )
         probs = ct.exp(logits * inv_temperature - lse)
-        is_target = ct.astype(col_idx == idx, ct.float32)
-        dlogits = (is_target - probs) * dlogp_scaled
+        # 1 - p_target from the accurate logp; 1 - probs is 0 once p_target rounds to 1
+        dlogits = ct.where(ct.equal(col_idx, idx), -_expm1(logp), -probs) * dlogp_scaled
         ct.scatter(
             dlogits_output,
             (logits_row, col_idx),
@@ -835,10 +855,12 @@ def _grpo_loss_forward_seq_ct(
     mask = completion_mask.float() if completion_mask is not None else torch.ones(B, L, device=device)
 
     # Per-token log-probs (host) → per-sequence importance weights (GSPO).
+    # As softplus over the other classes, since tgt - logsumexp rounds to 0 once p_target rounds to 1.
     lg = logits[:, :L, :].float() / temperature
-    lse_pt = torch.logsumexp(lg, dim=-1)
-    tgt = torch.gather(lg, -1, completion_ids.long().unsqueeze(-1)).squeeze(-1)
-    per_token_logps = tgt - lse_pt
+    ids = completion_ids.long().unsqueeze(-1)
+    tgt = torch.gather(lg, -1, ids).squeeze(-1)
+    others_lse = torch.logsumexp(lg.scatter(-1, ids, float("-inf")), dim=-1)
+    per_token_logps = -torch.nn.functional.softplus(others_lse - tgt)
     log_ratio = torch.zeros_like(per_token_logps) if old_logp is None else (per_token_logps - old_logp)
     seq_lens = mask.sum(-1).clamp(min=1.0)  # (B,)
     coef_1 = torch.exp((log_ratio * mask).sum(-1) / seq_lens)  # (B,)
@@ -850,7 +872,7 @@ def _grpo_loss_forward_seq_ct(
 
     logits_2d = logits.reshape(B * L_ADD_1, N).contiguous()
     loss = torch.zeros(B, L, device=device, dtype=torch.float32)
-    lse = torch.zeros(B, L, device=device, dtype=torch.float32)
+    logp_cache = torch.zeros(B, L, device=device, dtype=torch.float32)
     is_clipped = torch.zeros(B, L, device=device, dtype=torch.float32)
     has_beta = float(beta) != 0.0
     kl = torch.zeros(B, L, device=device, dtype=torch.float32) if has_beta else None
@@ -882,7 +904,7 @@ def _grpo_loss_forward_seq_ct(
             is_clipped_seq.contiguous(),
             vllm_arg,
             loss,
-            lse,
+            logp_cache,
             kl_arg,
             is_clipped,
             int(B),
@@ -897,7 +919,7 @@ def _grpo_loss_forward_seq_ct(
             int(vllm_is_ratio_stride),
         ),
     )
-    return loss, lse, is_clipped, kl, coef_1, seq_lens
+    return loss, logp_cache, is_clipped, kl, coef_1, seq_lens
 
 
 def _grpo_loss_backward_seq_ct(
@@ -907,7 +929,7 @@ def _grpo_loss_backward_seq_ct(
     completion_ids,
     advantages,
     completion_mask,
-    lse,
+    logp_cache,
     coef_1,
     seq_lens,
     temperature,
@@ -950,7 +972,7 @@ def _grpo_loss_backward_seq_ct(
             completion_ids.contiguous(),
             advantages.contiguous(),
             mask_arg,
-            lse,
+            logp_cache,
             coef_1.contiguous(),
             seq_lens.contiguous(),
             int(B),
@@ -1046,7 +1068,7 @@ class GrpoLossFunction(torch.autograd.Function):
             vllm_is_ratio_stride = vllm_is_ratio.shape[1] if vllm_is_ratio.dim() > 1 else 1
 
         if importance_sampling_level == "sequence":
-            loss, lse, is_clipped, kl, coef_1, seq_lens = _grpo_loss_forward_seq_ct(
+            loss, logp_cache, is_clipped, kl, coef_1, seq_lens = _grpo_loss_forward_seq_ct(
                 logits,
                 old_logp,
                 ref_logp,
@@ -1062,9 +1084,11 @@ class GrpoLossFunction(torch.autograd.Function):
                 vllm_is_ratio,
                 vllm_is_ratio_stride,
             )
-            ctx.save_for_backward(logits, ref_logp, completion_ids, advantages, completion_mask, lse, coef_1, seq_lens)
+            ctx.save_for_backward(
+                logits, ref_logp, completion_ids, advantages, completion_mask, logp_cache, coef_1, seq_lens
+            )
         else:
-            loss, lse, is_clipped, kl = _grpo_loss_forward_ct(
+            loss, logp_cache, is_clipped, kl = _grpo_loss_forward_ct(
                 logits,
                 old_logp,
                 ref_logp,
@@ -1084,7 +1108,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 vllm_is_ratio_stride,
                 phi_seq,
             )
-            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse)
+            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, logp_cache)
 
         ctx.importance_sampling_level = importance_sampling_level
         ctx.vllm_is_ratio = vllm_is_ratio
@@ -1128,10 +1152,12 @@ class GrpoLossFunction(torch.autograd.Function):
         dloss_input = args[0]
         level = ctx.importance_sampling_level
         if level == "sequence":
-            logits, ref_logp, completion_ids, advantages, completion_mask, lse, coef_1, seq_lens = ctx.saved_tensors
+            logits, ref_logp, completion_ids, advantages, completion_mask, logp_cache, coef_1, seq_lens = (
+                ctx.saved_tensors
+            )
             old_logp = None
         else:
-            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse = ctx.saved_tensors
+            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, logp_cache = ctx.saved_tensors
         (
             temperature,
             beta,
@@ -1187,7 +1213,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_ids,
                 advantages,
                 completion_mask,
-                lse,
+                logp_cache,
                 coef_1,
                 seq_lens,
                 temperature,
@@ -1208,7 +1234,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_ids,
                 advantages,
                 completion_mask,
-                lse,
+                logp_cache,
                 temperature,
                 beta,
                 eps_low,

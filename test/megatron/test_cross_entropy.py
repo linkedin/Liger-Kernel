@@ -37,6 +37,8 @@ import torch.nn.functional as F
 from liger_kernel.megatron import LigerMegatronCrossEntropy
 from liger_kernel.transformers import LigerVocabParallelCrossEntropy
 from liger_kernel.utils import infer_device
+from test.utils import COLLAPSE_DTYPES
+from test.utils import assert_cross_entropy_does_not_collapse
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
@@ -147,6 +149,13 @@ def test_vp_class_matches_pytorch_cross_entropy(s, b, v, dtype, atol, rtol):
     ref.sum().backward()
     got.sum().backward()
     assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
+def test_vp_class_dominant_target_does_not_collapse(dtype, rtol):
+    assert_cross_entropy_does_not_collapse(
+        lambda x, y, reduction: LigerVocabParallelCrossEntropy()(x[:, None], y[:, None]).flatten(), dtype, rtol, device
+    )
 
 
 @pytest.mark.parametrize("ignore_index", [-100, 0])

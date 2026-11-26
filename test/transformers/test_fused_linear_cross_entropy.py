@@ -4,6 +4,8 @@ import pytest
 import torch
 
 from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
+from test.utils import COLLAPSE_DTYPES
+from test.utils import assert_cross_entropy_does_not_collapse
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 
@@ -1108,3 +1110,14 @@ def test_correctness_reduction_none_per_token_grad_output(B, T, H, V, bias, dtyp
     assert_verbose_allclose(lig_gw, ref_gw, atol=atol, rtol=rtol)
     if bias:
         assert_verbose_allclose(lig_gb, ref_gb, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("reduction", ["none", "sum", "mean"])
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
+def test_dominant_target_does_not_collapse(reduction, dtype, rtol):
+    # With an identity lm_head the fused path sees exactly these logits, so the input gradient is the logits gradient.
+    def fused_linear_cross_entropy(x, y, reduction):
+        weight = torch.eye(x.shape[-1], dtype=x.dtype, device=x.device)
+        return liger_fused_linear_cross_entropy(x, weight, y, reduction=reduction)
+
+    assert_cross_entropy_does_not_collapse(fused_linear_cross_entropy, dtype, rtol, device, reduction)

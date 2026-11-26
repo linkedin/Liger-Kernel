@@ -160,9 +160,9 @@ declare_op_locations(
     ("liger_kernel.ops.backends._triton.kl_div",),
 )
 
-# fused_linear_jsd: Triton (universal) + cuTile (Blackwell). The CuTe DSL
-# registration remains explicit-only because the composed op upcasts its inner
-# JSD inputs to fp32, which safely falls back to Triton.
+# fused_linear_jsd: one Triton kernel computes the JSD from the logit gap, so the
+# gradient stays accurate near the teacher. The CuTe DSL and cuTile registrations
+# are kept so existing impl names still resolve; they run the same kernel.
 declare_op_locations(
     "fused_linear_jsd",
     (
@@ -633,9 +633,8 @@ def fused_linear_jsd(
     """Fused linear + JSD loss for knowledge distillation.
 
     Computes the JSD loss between student and teacher logits without
-    materializing the full log-softmax tensors. Matmuls use cuBLAS; the inner
-    JSD computation dispatches through ``jsd_loss_and_grad`` (picking up the
-    CuTe DSL kernel on Hopper+).
+    materializing the full log-softmax tensors. Matmuls use cuBLAS; the JSD and
+    its gradient are computed from the student-teacher logit gap in one Triton kernel.
 
     Args:
         student_input: student hidden states, shape ``(BT, H)``.

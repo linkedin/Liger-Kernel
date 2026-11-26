@@ -156,6 +156,44 @@ def element_mul_kernel(
         tl.store(X_ptrs, X_block * grad_output, mask=X_offsets < n_cols)
 
 
+# log1p / expm1 from tl.log / tl.exp alone (Goldberg's and Kahan's tricks), so they stay exact for tiny
+# arguments on every backend without libdevice.
+@triton.jit
+def log1p(x):
+    u = 1.0 + x
+    return tl.where(u == 1.0, x, tl.log(u) * (x / tl.where(u == 1.0, 1.0, u - 1.0)))
+
+
+@triton.jit
+def expm1(x):
+    u = tl.exp(x)
+    um1 = u - 1.0
+    big = u == float("inf")  # past exp overflow the formula below is inf * 0
+    safe_u = tl.where((u == 1.0) | big, 2.0, u)
+    return tl.where(big, u, tl.where(u == 1.0, x, tl.where(um1 == -1.0, -1.0, um1 * (x / tl.log(safe_u)))))
+
+
+@triton.jit
+def exp_excess(x):
+    """e^x - 1 - x, the K3 KL estimator, keeping its O(x^2) value near 0 where the direct form cancels
+    (arXiv 2611.18511, reformulation 6)."""
+    s = tl.minimum(tl.maximum(x, -0.5), 0.5)
+    series = s * s * (0.5 + s * (1 / 6 + s * (1 / 24 + s * (1 / 120 + s * (1 / 720 + s * (1 / 5040 + s / 40320))))))
+    return tl.where(tl.abs(x) <= 0.5, series, tl.exp(x) - 1.0 - x)
+
+
+@triton.jit
+def target_nll(x_target, m, sum_exp_others):
+    """-log softmax(x)[target] from the row max m and sum_{j != target} exp(x_j - m).
+
+    lse - x_target rounds to 0 once the target dominates the row (margin > ~16.6 in fp32), taking 1 - p_target
+    with it. Writing it as softplus(log(sum_exp_others) + m - x_target) keeps both (arXiv 2610.31642), with
+    1 - p_target = -expm1(-nll).
+    """
+    r = tl.log(sum_exp_others) + m - x_target
+    return tl.maximum(r, 0.0) + log1p(tl.exp(-tl.abs(r)))
+
+
 @functools.cache
 def get_npu_core_count(default: int = 20) -> int:
     """Return NPU vector core count.

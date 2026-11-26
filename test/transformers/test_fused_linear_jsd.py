@@ -1,8 +1,11 @@
+import math
+
 import pytest
 import torch
 
 from packaging.version import Version
 from test.transformers.test_jsd import JSD as TorchJSD
+from test.utils import assert_jsd_edge_cases
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 
@@ -328,8 +331,6 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, t
         ignore_index,
         temperature,
         accum_dtype,
-        None,
-        None,
     )
 
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
@@ -568,6 +569,24 @@ def test_logits_projection_is_not_rounded_to_input_dtype(dtype, beta):
             f"{name} deviates {relative_error:.2%} from the float32-projection reference, "
             f"which means the projection rounded its logits to {dtype}"
         )
+
+
+def test_student_near_teacher_and_dominant_token():
+    assert_jsd_edge_cases(
+        lambda student, weight, teacher, beta: liger_fused_linear_jsd(student, weight, teacher, weight, jsd_beta=beta),
+        device,
+    )
+
+
+@pytest.mark.parametrize("beta", [1e-6, 1 - 1e-6])
+def test_disjoint_distributions_near_endpoint_beta(beta):
+    # The loss is the binary entropy of beta, which needs log(beta) and log(1 - beta) of the beta passed in, not of its
+    # float32 rounding.
+    student = torch.tensor([[-40.0, 40.0]], device=device)
+    weight = torch.eye(2, device=device)
+    loss = liger_fused_linear_jsd(student, weight, -student, weight, jsd_beta=beta)
+    expected = -beta * math.log(beta) - (1 - beta) * math.log1p(-beta)
+    torch.testing.assert_close(loss.double().cpu(), torch.tensor(expected, dtype=torch.float64), rtol=1e-5, atol=0)
 
 
 @pytest.mark.parametrize("layout", ["weight", "input"])

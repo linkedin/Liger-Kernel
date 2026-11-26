@@ -28,12 +28,9 @@ _CUTILE_FLJSD_TOLERANCES = {
     ),
     modes=("default",),
     default_mode="default",
-    # Ranked above cutedsl fused_linear_jsd (rank 4) so cutedsl stays the auto-default; the
-    # fused-linear path is GEMM-bound so backends are ~tied, and cuTile composes the cuTile
-    # JSD primitive which is slower than cutedsl on B200 (see _cutile/jsd.py). Opt-in / fallback.
     preference_rank=25,
     tolerances=_CUTILE_FLJSD_TOLERANCES,
-    notes="cuTile fused_linear_jsd for Blackwell (opt-in; cutedsl stays default). Inner JSD uses the cuTile primitive.",
+    notes="cuTile fused_linear_jsd for Blackwell; runs the shared Triton JSD kernel.",
 )
 def fused_linear_jsd_cutile(
     student_input: torch.Tensor,

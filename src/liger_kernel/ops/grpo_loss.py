@@ -2,6 +2,10 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import exp_excess
+from liger_kernel.ops.utils import expm1
+from liger_kernel.ops.utils import target_nll
+
 # Loss type constants for Triton constexpr branching
 # GRPO/DAPO/BNPO/DR_GRPO all use the same per-token loss computation (standard PPO clipping)
 _LOSS_TYPE_GRPO: tl.constexpr = tl.constexpr(0)
@@ -26,7 +30,6 @@ def _selective_log_softmax_kernel(
     LOGITS,
     INPUT_IDS,
     LOG_P,
-    LSE,
     MASK,
     TEMPERATURE: tl.constexpr,
     stride_input_ids_b,
@@ -50,30 +53,24 @@ def _selective_log_softmax_kernel(
         if not_skip == 0:
             return
 
+    ids = tl.load(INPUT_IDS)
     m_i = float("-inf")
-    l_i = 0.0
+    l_others = 0.0
     for start in range(0, N, BLOCK_N):
         cols = start + tl.arange(0, BLOCK_N)
         logits = tl.load(LOGITS + cols, mask=cols < N, other=float("-inf")).to(tl.float32) / TEMPERATURE
         new_m_i = tl.maximum(m_i, tl.max(logits))
         alpha = tl.exp(m_i - new_m_i)
-        l_i = l_i * alpha + tl.sum(tl.exp(logits - new_m_i))
+        l_others = l_others * alpha + tl.sum(tl.where(cols != ids, tl.exp(logits - new_m_i), 0.0))
         m_i = new_m_i
-    lse = m_i + tl.log(l_i)
 
-    ids = tl.load(INPUT_IDS)
     x = tl.load(LOGITS + ids).to(tl.float32) / TEMPERATURE
-    logp = x - lse
-    tl.store(LOG_P, logp)
-    if LSE is not None:
-        tl.store(LSE + off_b * L + off_l, lse)
+    tl.store(LOG_P, -target_nll(x, m_i, l_others))
 
 
 # compue old_logp and ref_logp, it reduce 10G peak Memory. it does not requires grad
 @torch.no_grad
-def fused_selective_log_softmax(
-    logits: torch.Tensor, input_ids: torch.Tensor, temperature: float = 0.9, mask=None, lse: torch.Tensor = None
-):
+def fused_selective_log_softmax(logits: torch.Tensor, input_ids: torch.Tensor, temperature: float = 0.9, mask=None):
     assert logits.is_contiguous()
     B, L_ADD_1, N = logits.shape
     L = L_ADD_1 - 1
@@ -86,7 +83,6 @@ def fused_selective_log_softmax(
         logits,
         input_ids,
         log_p,
-        lse,
         mask,
         temperature,
         input_ids.stride(0),
@@ -117,7 +113,7 @@ def _grpo_loss_fwd_kernel(
     VLLM_IS_RATIO_STRIDE,
     PHI_SEQ,  # VESPO gamma weight per sequence (B,) or None
     LOSS,
-    LSE,
+    LOGP,
     KL,
     IS_CLIPPED,
     # constexpr for the fp64 reason in _selective_log_softmax_kernel above.
@@ -147,23 +143,22 @@ def _grpo_loss_fwd_kernel(
     INPUT_IDS += off_b * L + off_l
     ADVANTAGES += off_b
     LOSS += off_b * L + off_l
-    LSE += off_b * L + off_l
+    LOGP += off_b * L + off_l
     IS_CLIPPED += off_b * L + off_l
 
+    idx = tl.load(INPUT_IDS)
     m_i = float("-inf")
-    l_i = 0.0
+    l_others = 0.0
     for start in range(0, N, BLOCK_N):
         cols = start + tl.arange(0, BLOCK_N)
         logits = tl.load(LOGITS + cols, mask=cols < N, other=float("-inf")).to(tl.float32) / TEMPERATURE
         new_m_i = tl.maximum(m_i, tl.max(logits))
         alpha = tl.exp(m_i - new_m_i)
-        l_i = l_i * alpha + tl.sum(tl.exp(logits - new_m_i))
+        l_others = l_others * alpha + tl.sum(tl.where(cols != idx, tl.exp(logits - new_m_i), 0.0))
         m_i = new_m_i
-    lse = m_i + tl.log(l_i)
 
-    idx = tl.load(INPUT_IDS)
     x = tl.load(LOGITS + idx).to(tl.float32) / TEMPERATURE
-    logp = x - lse
+    logp = -target_nll(x, m_i, l_others)
     if OLD_LOGP is None:
         old_logp = logp
     else:
@@ -221,7 +216,7 @@ def _grpo_loss_fwd_kernel(
         REF_LOGP += off_b * L + off_l
         KL += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
-        kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
+        kl = exp_excess(ref_logp - logp)
         if USE_BIAS_CORRECTION_KL:
             # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= coef_1
             kl = kl * tl.exp(logp - old_logp)
@@ -229,7 +224,7 @@ def _grpo_loss_fwd_kernel(
         tl.store(KL, kl)
 
     tl.store(LOSS, per_token_loss)
-    tl.store(LSE, lse)
+    tl.store(LOGP, logp)
     tl.store(IS_CLIPPED, is_clipped)
 
 
@@ -292,7 +287,7 @@ def _grpo_loss_fwd_kernel_seq(
         REF_LOGP += off_b * L + off_l
         KL += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
-        kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
+        kl = exp_excess(ref_logp - logp)
         if USE_BIAS_CORRECTION_KL:
             # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= coef_1.
             # Use the pre-clamp sequence-level coef_1 to match TRL — the same coef_1
@@ -318,7 +313,7 @@ def _grpo_loss_bwd_kernel_seq(
     INPUT_IDS,
     ADVANTAGES,
     COMPLETION_MASK,
-    LSE,
+    LOGP,
     COEF_1,  # Pre-computed sequence-level importance weight (B,)
     SEQ_LEN,  # Number of valid tokens per sequence (B,)
     # constexpr for the fp64 reason in _selective_log_softmax_kernel above.
@@ -352,19 +347,19 @@ def _grpo_loss_bwd_kernel_seq(
     DLOSS_SUM += off_b
     INPUT_IDS += off_b * L + off_l
     ADVANTAGES += off_b
-    LSE += off_b * L + off_l
+    LOGP += off_b * L + off_l
     COEF_1 += off_b
     SEQ_LEN += off_b
 
     dloss = tl.load(DLOSS).to(tl.float32)
     dloss_sum = tl.load(DLOSS_SUM).to(tl.float32)
-    lse = tl.load(LSE).to(tl.float32)
+    logp = tl.load(LOGP).to(tl.float32)
     coef_1 = tl.load(COEF_1).to(tl.float32)
     seq_len = tl.load(SEQ_LEN).to(tl.float32)
 
     idx = tl.load(INPUT_IDS)
     x = tl.load(LOGITS + idx).to(tl.float32) / TEMPERATURE
-    logp = x - lse
+    lse = x - logp
 
     advantage = tl.load(ADVANTAGES).to(tl.float32)
     coef_2 = tl.clamp(coef_1, 1 - EPS_LOW, 1 + EPS_HIGH)
@@ -388,9 +383,9 @@ def _grpo_loss_bwd_kernel_seq(
         if USE_BIAS_CORRECTION_KL:
             # The shared ratio contributes every token's upstream-weighted KL.
             dkl_sum = tl.load(DKL_SUM + off_b).to(tl.float32)
-            dlogp += BETA * (coef_1 * (1 - tl.exp(ref_logp - logp)) * dloss + dkl_sum / seq_len)
+            dlogp += BETA * (coef_1 * -expm1(ref_logp - logp) * dloss + dkl_sum / seq_len)
         else:
-            dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
+            dlogp += BETA * -expm1(ref_logp - logp) * dloss
 
     dlogp = dlogp / TEMPERATURE
     if dlogp == 0.0:
@@ -403,7 +398,8 @@ def _grpo_loss_bwd_kernel_seq(
         cols = start_n + tl.arange(0, BLOCK_N)
         logits = tl.load(LOGITS + cols, mask=cols < N, other=-float("inf")).to(tl.float32) / TEMPERATURE
         probs = tl.exp(logits - lse)
-        dlogits = tl.where(cols == idx, 1 - probs, -probs) * dlogp
+        # 1 - p_y from the accurate logp; 1 - probs is 0 once p_y rounds to 1
+        dlogits = tl.where(cols == idx, -expm1(logp), -probs) * dlogp
         tl.store(DLOGITS + cols, dlogits, mask=cols < N)
 
 
@@ -417,7 +413,7 @@ def _grpo_loss_bwd_kernel(
     INPUT_IDS,
     ADVANTAGES,
     COMPLETION_MASK,
-    LSE,
+    LOGP,
     VLLM_IS_RATIO,
     VLLM_IS_RATIO_STRIDE,
     PHI_SEQ,  # VESPO gamma weight per sequence (B,) or None
@@ -454,14 +450,14 @@ def _grpo_loss_bwd_kernel(
     DLOSS += off_b * loss_stride0 + off_l * loss_stride1
     INPUT_IDS += off_b * L + off_l
     ADVANTAGES += off_b
-    LSE += off_b * L + off_l
+    LOGP += off_b * L + off_l
 
     dloss = tl.load(DLOSS).to(tl.float32)
-    lse = tl.load(LSE).to(tl.float32)
+    logp = tl.load(LOGP).to(tl.float32)
 
     idx = tl.load(INPUT_IDS)
     x = tl.load(LOGITS + idx).to(tl.float32) / TEMPERATURE
-    logp = x - lse
+    lse = x - logp
     if OLD_LOGP is None:
         old_logp = logp
     else:
@@ -525,7 +521,7 @@ def _grpo_loss_bwd_kernel(
             # d(kl * coef_1)/d(logp) = coef_1 * (logp - ref_logp), where coef_1 = exp(logp - old_logp)
             dlogp += BETA * coef_1 * (logp - ref_logp)
         else:
-            dlogp += BETA * (1 - tl.exp(ref_logp - logp))
+            dlogp += BETA * -expm1(ref_logp - logp)
 
     dlogp = dlogp * dloss / TEMPERATURE
     if dlogp == 0.0:
@@ -538,7 +534,8 @@ def _grpo_loss_bwd_kernel(
         cols = start_n + tl.arange(0, BLOCK_N)
         logits = tl.load(LOGITS + cols, mask=cols < N, other=-float("inf")).to(tl.float32) / TEMPERATURE
         probs = tl.exp(logits - lse)
-        dlogits = tl.where(cols == idx, 1 - probs, -probs) * dlogp
+        # 1 - p_y from the accurate logp; 1 - probs is 0 once p_y rounds to 1
+        dlogits = tl.where(cols == idx, -expm1(logp), -probs) * dlogp
         tl.store(DLOGITS + cols, dlogits, mask=cols < N)
 
 
@@ -695,14 +692,13 @@ class GrpoLossFunction(torch.autograd.Function):
 
         # Allocate outputs
         loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
-        lse = torch.zeros_like(loss)
         is_clipped = torch.zeros_like(loss)
         kl = torch.zeros_like(loss) if beta != 0.0 else None
 
         if importance_sampling_level == "sequence":
             # Sequence-level: pre-compute sequence importance weights, then use Triton kernel
-            # Step 1: Get per-token log probs and lse in a single vocab pass
-            per_token_logps = fused_selective_log_softmax(logits, completion_ids, temperature, completion_mask, lse=lse)
+            # Step 1: Get per-token log probs
+            per_token_logps = fused_selective_log_softmax(logits, completion_ids, temperature, completion_mask)
 
             # Step 2: Compute sequence-level importance weights
             if old_logp is None:
@@ -754,7 +750,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_ids,
                 advantages,
                 completion_mask,
-                lse,
+                per_token_logps,
                 mask,
                 coef_1,
                 seq_lens,
@@ -764,6 +760,7 @@ class GrpoLossFunction(torch.autograd.Function):
         else:
             # Token-level: use optimized Triton kernel with LOSS_TYPE branching
             kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
+            logp = torch.zeros_like(loss)
             _grpo_loss_fwd_kernel[(B, L)](
                 logits,
                 old_logp,
@@ -775,7 +772,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 vllm_is_ratio_stride,
                 phi_seq,  # PHI_SEQ (B,) for VESPO, None otherwise
                 loss,
-                lse,
+                logp,
                 kl,
                 is_clipped,
                 temperature,
@@ -798,7 +795,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_ids,
                 advantages,
                 completion_mask,
-                lse,
+                logp,
                 mask,
                 vllm_is_ratio_ptr,
                 phi_seq,
@@ -874,7 +871,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_ids,
                 advantages,
                 completion_mask,
-                lse,
+                logp,
                 mask,
                 coef_1,
                 seq_lens,
@@ -890,7 +887,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_ids,
                 advantages,
                 completion_mask,
-                lse,
+                logp,
                 mask,
                 vllm_is_ratio,
                 phi_seq,
@@ -947,7 +944,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_ids,
                 advantages,
                 completion_mask,
-                lse,
+                logp,
                 coef_1,
                 seq_lens,
                 temperature,
@@ -972,7 +969,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_ids,
                 advantages,
                 completion_mask,
-                lse,
+                logp,
                 vllm_is_ratio,
                 vllm_is_ratio_stride,
                 phi_seq,

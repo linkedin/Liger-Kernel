@@ -2,6 +2,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from test.utils import COLLAPSE_DTYPES
+from test.utils import assert_cross_entropy_does_not_collapse
 from test.utils import supports_bfloat16
 
 from liger_kernel.ops.fused_ce_tvd import LigerFusedCETVDFunction
@@ -208,3 +210,10 @@ def test_shape_validation():
 
     with pytest.raises(ValueError, match="target must have shape"):
         LigerFusedCETVDFunction.apply(student, torch.randn(BT, V, device=device), target[:-1])
+
+
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
+def test_dominant_target_does_not_collapse(dtype, rtol):
+    assert_cross_entropy_does_not_collapse(
+        lambda x, y, reduction: LigerFusedCETVDFunction.apply(x, torch.randn_like(x), y)[0], dtype, rtol, device
+    )

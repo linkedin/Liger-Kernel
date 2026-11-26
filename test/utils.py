@@ -1,5 +1,6 @@
 import importlib
 import json
+import math
 import os
 import random
 
@@ -13,6 +14,7 @@ from typing import Optional
 from typing import Tuple
 
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 import transformers
@@ -88,6 +90,230 @@ def get_qwen3_vl_rope_config() -> dict:
             "mrope_section": [16, 24, 24],
         },
     }
+
+
+# Target logit margins over the log-sum-exp of the other logits. Above ~16.6 an fp32 softmax rounds the target
+# probability to exactly 1, so `p - 1` and `lse - x_target` collapse to 0 (arXiv 2610.31642). Negative margins
+# cover a target that is not the argmax.
+COLLAPSE_MARGINS = [-5.0, 0.0, 5.0, 12.0, 17.0, 25.0, 40.0]
+# Below fp64's own cliff (~36.7), so plain fp64 autograd is a valid reference.
+FP64_SAFE_COLLAPSE_MARGINS = [m for m in COLLAPSE_MARGINS if m < 30]
+JSD_BETAS = (0.0, 0.1, 0.5, 0.9, 1.0)
+
+
+def dominant_target_logits(margins, V, dtype=torch.float32, device="cpu", target=None):
+    """One row of random logits per margin, with the target logit `margin` above the logsumexp of the rest."""
+    logits = torch.randn(len(margins), V, dtype=torch.float64)
+    target = torch.randint(0, V, (len(margins),)) if target is None else target.cpu()
+    rows = torch.arange(len(margins))
+    others = logits.clone()
+    others[rows, target] = float("-inf")
+    logits[rows, target] = others.logsumexp(-1) + torch.tensor(margins, dtype=torch.float64)
+    return logits.to(device=device, dtype=dtype), target.to(device)
+
+
+def reference_cross_entropy(logits, target, reduction="none"):
+    """fp64 cross entropy as softplus(logsumexp_{j != y} x_j - x_y), which keeps the loss and its gradient exact
+    past the margin where even an fp64 F.cross_entropy collapses (~36.7)."""
+    logits = logits.double()
+    rows = torch.arange(logits.shape[0], device=logits.device)
+    others = logits.masked_fill(torch.nn.functional.one_hot(target, logits.shape[-1]).bool(), float("-inf"))
+    nll = torch.nn.functional.softplus(others.logsumexp(-1) - logits[rows, target])
+    return {"none": nll, "sum": nll.sum(), "mean": nll.mean()}[reduction]
+
+
+def assert_rows_sum_to_zero(grad):
+    """
+    Softmax is invariant to shifting a row's logits, so each row of a gradient w.r.t. them must sum to zero. Tighter than
+    the entrywise fp64 comparisons, which alone would allow an argmax entry inconsistent with the rest of its row.
+    """
+    tol = {torch.float32: 1e-5, torch.bfloat16: 5e-3}[grad.dtype]
+    grad = grad.double()
+    row_sum, row_abs = grad.sum(-1).abs(), grad.abs().sum(-1)
+    assert (row_sum <= tol * row_abs).all(), f"worst |sum| / sum|.|: {(row_sum / row_abs.clamp_min(1e-300)).max():.3e}"
+
+
+def assert_matches_reference(loss, _input, ref, _ref, rtol):
+    """Backward both losses through the same non-uniform upstream gradient, then compare values and input gradients."""
+    upstream_grad = torch.randn_like(loss)
+    loss.backward(upstream_grad)
+    ref.backward(upstream_grad.double())
+    torch.testing.assert_close(loss.double(), ref.detach(), rtol=rtol, atol=0)
+    torch.testing.assert_close(_input.grad.double(), _ref.grad, rtol=rtol, atol=0)
+    assert_rows_sum_to_zero(_input.grad)
+
+
+def assert_grad_close_per_row(grad, ref_grad, rtol=1e-4, msg=""):
+    """Off-argmax entries are differences of two tiny probabilities, accurate only to the row's scale."""
+    row_scale = ref_grad.abs().amax(-1, keepdim=True)
+    torch.testing.assert_close(grad.double() / row_scale, ref_grad / row_scale, rtol=rtol, atol=rtol, msg=msg)
+    assert_rows_sum_to_zero(grad)
+
+
+def assert_near_teacher_grad(grad, ref_grad, msg=""):
+    """Row 0 of `near_teacher_logits` matches its teacher exactly; the others must keep their small gradients."""
+    assert torch.count_nonzero(grad[0]) == 0, msg
+    torch.testing.assert_close(grad.double(), ref_grad, rtol=1e-4, atol=1e-12, msg=msg)
+    assert_rows_sum_to_zero(grad)
+
+
+def near_teacher_logits(device):
+    """Student rows equal to the teacher, off by 1e-8, and shifted by 32 while off by 2^-20."""
+    teacher = torch.tensor([[2.0, 1.0, 0.0], [2.0, 0.01, 0.0], [2.0**-20, 0.0, -(2.0**-20)]], device=device)
+    student = teacher.clone()
+    student[1, 1] += 1e-8
+    student[2] = 32.0
+    return student, teacher
+
+
+def dominant_student_teacher_logits(V=4096, dtype=torch.float32, device="cpu"):
+    """Student and an fp64 CPU teacher that both put almost all mass on the same token of each row."""
+    student, target = dominant_target_logits(FP64_SAFE_COLLAPSE_MARGINS, V=V, dtype=dtype, device=device)
+    teacher, _ = dominant_target_logits(
+        [m + 3 for m in FP64_SAFE_COLLAPSE_MARGINS], V=V, dtype=torch.float64, target=target
+    )
+    return student, teacher
+
+
+def reference_jsd(student_logits, teacher_logits, beta):
+    """fp64 generalized JSD, mean over rows, with forward and reverse KL at beta 0 and 1."""
+    log_q, log_p = student_logits.log_softmax(-1), teacher_logits.log_softmax(-1)
+    if beta == 0.0:
+        loss = (log_p.exp() * (log_p - log_q)).sum(-1)
+    elif beta == 1.0:
+        loss = (log_q.exp() * (log_q - log_p)).sum(-1)
+    else:
+        log_m = torch.logaddexp(log_p + math.log(beta), log_q + math.log1p(-beta))
+        loss = beta * (log_p.exp() * (log_p - log_m)).sum(-1) + (1 - beta) * (log_q.exp() * (log_q - log_m)).sum(-1)
+    return loss.mean()
+
+
+def assert_jsd_edge_cases(jsd, device):
+    """
+    `jsd(student, weight, teacher, beta)` must take its gradients from the logit gap, not from rounded probabilities
+    (arXiv 2610.31642, Eq. 9): near a teacher they stay accurate and are exactly 0 at a match, and at a token both put
+    almost all mass on they keep what fp32 softmax rounds away.
+    """
+    set_seed()
+    dominant_student, dominant_teacher = dominant_student_teacher_logits(device=device)
+    cases = (
+        (*near_teacher_logits(device), assert_near_teacher_grad),
+        (dominant_student, dominant_teacher.to(dominant_student), assert_grad_close_per_row),
+    )
+    for beta in JSD_BETAS:
+        for student, teacher, assert_grad in cases:
+            weight = torch.eye(student.shape[-1], device=device)
+            _input = student.clone().requires_grad_(True)
+            _ref = student.double().requires_grad_(True)
+            jsd(_input, weight, teacher, beta).backward()
+            reference_jsd(_ref, teacher.double(), beta).backward()
+            assert_grad(_input.grad, _ref.grad, msg=f"beta={beta}")
+
+
+def assert_cross_entropy_does_not_collapse(cross_entropy, dtype, rtol, device, reduction="none"):
+    """
+    `cross_entropy(logits, target, reduction=...)` must keep the loss and its true-class gradient once softmax(x_y) rounds
+    to 1, where lse - x_y and p_y - 1 cancel to 0 (arXiv 2610.31642).
+    """
+    set_seed()
+    logits, target = dominant_target_logits(COLLAPSE_MARGINS, V=4096, dtype=dtype, device=device)
+    _input = logits.clone().requires_grad_(True)
+    _ref = logits.double().requires_grad_(True)
+    loss = cross_entropy(_input, target, reduction=reduction)
+    ref = reference_cross_entropy(_ref, target, reduction=reduction)
+    assert_matches_reference(loss, _input, ref, _ref, rtol)
+
+
+def dominant_completion_logits(margins, dtype, device):
+    """One completion of len(margins) tokens whose sampled token is `margin` above the rest, as (1, L + 1, V) logits."""
+    rows, completion_ids = dominant_target_logits(margins, V=4096, dtype=dtype, device=device)
+    logits = torch.cat([rows, torch.randn_like(rows[:1])])[None]  # the last position predicts nothing
+    ref_logits = logits.double().requires_grad_(True)
+    ref_logp = -reference_cross_entropy(ref_logits[0, :-1], completion_ids)[None]
+    return logits, completion_ids[None], ref_logits, ref_logp
+
+
+def assert_grpo_dominant_target(grpo_loss, importance_sampling_level, dtype, rtol, device):
+    """
+    `grpo_loss` (the `triton_grpo_loss` interface) must keep logp and the 1 - p_y gradient of the sampled token once
+    softmax(x_y) rounds to 1, instead of flushing them to 0 (arXiv 2610.31642).
+    """
+    set_seed()
+    logits, completion_ids, ref_logits, ref_logp = dominant_completion_logits(COLLAPSE_MARGINS, dtype, device)
+    advantages = torch.tensor([0.7], device=device)
+    old_logp = (ref_logp.detach() + 0.01 * torch.randn_like(ref_logp)).float()
+
+    log_ratio = ref_logp - old_logp.double()
+    if importance_sampling_level == "sequence":
+        log_ratio = log_ratio.mean(-1, keepdim=True).expand_as(ref_logp)
+    coef_1 = log_ratio.exp()
+    coef_2 = coef_1.clamp(1 - 0.2, 1 + 0.2)
+    ref_loss = -torch.min(coef_1 * advantages.double()[:, None], coef_2 * advantages.double()[:, None])
+    upstream_grad = torch.randn_like(ref_loss).float()
+    ref_loss.backward(upstream_grad.double())
+
+    _logits = logits.clone().requires_grad_(True)
+    loss, _, _ = grpo_loss(
+        _logits,
+        old_logp,
+        None,
+        completion_ids,
+        advantages,
+        temperature=1.0,
+        beta=0.0,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type="grpo",
+        importance_sampling_level=importance_sampling_level,
+        reduce=False,
+    )
+    loss.backward(upstream_grad)
+
+    torch.testing.assert_close(_logits.grad[:, :-1].double(), ref_logits.grad[:, :-1], rtol=rtol, atol=0)
+    assert_rows_sum_to_zero(_logits.grad)
+
+
+def assert_grpo_k3_near_reference(grpo_loss, importance_sampling_level, device):
+    """
+    Near the reference policy the K3 KL term exp(r) - r - 1 is O(r^2) and its gradient 1 - exp(r) is O(r), so evaluating
+    either directly in fp32 cancels away the small part (arXiv 2611.18511, reformulation 6). `grpo_loss` has the
+    `triton_grpo_loss` interface; with zero advantages its per-token loss is the KL term alone.
+    """
+    set_seed()
+    log_ratios = torch.tensor([1e-1, -1e-2, 1e-3, -1e-4, 1e-5, -1e-5], dtype=torch.float64, device=device)
+    # confident sampled tokens, so logp ~ -3e-7 and is exact in fp32
+    logits, completion_ids, ref_logits, logp = dominant_completion_logits(
+        [15.0] * len(log_ratios), torch.float32, device
+    )
+    ref_logp = (logp.detach() + log_ratios).float()
+    r = ref_logp.double() - logp
+    ref_kl = torch.where(r.abs() < 1e-3, r * r * (0.5 + r / 6 + r * r / 24), torch.expm1(r) - r)
+    upstream_grad = torch.randn_like(ref_kl).float()
+    ref_kl.backward(upstream_grad.double())
+
+    _logits = logits.clone().requires_grad_(True)
+    loss, kl, _ = grpo_loss(
+        _logits,
+        None,
+        ref_logp,
+        completion_ids,
+        torch.zeros(1, device=device),
+        temperature=1.0,
+        beta=1.0,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type="grpo",
+        importance_sampling_level=importance_sampling_level,
+        reduce=False,
+    )
+    loss.backward(upstream_grad)
+
+    torch.testing.assert_close(kl.double(), ref_kl.detach(), rtol=1e-4, atol=0)
+    torch.testing.assert_close(loss.double(), ref_kl.detach(), rtol=1e-4, atol=0)
+    torch.testing.assert_close(_logits.grad[:, :-1].double(), ref_logits.grad[:, :-1], rtol=1e-4, atol=1e-12)
+    assert_rows_sum_to_zero(_logits.grad)
 
 
 def set_seed(seed=42):
@@ -336,6 +562,17 @@ def supports_bfloat16():
         return True
     else:
         return False
+
+
+# (dtype, rtol) for the collapse tests: fp32 must match fp64 closely, bf16 only to its own resolution.
+COLLAPSE_DTYPES = [
+    (torch.float32, 1e-4),
+    pytest.param(
+        torch.bfloat16,
+        1e-2,
+        marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this device"),
+    ),
+]
 
 
 def is_torchvision_available():

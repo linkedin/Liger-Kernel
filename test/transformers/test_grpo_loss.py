@@ -2,7 +2,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from test.utils import COLLAPSE_DTYPES
+from test.utils import COLLAPSE_MARGINS
+from test.utils import assert_grpo_dominant_target
+from test.utils import assert_grpo_k3_near_reference
 from test.utils import assert_verbose_allclose
+from test.utils import dominant_completion_logits
 from test.utils import infer_device
 from test.utils import set_seed
 
@@ -1477,3 +1482,19 @@ def test_triton_sequence_level_rejects_unsupported_loss_types(loss_type):
             loss_type=loss_type,
             reduce=True,
         )
+
+
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
+def test_dominant_target_does_not_collapse(importance_sampling_level, dtype, rtol):
+    assert_grpo_dominant_target(triton_grpo_loss, importance_sampling_level, dtype, rtol, device)
+
+    # the selective log-softmax used for old/ref logps keeps the same logp
+    logits, completion_ids, _, ref_logp = dominant_completion_logits(COLLAPSE_MARGINS, dtype, device)
+    logp = fused_selective_log_softmax(logits, completion_ids, temperature=1.0)
+    torch.testing.assert_close(logp.double(), ref_logp.detach(), rtol=rtol, atol=0)
+
+
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+def test_k3_kl_near_reference(importance_sampling_level):
+    assert_grpo_k3_near_reference(triton_grpo_loss, importance_sampling_level, device)

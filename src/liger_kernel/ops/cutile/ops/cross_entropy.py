@@ -16,6 +16,20 @@ ConstFloat = ct.Constant[float]
 ConstInt = ct.Constant[int]
 
 
+def _log1p(x):
+    # Goldberg's trick, exact for tiny x without a log1p intrinsic
+    u = 1.0 + x
+    is_one = ct.equal(u, 1.0)
+    return ct.where(is_one, x, ct.log(u) * (x / ct.where(is_one, 1.0, u - 1.0)))
+
+
+def _target_nll(target_logit, m, d_others):
+    # -log softmax(x)[y] = softplus(log(sum_{j != y} exp(x_j - m)) + m - x_y), which keeps the loss once softmax(x_y)
+    # rounds to 1 and lse - x_y would cancel to 0 (arXiv 2610.31642)
+    r = ct.log(d_others) + m - target_logit
+    return ct.maximum(r, 0.0) + _log1p(ct.exp(-ct.abs(r)))
+
+
 @ct.kernel(occupancy=4)
 def liger_cross_entropy_kernel_ct(
     input,
@@ -110,6 +124,8 @@ def liger_cross_entropy_kernel_ct(
     # ---- Single-pass online numerically stable logsumexp ----
     m_tile = ct.full((1,), -math.inf, dtype=ct.float32)
     d_tile = ct.full((1,), 0.0, dtype=ct.float32)
+    # d without the target term, for the loss and the target grad once softmax(x_y) rounds to 1
+    d_others_tile = ct.full((1,), 0.0, dtype=ct.float32)
     scaled_x_sum_tile = ct.full((1,), 0.0, dtype=ct.float32)
     # For argmax tracking (token accuracy / predicted tokens)
     argmax_val_tile = ct.full((1,), -math.inf, dtype=ct.float32)
@@ -128,7 +144,9 @@ def liger_cross_entropy_kernel_ct(
 
         block_max = ct.max(input_tile, 0, keepdims=False)
         neg_bmax_log2e = -block_max * LOG2E
-        block_sum_exp = ct.sum(ct.exp2(input_tile * LOG2E + neg_bmax_log2e, flush_to_zero=True), 0, keepdims=False)
+        block_exp = ct.exp2(input_tile * LOG2E + neg_bmax_log2e, flush_to_zero=True)
+        block_sum_exp = ct.sum(block_exp, 0, keepdims=False)
+        block_sum_others = ct.sum(ct.where(ct.equal(col_idx, y_int32), 0.0, block_exp), 0, keepdims=False)
 
         # Track argmax for token accuracy / predicted tokens
         if RETURN_TOKEN_ACCURACY or RETURN_PREDICTED_TOKENS:
@@ -175,18 +193,24 @@ def liger_cross_entropy_kernel_ct(
         d_prev = ct.sum(d_tile, 0, keepdims=False)
         m_new = ct.maximum(m_prev, block_max)
         neg_m_new_log2e = -m_new * LOG2E
-        block_sum_exp_scaled = block_sum_exp * ct.exp2(block_max * LOG2E + neg_m_new_log2e, flush_to_zero=True)
-        d_new = d_prev * ct.exp2(m_prev * LOG2E + neg_m_new_log2e, flush_to_zero=True) + block_sum_exp_scaled
+        block_scale = ct.exp2(block_max * LOG2E + neg_m_new_log2e, flush_to_zero=True)
+        prev_scale = ct.exp2(m_prev * LOG2E + neg_m_new_log2e, flush_to_zero=True)
+        d_new = d_prev * prev_scale + block_sum_exp * block_scale
+        d_others_new = ct.sum(d_others_tile, 0, keepdims=False) * prev_scale + block_sum_others * block_scale
         m_tile = ct.full((1,), m_new, dtype=ct.float32)
         d_tile = ct.full((1,), d_new, dtype=ct.float32)
+        d_others_tile = ct.full((1,), d_others_new, dtype=ct.float32)
 
     m = ct.sum(m_tile, 0, keepdims=False)
     d = ct.sum(d_tile, 0, keepdims=False)
+    d_others = ct.sum(d_others_tile, 0, keepdims=False)
     lse = m + ct.log(d)
 
     # ---- Write gradient in-place (fused forward+backward) ----
     if HAS_GRADIENTS:
         inv_d = 1.0 / d
+        # softmax(x_y) - 1 without the cancellation
+        softmax_y_m1 = -d_others * inv_d
         neg_m_log2e = -m * LOG2E
         for ci in range(num_chunks):
             col_idx = ct.add(ct.arange(BLOCK_SIZE, dtype=ct.int32), ci * BLOCK_SIZE)
@@ -204,16 +228,15 @@ def liger_cross_entropy_kernel_ct(
             is_y = ct.equal(col_idx, y_int32)
 
             if not HAS_WEIGHT:
-                grad_tile = ct.add(softmax_tile, ct.mul(2.0 * lse_square_scale * lse, softmax_tile))
-                grad_tile = ct.sub(grad_tile, eps)
-                grad_tile = ct.where(is_y, ct.sub(grad_tile, 1.0 - label_smoothing), grad_tile)
+                dz_tile = ct.mul(2.0 * lse_square_scale * lse, softmax_tile)
+                grad_tile = ct.where(is_y, softmax_y_m1 + label_smoothing, softmax_tile)
+                grad_tile = ct.sub(ct.add(grad_tile, dz_tile), eps)
                 if REDUCTION_MEAN:
                     grad_tile = ct.mul(grad_tile, inv_n_non_ignore)
             else:
                 # Weighted gradient
                 w_tile = ct.astype(ct.gather(weight, (col_idx,), check_bounds=True, padding_value=0.0), ct.float32)
-                dloss_ori = ct.mul(1.0 - label_smoothing, softmax_tile)
-                dloss_ori = ct.where(is_y, ct.sub(dloss_ori, 1.0 - label_smoothing), dloss_ori)
+                dloss_ori = ct.mul(1.0 - label_smoothing, ct.where(is_y, softmax_y_m1, softmax_tile))
                 dloss_ori = ct.mul(dloss_ori, weight_y)
                 dloss_smooth = ct.mul(eps, ct.sub(ct.mul(softmax_tile, weight_sum), w_tile))
                 dz_loss = ct.mul(2.0 * lse_square_scale * lse, softmax_tile)
@@ -232,7 +255,7 @@ def liger_cross_entropy_kernel_ct(
             ct.scatter(input, (row_idx, col_idx), ct.astype(grad_tile, input.dtype), check_bounds=True)
 
     # ---- Compute loss ----
-    loss_val = lse - target_logit
+    loss_val = _target_nll(target_logit, m, d_others)
     if HAS_WEIGHT:
         loss_val = ct.mul(loss_val, weight_y)
 

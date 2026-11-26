@@ -4,6 +4,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from test.utils import COLLAPSE_DTYPES
+from test.utils import assert_cross_entropy_does_not_collapse
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
@@ -1345,6 +1347,14 @@ def test_correctness_true_class_grad_confident_predictions(dtype, label_smoothin
     assert liger_err <= max(4 * torch_err, torch.finfo(dtype).tiny), (
         f"true-class grad error {liger_err:.3e} exceeds torch's {torch_err:.3e} "
         f"(reduction={reduction}, label_smoothing={label_smoothing}, dtype={dtype})"
+    )
+
+
+@pytest.mark.parametrize("reduction", ["none", "sum", "mean"])
+@pytest.mark.parametrize("dtype, rtol", COLLAPSE_DTYPES)
+def test_dominant_target_does_not_collapse(reduction, dtype, rtol):
+    assert_cross_entropy_does_not_collapse(
+        lambda x, y, reduction: liger_cross_entropy(x, y, reduction=reduction), dtype, rtol, device, reduction
     )
 
 

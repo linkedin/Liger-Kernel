@@ -4,12 +4,11 @@ Thin adapter: the composed-op logic and ``LigerFusedLinearJSDFunction`` live
 in :mod:`liger_kernel.ops.fused_linear_jsd`.  This file only wraps them in a
 :func:`register_op`-decorated callable that the multi-DSL dispatcher can find.
 
-The composed op computes logits and log-softmax in fp32; the CuTe DSL JSD
-primitive (b02ab91) handles fp32 natively via trace-time precise exp/log, so
-the whole composed op now runs on the CuTe DSL inner primitive.
+The JSD and its gradient are computed in one Triton kernel shared by every
+backend; this registration keeps ``impl="nvidia-cutedsl"`` working.
 
 Capability: requires the ``cutlass.cute`` package and compute capability >=
-sm_90 (Hopper or newer), matching the ``jsd_loss_and_grad`` CuTeDSL primitive.
+sm_90 (Hopper or newer).
 """
 
 from __future__ import annotations
@@ -38,15 +37,9 @@ _CUTEDSL_FLJSD_TOLERANCES = {
     ),
     modes=("default",),
     default_mode="default",
-    # Auto-select: fp32 inner JSD runs CuTe DSL natively (b02ab91), so the
-    # composed op beats cuTile (rank 5) by ~2-8% at V>=65536 and ties it at
-    # V=32000 on B200 (A/B flake-level at 32000, 1.02-1.08x at wide vocab);
-    # it also never loses to Triton (rank 50). Rank 4 sits below both so the
-    # dispatcher picks CuTe DSL on sm_90+; pre-Hopper falls to Triton via the
-    # min_cc gate.
     preference_rank=4,
     tolerances=_CUTEDSL_FLJSD_TOLERANCES,
-    notes="CuTe DSL FLJSD (fp32 inner JSD via precise exp/log); auto-selected on sm_90+, beats cuTile/Triton at wide vocab.",
+    notes="CuTe DSL FLJSD; runs the shared Triton JSD kernel.",
 )
 def fused_linear_jsd_cutedsl(
     student_input: torch.Tensor,
@@ -62,8 +55,7 @@ def fused_linear_jsd_cutedsl(
 ) -> torch.Tensor:
     """CuTe DSL fused_linear_jsd dispatch entry point.
 
-    Delegates to ``LigerFusedLinearJSDFunction`` with the inner
-    ``jsd_loss_and_grad`` primitive pinned to the CuTe DSL impl.
+    Delegates to ``LigerFusedLinearJSDFunction``.
 
     ``mode`` is accepted only for API parity with the other backends; the only
     valid value is ``"default"`` (or ``None``).
