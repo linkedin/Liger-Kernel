@@ -87,8 +87,9 @@ def _tv_distance_kernel(
         offsets = i + base_offsets
         mask = offsets < n_cols
 
-        p = tl.load(p_ptr + offsets, mask=mask, other=0.0)
-        q = tl.load(q_ptr + offsets, mask=mask, other=0.0)
+        # float32 like the other loss kernels: two bf16 inputs are otherwise subtracted and summed in bf16
+        p = tl.load(p_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        q = tl.load(q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
 
         # TVD(P || Q) = 0.5 * |P - Q|
         tv_loss = 0.5 * tl.abs(p - q)

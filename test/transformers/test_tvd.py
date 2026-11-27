@@ -229,6 +229,33 @@ def test_correctness_with_ties(B, T, V, reduction, dtype, atol, rtol, tied_fract
     _test_correctness_with_ties_once(liger_tvd, torch_tvd, B, T, V, dtype, atol, rtol, reduction, tied_fraction)
 
 
+@pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
+@pytest.mark.parametrize("B, T, V", [(2, 8, 4096), (3, 423, 32000)])
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
+def test_correctness_bfloat16_target(B, T, V, reduction):
+    # Every other test keeps the target in float32, which promotes the kernel's arithmetic. With both
+    # distributions in bfloat16 the kernel must still subtract and sum them in float32.
+    torch.manual_seed(0)
+    device = infer_device()
+    input = torch.randn(B * T, V, device=device).softmax(dim=-1).to(torch.bfloat16)
+    target = torch.randn(B * T, V, device=device).softmax(dim=-1).to(torch.bfloat16)
+
+    x1 = input.detach().clone().requires_grad_(True)
+    x2 = input.detach().clone().requires_grad_(True)
+
+    output = LigerTVDLoss(reduction=reduction)(x1, target)
+    output2 = TorchTVDLoss(reduction=reduction)(x2.float(), target.float())
+
+    assert torch.allclose(output, output2, atol=1e-8, rtol=1e-6)
+
+    if reduction == "none":
+        return
+
+    output.backward()
+    output2.backward()
+    assert torch.allclose(x1.grad, x2.grad, atol=1e-8, rtol=1e-6)
+
+
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
 @pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
