@@ -50,7 +50,8 @@ def _group_norm_forward_kernel(
     References:
     https://nn.labml.ai/normalization/group_norm/index.html
     """
-    batch_idx = tl.program_id(0)
+    # batch_idx * row_stride can exceed int32 for large batches; widen before the multiply.
+    batch_idx = tl.program_id(0).to(tl.int64)
     group_idx = tl.program_id(1)
 
     X_ptr += batch_idx * X_row_stride + group_idx * X_col_stride
@@ -129,7 +130,8 @@ def _group_norm_backward_kernel(
 
     We also need to load the Weights corresponding to the current channel to compute the gradients.
     """
-    batch_idx = tl.program_id(0)
+    # batch_idx * row_stride can exceed int32 for large batches; widen before the multiply.
+    batch_idx = tl.program_id(0).to(tl.int64)
     group_idx = tl.program_id(1)
 
     # Move the pointers to the correct batch
