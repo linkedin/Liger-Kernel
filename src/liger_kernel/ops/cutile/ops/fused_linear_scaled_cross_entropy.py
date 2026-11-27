@@ -101,6 +101,16 @@ def _calculate_token_chunk_size(
     return power_of_two_chunk
 
 
+def _load_selected_id(ids, row, k):
+    if ids.ndim == 2:
+        return ct.gather(ids, (row, k), check_bounds=False)
+    return ct.load(ids, k, shape=())
+
+
+def _chunk_selected_ids(ids, start, end):
+    return ids[start:end] if ids.ndim == 2 else ids
+
+
 @ct.kernel(occupancy=4)
 def _fused_scaled_cross_entropy_forward_kernel_ct(
     logits,
@@ -173,7 +183,7 @@ def _fused_scaled_cross_entropy_forward_kernel_ct(
         entropy_value = logsumexp - running_weighted_sum / running_sum
         ct.scatter(entropy, row_idx, ct.astype(entropy_value, entropy.dtype))
     for k in range(NUM_SELECTED):
-        selected_id = ct.load(selected_token_ids, k, shape=())
+        selected_id = _load_selected_id(selected_token_ids, row_idx, k)
         selected_logit = ct.astype(ct.gather(logits, (row_idx, selected_id), check_bounds=False), ct.float32)
         ct.scatter(selected_log_probs, (row_idx, k), selected_logit * inv_temperature - logsumexp)
 
@@ -195,7 +205,7 @@ def fused_scaled_cross_entropy_forward(
     """
     _validate_inputs(_input, weight, target, ignore_index)
     _validate_temperature(temperature)
-    selected_token_ids = _validate_selected_token_ids(selected_token_ids, weight)
+    selected_token_ids = _validate_selected_token_ids(selected_token_ids, weight, token_count=_input.shape[0])
     if not isinstance(m_tiles_per_cluster, int) or isinstance(m_tiles_per_cluster, bool):
         raise TypeError("m_tiles_per_cluster must be an int")
     if m_tiles_per_cluster < 1:
@@ -213,7 +223,7 @@ def fused_scaled_cross_entropy_forward(
     nll = torch.empty(BT, dtype=torch.float32, device=_input.device)
     entropy = torch.empty(BT, dtype=_input.dtype, device=_input.device) if return_entropy else None
     lse = torch.empty(BT, dtype=torch.float32, device=_input.device)
-    num_selected = selected_token_ids.numel() if selected_token_ids is not None else 0
+    num_selected = selected_token_ids.shape[-1] if selected_token_ids is not None else 0
     selected = nll.new_empty(BT, num_selected) if selected_token_ids is not None else None
     selected_arg = selected if num_selected else nll.view(BT, 1)
     dummy_entropy = torch.empty(1, dtype=_input.dtype, device=_input.device)
@@ -221,6 +231,7 @@ def fused_scaled_cross_entropy_forward(
 
     for start in range(0, BT, chunk_size):
         end = min(start + chunk_size, BT)
+        chunk_ids = _chunk_selected_ids(selected_token_ids, start, end) if num_selected else target
         logits_chunk = (_input[start:end] @ weight.t()).contiguous()
         entropy_arg = entropy[start:end] if return_entropy else dummy_entropy
 
@@ -234,7 +245,7 @@ def fused_scaled_cross_entropy_forward(
                 nll[start:end],
                 entropy_arg,
                 lse[start:end],
-                selected_token_ids if num_selected else target,
+                chunk_ids,
                 selected_arg[start:end],
                 int(V),
                 float(1.0 / temperature),
@@ -311,7 +322,7 @@ def _fused_scaled_cross_entropy_backward_kernel_ct(
         if NUM_SELECTED:
             grad_scaled_logits -= row_selected_sum * probabilities
             for k in range(NUM_SELECTED):
-                selected_id = ct.load(selected_token_ids, k, shape=())
+                selected_id = _load_selected_id(selected_token_ids, row_idx, k)
                 selected_grad = ct.load(grad_selected, (row_idx, k), shape=())
                 grad_scaled_logits += ct.where(ct.equal(col_idx, selected_id), selected_grad, 0.0)
         grad_raw_logits = grad_scaled_logits * inv_temperature
@@ -363,8 +374,8 @@ def fused_scaled_cross_entropy_backward(
                 f"got {tuple(entropy.shape)} and {tuple(grad_entropy.shape)}"
             )
     if grad_selected is not None:
-        if selected_token_ids is None or grad_selected.shape != (_input.shape[0], selected_token_ids.numel()):
-            raise ValueError("grad_selected must have shape [tokens, selected_token_ids.numel()]")
+        if selected_token_ids is None or grad_selected.shape != (_input.shape[0], selected_token_ids.shape[-1]):
+            raise ValueError("grad_selected must have shape [tokens, K]")
 
     BT = _input.shape[0]
     V = weight.shape[0]
@@ -391,12 +402,13 @@ def fused_scaled_cross_entropy_backward(
     grad_nll = grad_nll.contiguous() if grad_nll is not None else None
     entropy = entropy.contiguous() if entropy is not None else None
     grad_entropy = grad_entropy.contiguous() if grad_entropy is not None else None
-    num_selected = selected_token_ids.numel() if grad_selected is not None else 0
+    num_selected = selected_token_ids.shape[-1] if grad_selected is not None else 0
     grad_selected = grad_selected.float().contiguous() if num_selected else None
     selected_grad_sum = grad_selected.sum(-1) if num_selected else None
 
     for start in range(0, BT, chunk_size):
         end = min(start + chunk_size, BT)
+        chunk_ids = _chunk_selected_ids(selected_token_ids, start, end) if num_selected else target
         input_chunk = _input[start:end]
         grad_logits_chunk = grad_logits_workspace[: end - start]
         torch.mm(input_chunk, weight.t(), out=grad_logits_chunk)
@@ -412,7 +424,7 @@ def fused_scaled_cross_entropy_backward(
                 entropy[start:end] if entropy is not None else dummy_input_dtype,
                 grad_nll[start:end] if grad_nll is not None else dummy_f32,
                 grad_entropy[start:end] if grad_entropy is not None else dummy_input_dtype,
-                selected_token_ids if num_selected else target,
+                chunk_ids,
                 grad_selected[start:end] if num_selected else dummy_f32.view(1, 1),
                 selected_grad_sum[start:end] if num_selected else dummy_f32,
                 int(V),
@@ -501,7 +513,7 @@ class LigerFusedLinearScaledCrossEntropyFunction:
     """Compute per-token scaled NLL and optional vocabulary entropy.
 
     ``m_tiles_per_cluster`` is accepted for API compatibility but does not
-    change the cuTile schedule. Supplying int64 ``selected_token_ids[K]``
+    change the cuTile schedule. Supplying shared ``[K]`` or per-token ``[M,K]`` int64 IDs
     appends differentiable FP32 full-vocabulary log-probabilities ``[M,K]``.
     """
 

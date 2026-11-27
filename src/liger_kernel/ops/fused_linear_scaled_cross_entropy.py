@@ -111,12 +111,17 @@ def _validate_temperature(temperature):
         raise ValueError("temperature must be finite and > 0")
 
 
-def _validate_selected_token_ids(selected_token_ids, weight):
+def _validate_selected_token_ids(selected_token_ids, weight, *, token_count=None):
     if selected_token_ids is None:
         return None
     if not isinstance(selected_token_ids, torch.Tensor):
         raise TypeError("selected_token_ids must be an int64 tensor")
-    if selected_token_ids.ndim != 1:
+    if token_count is not None:
+        if selected_token_ids.ndim != 1 and not (
+            selected_token_ids.ndim == 2 and selected_token_ids.shape[0] == token_count
+        ):
+            raise ValueError("selected_token_ids must have shape [K] or [M, K] with one row per token")
+    elif selected_token_ids.ndim != 1:
         raise ValueError("selected_token_ids must have shape [K]")
     if selected_token_ids.dtype != torch.int64:
         raise TypeError("selected_token_ids must be an int64 tensor")
@@ -504,7 +509,8 @@ class LigerFusedLinearScaledCrossEntropyFunction:
 
     Supplying int64 ``selected_token_ids[K]`` appends FP32 full-vocabulary
     log-probabilities ``[M,K]`` to the outputs. Ignored rows are zero; ID order
-    and duplicates are preserved. All floating-point outputs are differentiable.
+    and duplicates are preserved. The cuTile backend also accepts per-token IDs
+    of shape ``[M,K]``. All floating-point outputs are differentiable.
 
     ``accum_dtype=None`` accumulates weight gradients in the weight dtype.
     Use ``torch.float32`` to accumulate dW across token chunks in FP32, then

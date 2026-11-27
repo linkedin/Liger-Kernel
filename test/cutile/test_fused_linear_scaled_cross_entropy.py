@@ -215,3 +215,42 @@ def test_cutile_rejects_out_of_range_target():
 
     with pytest.raises(ValueError, match=r"outside \[0, 16\)"):
         LigerFusedLinearScaledCrossEntropyFunction.apply(_input, weight, target)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available() or not _CUTILE_ENABLED, reason="requires cuTile on CUDA")
+@pytest.mark.parametrize("rowwise", [False, True], ids=["shared", "per-token"])
+@pytest.mark.parametrize("combined", [False, True], ids=["selected-only", "combined"])
+def test_selected_queries_match_torch(monkeypatch, request, rowwise, combined):
+    from liger_kernel.ops.cutile.ops import fused_linear_scaled_cross_entropy as op
+
+    # Exercise two full chunks and a tail, with the same ID repeated within each row.
+    monkeypatch.setattr(op, "_calculate_token_chunk_size", lambda *args: 3)
+    previous_precision = torch.get_float32_matmul_precision()
+    request.addfinalizer(lambda: torch.set_float32_matmul_precision(previous_precision))
+    torch.set_float32_matmul_precision("highest")
+    torch.manual_seed(51)
+    m, d, v = 7, 16, 37
+    x = torch.randn(m, d, device="cuda", requires_grad=True)
+    w = torch.randn(v, d, device="cuda", requires_grad=True)
+    target = torch.arange(m, device="cuda")
+    target[3] = -100
+    ids = torch.tensor([0, 5, 5, v - 1], device="cuda")
+    if rowwise:
+        ids = (ids[:, None] + torch.arange(m, device="cuda")).remainder(v).T
+    outputs = op.LigerFusedLinearScaledCrossEntropyFunction.apply(
+        x, w, target, temperature=1.3, return_entropy=combined, selected_token_ids=ids
+    )
+    lp = ((x @ w.T) / 1.3).log_softmax(-1)
+    ignored = target == -100
+    selected = lp.gather(1, ids.expand(m, -1)).masked_fill(ignored[:, None], 0)
+    nll = -lp.gather(1, target.clamp_min(0)[:, None]).flatten().masked_fill(ignored, 0)
+    entropy = -(lp.exp() * lp).sum(-1).masked_fill(ignored, 0)
+    expected = (nll, entropy, selected) if combined else (nll, selected)
+    for actual, reference in zip(outputs, expected):
+        torch.testing.assert_close(actual, reference, atol=6e-5, rtol=6e-5)
+    used = outputs if combined else outputs[-1:]
+    upstream = tuple(torch.randn_like(o) for o in used)
+    actual_grads = torch.autograd.grad(used, (x, w), upstream)
+    expected_grads = torch.autograd.grad(expected if combined else expected[-1:], (x, w), upstream)
+    for actual, reference in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(actual, reference, atol=6e-5, rtol=6e-5)
