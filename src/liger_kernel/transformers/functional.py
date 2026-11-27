@@ -11,6 +11,7 @@ from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops import LigerFusedLinearJSDFunction
 from liger_kernel.ops import LigerFusedLinearKLDivFunction
 from liger_kernel.ops import LigerFusedLinearScaledCrossEntropyTPFunction
+from liger_kernel.ops import LigerFusedLoRALinearFunction
 from liger_kernel.ops import LigerFusedNeighborhoodAttentionFunction
 from liger_kernel.ops import LigerGELUMulFunction
 from liger_kernel.ops import LigerGroupNormFunction
@@ -241,6 +242,10 @@ def liger_fused_linear_kl_div(
         eps,
         accum_dtype,
     )
+
+
+def liger_fused_lora_linear(x, weight, lora_A, lora_B, bias=None, scale=1.0):
+    return LigerFusedLoRALinearFunction.apply(x, weight, lora_A, lora_B, bias, scale)
 
 
 def liger_geglu(a, b):
