@@ -191,6 +191,27 @@ def test_vp_class_respects_label_smoothing(label_smoothing):
     assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=1e-5, rtol=1e-4)
 
 
+@pytest.mark.parametrize("formula", ["pytorch", "megatron"])
+def test_vp_label_smoothing_with_large_logits_stays_finite(formula):
+    """exp() underflows for far-from-target logits, but log-softmax stays finite."""
+    base = torch.tensor([[[100.0, 0.0, -50.0, 1.0]]], device=device, dtype=torch.float32)
+    target = torch.tensor([[0]], device=device, dtype=torch.long)
+    ce = LigerVocabParallelCrossEntropy(label_smoothing=0.1, label_smoothing_formula=formula)
+
+    got = ce(base.clone(), target)
+
+    alpha = 0.1 if formula == "pytorch" else 0.1 * base.size(-1) / (base.size(-1) - 1)
+    expected = F.cross_entropy(
+        base.double().reshape(-1, base.size(-1)),
+        target.reshape(-1),
+        reduction="none",
+        label_smoothing=alpha,
+    ).reshape(1, 1)
+
+    assert torch.isfinite(got).all()
+    assert_verbose_allclose(got.float(), expected.float(), atol=1e-4, rtol=1e-4)
+
+
 # ===========================================================================
 # 2. LigerMegatronCrossEntropy — Megatron formula, rescaled F.cross_entropy parity
 # ===========================================================================
