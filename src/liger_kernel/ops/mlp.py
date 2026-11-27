@@ -227,12 +227,7 @@ def _swiglu_kernel_forward_inference(
 # =====================================================================
 # Backward dU and dG
 # =====================================================================
-"""
-Note: 
-- We don't use autotune here, 
-- because autotune could break the in-place overwrite operation. 
-- Instead, we directly use the optimal configuration for the forward kernel.
-"""
+# Reuse the forward kernel's best configuration without a separate autotuning pass.
 
 
 # grid = [ceil(S/Block_M) * ceil(hidden_dim/Block_N), B]
@@ -552,8 +547,10 @@ def swiglu_backward_dGU(
     G = AGU[..., hidden_dim : 2 * hidden_dim]
     U = AGU[..., 2 * hidden_dim :]
 
-    # Reuse the memory of GU to store dGU, in order to save memory.
-    dG, dU = G, U
+    # Saved preactivations remain read-only across retained-graph backward calls.
+    dGU = torch.empty((B, S, 2 * hidden_dim), device=AGU.device, dtype=AGU.dtype)
+    dG = dGU[..., :hidden_dim]
+    dU = dGU[..., hidden_dim:]
 
     # Use forward best config.
     BLOCK_M = fwd_best_config.kwargs["BLOCK_M"]
@@ -593,18 +590,20 @@ def swiglu_backward_dGU(
         num_stages=fwd_best_config.num_stages,
     )
 
+    return dGU
+
 
 def swiglu_backward_dI(
     gate_weight: torch.Tensor,
     up_weight: torch.Tensor,
-    AGU: torch.Tensor,
+    dGU: torch.Tensor,
 ) -> torch.Tensor:
-    B, S, _ = AGU.shape
+    B, S, _ = dGU.shape
     hidden_dim, dim = gate_weight.shape
     bucket_M = get_bucket_m(B * S)
     dI = torch.empty((B, S, dim), device=gate_weight.device, dtype=gate_weight.dtype)
-    dG = AGU[..., hidden_dim : 2 * hidden_dim]
-    dU = AGU[..., 2 * hidden_dim :]
+    dG = dGU[..., :hidden_dim]
+    dU = dGU[..., hidden_dim:]
 
     dummy_block_3D = [1, 1, 1]
     dummy_block_2D = [1, 1]
@@ -688,15 +687,13 @@ class LigerMLPFunction(torch.autograd.Function):
             dWd = dO.reshape(-1, dim).T @ A.reshape(-1, hidden_dim) * down_multiplier
 
         # Compute dU and dG by triton kernel.
-        # The original G and U will be overwritten by dG and dU.
-        swiglu_backward_dGU(dO, down_weight, AGU, ctx.fwd_best_config, gate_multiplier, down_multiplier)
+        dGU = swiglu_backward_dGU(dO, down_weight, AGU, ctx.fwd_best_config, gate_multiplier, down_multiplier)
 
         # Compute dWug by a single large GEMM.
-        dGU = AGU[..., hidden_dim:]
         dWug = dGU.reshape(-1, 2 * hidden_dim).T @ input.reshape(-1, dim)  # [2*hidden_dim, dim]
         dWg, dWu = dWug[:hidden_dim], dWug[hidden_dim:]  # [hidden_dim, dim]
 
         # Compute dI by triton kernel.
-        dI = swiglu_backward_dI(gate_weight, up_weight, AGU)
+        dI = swiglu_backward_dI(gate_weight, up_weight, dGU)
 
         return dI, dWg, dWu, dWd, None, None
