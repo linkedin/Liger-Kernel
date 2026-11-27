@@ -5,6 +5,9 @@ import torch
 
 from torch.nn import functional as F
 
+from liger_kernel.ops.selective_logprob import selective_logprob_backward
+from liger_kernel.ops.selective_logprob import selective_logprob_forward
+
 
 class LigerFusedLinearPreferenceBase(torch.autograd.Function):
     @abstractmethod
@@ -125,7 +128,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
         if len(argnums) == 0:
 
-            def fused_fwd_bwd(input_chunk, target_chunk, ref_input_chunk, chosen_nll_target_chunk):
+            def fused_fwd_bwd_fallback(input_chunk, target_chunk, ref_input_chunk, chosen_nll_target_chunk):
                 """
                 Forward pass only when no gradients are required.
                 """
@@ -149,7 +152,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                 return (), (loss, aux)
         else:
 
-            def fused_fwd_bwd(input_chunk, target_chunk, ref_input_chunk, chosen_nll_target_chunk):
+            def fused_fwd_bwd_fallback(input_chunk, target_chunk, ref_input_chunk, chosen_nll_target_chunk):
                 """
                 Fused forward and backward pass for a chunk of input and target.
                 """
@@ -170,6 +173,217 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                         ref_input_chunk=ref_input_chunk,
                         chosen_nll_target_chunk=chosen_nll_target_chunk,
                     )
+
+        def fused_fwd_bwd_triton(input_chunk, target_chunk, ref_input_chunk=None, chosen_nll_target_chunk=None):
+            chunk_bs, seq_len, H = input_chunk.shape
+            len_chosen_chunk = chunk_bs // 2
+            V = weight.shape[0]
+
+            flat_input = input_chunk.reshape(-1, H)
+            flat_target = target_chunk.reshape(-1)
+
+            # Compute logits: [chunk_bs * seq_len, V]
+            logits_chunk = flat_input @ weight.t()
+            if bias is not None:
+                logits_chunk.add_(bias)
+
+            # Compute chosen and rejected logits mean
+            chosen_logits_sum = logits_chunk[: len_chosen_chunk * seq_len].sum()
+            rejected_logits_sum = logits_chunk[len_chosen_chunk * seq_len :].sum()
+            denom_logits_mean = target.shape[0] // 2 * seq_len * V
+            chosen_logits_mean = chosen_logits_sum / denom_logits_mean
+            rejected_logits_mean = rejected_logits_sum / denom_logits_mean
+
+            # Reference model log probabilities
+            nonlocal loss_kwargs
+            current_loss_kwargs = dict(loss_kwargs)
+            if use_ref_model:
+                with torch.no_grad():
+                    ref_flat_input = ref_input_chunk.reshape(-1, ref_input_chunk.shape[-1])
+                    ref_logits_chunk = ref_flat_input @ ref_weight.t()
+                    if ref_bias is not None:
+                        ref_logits_chunk.add_(ref_bias)
+                    ref_logprobs = selective_logprob_forward(
+                        ref_logits_chunk,
+                        flat_target,
+                        bias=None,
+                        ignore_index=ignore_index,
+                    )
+                    ref_logprobs = ref_logprobs.reshape(chunk_bs, seq_len)
+                    ref_mask = target_chunk != ignore_index
+                    if average_log_prob:
+                        ref_denom = ref_mask.sum(-1).clamp(min=1)
+                        ref_log_prob = (ref_logprobs * ref_mask).sum(-1) / ref_denom
+                    else:
+                        ref_log_prob = (ref_logprobs * ref_mask).sum(-1)
+                    current_loss_kwargs["ref_chosen_logps"] = ref_log_prob[:len_chosen_chunk]
+                    current_loss_kwargs["ref_rejected_logps"] = ref_log_prob[len_chosen_chunk:]
+
+            # Policy model log probabilities
+            logprobs = selective_logprob_forward(
+                logits_chunk,
+                flat_target,
+                bias=None,
+                ignore_index=ignore_index,
+            )
+            logprobs = logprobs.reshape(chunk_bs, seq_len)
+            loss_mask = target_chunk != ignore_index
+
+            if average_log_prob:
+                denom = loss_mask.sum(-1).clamp(min=1)
+                logps = (logprobs * loss_mask).sum(-1) / denom
+            else:
+                denom = None
+                logps = (logprobs * loss_mask).sum(-1)
+
+            chosen_logps = logps[:len_chosen_chunk]
+            rejected_logps = logps[len_chosen_chunk:]
+
+            # Compute NLL loss
+            chosen_nll_loss = torch.zeros((), device=_input.device, dtype=torch.float32)
+            if compute_nll_loss:
+                nll_labels = (
+                    chosen_nll_target_chunk if chosen_nll_target_chunk is not None else target_chunk[:len_chosen_chunk]
+                )
+                nll_mask = nll_labels != ignore_index
+                if chosen_nll_target_chunk is None or torch.equal(
+                    chosen_nll_target_chunk, target_chunk[:len_chosen_chunk]
+                ):
+                    chosen_nll_sum = -(logprobs[:len_chosen_chunk] * nll_mask).sum()
+                else:
+                    nll_flat_logits = logits_chunk[: len_chosen_chunk * seq_len]
+                    nll_flat_target = nll_labels.reshape(-1)
+                    nll_lp = selective_logprob_forward(
+                        nll_flat_logits,
+                        nll_flat_target,
+                        bias=None,
+                        ignore_index=ignore_index,
+                    )
+                    chosen_nll_sum = -(nll_lp.reshape(len_chosen_chunk, seq_len) * nll_mask).sum()
+
+                if nll_target is not None:
+                    nll_denom = (nll_target[: nll_target.shape[0] // 2] != ignore_index).sum()
+                else:
+                    nll_denom = (target[: target.shape[0] // 2] != ignore_index).sum()
+                chosen_nll_loss = chosen_nll_sum / nll_denom
+
+            # Preference loss
+            requires_grads = len(argnums) > 0
+            if requires_grads:
+                with torch.enable_grad():
+                    chosen_logps_leaf = chosen_logps.detach().requires_grad_(True)
+                    rejected_logps_leaf = rejected_logps.detach().requires_grad_(True)
+
+                    preference_loss_outputs = cls.preference_loss_fn(
+                        chosen_logps_leaf,
+                        rejected_logps_leaf,
+                        target,
+                        beta=beta,
+                        **current_loss_kwargs,
+                    )
+                    if isinstance(preference_loss_outputs, tuple):
+                        preference_loss, *aux_outputs = preference_loss_outputs
+                    else:
+                        preference_loss, aux_outputs = preference_loss_outputs, []
+
+                    chunk_loss = alpha * chosen_nll_loss + preference_loss
+
+                    # Backward pass w.r.t. chosen_logps and rejected_logps
+                    grad_chosen_logps, grad_rejected_logps = torch.autograd.grad(
+                        preference_loss,
+                        (chosen_logps_leaf, rejected_logps_leaf),
+                        retain_graph=False,
+                        allow_unused=True,
+                    )
+                if grad_chosen_logps is None:
+                    grad_chosen_logps = torch.zeros_like(chosen_logps_leaf)
+                if grad_rejected_logps is None:
+                    grad_rejected_logps = torch.zeros_like(rejected_logps_leaf)
+            else:
+                preference_loss_outputs = cls.preference_loss_fn(
+                    chosen_logps,
+                    rejected_logps,
+                    target,
+                    beta=beta,
+                    **current_loss_kwargs,
+                )
+                if isinstance(preference_loss_outputs, tuple):
+                    preference_loss, *aux_outputs = preference_loss_outputs
+                else:
+                    preference_loss, aux_outputs = preference_loss_outputs, []
+
+                chunk_loss = alpha * chosen_nll_loss + preference_loss
+
+                return (), (
+                    chunk_loss.detach(),
+                    (
+                        chosen_logps.detach(),
+                        rejected_logps.detach(),
+                        chosen_logits_mean.detach(),
+                        rejected_logits_mean.detach(),
+                        chosen_nll_loss.detach(),
+                        *[a.detach() if torch.is_tensor(a) else a for a in aux_outputs],
+                    ),
+                )
+
+            # Assemble per-token grad_logprobs
+            grad_logprobs = torch.zeros((chunk_bs, seq_len), device=_input.device, dtype=torch.float32)
+            if average_log_prob:
+                grad_logprobs[:len_chosen_chunk] = (grad_chosen_logps / denom[:len_chosen_chunk]).unsqueeze(
+                    -1
+                ) * loss_mask[:len_chosen_chunk]
+                grad_logprobs[len_chosen_chunk:] = (grad_rejected_logps / denom[len_chosen_chunk:]).unsqueeze(
+                    -1
+                ) * loss_mask[len_chosen_chunk:]
+            else:
+                grad_logprobs[:len_chosen_chunk] = grad_chosen_logps.unsqueeze(-1) * loss_mask[:len_chosen_chunk]
+                grad_logprobs[len_chosen_chunk:] = grad_rejected_logps.unsqueeze(-1) * loss_mask[len_chosen_chunk:]
+
+            if compute_nll_loss and alpha != 0.0:
+                grad_logprobs[:len_chosen_chunk] -= (alpha / nll_denom) * nll_mask
+
+            # Overwrite logits_chunk with grad_logits in-place using Triton
+            selective_logprob_backward(
+                logits_chunk,
+                flat_target,
+                grad_logprobs.reshape(-1),
+                bias=None,
+                ignore_index=ignore_index,
+            )
+
+            # Compute gradients w.r.t. inputs, weights, and bias
+            grad_map = {}
+            if input_requires_grad:
+                chunk_grad_input = (logits_chunk @ weight).reshape(chunk_bs, seq_len, H)
+                grad_map[0] = chunk_grad_input
+            if weight_requires_grad:
+                chunk_grad_weight = logits_chunk.t() @ flat_input
+                grad_map[1] = chunk_grad_weight
+            if bias_requires_grad:
+                chunk_grad_bias = logits_chunk.sum(dim=0)
+                grad_map[3] = chunk_grad_bias
+
+            grads = tuple(grad_map[i] for i in argnums)
+            aux_tuple = (
+                chosen_logps.detach(),
+                rejected_logps.detach(),
+                chosen_logits_mean.detach(),
+                rejected_logits_mean.detach(),
+                chosen_nll_loss.detach(),
+                *[a.detach() if torch.is_tensor(a) else a for a in aux_outputs],
+            )
+            return grads, (chunk_loss.detach(), aux_tuple)
+
+        # Dispatch
+        use_triton = _input.device.type in ("cuda", "xpu") and (
+            nll_target is None or torch.equal(nll_target[: target.shape[0] // 2], target[: target.shape[0] // 2])
+        )
+        if use_triton:
+            fused_fwd_bwd = fused_fwd_bwd_triton
+        else:
+            fused_fwd_bwd = fused_fwd_bwd_fallback
+            if compiled:
+                fused_fwd_bwd = torch.compile(fused_fwd_bwd)
 
         def accumulate_chunk(input_chunk, target_chunk, ref_input_chunk=None, chosen_nll_target_chunk=None):
             (
@@ -226,9 +440,6 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                     aggregated_aux_outputs[i].add_(aux)
                 else:
                     aggregated_aux_outputs[i].append(aux)
-
-        if compiled:
-            fused_fwd_bwd = torch.compile(fused_fwd_bwd)
 
         len_chosen = target.shape[0] // 2
         chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
