@@ -150,6 +150,114 @@ def test_functional_correctness(bsz, seq_len, num_q_heads, num_kv_heads, head_di
     assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol)
 
 
+def _explicit_freqs(bsz, seq_len, head_dim, device):
+    """(batch, seq, head_dim/2) complex angles that differ per batch.
+
+    HF's rotary embedding derives them from position_ids, and the existing
+    tests expand one position-id range across every batch — which makes each
+    batch's angles identical and hides a batch-indexing bug.
+    """
+    angles = torch.zeros((bsz, seq_len, head_dim // 2), dtype=torch.complex64, device=device)
+    for b in range(bsz):
+        angles[b] = torch.exp(1j * torch.tensor(0.1 * (b + 1), device=device))
+    return angles
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, num_q_heads, num_kv_heads, head_dim",
+    [(2, 4, 2, 2, 32), (3, 5, 4, 2, 16), (4, 6, 2, 2, 8)],
+)
+def test_per_batch_freqs_are_not_collapsed_to_batch_zero(bsz, seq_len, num_q_heads, num_kv_heads, head_dim):
+    """Each batch rotates by its own frequencies.
+
+    freqs_cis arrives as (batch, seq, dim) with distinct per-batch angles, as
+    HF produces from per-row position_ids. Flattening that to (-1, dim) and
+    slicing to seq_len drops every batch but the first, so batches b >= 1 were
+    silently rotated by batch 0's angles.
+    """
+    q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device, dtype=torch.float32)
+    k = torch.randn((bsz, seq_len, num_kv_heads, head_dim), device=device, dtype=torch.float32)
+    freqs_cis = _explicit_freqs(bsz, seq_len, head_dim, device)
+
+    got_q, got_k = LigerLlama4RopeFunction.apply(q, k, freqs_cis)
+
+    def reference(x):
+        xc = torch.view_as_complex(x.reshape(bsz, seq_len, x.shape[2], -1, 2))
+        return torch.view_as_real(xc * freqs_cis.unsqueeze(2)).flatten(-2)
+
+    assert torch.allclose(got_q, reference(q), atol=1e-5, rtol=1e-5)
+    assert torch.allclose(got_k, reference(k), atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, num_q_heads, num_kv_heads, head_dim",
+    [(2, 4, 2, 2, 32), (1, 3, 2, 2, 16)],
+)
+def test_forward_does_not_mutate_inputs(bsz, seq_len, num_q_heads, num_kv_heads, head_dim):
+    """Applying RoPE must leave the caller's q/k untouched.
+
+    The kernel writes its rotated values into the buffers it is given. For an
+    already-fp32 contiguous input, both the dtype cast and `.contiguous()` in
+    `_cast_and_contiguous` are no-ops, so the caller's own tensors were
+    rotated in place.
+    """
+    q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device, dtype=torch.float32)
+    k = torch.randn((bsz, seq_len, num_kv_heads, head_dim), device=device, dtype=torch.float32)
+    q_before, k_before = q.clone(), k.clone()
+    freqs_cis = _explicit_freqs(bsz, seq_len, head_dim, device)
+
+    LigerLlama4RopeFunction.apply(q, k, freqs_cis)
+
+    assert torch.equal(q, q_before), "forward mutated its q input in place"
+    assert torch.equal(k, k_before), "forward mutated its k input in place"
+
+
+def test_backward_rotates_gradients_per_batch_and_leaves_them_intact():
+    """The backward pass rotates dq/dk by each batch's own conjugate angles.
+
+    Backward runs the same forward helper with imag_sign=-1; the batch axis
+    and the no-in-place guarantee must hold there too.
+    """
+    bsz, seq_len, num_q_heads, num_kv_heads, head_dim = 2, 4, 2, 2, 32
+    q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device, dtype=torch.float32)
+    k = torch.randn((bsz, seq_len, num_kv_heads, head_dim), device=device, dtype=torch.float32)
+    freqs_cis = _explicit_freqs(bsz, seq_len, head_dim, device)
+
+    q_out, k_out = LigerLlama4RopeFunction.apply(q, k, freqs_cis)
+    dq = torch.randn_like(q_out)
+    dk = torch.randn_like(k_out)
+    dq_before, dk_before = dq.clone(), dk.clone()
+
+    grad_q, grad_k = torch.autograd.grad((q_out, k_out), (q, k), (dq, dk))
+
+    def conjugated(x):
+        xc = torch.view_as_complex(x.reshape(bsz, seq_len, x.shape[2], -1, 2))
+        return torch.view_as_real(xc * freqs_cis.conj().unsqueeze(2)).flatten(-2)
+
+    assert torch.allclose(grad_q, conjugated(dq), atol=1e-5, rtol=1e-5)
+    assert torch.allclose(grad_k, conjugated(dk), atol=1e-5, rtol=1e-5)
+    assert torch.equal(dq, dq_before), "backward mutated its dq input in place"
+    assert torch.equal(dk, dk_before), "backward mutated its dk input in place"
+
+
+def test_shared_seq_freqs_still_apply_to_every_batch():
+    """A (seq, dim) table without a batch axis keeps working for batch > 1.
+
+    Only tensors whose leading dimension *is* the batch get the batch axis;
+    a shared table must keep rotating every batch by the same angles.
+    """
+    bsz, seq_len, num_q_heads, num_kv_heads, head_dim = 3, 5, 2, 2, 16
+    q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device, dtype=torch.float32)
+    k = torch.randn((bsz, seq_len, num_kv_heads, head_dim), device=device, dtype=torch.float32)
+    freqs_cis = _explicit_freqs(1, seq_len, head_dim, device)[0]
+
+    got_q, _ = LigerLlama4RopeFunction.apply(q, k, freqs_cis)
+
+    xc = torch.view_as_complex(q.reshape(bsz, seq_len, num_q_heads, -1, 2))
+    expected = torch.view_as_real(xc * freqs_cis.unsqueeze(0).unsqueeze(2)).flatten(-2)
+    assert torch.allclose(got_q, expected, atol=1e-5, rtol=1e-5)
+
+
 # The kernel indexes the flattened batch*seq dimension as
 # `base_offset * q_row_stride`, whose largest value is
 # `(bsz * seq_len - 1) * n_q_heads * head_dim`. That product is one row short of
