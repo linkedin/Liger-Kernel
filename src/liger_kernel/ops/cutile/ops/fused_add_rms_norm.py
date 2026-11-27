@@ -572,13 +572,13 @@ def _fused_add_rms_norm_backward_ct(dY, dS_out, S, W, RSTD, offset, casting_mode
 class LigerFusedAddRMSNormFunction(torch.autograd.Function):
     """CuTile autograd wrapper for fused residual-add + RMSNorm.
 
-    Signature-compatible with the Triton LigerFusedAddRMSNormFunction. in_place is accepted
-    for parity but ignored (this backend always writes fresh output buffers).
+    Signature-compatible with the Triton LigerFusedAddRMSNormFunction. in_place and row_mode are
+    accepted for parity but ignored (this backend always writes fresh output buffers).
     """
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False):
+    def forward(ctx, X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False, row_mode=None):
         Y, S, RSTD, BLOCK_SIZE, casting_mode_int = _fused_add_rms_norm_forward_ct(X, R, W, eps, offset, casting_mode)
         ctx.offset = offset
         ctx.casting_mode = casting_mode_int
@@ -593,4 +593,4 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
         dX, dR, dW = _fused_add_rms_norm_backward_ct(
             dY, dS_out, S, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE
         )
-        return dX, dR, dW, None, None, None, None
+        return dX, dR, dW, None, None, None, None, None
