@@ -3,6 +3,8 @@ import torch
 
 from test.utils import supports_bfloat16
 
+from liger_kernel.ops.group_norm import group_norm_backward
+from liger_kernel.ops.group_norm import group_norm_forward
 from liger_kernel.transformers.group_norm import LigerGroupNorm
 from liger_kernel.utils import infer_device
 
@@ -109,3 +111,31 @@ def test_liger_group_norm_low_precision_statistics(shape, num_groups, offset, dt
 
     assert torch.isfinite(liger_output).all()
     assert torch.allclose(liger_output.float(), torch_output, atol=atol, rtol=rtol)
+
+
+_REQUIRES_LARGE_GPU = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_memory < 12 * 1024**3,
+    reason="needs a GPU with at least 12 GiB to cross the 2^31 element offset",
+)
+
+
+@_REQUIRES_LARGE_GPU
+def test_group_norm_large_batch_int64_offsets():
+    # 65 samples each with 2^25 elements: sample 64 starts at 2^31 elements,
+    # which wrapped to a negative offset when batch_idx was int32.
+    torch.manual_seed(0)
+    N, C, G, H, W = 65, 512, 32, 256, 256
+    x0 = torch.randint(-3, 4, (C, H, W), device=device, dtype=torch.int8)
+    X = x0.expand(N, C, H, W).contiguous()
+    w = torch.randn(C, device=device, dtype=torch.bfloat16)
+    b = torch.randn(C, device=device, dtype=torch.bfloat16)
+
+    Y, _, _, _, _ = group_norm_forward(X, C, G, w, b, 1e-6)
+    torch.cuda.synchronize()
+    assert all(torch.equal(Y[i], Y[0]) for i in range(1, N))
+
+    Mean = torch.zeros(N, G, device=device, dtype=torch.int8)
+    RSTD = torch.ones(N, G, device=device, dtype=torch.int8)
+    DX, _, _ = group_norm_backward(X, X, w, b, Mean, RSTD, C, G)
+    torch.cuda.synchronize()
+    assert all(torch.equal(DX[i], DX[0]) for i in range(1, N))
