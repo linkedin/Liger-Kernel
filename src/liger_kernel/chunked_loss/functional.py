@@ -2,6 +2,7 @@ from liger_kernel.chunked_loss.cosine_similarity_loss import LigerFusedLinearCos
 from liger_kernel.chunked_loss.cpo_loss import LigerFusedLinearCPOFunction
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 from liger_kernel.chunked_loss.grpo_loss import LigerFusedLinearGRPOFunction
+from liger_kernel.chunked_loss.irpo_loss import LigerFusedLinearIRPOFunction
 from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
 from liger_kernel.chunked_loss.kto_loss import LigerFusedLinearKTOFunction
 from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
@@ -15,3 +16,4 @@ liger_fused_linear_cpo = LigerFusedLinearCPOFunction.apply
 liger_fused_linear_simpo = LigerFusedLinearSimPOFunction.apply
 liger_fused_linear_kto = LigerFusedLinearKTOFunction.apply
 liger_fused_linear_grpo = LigerFusedLinearGRPOFunction.apply
+liger_fused_linear_irpo = LigerFusedLinearIRPOFunction.apply
