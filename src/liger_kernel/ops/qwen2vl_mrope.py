@@ -42,12 +42,16 @@ def _triton_qwen2vl_mrope(
     t_end = mrope_section_t
     h_end = t_end + mrope_section_h
 
+    # One cos/sin section is bs * sl * hd elements; past 2^31 this overflows int32.
+    # tl.cast is used because sl can be specialized to a constexpr of 1.
+    section = bs * tl.cast(sl, tl.int64) * hd
+
     t_cos = cos + pid * hd
-    h_cos = t_cos + bs * sl * hd
-    w_cos = h_cos + bs * sl * hd
+    h_cos = t_cos + section
+    w_cos = h_cos + section
     t_sin = sin + pid * hd
-    h_sin = t_sin + bs * sl * hd
-    w_sin = h_sin + bs * sl * hd
+    h_sin = t_sin + section
+    w_sin = h_sin + section
 
     cos_offsets = tl.arange(0, pad_hd // 2)
     t_mask = cos_offsets < t_end
