@@ -88,6 +88,9 @@ def fused_linear_cross_entropy_forward(
     # before that gradient is summed into grad_weight/grad_bias.
     input_requires_grad = _input.requires_grad if compute_gradients is None else compute_gradients
     weight_needs_grad = weight.requires_grad if weight_requires_grad is None else weight_requires_grad
+    if compute_gradients is None:
+        # Frozen activations can still feed a trainable output head.
+        compute_gradients = input_requires_grad or weight_needs_grad or (bias is not None and bias.requires_grad)
 
     # inputs have shape: BT x H
     # materialized activations will have shape: BT x V
@@ -111,7 +114,7 @@ def fused_linear_cross_entropy_forward(
     # with accum_dtype=None they inherit the parameter dtype (e.g. bf16/fp16), and only
     # take accum_dtype when one is explicitly requested. The weight-grad projection below
     # therefore has a dtype-matched low-precision path in addition to the fp32 fast path.
-    if input_requires_grad:
+    if compute_gradients:
         if accum_dtype is None:
             grad_weight = torch.zeros_like(weight, device=device) if weight_needs_grad else None
             grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
@@ -243,7 +246,7 @@ def fused_linear_cross_entropy_forward(
                 RETURN_PREDICTED_TOKENS=return_predicted_tokens,
                 HAS_WEIGHT=ce_weight is not None,
                 HAS_SOFTCAPPING=softcap is not None,
-                HAS_GRADIENTS=input_requires_grad,
+                HAS_GRADIENTS=compute_gradients,
                 BLOCK_SIZE=block_size,
                 num_warps=32 if not is_hip() else 16,
             )
@@ -264,7 +267,7 @@ def fused_linear_cross_entropy_forward(
                 return_z_loss,
                 return_token_accuracy,
                 return_predicted_tokens,
-                input_requires_grad,
+                compute_gradients,
             )
             (
                 loss_1d_slice,
@@ -321,7 +324,7 @@ def fused_linear_cross_entropy_forward(
             else:
                 grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
-        if grad_weight is not None and input_requires_grad:
+        if grad_weight is not None:
             grad_logits_t = grad_logits_chunk.t()
             if (
                 _ADDMM_SUPPORTS_OUT_DTYPE
@@ -375,7 +378,7 @@ def fused_linear_cross_entropy_forward(
                 grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
             del grad_logits_t
 
-        if bias is not None and input_requires_grad:
+        if grad_bias is not None:
             torch.add(
                 input=grad_bias,
                 other=grad_logits_chunk.sum(dim=0),
