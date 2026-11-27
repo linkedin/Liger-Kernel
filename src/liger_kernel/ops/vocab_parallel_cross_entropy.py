@@ -300,15 +300,20 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
                 alpha_eff = label_smoothing
             eps_eff = alpha_eff / v_for_K
 
-            # log_softmax_i = log(exp_i / sum_exp_global) = log(exp_i) - log(sum_exp_global)
-            log_probs_local = torch.log(exp_buf) - torch.log(sum_exp_local).unsqueeze(-1)
+            # log_softmax_i = logits_i - max_logit - log(sum_exp_global).
+            # exp_buf holds exp(logits_i - max_logit), which underflows to zero for
+            # large negative logits; taking log(exp_buf) would turn a finite log
+            # probability into -inf and the smoothed loss into +inf. Summing the
+            # original logits with an fp32 accumulator keeps it finite without
+            # materializing a full fp32 copy of the logits.
+            sum_logits = x_2d.sum(dim=-1, dtype=torch.float32)
             if label_smoothing_mode == "global":
-                sum_log_probs = log_probs_local.sum(dim=-1)
                 if tp_distributed:
-                    dist.all_reduce(sum_log_probs, op=dist.ReduceOp.SUM, group=tp_group)
-                mean_log_probs = sum_log_probs / v_for_K
+                    dist.all_reduce(sum_logits, op=dist.ReduceOp.SUM, group=tp_group)
+                mean_log_probs = sum_logits / v_for_K
             else:  # "partition"
-                mean_log_probs = log_probs_local.mean(dim=-1)
+                mean_log_probs = sum_logits / v_local
+            mean_log_probs = mean_log_probs - logits_max.reshape(-1) - torch.log(sum_exp_local)
 
             loss = (1.0 - alpha_eff) * loss + alpha_eff * (-mean_log_probs)
         else:
