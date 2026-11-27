@@ -54,6 +54,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         vespo_lambda_pos: float = 3.0,
         vespo_k_neg: float = 3.0,
         vespo_lambda_neg: float = 2.0,
+        off_policy_mask_threshold: float | None = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -74,8 +75,20 @@ class TorchLMHeadGRPO(torch.nn.Module):
         self.vespo_lambda_pos = vespo_lambda_pos
         self.vespo_k_neg = vespo_k_neg
         self.vespo_lambda_neg = vespo_lambda_neg
+        self.off_policy_mask_threshold = off_policy_mask_threshold
         if self.loss_type == "dr_grpo":
             assert self.max_completion_length is not None, "max_completion_length must be provided for dr_grpo"
+
+    @staticmethod
+    def get_off_policy_mask(advantages, per_token_logps, sampling_per_token_logps, mask, off_policy_threshold):
+        # TRL reference: GRPOTrainer.get_off_policy_mask (DeepSeek-V3.2 Eq. 9). (B, 1): 1 keep, 0 drop.
+        kl_div = sampling_per_token_logps - per_token_logps.detach()
+        kl_div = torch.nan_to_num(kl_div, nan=0.0)
+        seq_kl_sum = (kl_div * mask).sum(dim=1, keepdim=True)
+        avg_seq_kl = seq_kl_sum / mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        is_pos_adv = advantages.unsqueeze(1) >= 0
+        is_low_kl = avg_seq_kl <= off_policy_threshold
+        return (is_pos_adv | is_low_kl).to(dtype=mask.dtype)
 
     @staticmethod
     def compute_per_token_components(
@@ -98,6 +111,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         vespo_lambda_pos: float = 3.0,
         vespo_k_neg: float = 3.0,
         vespo_lambda_neg: float = 2.0,
+        off_policy_mask_threshold=None,
+        sampling_per_token_logps=None,
     ):
         attention_mask = attention_mask.to(per_token_logps.dtype)
         old_per_token_logps = (
@@ -177,6 +192,14 @@ class TorchLMHeadGRPO(torch.nn.Module):
             per_token_loss2 = coef_2 * expanded_advantages
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
 
+        # TRL: Off-Policy Sequence Masking is applied to the policy term before the vLLM IS correction and the KL.
+        if off_policy_mask_threshold is not None:
+            sampling = sampling_per_token_logps.float() if sampling_per_token_logps is not None else old_per_token_logps
+            off_policy_mask = TorchLMHeadGRPO.get_off_policy_mask(
+                advantages, per_token_logps, sampling, attention_mask, off_policy_mask_threshold
+            )
+            per_token_loss = per_token_loss * off_policy_mask
+
         # Apply vLLM importance sampling correction BEFORE KL penalty.
         # VESPO folds this into phi_seq in log space, so we skip it here.
         if vllm_is_ratio is not None and loss_type != "vespo":
@@ -210,6 +233,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         old_per_token_logps=None,
         ref_input=None,  # Shape: [batch_size, seq_len, hidden_size]
         vllm_is_ratio=None,  # Shape: [batch_size, seq_len] or None
+        sampling_per_token_logps=None,  # Shape: [batch_size, seq_len] or None
     ):
         logits = x @ self.lin.weight.t()
         if self.lin.bias is not None:
@@ -258,6 +282,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
             vespo_lambda_pos=self.vespo_lambda_pos,
             vespo_k_neg=self.vespo_k_neg,
             vespo_lambda_neg=self.vespo_lambda_neg,
+            off_policy_mask_threshold=self.off_policy_mask_threshold,
+            sampling_per_token_logps=sampling_per_token_logps,
         )
 
         # Apply masking and calculate loss based on loss_type
@@ -313,6 +339,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         vespo_lambda_pos: float = 3.0,
         vespo_k_neg: float = 3.0,
         vespo_lambda_neg: float = 2.0,
+        off_policy_mask_threshold: float | None = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -335,6 +362,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
             vespo_lambda_pos=vespo_lambda_pos,
             vespo_k_neg=vespo_k_neg,
             vespo_lambda_neg=vespo_lambda_neg,
+            off_policy_mask_threshold=off_policy_mask_threshold,
         )
 
     def forward(
@@ -348,6 +376,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         ref_input=None,
         vllm_is_ratio=None,
         num_items_in_batch=None,
+        sampling_per_token_logps=None,
     ):
         return self.grpo_loss(
             x,  # _input
@@ -363,6 +392,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
             self.ref_lin.bias,  # ref_bias
             vllm_is_ratio=vllm_is_ratio,
             num_items_in_batch=num_items_in_batch,
+            sampling_per_token_logps=sampling_per_token_logps,
         )
 
 
@@ -802,6 +832,267 @@ def test_correctness_with_vllm_is_ratio(loss_type, beta):
     loss3.backward()
     loss4.backward()
     assert_verbose_allclose(input3.grad, input4.grad, atol=1e-5, rtol=1e-5)
+
+
+def _make_off_policy_inputs(B, T, H, V, dtype, weight, explicit_sampling_logps):
+    """Inputs where OPSM is non-trivial: some negative-advantage sequences drift (dropped), others do not (kept).
+
+    Returns (input, selected_token_ids, attention_mask, advantages, old_per_token_logps, sampling_per_token_logps).
+    The sequence-level KL used by OPSM is ``mean(sampling_logps - per_token_logps)``, so the drift is injected as a
+    per-sequence constant shift of the sampler's log probs relative to the current policy's.
+    """
+    assert B >= 4
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[:, -3:] = 0
+    attention_mask[1, : T // 4] = 0
+
+    with torch.no_grad():
+        logits = _input @ weight.t()
+        per_token_logps = F.log_softmax(logits.float(), dim=-1).gather(-1, selected_token_ids.unsqueeze(-1)).squeeze(-1)
+
+    # Advantages: alternate signs so both branches of (adv >= 0) | (kl <= threshold) are exercised.
+    advantages = torch.randn(B, device=device, dtype=dtype).abs() + 0.1
+    advantages[0::2] = -advantages[0::2]  # even rows negative, odd rows positive
+
+    # Drift: rows 0 (neg adv) and 1 (pos adv) drift by +0.5 (mean KL 0.5 > threshold 0.2);
+    # rows 2 (neg adv) and 3 (pos adv) stay close to on-policy. Rows >= 4 drift only slightly.
+    shift = torch.zeros(B, 1, device=device)
+    shift[0] = 0.5
+    shift[1] = 0.5
+    noise = torch.randn(B, T, device=device) * 0.01
+    drifted_logps = per_token_logps + shift + noise
+
+    if explicit_sampling_logps:
+        # Sampler (vLLM) logps carry the drift; old logps are near on-policy. Include a NaN (unscorable token) on a
+        # valid position to exercise nan_to_num handling, as TRL does.
+        sampling_per_token_logps = drifted_logps.clone()
+        sampling_per_token_logps[2, 1] = float("nan")
+        old_per_token_logps = per_token_logps + torch.randn(B, T, device=device) * 0.01
+    else:
+        # No sampler logps: OPSM falls back to old_per_token_logps, which carry the drift.
+        sampling_per_token_logps = None
+        old_per_token_logps = drifted_logps
+
+    return _input, selected_token_ids, attention_mask, advantages, old_per_token_logps, sampling_per_token_logps
+
+
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dapo", "cispo", "sapo", "luspo", "vespo"])
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+@pytest.mark.parametrize("beta", [0.0, 0.04])
+@pytest.mark.parametrize("explicit_sampling_logps", [True, False])
+def test_correctness_with_off_policy_mask(loss_type, importance_sampling_level, beta, explicit_sampling_logps):
+    """Off-Policy Sequence Masking (DeepSeek-V3.2 Eq. 9, TRL ``off_policy_mask_threshold``) matches the torch
+    reference for loss, metrics and gradients, with a mask that drops some sequences and keeps others."""
+    if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo", "vespo"):
+        pytest.skip(f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'")
+    if importance_sampling_level == "token" and loss_type == "luspo":
+        pytest.skip("Token-level importance sampling is not supported for loss_type='luspo'")
+    torch.compiler.reset()
+    set_seed(42)
+    B, T, H, V = 6, 32, 64, 128
+    dtype = torch.float32
+    atol, rtol = 1e-5, 5e-4
+    threshold = 0.2
+
+    _weight = torch.randn(V, H, device=device, dtype=dtype)
+    _input, selected_token_ids, attention_mask, advantages, old_logps, sampling_logps = _make_off_policy_inputs(
+        B, T, H, V, dtype, _weight, explicit_sampling_logps
+    )
+    ref_per_token_logps = old_logps + torch.randn(B, T, device=device) * 0.01 if beta != 0.0 else None
+
+    # Guard against a vacuous test: the reference mask must drop at least one sequence and keep at least one.
+    with torch.no_grad():
+        logits = _input @ _weight.t()
+        per_token_logps = F.log_softmax(logits, dim=-1).gather(-1, selected_token_ids.unsqueeze(-1)).squeeze(-1)
+        ref_mask = TorchLMHeadGRPO.get_off_policy_mask(
+            advantages,
+            per_token_logps,
+            sampling_logps if sampling_logps is not None else old_logps,
+            attention_mask,
+            threshold,
+        )
+    assert ref_mask.shape == (B, 1)
+    assert ref_mask[0] == 0.0, "negative-advantage drifted sequence must be dropped"
+    assert ref_mask[1] == 1.0, "positive-advantage drifted sequence must be kept"
+    assert ref_mask[2] == 1.0, "negative-advantage on-policy sequence must be kept"
+    assert 0 < ref_mask.sum() < B
+
+    common = dict(
+        H=H,
+        V=V,
+        dtype=dtype,
+        beta=beta,
+        loss_type=loss_type,
+        importance_sampling_level=importance_sampling_level,
+        use_ref_model=beta != 0.0,
+        off_policy_mask_threshold=threshold,
+    )
+    torch_lm = TorchLMHeadGRPO(**common)
+    liger_lm = LigerLMHeadGRPO(**common)
+    torch_lm.lin.weight.data = liger_lm.lin.weight.data = _weight.clone()
+
+    input1 = _input.detach().clone().requires_grad_(True)
+    input2 = _input.detach().clone().requires_grad_(True)
+    loss1, aux1 = torch_lm(
+        input1,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        ref_per_token_logps=ref_per_token_logps,
+        old_per_token_logps=old_logps,
+        sampling_per_token_logps=sampling_logps,
+    )
+    loss2, aux2 = liger_lm(
+        input2,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        ref_per_token_logps=ref_per_token_logps,
+        old_per_token_logps=old_logps,
+        sampling_per_token_logps=sampling_logps,
+    )
+
+    assert not torch.isnan(loss1)
+    assert not torch.isnan(loss2)
+    assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+    assert len(aux1) == len(aux2)
+    for m1, m2 in zip(aux1, aux2):
+        assert_verbose_allclose(m1, m2, atol=atol, rtol=rtol)
+
+    loss1.backward()
+    loss2.backward()
+    assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(torch_lm.lin.weight.grad, liger_lm.lin.weight.grad, atol=atol, rtol=rtol)
+
+    # The mask must actually change the result: the unmasked loss differs from the masked one.
+    torch.compiler.reset()
+    liger_unmasked = LigerLMHeadGRPO(**{**common, "off_policy_mask_threshold": None})
+    liger_unmasked.lin.weight.data = _weight.clone()
+    loss3, _ = liger_unmasked(
+        _input.detach().clone().requires_grad_(True),
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        ref_per_token_logps=ref_per_token_logps,
+        old_per_token_logps=old_logps,
+        sampling_per_token_logps=sampling_logps,
+    )
+    if loss_type == "vespo" and not explicit_sampling_logps:
+        # VESPO's phi_seq = exp(lambda + k*log(w) - lambda*w) with w = exp(sum(log_ratio)) already vanishes for a
+        # sequence whose old logps drift by 0.5/token (w ~ exp(-0.5 * n)), so the mask changes nothing measurable.
+        pass
+    else:
+        assert not torch.allclose(loss2, loss3, atol=1e-6, rtol=0.0), "off-policy mask had no effect"
+
+    # The dropped sequence must receive no policy gradient (only the KL term, if any, remains).
+    if beta == 0.0:
+        assert torch.all(input2.grad[0] == 0), "dropped sequence should get zero gradient when beta == 0"
+        assert torch.any(input2.grad[1] != 0)
+
+
+def test_off_policy_mask_is_noop_without_old_or_sampling_logps():
+    """With no old/sampling logps the policy is on-policy (KL == 0), so OPSM keeps every sequence."""
+    torch.compiler.reset()
+    set_seed(0)
+    B, T, H, V = 4, 16, 32, 64
+    _weight = torch.randn(V, H, device=device)
+    _input = torch.randn(B, T, H, device=device)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    advantages = torch.randn(B, device=device)
+    advantages[0] = -advantages[0].abs()
+
+    masked = LigerFusedLinearGRPOLoss(beta=0.0, use_ref_model=False, compiled=False, off_policy_mask_threshold=1e-6)
+    unmasked = LigerFusedLinearGRPOLoss(beta=0.0, use_ref_model=False, compiled=False)
+    input1 = _input.detach().clone().requires_grad_(True)
+    input2 = _input.detach().clone().requires_grad_(True)
+    loss1, _ = masked(input1, _weight, selected_token_ids, attention_mask, advantages)
+    loss2, _ = unmasked(input2, _weight, selected_token_ids, attention_mask, advantages)
+    assert_verbose_allclose(loss1, loss2, atol=1e-6, rtol=1e-6)
+    loss1.backward()
+    loss2.backward()
+    assert_verbose_allclose(input1.grad, input2.grad, atol=1e-6, rtol=1e-6)
+
+
+def test_off_policy_mask_rejects_bad_sampling_logps_shape():
+    B, T, H, V = 2, 8, 16, 32
+    loss_fn = LigerFusedLinearGRPOLoss(beta=0.0, use_ref_model=False, compiled=False, off_policy_mask_threshold=0.1)
+    with pytest.raises(AssertionError, match="sampling_per_token_logps shape"):
+        loss_fn(
+            torch.randn(B, T, H, device=device),
+            torch.randn(V, H, device=device),
+            torch.randint(0, V, (B, T), device=device),
+            torch.ones(B, T, device=device),
+            torch.randn(B, device=device),
+            sampling_per_token_logps=torch.randn(B, T + 1, device=device),
+        )
+
+
+def test_functional_api_positional_opsm_args():
+    """The functional API keeps its positional layout; the OPSM args are trailing optionals."""
+    torch.compiler.reset()
+    set_seed(1)
+    B, T, H, V = 4, 16, 32, 64
+    _weight = torch.randn(V, H, device=device)
+    _input, selected_token_ids, attention_mask, advantages, old_logps, sampling_logps = _make_off_policy_inputs(
+        B, T, H, V, torch.float32, _weight, explicit_sampling_logps=True
+    )
+    threshold = 0.2
+    legacy_positional = (
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        None,  # bias
+        None,  # ref_per_token_logps
+        old_logps,  # old_per_token_logps
+        None,  # ref_input
+        None,  # ref_weight
+        None,  # ref_bias
+        0.0,  # beta
+        0.2,  # epsilon_low
+        0.2,  # epsilon_high
+        "dapo",  # loss_type
+        None,  # max_completion_length
+        "token",  # importance_sampling_level
+        1.0,  # sapo_temperature_pos
+        1.05,  # sapo_temperature_neg
+        1.0,  # temperature
+        False,  # compiled
+        False,  # use_ref_model
+        1,  # chunk_size
+    )
+    # Legacy call (no OPSM args) still works and equals the module with OPSM disabled.
+    input1 = _input.detach().clone().requires_grad_(True)
+    loss_legacy, _ = liger_fused_linear_grpo(input1, _weight, *legacy_positional)
+    module_off = LigerFusedLinearGRPOLoss(beta=0.0, use_ref_model=False, compiled=False, loss_type="dapo")
+    loss_module_off, _ = module_off(
+        _input.detach().clone(), _weight, selected_token_ids, attention_mask, advantages, old_per_token_logps=old_logps
+    )
+    assert_verbose_allclose(loss_legacy, loss_module_off, atol=1e-6, rtol=1e-6)
+
+    # Trailing OPSM args: (vllm_is_ratio, delta, use_bias_correction_kl, vespo x4, num_items_in_batch,
+    # off_policy_mask_threshold, sampling_per_token_logps).
+    input2 = _input.detach().clone().requires_grad_(True)
+    loss_opsm, _ = liger_fused_linear_grpo(
+        input2, _weight, *legacy_positional, None, None, False, 2.0, 3.0, 3.0, 2.0, None, threshold, sampling_logps
+    )
+    module_on = LigerFusedLinearGRPOLoss(
+        beta=0.0, use_ref_model=False, compiled=False, loss_type="dapo", off_policy_mask_threshold=threshold
+    )
+    loss_module_on, _ = module_on(
+        _input.detach().clone(),
+        _weight,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        old_per_token_logps=old_logps,
+        sampling_per_token_logps=sampling_logps,
+    )
+    assert_verbose_allclose(loss_opsm, loss_module_on, atol=1e-6, rtol=1e-6)
+    assert not torch.allclose(loss_opsm, loss_legacy, atol=1e-6, rtol=0.0)
+    loss_opsm.backward()  # backward returns one grad per forward input
 
 
 @pytest.mark.parametrize("loss_type", ["dapo", "cispo", "vespo"])
