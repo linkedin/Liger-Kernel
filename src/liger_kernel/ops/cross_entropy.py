@@ -413,8 +413,15 @@ def cross_entropy_forward(
         if weight.stride(-1) != 1:
             weight = weight.contiguous()
 
-    # ensure _input and target are contiguous in the last dimension
-    if _input.stride(-1) != 1:
+    # Capture requires_grad before .contiguous(), which allocates a copy with
+    # requires_grad=False inside autograd.Function.forward (where grad mode is off).
+    has_gradients = _input.requires_grad
+
+    # Ensure _input and target are contiguous in the last dimension, and materialize
+    # overlapping/broadcasted rows (e.g. expand with stride(-2) == 0) before the
+    # kernel writes gradients in-place into _input. Row-padded slices with
+    # stride(-2) >= V remain zero-copy.
+    if _input.stride(-1) != 1 or (BT > 1 and _input.stride(-2) < V):
         _input = _input.contiguous()
     if target.stride(-1) != 1:
         target = target.contiguous()
@@ -465,7 +472,7 @@ def cross_entropy_forward(
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_WEIGHT=True if weight is not None else False,
         HAS_SOFTCAPPING=True if softcap is not None else False,
-        HAS_GRADIENTS=_input.requires_grad,
+        HAS_GRADIENTS=has_gradients,
         num_warps=ce_num_warps,
     )
 
