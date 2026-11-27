@@ -277,12 +277,16 @@ def _grpo_loss_bwd_ct(
             coef_1_for_loss = coef_1
         per_token_loss1 = coef_1_for_loss * advantage
         per_token_loss2 = coef_2_high * advantage
-        # gradient flows only when unclipped (per_token_loss2 >= per_token_loss1)
+        # gradient flows through the operand -min() selects, when that operand is not clamped
         grad_mask = ct.astype(per_token_loss2 >= per_token_loss1, ct.float32)
-        # Gradient uses original coef_1; zero when delta-clamped (constant → no gradient)
-        dlogp = -coef_1 * advantage * grad_mask
         if delta != 0.0:
-            dlogp = dlogp * ct.astype(coef_1 <= ct.full((), delta, dtype=ct.float32), ct.float32)
+            # When delta < 1 + eps_high, loss2 can be selected while coef_2 is still unclamped.
+            in_delta = ct.astype(coef_1 <= ct.full((), delta, dtype=ct.float32), ct.float32)
+            in_clip = ct.astype(coef_1 >= (1.0 - eps_low), ct.float32) * ct.astype(
+                coef_1 <= (1.0 + eps_high), ct.float32
+            )
+            grad_mask = grad_mask * in_delta + (1.0 - grad_mask) * in_clip
+        dlogp = -coef_1 * advantage * grad_mask
     elif loss_type == 1:  # CISPO
         coef_2 = ct.minimum(coef_1, ct.full((), eps_high, dtype=ct.float32))
         dlogp = -coef_2 * advantage
@@ -739,10 +743,16 @@ def _grpo_loss_bwd_seq_ct(
     else:
         coef_1_for_loss = coef_1_v
     is_unclipped = ct.astype((coef_2 * advantage) >= (coef_1_for_loss * advantage), ct.float32)
+    if delta != 0.0:
+        # The gradient follows the operand -min() selects. When delta < 1 + eps_high,
+        # loss2 can be selected while coef_2 is still unclamped, so it carries a gradient.
+        in_delta = ct.astype(coef_1_v <= ct.full((), delta, dtype=ct.float32), ct.float32)
+        in_clip = ct.astype(coef_1_v >= (1.0 - eps_low), ct.float32) * ct.astype(
+            coef_1_v <= (1.0 + eps_high), ct.float32
+        )
+        is_unclipped = is_unclipped * in_delta + (1.0 - is_unclipped) * in_clip
 
     dlogp = -coef_1_v * advantage / seq_len_v * is_unclipped * dloss_sum
-    if delta != 0.0:
-        dlogp = dlogp * ct.astype(coef_1_v <= ct.full((), delta, dtype=ct.float32), ct.float32)
 
     if beta != 0.0:
         ref_logp = ct.astype(ct.load(ref_logp_input, (off_b, off_l), shape=()), ct.float32)
