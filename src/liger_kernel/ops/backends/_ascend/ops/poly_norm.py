@@ -751,7 +751,7 @@ class LigerPolyNormFunction(torch.autograd.Function):
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, B, eps=1e-6, in_place=True):
+    def forward(ctx, X, W, B, eps=1e-6, in_place=False):
         """
         Args:
             X: input tensor of shape (B, T, H) or (BxT, H)
