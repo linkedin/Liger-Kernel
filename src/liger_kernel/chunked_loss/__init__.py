@@ -1,3 +1,4 @@
+from liger_kernel.chunked_loss.bco_loss import LigerFusedLinearBCOLoss  # noqa: F401
 from liger_kernel.chunked_loss.cosine_similarity_loss import LigerFusedLinearCosineSimilarityLoss  # noqa:F401
 from liger_kernel.chunked_loss.cpo_loss import LigerFusedLinearCPOLoss  # noqa: F401
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOLoss  # noqa: F401
