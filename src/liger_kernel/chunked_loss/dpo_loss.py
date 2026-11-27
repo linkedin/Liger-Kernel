@@ -140,8 +140,8 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             # Eqn (5) of the DiscoPOP paper (https://huggingface.co/papers/2406.08414)
             log_ratio_modulation = torch.sigmoid(logits_diff / discopop_tau)
             logistic_component = -F.logsigmoid(logits_diff)
-            exp_component = torch.exp(-logits_diff)
-            losses = logistic_component * (1 - log_ratio_modulation) + exp_component * log_ratio_modulation
+            exp_component = torch.exp(F.logsigmoid(logits_diff / discopop_tau) - logits_diff)
+            losses = logistic_component * (1 - log_ratio_modulation) + exp_component
             loss = losses.sum() / n_pairs
 
         else:
