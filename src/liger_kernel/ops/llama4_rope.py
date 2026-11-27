@@ -26,6 +26,7 @@ def _llama4_rope_kernel(
     q_head_stride,
     k_head_stride,
     freqs_row_stride,
+    freqs_batch_stride,
     seq_len,
     batch_size,
     imag_sign,
@@ -53,7 +54,10 @@ def _llama4_rope_kernel(
     base_offset = batch_idx * seq_len + seq_idx
     q_base = q_ptr + base_offset * q_row_stride
     k_base = k_ptr + base_offset * k_row_stride
-    freq_base = seq_idx * freqs_row_stride
+    # Per-batch frequencies (as the HF rotary embedding produces) live at
+    # batch_idx * freqs_batch_stride; a shared (seq, dim) table passes a
+    # batch stride of 0, so every batch rotates by the same angles.
+    freq_base = batch_idx * freqs_batch_stride + seq_idx * freqs_row_stride
 
     # Tiling over dim/2
     for d_start in tl.static_range(0, head_dim_half, BLOCK_SIZE):
@@ -113,14 +117,38 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
     batch_size, seq_len, n_q_heads, head_dim = q.shape
     _, _, n_k_heads, _ = k.shape
     head_dim_half = head_dim // 2
+    q_in_ptr, k_in_ptr = q.data_ptr(), k.data_ptr()
+    # HF's Llama4TextRotaryEmbedding returns (batch, seq, dim) frequencies:
+    # position_ids enters the product, so each batch can carry its own angles.
+    # Keep that axis — flattening it and slicing to seq_len silently applied
+    # batch 0's angles to every other batch. A (seq, dim) table (or anything
+    # without a batch axis) stays shared by all batches via batch stride 0.
+    freqs_has_batch = freqs_cis.is_complex() and freqs_cis.dim() == 3 and freqs_cis.shape[0] == batch_size
     if freqs_cis.is_complex():
-        freqs_cis = freqs_cis.reshape(-1, freqs_cis.shape[-1])
-        if freqs_cis.shape[0] > seq_len:
-            freqs_cis = freqs_cis[:seq_len]
+        if freqs_has_batch:
+            freqs_cis = freqs_cis[:, :seq_len]
+        else:
+            freqs_cis = freqs_cis.reshape(-1, freqs_cis.shape[-1])[:seq_len]
         freqs_cis = torch.view_as_real(freqs_cis)
 
-    # Cast to appropriate dtype and make contiguous only when needed
+    # Cast to appropriate dtype and make contiguous only when needed. The
+    # kernel writes its rotated values straight into the buffers it gets, and
+    # both steps above are no-ops for an already-fp32 contiguous input — the
+    # caller's own tensor. Copy first whenever the result would still alias
+    # the input, so applying RoPE never mutates q/k in place.
     q, k, freqs_cis = _cast_and_contiguous(q, k, freqs_cis)
+    if q.dtype == original_dtype and q.data_ptr() == q_in_ptr:
+        q = q.clone()
+    if k.dtype == original_dtype and k.data_ptr() == k_in_ptr:
+        k = k.clone()
+
+    # The kernel addresses frequencies as batch * batch_stride + seq * row_stride.
+    if freqs_has_batch:
+        freqs_batch_stride = freqs_cis.stride(0)
+        freqs_row_stride = freqs_cis.stride(1)
+    else:
+        freqs_batch_stride = 0
+        freqs_row_stride = freqs_cis.stride(0)
 
     # H100-optimized meta-params
     if BLOCK_SIZE is None:
@@ -142,7 +170,8 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
         k.stride(1),
         q.stride(2),
         k.stride(2),
-        freqs_cis.stride(0),
+        freqs_row_stride,
+        freqs_batch_stride,
         seq_len,
         batch_size,
         imag_sign,
