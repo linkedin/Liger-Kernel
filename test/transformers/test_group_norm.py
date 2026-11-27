@@ -109,3 +109,122 @@ def test_liger_group_norm_low_precision_statistics(shape, num_groups, offset, dt
 
     assert torch.isfinite(liger_output).all()
     assert torch.allclose(liger_output.float(), torch_output, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-3, 1e-3),
+        (torch.float16, 2e-3, 2e-3),
+        pytest.param(
+            torch.bfloat16,
+            2e-2,
+            2e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_liger_group_norm_constant_groups_no_nan(dtype, atol, rtol):
+    """Regression test for #1646: constant groups must not produce negative variance / NaN."""
+    torch.manual_seed(0)
+    x1 = torch.full((2, 4, 25, 10), 5.3, device=device, dtype=dtype)
+    liger_gn1 = LigerGroupNorm(4, 2, eps=1e-6, bias=True).to(dtype).to(device)
+    torch_gn1 = torch.nn.GroupNorm(2, 4, eps=1e-6).to(dtype).to(device)
+    with torch.no_grad():
+        torch_gn1.weight.copy_(liger_gn1.weight)
+        torch_gn1.bias.copy_(liger_gn1.bias)
+        y1 = liger_gn1(x1)
+        ref1 = torch_gn1(x1)
+    assert torch.isfinite(y1).all()
+    assert torch.allclose(y1, ref1, atol=atol, rtol=rtol)
+
+    x2_base = (torch.randn(8, 16, 1, 1, device=device, dtype=dtype) * 10).expand(8, 16, 8, 8).contiguous()
+    x2_lig = x2_base.clone().requires_grad_(True)
+    x2_ref = x2_base.clone().float().requires_grad_(True)
+    liger_gn2 = LigerGroupNorm(16, 16, eps=1e-6, bias=True).to(dtype).to(device)
+    torch_gn2 = torch.nn.GroupNorm(16, 16, eps=1e-6).to(torch.float32).to(device)
+    with torch.no_grad():
+        torch_gn2.weight.copy_(liger_gn2.weight.float())
+        torch_gn2.bias.copy_(liger_gn2.bias.float())
+
+    y2 = liger_gn2(x2_lig)
+    ref2 = torch_gn2(x2_ref)
+    assert torch.isfinite(y2).all()
+    assert torch.allclose(y2.float(), ref2, atol=atol, rtol=rtol)
+
+    # Note: low-precision Mean/RSTD storage and backward reductions are tracked separately in #1606 / PR #1608.
+    if dtype == torch.float32:
+        dy = torch.randn_like(ref2)
+        y2.backward(dy)
+        ref2.backward(dy)
+        assert torch.isfinite(x2_lig.grad).all()
+        assert torch.allclose(x2_lig.grad, x2_ref.grad, atol=atol, rtol=rtol)
+
+
+def test_liger_group_norm_large_mean_shift_stability():
+    """Regression test for #1646: |mean| >> std across multi-block groups must stay accurate in fwd and bwd."""
+    torch.manual_seed(0)
+    # hidden_size per group = (16 // 4) * 64 * 64 = 16384 > MAX_FUSED_SIZE_FORWARD (8192),
+    # exercising multi-block Welford merge under a large mean offset.
+    base = torch.randn(2, 16, 64, 64, device=device, dtype=torch.float32) + 1000.0
+    x_lig = base.clone().requires_grad_(True)
+    x_ref = base.clone().requires_grad_(True)
+
+    liger_gn = LigerGroupNorm(16, 4, eps=1e-6, bias=True).to(device)
+    torch_gn = torch.nn.GroupNorm(4, 16, eps=1e-6).to(device)
+    with torch.no_grad():
+        torch_gn.weight.copy_(liger_gn.weight)
+        torch_gn.bias.copy_(liger_gn.bias)
+
+    y_lig = liger_gn(x_lig)
+    y_ref = torch_gn(x_ref)
+    dy = torch.randn_like(y_ref)
+    y_lig.backward(dy)
+    y_ref.backward(dy)
+
+    assert torch.allclose(y_lig, y_ref, atol=1e-3, rtol=1e-3)
+    assert torch.allclose(x_lig.grad, x_ref.grad, atol=1e-3, rtol=1e-3)
+    assert torch.allclose(liger_gn.weight.grad, torch_gn.weight.grad, atol=1e-2, rtol=1e-2)
+    assert torch.allclose(liger_gn.bias.grad, torch_gn.bias.grad, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float32,
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_liger_group_norm_torch_compile_matches_eager(dtype):
+    """Ensure tl.cast keeps scalar block counts torch.compile-clean (#1544)."""
+    import gc
+
+    torch.manual_seed(0)
+    torch._dynamo.reset()
+    try:
+        base = torch.full((2, 8, 15, 17), 5.3, device=device, dtype=dtype)
+        dy = torch.randn_like(base)
+
+        eager_gn = LigerGroupNorm(8, 4, eps=1e-6, bias=True).to(dtype).to(device)
+        compiled_gn = LigerGroupNorm(8, 4, eps=1e-6, bias=True).to(dtype).to(device)
+        with torch.no_grad():
+            compiled_gn.weight.copy_(eager_gn.weight)
+            compiled_gn.bias.copy_(eager_gn.bias)
+
+        x_eager = base.clone().requires_grad_(True)
+        x_comp = base.clone().requires_grad_(True)
+
+        y_eager = eager_gn(x_eager)
+        y_comp = torch.compile(compiled_gn)(x_comp)
+        y_eager.backward(dy)
+        y_comp.backward(dy)
+
+        assert torch.isfinite(y_comp).all()
+        torch.testing.assert_close(y_comp, y_eager, atol=0, rtol=0)
+        torch.testing.assert_close(x_comp.grad, x_eager.grad, atol=0, rtol=0)
+    finally:
+        torch._dynamo.reset()
+        gc.collect()
