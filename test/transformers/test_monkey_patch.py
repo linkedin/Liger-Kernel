@@ -1,3 +1,4 @@
+import copy
 import inspect
 
 from inspect import signature
@@ -3636,6 +3637,8 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_self_attn_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_mlp_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert layer.post_self_attn_layernorm.in_place is False
+            assert layer.post_mlp_layernorm.in_place is False
         for vision_block in dummy_model_instance.model.visual.blocks:
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerRMSNorm.forward)
@@ -3645,6 +3648,53 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_glm4v_available(), reason="glm4v module not available")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Liger kernels require a GPU")
+def test_apply_liger_kernel_to_instance_for_glm4v_matches_hf_gradients():
+    # GLM-4V adds the post_self_attn_layernorm / post_mlp_layernorm outputs straight to the
+    # residual stream, so an in-place RMSNorm backward would overwrite the residual gradient.
+    # Compare against the unpatched HF model, which is the reference implementation.
+    with patch("transformers.models.glm4v.modeling_glm4v"):
+        from transformers.models.glm4v.configuration_glm4v import Glm4vTextConfig
+        from transformers.models.glm4v.modeling_glm4v import Glm4vTextModel
+
+        torch.manual_seed(0)
+        # head_dim 64 matches the default mrope_section
+        config = Glm4vTextConfig(
+            hidden_size=256,
+            intermediate_size=512,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            vocab_size=256,
+            rms_norm_eps=1e-5,
+            pad_token_id=None,
+        )
+        config._attn_implementation = "eager"
+        hf_model = Glm4vTextModel(config).to("cuda", torch.float32)
+        liger_model = copy.deepcopy(hf_model)
+        monkey_patch.apply_liger_kernel_to_glm4v(
+            fused_linear_cross_entropy=False, rms_norm=True, swiglu=False, model=liger_model
+        )
+        assert inspect.getsource(liger_model.layers[0].post_mlp_layernorm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+
+        input_ids = torch.randint(0, config.vocab_size, (2, 16), device="cuda")
+        hf_out = hf_model(input_ids=input_ids).last_hidden_state
+        liger_out = liger_model(input_ids=input_ids).last_hidden_state
+        torch.testing.assert_close(liger_out, hf_out, rtol=1e-5, atol=1e-5)
+
+        grad_output = torch.randn_like(hf_out)
+        hf_out.backward(grad_output)
+        liger_out.backward(grad_output.clone())
+        liger_params = dict(liger_model.named_parameters())
+        for name, hf_param in hf_model.named_parameters():
+            # fp32 kernels round differently from eager PyTorch, so scale atol by the gradient size
+            atol = 1e-4 * hf_param.grad.abs().max().item()
+            torch.testing.assert_close(liger_params[name].grad, hf_param.grad, rtol=1e-4, atol=atol, msg=name)
 
 
 @pytest.mark.skipif(not is_glm4v_moe_available(), reason="glm4v_moe module not available")

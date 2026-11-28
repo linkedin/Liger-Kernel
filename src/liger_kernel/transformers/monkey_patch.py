@@ -2686,8 +2686,10 @@ def apply_liger_kernel_to_glm4v(
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_self_attn_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_mlp_layernorm)
+                    # These outputs are added straight to the residual stream, so their grad
+                    # output is shared with the residual branch and must not be overwritten.
+                    _patch_rms_norm_module(decoder_layer.post_self_attn_layernorm, in_place=False)
+                    _patch_rms_norm_module(decoder_layer.post_mlp_layernorm, in_place=False)
 
 
 def apply_liger_kernel_to_glm4v_moe(
