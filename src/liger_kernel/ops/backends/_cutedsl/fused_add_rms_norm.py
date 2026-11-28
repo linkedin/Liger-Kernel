@@ -414,7 +414,8 @@ def fused_add_rms_norm_cutedsl(
     in_place: bool = False,
     *,
     mode: Optional[str] = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    return_residual: bool = True,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """CuTe DSL fused_add_rms_norm dispatch entry point.
 
     ``mode`` is accepted only for API parity with the other backends; the only
@@ -432,7 +433,9 @@ def fused_add_rms_norm_cutedsl(
         _xmax = _AUTORANK_MAX_HIDDEN
         _xmax_2b = _AUTORANK_MAX_HIDDEN_2B
         _xupper = _AUTORANK_UPPER_MIN_HIDDEN
-    if X.shape[-1] % vector_width:
+    if not return_residual:
+        fallback_reason = "output-only inference is supported by Triton"
+    elif X.shape[-1] % vector_width:
         fallback_reason = f"hidden size {X.shape[-1]} is not divisible by vector width {vector_width}"
     elif _farn_fwd_stages_fp32_pair(X, R, W, casting_mode) and X.shape[-1] > _FWD_SMEM_CAP_TILE_FP32_PAIR:
         fallback_reason = (
@@ -486,5 +489,6 @@ def fused_add_rms_norm_cutedsl(
             casting_mode,
             in_place,
             mode=mode,
+            return_residual=return_residual,
         )
     return _LigerFusedAddRMSNormCuTeDSLFunction.apply(X, R, W, eps, offset, casting_mode, in_place)

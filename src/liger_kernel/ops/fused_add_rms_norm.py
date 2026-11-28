@@ -7,6 +7,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 from liger_kernel.ops.utils import set_large_grf_mode
@@ -48,6 +49,7 @@ def _fused_add_rms_norm_forward_kernel(
     offset,
     casting_mode: tl.constexpr,  # constexpr so the `if` blocks can be optimized out
     BLOCK_SIZE: tl.constexpr,
+    STORE_AUX: tl.constexpr = True,
 ):
     """
     This kernel computes the following:
@@ -69,15 +71,17 @@ def _fused_add_rms_norm_forward_kernel(
     mask = col_offsets < n_cols
 
     Y_ptr += row_idx * Y_row_stride
-    S_ptr += row_idx * S_row_stride
     X_ptr += row_idx * X_row_stride
     R_ptr += row_idx * R_row_stride
-    RSTD_ptr += row_idx * RSTD_row_stride
+    if STORE_AUX:
+        S_ptr += row_idx * S_row_stride
+        RSTD_ptr += row_idx * RSTD_row_stride
 
     X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0)
     R_row = tl.load(R_ptr + col_offsets, mask=mask, other=0)
     S_row = X_row + R_row
-    tl.store(S_ptr + col_offsets, S_row, mask=mask)
+    if STORE_AUX:
+        tl.store(S_ptr + col_offsets, S_row, mask=mask)
     S_row_dtype = S_row.dtype
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0)
 
@@ -104,7 +108,8 @@ def _fused_add_rms_norm_forward_kernel(
     # We can save time by caching rms with minimal memory overhead
     # because rms is much smaller compared to X_row, as rms is for each row.
     # However, on the computation side, it can save 4 operations (*, sum, /, sqrt).
-    tl.store(RSTD_ptr, rstd)
+    if STORE_AUX:
+        tl.store(RSTD_ptr, rstd)
 
     S_row = S_row * rstd
 
@@ -228,7 +233,7 @@ _str_to_casting_mode = {
 }
 
 
-def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
+def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode, *, return_residual=True):
     if not isinstance(casting_mode, int):
         assert casting_mode in _str_to_casting_mode, f"Invalid casting mode: {casting_mode}"
         casting_mode = _str_to_casting_mode[casting_mode]
@@ -245,11 +250,11 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
     num_stages = 2
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-    S = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
+    S = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device) if return_residual else None
     # RSTD is to cache rstd for each row
     # RSTD is always computed/stored in fp32 if we are using Llama or Gemma casting mode
     rstd_dtype = torch.float32 if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value) else X.dtype
-    RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
+    RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device) if return_residual else None
 
     # Check constraints.
     assert X.shape[1] == W.shape[0], "Incompatible hidden size dimension between tensor1.shape[1] and tensor2.shape[0]"
@@ -264,7 +269,7 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
         Y,
         Y.stride(0),
         S,
-        S.stride(0),
+        S.stride(0) if S is not None else 0,
         X,
         X.stride(0),
         R,
@@ -272,18 +277,44 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
         W,
         W.stride(0),
         RSTD,
-        RSTD.stride(0),
+        RSTD.stride(0) if RSTD is not None else 0,
         n_cols,
         eps,
         offset,
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
+        STORE_AUX=return_residual,
         num_warps=num_warps,
         num_stages=num_stages,
         **kernel_args,  # XPU-specific optimization
     )
 
-    return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, num_warps, num_stages, casting_mode
+    return (
+        Y.view(*shape),
+        S.view(*shape) if S is not None else None,
+        RSTD,
+        BLOCK_SIZE,
+        num_warps,
+        num_stages,
+        casting_mode,
+    )
+
+
+def fused_add_rms_norm_output_only(X, R, W, eps, offset=0.0, casting_mode="llama") -> torch.Tensor:
+    """Return only the normalized output when no backward pass is needed."""
+    if torch.is_grad_enabled() and any(t.requires_grad for t in (X, R, W)):
+        raise ValueError("return_residual=False requires torch.no_grad() or inputs that do not require gradients.")
+    with device_context(X.device):
+        Y, _, _, _, _, _, _ = fused_add_rms_norm_forward(
+            X.contiguous(),
+            R.contiguous(),
+            W.contiguous(),
+            eps,
+            offset,
+            casting_mode,
+            return_residual=False,
+        )
+    return Y
 
 
 def fused_add_rms_norm_backward(

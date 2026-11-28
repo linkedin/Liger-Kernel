@@ -3,6 +3,7 @@
 | **Kernel**                      | **API**                                                     |
 |---------------------------------|-------------------------------------------------------------|
 | RMSNorm                         | `liger_kernel.transformers.LigerRMSNorm`                    |
+| Fused Add and RMSNorm            | `liger_kernel.transformers.LigerFusedAddRMSNorm`            |
 | Modulated RMSNorm               | `liger_kernel.transformers.LigerModulatedRMSNorm`           |
 | LayerNorm                       | `liger_kernel.transformers.LigerLayerNorm`                  |
 | RoPE                            | `liger_kernel.transformers.liger_rotary_pos_emb`            |
@@ -25,6 +26,48 @@ implementations in PyTorch.
 
 !!! Example "Try it out"
     You can experiment as shown in this example [here](https://colab.research.google.com/drive/1CQYhul7MVG5F0gmqTBbx1O1HgolPgF0M?usp=sharing).
+
+### Fused Add and RMSNorm
+
+Some shared transformer blocks add a residual and apply RMSNorm many times.
+They only need the normalized output, not the sum returned as a second tensor.
+
+Use `return_residual=False` to skip the second output and the statistics saved
+for backward:
+
+```python
+import torch
+
+from liger_kernel.functional import fused_add_rms_norm
+
+with torch.no_grad():
+    y = fused_add_rms_norm(x, residual, weight, return_residual=False)
+```
+
+The same flag is available on `LigerFusedAddRMSNorm` and
+`liger_fused_add_rms_norm`. The default still returns `(y, summed_residual)`
+and supports training. The output-only path uses Triton. A CuTe DSL call falls
+back to Triton with a warning.
+
+Use `torch.no_grad()` or `torch.inference_mode()` if an input or the norm weight
+requires gradients. Otherwise the call raises `ValueError`. Frozen inputs can
+use this path without changing the grad context. Inputs are not changed.
+The output follows the same dtype and casting mode as the current fused op.
+
+This does not add a Huginn model patch or change its KV cache. During inference,
+each skipped buffer is temporary. Skipping a buffer at each step does not mean
+all those buffers would have been live at once.
+
+#### Inference benchmark
+
+```sh
+python benchmark/scripts/benchmark_fused_add_rms_norm_inference.py --tokens 4096 --hidden-size 5280 --steps 1 8 32
+```
+
+The benchmark compares eager PyTorch, compiled PyTorch, the current Liger path,
+and the output-only path. It repeats the same norm with a fixed residual and
+uses no-grad calls for both time and memory. It measures this operation, not
+a full transformer model.
 
 ### Modulated RMS Norm
 

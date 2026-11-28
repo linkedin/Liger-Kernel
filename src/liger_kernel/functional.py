@@ -513,7 +513,8 @@ def fused_add_rms_norm(
     impl: Optional[str] = None,
     mode: Optional[str] = None,
     backend: Optional[str] = None,  # legacy back-compat alias for impl=
-) -> tuple[torch.Tensor, torch.Tensor]:
+    return_residual: bool = True,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Fused add + RMSNorm: ``Y = RMSNorm(X + R)`` returning ``(Y, S)`` where
     ``S = X + R`` (the residual output for the next layer).
 
@@ -532,6 +533,10 @@ def fused_add_rms_norm(
             ``"nvidia-triton"``). Legacy bare names accepted and translated.
         backend: Legacy back-compat alias for ``impl=``.
         mode: implementation-specific kernel-variant selection.
+        return_residual: if False, return only ``Y`` and skip the residual and
+            backward statistics buffers. Use ``torch.no_grad()`` when any input
+            requires gradients. This path uses Triton; CuTe DSL falls back with
+            a warning. The default still returns ``(Y, S)``.
     """
     if impl is None and backend is not None:
         impl = backend
@@ -546,6 +551,7 @@ def fused_add_rms_norm(
         in_place,
         impl=impl,
         mode=mode,
+        return_residual=return_residual,
     )
 
 

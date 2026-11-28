@@ -17,6 +17,7 @@ import torch
 from liger_kernel.backends import Capability
 from liger_kernel.backends import register_op
 from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
+from liger_kernel.ops.fused_add_rms_norm import fused_add_rms_norm_output_only
 
 _TRITON_TOLERANCES = {
     torch.float16: {"atol_fwd": 5e-3, "atol_bwd": 5e-2, "rtol_fwd": 1e-3, "rtol_bwd": 1e-2},
@@ -45,7 +46,8 @@ def fused_add_rms_norm_triton(
     in_place: bool = False,
     *,
     mode: Optional[str] = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    return_residual: bool = True,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Triton fused_add_rms_norm. ``mode`` is accepted for API parity and must
     be one of ``None``/``"default"``; anything else is rejected with a clear
     error.
@@ -55,4 +57,6 @@ def fused_add_rms_norm_triton(
             f"Triton fused_add_rms_norm has only mode='default'; got mode={mode!r}. "
             f"Pass impl='nvidia-cutedsl' to use the CuTe DSL variant."
         )
+    if not return_residual:
+        return fused_add_rms_norm_output_only(X, R, W, eps, offset, casting_mode)
     return LigerFusedAddRMSNormFunction.apply(X, R, W, eps, offset, casting_mode, in_place)

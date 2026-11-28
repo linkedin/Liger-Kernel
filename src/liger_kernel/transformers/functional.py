@@ -32,6 +32,7 @@ from liger_kernel.ops import LigerSoftmaxFunction
 from liger_kernel.ops import LigerSparsemaxFunction
 from liger_kernel.ops import LigerTVDLossFunction
 from liger_kernel.ops import fused_linear_score_centering
+from liger_kernel.ops.fused_add_rms_norm import fused_add_rms_norm_output_only
 
 
 @dataclass
@@ -415,7 +416,20 @@ def liger_poly_norm(X, W, B, eps=1e-6, in_place=True):
     return LigerPolyNormFunction.apply(X, W, B, eps, in_place)
 
 
-def liger_fused_add_rms_norm(X, R, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
+def liger_fused_add_rms_norm(
+    X,
+    R,
+    W,
+    eps,
+    offset: float = 0.0,
+    casting_mode: str = "llama",
+    in_place: bool = True,
+    *,
+    return_residual: bool = True,
+):
+    """Set return_residual=False for output-only inference with the Triton kernel."""
+    if not return_residual:
+        return fused_add_rms_norm_output_only(X, R, W, eps, offset, casting_mode)
     return LigerFusedAddRMSNormFunction.apply(X, R, W, eps, offset, casting_mode, in_place)
 
 
