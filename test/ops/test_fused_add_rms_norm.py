@@ -147,3 +147,27 @@ def test_fused_add_rms_norm_available_backends_includes_triton():
     """Sanity: the Triton implementation should always be available."""
     impls = available_backends("fused_add_rms_norm")
     assert any(b in ("triton", "nvidia-triton") for b in impls), f"expected 'triton' / 'nvidia-triton' in {impls}"
+
+
+@pytest.mark.parametrize("backend", _REGISTERED_BACKENDS or ["__none__"])
+def test_output_only_dispatch(backend, monkeypatch):
+    if backend == "__none__":
+        pytest.skip("No fused_add_rms_norm backend available")
+    x = torch.randn(7, 256, device="cuda", dtype=torch.bfloat16)
+    r = torch.randn_like(x)
+    w = torch.ones(256, device="cuda", dtype=x.dtype)
+    with torch.no_grad():
+        if backend in ("cutedsl", "nvidia-cutedsl"):
+            import importlib
+
+            from liger_kernel.backends.dispatch import LigerImplFallbackWarning
+
+            dispatch_module = importlib.import_module("liger_kernel.backends.dispatch")
+            monkeypatch.setattr(dispatch_module, "_FALLBACK_NOTIFIED", set())
+            with pytest.warns(LigerImplFallbackWarning, match="output-only inference"):
+                y = liger_kernel.functional.fused_add_rms_norm(x, r, w, impl=backend, return_residual=False)
+        else:
+            y = liger_kernel.functional.fused_add_rms_norm(x, r, w, impl=backend, return_residual=False)
+        expected, _ = _fused_add_rms_norm_ref(x, r, w, 1e-6)
+    assert isinstance(y, torch.Tensor)
+    torch.testing.assert_close(y, expected, atol=2e-2, rtol=2e-2)

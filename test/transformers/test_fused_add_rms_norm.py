@@ -8,6 +8,7 @@ from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
+from liger_kernel.functional import fused_add_rms_norm
 from liger_kernel.ops import LigerFusedAddRMSNormFunction
 from liger_kernel.transformers.functional import liger_fused_add_rms_norm
 from liger_kernel.transformers.fused_add_rms_norm import LigerFusedAddRMSNorm
@@ -286,3 +287,127 @@ def test_torch_compile_dynamic_batch_matches_eager(dtype):
             actual = compiled(x, residual)
         for got, want in zip(actual, expected):
             torch.testing.assert_close(got, want, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.parametrize("shape", [(2, 7, 123), (1, 5, 5280)])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize(
+    "reference, offset, casting_mode",
+    [(LlamaAddRMSNorm, 0.0, "llama"), (GemmaAddRMSNorm, 1.0, "gemma"), (BaseAddRMSNorm, 0.0, "none")],
+)
+def test_output_only_matches_default(shape, dtype, reference, offset, casting_mode):
+    model = LigerFusedAddRMSNorm(shape[-1], offset=offset, casting_mode=casting_mode).to(device=device, dtype=dtype)
+    ref = reference(shape[-1]).to(device=device, dtype=dtype)
+    model.weight.data.copy_(torch.randn_like(model.weight))
+    ref.weight.data.copy_(model.weight)
+    x = torch.randn(shape, device=device, dtype=dtype).requires_grad_()
+    residual = torch.randn_like(x).requires_grad_()
+    x_before, r_before = x.detach().clone(), residual.detach().clone()
+
+    with torch.no_grad():
+        expected, _ = model(x, residual)
+        model.return_residual = False
+        actual = model(x, residual)
+        ref_y, _ = ref(x, residual)
+
+    assert isinstance(actual, torch.Tensor)
+    assert not actual.requires_grad
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    atol, rtol = (1e-4, 1e-5) if dtype == torch.float32 else (2e-1, 2e-2)
+    torch.testing.assert_close(actual, ref_y, atol=atol, rtol=rtol)
+    torch.testing.assert_close(x, x_before, atol=0, rtol=0)
+    torch.testing.assert_close(residual, r_before, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("api", ["module", "functional", "dispatch"])
+@pytest.mark.parametrize("context", ["no_grad", "inference_mode", "frozen"])
+def test_output_only_public_calls(api, context):
+    model = LigerFusedAddRMSNorm(123, return_residual=False).to(device)
+    model.weight = torch.nn.Parameter(torch.ones(246, device=device)[::2])
+    x = torch.randn(7, 2, 123, device=device).transpose(0, 1)
+    residual = torch.randn_like(x)
+    if context == "frozen":
+        model.requires_grad_(False)
+
+    def call():
+        if api == "module":
+            return model(x, residual)
+        if api == "functional":
+            return liger_fused_add_rms_norm(x, residual, model.weight, 1e-6, return_residual=False)
+        return fused_add_rms_norm(x, residual, model.weight, impl="nvidia-triton", return_residual=False)
+
+    manager = {
+        "no_grad": torch.no_grad,
+        "inference_mode": torch.inference_mode,
+        "frozen": torch.enable_grad,
+    }[context]
+    with manager():
+        actual = call()
+    with torch.no_grad():
+        expected = LlamaAddRMSNorm(123).to(device)(x, residual)[0]
+    torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-5)
+
+
+@pytest.mark.parametrize("grad_input", ["x", "residual", "weight"])
+@pytest.mark.parametrize("api", ["module", "functional", "dispatch"])
+def test_output_only_rejects_required_gradients(grad_input, api):
+    x = torch.randn(2, 8, device=device, requires_grad=grad_input == "x")
+    residual = torch.randn_like(x, requires_grad=grad_input == "residual")
+    weight = torch.ones(8, device=device, requires_grad=grad_input == "weight")
+    with pytest.raises(ValueError, match="requires torch.no_grad"):
+        if api == "module":
+            model = LigerFusedAddRMSNorm(8, return_residual=False).to(device).eval()
+            model.weight = torch.nn.Parameter(weight, requires_grad=weight.requires_grad)
+            model(x, residual)
+        elif api == "functional":
+            liger_fused_add_rms_norm(x, residual, weight, 1e-6, return_residual=False)
+        else:
+            fused_add_rms_norm(x, residual, weight, impl="nvidia-triton", return_residual=False)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA memory check")
+def test_output_only_skips_residual_buffer():
+    x = torch.randn(512, 2048, device="cuda", dtype=torch.bfloat16)
+    residual = torch.randn_like(x)
+    weight = torch.ones(2048, device="cuda", dtype=x.dtype)
+
+    def peak(return_residual):
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        baseline = torch.cuda.memory_allocated()
+        output = liger_fused_add_rms_norm(x, residual, weight, 1e-6, return_residual=return_residual)
+        torch.cuda.synchronize()
+        used = torch.cuda.max_memory_allocated() - baseline
+        del output
+        return used
+
+    with torch.no_grad():
+        peak(True)
+        peak(False)
+        default_peak = peak(True)
+        output_only_peak = peak(False)
+    assert default_peak - output_only_peak >= residual.numel() * residual.element_size()
+
+
+def test_output_only_shared_steps_match_default():
+    model = LigerFusedAddRMSNorm(256).to(device=device, dtype=torch.bfloat16)
+    x = torch.randn(2, 7, 256, device=device, dtype=torch.bfloat16)
+    residual = torch.randn_like(x)
+    with torch.no_grad():
+        expected, actual = x, x
+        for _ in range(32):
+            expected = model(expected, residual)[0]
+            actual = liger_fused_add_rms_norm(actual, residual, model.weight, 1e-6, return_residual=False)
+        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+
+def test_output_only_compile_matches_eager():
+    model = LigerFusedAddRMSNorm(256, return_residual=False).to(device=device, dtype=torch.bfloat16)
+    compiled = torch.compile(model, fullgraph=True, dynamic=True)
+    for rows in (1, 7):
+        x = torch.randn(rows, 256, device=device, dtype=torch.bfloat16)
+        residual = torch.randn_like(x)
+        with torch.no_grad():
+            actual = compiled(x, residual)
+            expected = model(x, residual)
+        torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)

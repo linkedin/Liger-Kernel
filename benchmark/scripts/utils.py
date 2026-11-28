@@ -182,7 +182,7 @@ def run_memory_benchmark(
     fwd_fn: Callable,
     mode: str,
 ) -> "SingleBenchmarkRunOutput":
-    """Measure peak memory for forward, backward, or full (fwd+bwd).
+    """Measure peak memory with or without a backward pass.
 
     Same caveats as :func:`run_speed_benchmark` regarding output shape.
     """
@@ -202,8 +202,15 @@ def run_memory_benchmark(
             y.backward(torch.randn_like(y), retain_graph=True)
 
         mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    elif mode == "no-grad-forward":
+
+        def no_grad_forward():
+            with torch.no_grad():
+                fwd_fn()
+
+        mem_50, mem_20, mem_80 = _test_memory(no_grad_forward, quantiles=QUANTILES)
     else:
-        raise ValueError(f"Unsupported mode: {mode}. Use 'forward', 'backward', or 'full'.")
+        raise ValueError(f"Unsupported mode: {mode}. Use 'forward', 'backward', 'full', or 'no-grad-forward'.")
     return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
 
 
